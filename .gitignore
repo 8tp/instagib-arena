@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.vite/
+
+# runtime data (SQLite stats DB lives here)
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs / os
+*.log
+npm-debug.log*
+.DS_Store

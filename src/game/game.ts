@@ -1,0 +1,1408 @@
+import * as THREE from 'three';
+import { SoundManager, type SoundClipName } from './audio';
+import {
+  BotManager,
+  loadBotModel,
+  pickFreeSpot,
+  type BotFireIntent,
+  type BotModel,
+  type BotTarget,
+} from './bots';
+import {
+  BANNER_DURATION_SEC,
+  BOT_HEADSHOT_THRESHOLD,
+  BOT_HEIGHT,
+  DEFAULT_BOT_DIFFICULTY,
+  DEFAULT_FOV,
+  EYE_HEIGHT,
+  HIT_MARKER_KILL_DURATION_SEC,
+  MAX_FOV,
+  MIN_FOV,
+  KILL_CONFIRM_DURATION_SEC,
+  KILLCAM_DURATION_SEC,
+  KILLFEED_DURATION_SEC,
+  LOCAL_RESPAWN_INVULN_SEC,
+  MATCH_FRAG_LIMIT,
+  MAX_KILLFEED_ENTRIES,
+  MAX_PLAYERS,
+  MAX_TOASTS,
+  NUM_BOTS,
+  PLAYER_HEIGHT,
+  PLAYER_RADIUS,
+  RAIL_RANGE,
+  SHAKE_DEATH,
+  SHAKE_FIRE,
+  SHAKE_MAX,
+  TICK_DT,
+  TOAST_DURATION_SEC,
+  type BotDifficulty,
+  type KeybindAction,
+} from './constants';
+import { EffectsManager } from './effects';
+import { InputManager } from './input';
+import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
+import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
+import { NetClient, type KillEvent } from './net';
+import { Player } from './player';
+import { RemotePlayer } from './remote-player';
+import { createCamera, createRenderer, createScene } from './renderer';
+import type {
+  AABB,
+  BannerState,
+  HitMarker,
+  HudState,
+  KillConfirm,
+  KillcamState,
+  KillfeedEntry,
+  MapVoteState,
+  Medal,
+  PlayerScore,
+  ToastEntry,
+} from './types';
+import { Railgun, type RailTarget } from './weapon';
+
+export type HudListener = (state: HudState) => void;
+
+// Reported to the client when a match ends (frag limit) or the player leaves.
+export type MatchResult = {
+  won: boolean;
+  kills: number;
+  deaths: number;
+  bestStreak: number;
+  headshots: number;
+  shotsFired: number;
+  shotsHit: number;
+};
+export type MatchEndListener = (result: MatchResult) => void;
+
+// Multiplayer-only lifecycle signals the client surfaces outside the HUD
+// (e.g. "couldn't join — lobby is gone/full" → bounce back to the menu). Map
+// changes are shown in-game via a HUD banner, not through this channel.
+export type NetMatchEvent = { type: 'join-failed'; reason: string };
+export type NetMatchListener = (ev: NetMatchEvent) => void;
+
+const PLAYER_NAME_DEFAULT = 'You';
+const BOT_MODEL_URL = '/models/instagib/soldier.glb';
+const POS_SEND_HZ = 32;
+
+const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
+  'first-blood':   'first-blood',
+  'double-kill':   'double-kill',
+  'multi-kill':    'triple-kill',
+  'ultra-kill':    'quad-kill',
+  'monster-kill':  'penta-kill',
+  'killing-spree': 'killing-spree',
+  'rampage':       'rampage',
+  'dominating':    'dominating',
+  'unstoppable':   'unstoppable',
+  'godlike':       'godlike',
+  'headshot':      'headshot',
+  'mid-air':       'humiliation',
+};
+
+export class Game {
+  private renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private camera: THREE.PerspectiveCamera;
+  private map: ArenaMap = DEFAULT_MAP;
+  private mapMesh: THREE.Group;
+  private player: Player;
+  private weapon = new Railgun();
+  private input: InputManager;
+  private bots: BotManager | null = null;
+  private botModel: BotModel | null = null;
+  private medals = new MedalTracker();
+  private effects = new EffectsManager();
+  private audio = new SoundManager();
+  private locked = false;
+  private accumulator = 0;
+  private lastTime = 0;
+  private rafHandle: number | null = null;
+  private disposed = false;
+  private resizeHandler: () => void;
+  private elapsed = 0;
+
+  private playerName = PLAYER_NAME_DEFAULT;
+  private playerFrags = 0;
+  private playerDeaths = 0;
+  private playerHeadshots = 0;
+  private playerShotsFired = 0;
+  private playerShotsHit = 0;
+  private botDeathCounts = new Map<string, number>();
+  private botFrags = new Map<string, number>();
+  // Per-bot shot tallies so the scoreboard can show bot accuracy too.
+  private botShotsFired = new Map<string, number>();
+  private botShotsHit = new Map<string, number>();
+
+  // Match config + state
+  private botCount = NUM_BOTS;
+  private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
+  private matchOver = false;
+  private matchWon = false;
+  private training = false; // endless practice — never hit the frag limit
+  private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
+  private shake = 0; // camera screen-shake amount, decays each render frame
+
+  // Visual customization
+  private worldColor = new THREE.Color(0xffffff);
+  private worldBrightness = 0;
+  private enemyColor: THREE.Color | null = null; // null = natural enemies
+
+  // Multiplayer
+  private net: NetClient | null = null;
+  private remotePlayers = new Map<string, RemotePlayer>();
+  private wantBots = true;
+  private wantMultiplayer = false;
+  private multiplayerUrl = '';
+  private multiplayerRoomId = '';
+  private posSendAccumMs = 0;
+  // End-of-match map vote (server-driven). Non-null → vote overlay + pointer
+  // released; the local player idles until the result resumes play.
+  private vote: MapVoteState | null = null;
+  private onNetEvent: NetMatchListener = () => {};
+  // Multiplayer match result latch: in MP the server (not checkMatchEnd) ends a
+  // match — the vote opening IS the end. wonLastMatch is latched from the
+  // vote-start winnerId; matchSubmitted guards a single stats POST per match.
+  private wonLastMatch = false;
+  private matchSubmitted = false;
+
+  private killfeed: KillfeedEntry[] = [];
+  private toasts: ToastEntry[] = [];
+  private banner: BannerState | null = null;
+  private hitMarker: HitMarker | null = null;
+  private killConfirm: KillConfirm | null = null;
+  private killcam: KillcamState | null = null;
+  private killcamLookAt = new THREE.Vector3();
+  private nextEventId = 1;
+  private fireWasAirborne = false;
+  private weaponWasReady = true; // tracks cooldown-to-ready transition
+
+  private fps = 60;
+  private fpsFrames = 0;
+  private fpsAccumMs = 0;
+  private hudAccumMs = 0; // throttles HUD delivery in runLoop (#24)
+
+  private tmpForward = new THREE.Vector3();
+  private tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+  private onMatchEnd: MatchEndListener;
+
+  constructor(
+    private canvas: HTMLCanvasElement,
+    private onHud: HudListener,
+    onMatchEnd?: MatchEndListener,
+  ) {
+    this.onMatchEnd = onMatchEnd ?? (() => {});
+    this.renderer = createRenderer(canvas);
+    this.scene = createScene(this.renderer);
+    this.camera = createCamera(canvas);
+    this.mapMesh = buildMapMesh(this.map);
+    this.scene.add(this.mapMesh);
+    this.player = new Player(this.map.spawn);
+
+    this.input = new InputManager(
+      canvas,
+      (locked) => {
+        this.locked = locked;
+        this.emitHud();
+        if (locked) this.audio.resume();
+      },
+      () => {
+        // Pointer lock was refused (no gesture / unsupported / touch). Surface a
+        // hint instead of a silently dimmed screen (#14).
+        this.banner = {
+          id: this.nextEventId++,
+          tier: 'special',
+          title: 'Click the arena to play',
+          subtitle: 'mouse capture needed',
+          remaining: BANNER_DURATION_SEC,
+          total: BANNER_DURATION_SEC,
+        };
+        this.emitHud();
+      },
+    );
+    void this.audio.init();
+
+    this.resizeHandler = () => this.handleResize();
+    window.addEventListener('resize', this.resizeHandler);
+    this.handleResize();
+    this.emitHud();
+  }
+
+  requestLock() {
+    this.input.requestLock();
+    this.audio.resume();
+  }
+
+  setSensitivity(s: number) {
+    this.input.setSensitivity(s);
+  }
+
+  setVertScale(v: number) {
+    this.input.setVertScale(v);
+  }
+
+  setRawInput(on: boolean) {
+    this.input.setRawInput(on);
+  }
+
+  setKeybinds(binds: Record<KeybindAction, string>) {
+    this.input.setBindings(binds);
+  }
+
+  setFov(fov: number) {
+    // Clamp + finite-guard so a corrupt/hand-edited persisted FOV can't write an
+    // invalid projection matrix (black/garbled viewport with no recovery). (#25)
+    const f = Number.isFinite(fov) ? fov : DEFAULT_FOV;
+    this.camera.fov = Math.max(MIN_FOV, Math.min(MAX_FOV, f));
+    this.camera.updateProjectionMatrix();
+  }
+
+  setMasterVolume(v: number) {
+    this.audio.setVolume(v);
+  }
+
+  setSfxVolume(v: number) {
+    this.audio.setSfxVolume(v);
+  }
+
+  setAnnouncerVolume(v: number) {
+    this.audio.setAnnouncerVolume(v);
+  }
+
+  setAnnouncerEnabled(on: boolean) {
+    this.audio.setAnnouncerEnabled(on);
+  }
+
+  setPlayerName(name: string) {
+    const trimmed = name?.trim() ?? '';
+    this.playerName = trimmed || PLAYER_NAME_DEFAULT;
+  }
+
+  setTraining(on: boolean) {
+    this.training = on;
+  }
+
+  setBotsEnabled(enabled: boolean) {
+    this.wantBots = enabled;
+    this.applyBotsState();
+  }
+
+  setBotCount(n: number) {
+    const next = Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(n)));
+    if (next === this.botCount) return;
+    this.botCount = next;
+    this.rebuildBots();
+  }
+
+  setBotDifficulty(difficulty: BotDifficulty) {
+    if (difficulty === this.botDifficulty) return;
+    this.botDifficulty = difficulty;
+    this.rebuildBots();
+  }
+
+  private rebuildBots() {
+    if (!this.bots) return; // not spawned yet — applyBotsState() will use the new values
+    this.bots.dispose(this.scene);
+    this.bots = null;
+    this.botDeathCounts.clear();
+    this.botFrags.clear();
+    this.botShotsFired.clear();
+    this.botShotsHit.clear();
+    this.applyBotsState();
+  }
+
+  // Tint + full-bright the arena surfaces (Ratz-style world color).
+  setWorldStyle(colorHex: string, brightness: number) {
+    this.worldColor.set(colorHex);
+    this.worldBrightness = brightness;
+    this.applyWorldStyle();
+  }
+
+  private applyWorldStyle() {
+    const tint = this.worldColor;
+    const intensity = this.worldBrightness * 1.6;
+    this.mapMesh.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material;
+      const apply = (m: THREE.Material) => {
+        const sm = m as THREE.MeshStandardMaterial;
+        if (!sm.isMeshStandardMaterial || !sm.emissiveMap) return; // textured surfaces only
+        sm.color.copy(tint);
+        sm.emissive.copy(tint);
+        sm.emissiveIntensity = intensity;
+      };
+      if (Array.isArray(mat)) mat.forEach(apply);
+      else if (mat) apply(mat);
+    });
+  }
+
+  // Make enemies glow a bright colour for visibility (null = natural).
+  setEnemyStyle(colorHex: string | null) {
+    this.enemyColor = colorHex ? new THREE.Color(colorHex) : null;
+    this.applyEnemyStyle();
+  }
+
+  private applyEnemyStyle() {
+    if (this.bots) for (const b of this.bots.bots) b.setHighlight(this.enemyColor);
+    for (const rp of this.remotePlayers.values()) rp.setHighlight(this.enemyColor);
+  }
+
+  // Swap the arena in place (keeps the renderer/canvas — a second WebGL context
+  // can't be created on the same canvas, so we rebuild scene contents instead).
+  setMap(map: ArenaMap) {
+    if (map === this.map) return;
+    this.map = map;
+    this.scene.remove(this.mapMesh);
+    disposeGroup(this.mapMesh);
+    this.mapMesh = buildMapMesh(map);
+    this.scene.add(this.mapMesh);
+    this.applyWorldStyle(); // re-tint the freshly-built materials
+    // Reset the local player onto the new spawn.
+    this.player.pos = { ...map.spawn };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    // Clear transient visuals tied to the old geometry.
+    this.weapon.disposeAll(this.scene);
+    this.effects.dispose(this.scene);
+    this.killcam = null;
+    // Rebuild bots for the new layout.
+    if (this.bots) {
+      this.bots.dispose(this.scene);
+      this.bots = new BotManager(
+        this.scene,
+        this.map,
+        this.botCount,
+        this.map.spawn,
+        this.botModel,
+        this.botDifficulty,
+      );
+      this.botDeathCounts.clear();
+      this.botFrags.clear();
+      this.botShotsFired.clear();
+      this.botShotsHit.clear();
+      for (const b of this.bots.bots) {
+        this.botDeathCounts.set(b.state.id, 0);
+        this.botFrags.set(b.state.id, 0);
+      }
+      this.applyEnemyStyle();
+    }
+    this.emitHud();
+  }
+
+  setMultiplayer(opts: { enabled: boolean; url: string; roomId?: string }) {
+    this.wantMultiplayer = opts.enabled;
+    this.multiplayerUrl = opts.url;
+    this.multiplayerRoomId = opts.roomId ?? '';
+    this.applyMultiplayerState();
+  }
+
+  // Surface multiplayer lifecycle events (join failure, map change) to the
+  // client orchestrator so it can navigate / toast.
+  setNetEventListener(fn: NetMatchListener) {
+    this.onNetEvent = fn;
+  }
+
+  async start() {
+    if (this.disposed) return;
+    this.lastTime = performance.now();
+    this.runLoop();
+    let model: BotModel | null = null;
+    try {
+      model = await loadBotModel(BOT_MODEL_URL);
+    } catch {
+      model = null;
+    }
+    if (this.disposed) return;
+    this.botModel = model;
+    this.applyBotsState();
+    this.applyMultiplayerState();
+    this.emitHud();
+  }
+
+  dispose() {
+    this.disposed = true;
+    if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
+    this.rafHandle = null;
+    this.input.detach();
+    window.removeEventListener('resize', this.resizeHandler);
+    this.weapon.disposeAll(this.scene);
+    this.effects.dispose(this.scene);
+    if (this.bots) this.bots.dispose(this.scene);
+    for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
+    this.remotePlayers.clear();
+    if (this.net) this.net.dispose();
+    this.audio.dispose();
+    // The PMREM IBL render target lives on scene.environment and isn't a scene
+    // child, so disposeScene() misses it — free it explicitly so each match
+    // remount (Play Again / new match) doesn't leak a cube render target (#26i).
+    (this.scene.environment as THREE.Texture | null)?.dispose();
+    this.scene.environment = null;
+    this.disposeScene();
+    this.renderer.dispose();
+  }
+
+  private applyBotsState() {
+    if (!this.botModel && this.wantBots) {
+      // Model not loaded yet — applyBotsState() will be called again from start()
+      return;
+    }
+    if (this.wantBots && !this.bots) {
+      this.bots = new BotManager(
+        this.scene,
+        this.map,
+        this.botCount,
+        this.map.spawn,
+        this.botModel,
+        this.botDifficulty,
+      );
+      for (const b of this.bots.bots) {
+        this.botDeathCounts.set(b.state.id, 0);
+        this.botFrags.set(b.state.id, 0);
+      }
+      this.applyEnemyStyle();
+    } else if (!this.wantBots && this.bots) {
+      this.bots.dispose(this.scene);
+      this.bots = null;
+      this.botDeathCounts.clear();
+      this.botFrags.clear();
+      this.botShotsFired.clear();
+      this.botShotsHit.clear();
+    }
+  }
+
+  private applyMultiplayerState() {
+    if (this.wantMultiplayer && !this.net) {
+      if (!this.multiplayerUrl) {
+        console.warn('[instagib] multiplayer enabled but no serverUrl set');
+        return;
+      }
+      console.info(`[instagib] connecting to ${this.multiplayerUrl} room=${this.multiplayerRoomId}`);
+      this.net = new NetClient({
+        url: this.multiplayerUrl,
+        name: this.playerName,
+        roomId: this.multiplayerRoomId,
+        events: {
+          onKill: (ev) => this.handleNetKill(ev),
+          onJoined: (info) => this.handleNetJoined(info),
+          onJoinFailed: (reason) => this.onNetEvent({ type: 'join-failed', reason }),
+          onRespawn: (pos) => this.handleNetRespawn(pos),
+          onVoteStart: (v) => this.handleVoteStart(v),
+          onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
+          onVoteResult: (r) => this.handleVoteResult(r),
+        },
+      });
+      this.net.connect();
+    } else if (!this.wantMultiplayer && this.net) {
+      this.net.dispose();
+      this.net = null;
+      this.vote = null;
+      for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
+      this.remotePlayers.clear();
+    }
+  }
+
+  // Server confirmed our room join → adopt the room's authoritative map and
+  // drop onto the server-assigned spawn.
+  private handleNetJoined(info: { mapId: string; spawn: { x: number; y: number; z: number }; state: 'active' | 'voting' }) {
+    const desired = mapById(info.mapId);
+    if (desired !== this.map) this.setMap(desired);
+    this.player.pos = { x: info.spawn.x, y: info.spawn.y, z: info.spawn.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.killcam = null;
+    this.matchSubmitted = false;
+    this.wonLastMatch = false;
+    if (info.state !== 'voting') this.vote = null;
+    // "Now playing: <map>" so a server map adoption on join isn't silent (#26g).
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: desired.name,
+      subtitle: 'Now playing',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.emitHud();
+  }
+
+  // Server forced a respawn (we fell out of the world) — snap to the new spot.
+  private handleNetRespawn(pos: { x: number; y: number; z: number }) {
+    this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+  }
+
+  private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null }) {
+    // The vote opening IS the end of the online match — this is the moment to
+    // latch win/loss and submit stats exactly once, BEFORE handleVoteResult
+    // resets the counters for the next map (#4).
+    this.wonLastMatch = v.winnerId != null && v.winnerId === this.net?.clientId;
+    if (this.net && !this.matchSubmitted) {
+      this.matchSubmitted = true;
+      this.onMatchEnd(this.collectStats(this.wonLastMatch));
+    }
+    const counts: Record<string, number> = {};
+    for (const o of v.options) counts[o] = 0;
+    this.vote = {
+      options: v.options,
+      endsAtClient: v.endsAtClient,
+      durationMs: v.durationMs,
+      counts,
+      myVote: null,
+    };
+    // Release the cursor so the player can click a map; freeze sim via vote.
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    this.emitHud();
+  }
+
+  private handleVoteUpdate(counts: Record<string, number>) {
+    if (this.vote) {
+      this.vote = { ...this.vote, counts };
+      this.emitHud();
+    }
+  }
+
+  private handleVoteResult(r: { mapId: string; resumeAtClient: number }) {
+    this.vote = null;
+    // New match on the winning map: reset local medal/streak + per-run stats
+    // (server resets the authoritative scoreboard; HUD reads it from snapshots).
+    // Done AFTER handleVoteStart already submitted the finished match's stats.
+    this.medals = new MedalTracker();
+    this.playerFrags = 0;
+    this.playerDeaths = 0;
+    this.playerHeadshots = 0;
+    this.playerShotsFired = 0;
+    this.playerShotsHit = 0;
+    this.matchSubmitted = false;
+    this.wonLastMatch = false;
+    const desired = mapById(r.mapId);
+    if (desired !== this.map) {
+      this.setMap(desired);
+    } else {
+      // Same map → still respawn fresh (player radius so we don't clip a box).
+      this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+      this.player.vel = { x: 0, y: 0, z: 0 };
+    }
+    this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: desired.name,
+      subtitle: 'Next map',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    // Best-effort re-lock so the player isn't dropped to a generic Click-to-Play
+    // after every map cycle (#8). Works when the vote resolved right after the
+    // local player clicked an option (transient activation); otherwise the
+    // ClickToPlay overlay is the fallback.
+    this.input.requestLock();
+    this.emitHud();
+  }
+
+  // Submit a map vote (called from the client overlay via the Game wrapper).
+  voteForMap(mapId: string) {
+    if (!this.net || !this.vote) return;
+    if (!this.vote.options.includes(mapId)) return;
+    this.vote = { ...this.vote, myVote: mapId };
+    this.net.sendVote(mapId);
+    this.emitHud();
+  }
+
+  private runLoop() {
+    const tick = (now: number) => {
+      if (this.disposed) return;
+      const dt = Math.min(0.1, (now - this.lastTime) / 1000);
+      this.lastTime = now;
+      this.accumulator += dt;
+      let steps = 0;
+      while (this.accumulator >= TICK_DT && steps < 5) {
+        this.simStep(TICK_DT);
+        this.accumulator -= TICK_DT;
+        steps += 1;
+      }
+      if (steps === 5) this.accumulator = 0;
+      this.tickHudTimers(dt);
+      this.tickFps(dt);
+      this.syncRemotePlayers(dt);
+      this.render();
+      // Throttle HUD delivery to ~20Hz so React isn't re-rendering ~14 overlay
+      // components every animation frame (the 3D render stays full-rate). Event
+      // sites (kills, respawn, vote, lock change) still call emitHud() directly
+      // for instant feedback. (#24)
+      this.hudAccumMs += dt * 1000;
+      if (this.hudAccumMs >= 50) {
+        this.hudAccumMs = 0;
+        this.emitHud();
+      }
+      this.rafHandle = requestAnimationFrame(tick);
+    };
+    this.rafHandle = requestAnimationFrame(tick);
+  }
+
+  private tickFps(dt: number) {
+    this.fpsAccumMs += dt * 1000;
+    this.fpsFrames += 1;
+    if (this.fpsAccumMs >= 500) {
+      this.fps = Math.round((this.fpsFrames * 1000) / this.fpsAccumMs);
+      this.fpsFrames = 0;
+      this.fpsAccumMs = 0;
+    }
+  }
+
+  private syncRemotePlayers(dt: number) {
+    if (!this.net) return;
+    // Refresh the interpolated view of remote players (render-delayed so we
+    // always interpolate between two snapshots — see NetClient.interpolate).
+    this.net.interpolate();
+    // Remove disconnected
+    for (const [id, rp] of this.remotePlayers) {
+      if (!this.net.remotes.has(id)) {
+        rp.dispose(this.scene);
+        this.remotePlayers.delete(id);
+      }
+    }
+    // Add new + tick existing
+    for (const [id, snap] of this.net.remotes) {
+      let rp = this.remotePlayers.get(id);
+      if (!rp) {
+        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
+        rp.group.position.set(snap.pos.x, snap.pos.y, snap.pos.z);
+        rp.setHighlight(this.enemyColor);
+        this.remotePlayers.set(id, rp);
+      }
+      rp.apply(snap, dt);
+      rp.setInvuln(snap.invulnMs);
+    }
+  }
+
+  private addShake(amount: number) {
+    this.shake = Math.min(SHAKE_MAX, this.shake + amount);
+  }
+
+  private simStep(dt: number) {
+    if (!this.locked || this.matchOver) return;
+    this.elapsed += dt;
+
+    const input = this.input.consume();
+    const dead = this.killcam !== null;
+
+    // While dead the input is still consumed (so accumYaw/accumPitch don't
+    // pile up and snap the view on respawn), but it does NOT apply to the
+    // player. The camera is owned by the killcam in render().
+    if (!dead) this.player.step(input, dt, this.map);
+
+    // Boost-jump feedback: a cyan spark at the surface the player kicked off.
+    if (this.player.didBoost) {
+      this.player.didBoost = false;
+      const c = this.player.boostContact;
+      this.effects.spawnHitFlash(this.scene, new THREE.Vector3(c.x, c.y, c.z), 0x9be8ff);
+    }
+
+    this.weapon.step(dt, this.scene);
+    this.effects.step(dt, this.scene);
+    if (this.localRespawnInvuln > 0) {
+      this.localRespawnInvuln = Math.max(0, this.localRespawnInvuln - dt);
+    }
+    if (this.bots) {
+      // Targetable entities: the local player (only while alive) + all live
+      // bots. Each bot skips itself. Resolve any shots they decide to take.
+      const enemies: BotTarget[] = [];
+      if (!dead) enemies.push({ id: 'player', pos: this.player.pos });
+      for (const b of this.bots.bots) {
+        if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos });
+      }
+      const intents = this.bots.step(dt, this.map, enemies);
+      for (const intent of intents) this.handleBotShot(intent);
+    }
+
+    // Cooldown-to-ready transition → reload-ready ping. Fires once per shot.
+    const ready = this.weapon.cooldown === 0;
+    if (ready && !this.weaponWasReady && !dead) {
+      this.audio.play('reload-ready', 0.6);
+    }
+    this.weaponWasReady = ready;
+
+    if (input.firePressed && !dead) this.handleFire();
+
+    // Throttled position broadcast
+    if (this.net) {
+      this.posSendAccumMs += dt * 1000;
+      const intervalMs = 1000 / POS_SEND_HZ;
+      if (this.posSendAccumMs >= intervalMs) {
+        this.posSendAccumMs = 0;
+        this.net.sendPosition(
+          this.player.pos.x,
+          this.player.pos.y,
+          this.player.pos.z,
+          this.player.yaw,
+          this.player.pitch,
+        );
+      }
+    }
+  }
+
+  private handleFire() {
+    this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
+    this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler);
+    const eye = new THREE.Vector3(
+      this.player.pos.x,
+      this.player.pos.y + EYE_HEIGHT,
+      this.player.pos.z,
+    );
+    const muzzle = eye.addScaledVector(this.tmpForward, 0.3);
+
+    // Bots are resolved locally; remote players are resolved by the SERVER
+    // (lag-compensated). So the local raycast only carries bots — the wall
+    // distance (result.end) becomes the shot's range cap sent to the server.
+    const targets: RailTarget[] = [];
+    const bots = this.bots?.bots ?? [];
+    for (const b of bots) {
+      if (!b.state.alive) continue;
+      targets.push({
+        kind: 'bot',
+        id: b.state.id,
+        name: b.state.name,
+        bounds: b.bounds(),
+        headshotY: b.state.pos.y + BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD,
+        centerY: b.centerY(),
+      });
+    }
+
+    const result = this.weapon.fire(
+      muzzle,
+      this.tmpForward,
+      this.scene,
+      this.map.boxes,
+      targets,
+    );
+    // Cooldown blocked the shot → no SFX, no side effects.
+    if (!result) return;
+
+    // Real shot: play fire SFX exactly once. The weapon already set cooldown.
+    this.weaponWasReady = false;
+    this.fireWasAirborne = !this.player.onGround;
+    this.playerShotsFired += 1;
+    this.audio.play('fire', 0.55);
+    this.addShake(SHAKE_FIRE);
+
+    // Hand the shot to the server for authoritative, lag-compensated hit
+    // detection against remote players. maxDist = distance to the nearest wall.
+    if (this.net) {
+      const maxDist = muzzle.distanceTo(result.end);
+      this.net.sendShot(
+        { x: muzzle.x, y: muzzle.y, z: muzzle.z },
+        { x: this.tmpForward.x, y: this.tmpForward.y, z: this.tmpForward.z },
+        maxDist,
+      );
+    }
+
+    if (result.hits.length === 0) return; // missed every bot
+
+    // Local bot kills resolve immediately. (Remote-player kills are decided by
+    // the server via the shot above and arrive through handleNetKill.)
+    let firstHitHeadshot = false;
+    let anyHit = false;
+
+    for (const hit of result.hits) {
+      if (hit.target.kind !== 'bot') continue;
+      anyHit = true;
+      if (!firstHitHeadshot && hit === result.hits[0]) {
+        firstHitHeadshot = hit.headshot;
+      }
+      this.effects.spawnHitFlash(this.scene, hit.point, 0xffd1d8);
+
+      const bot = bots.find((b) => b.state.id === hit.target.id);
+      if (!bot) continue;
+      const midAir = this.fireWasAirborne;
+      const special = hit.headshot ? 'headshot' : midAir ? 'mid-air' : null;
+      this.effects.spawnKillBurst(
+        this.scene,
+        new THREE.Vector3(bot.state.pos.x, bot.centerY(), bot.state.pos.z),
+      );
+      bot.kill();
+      this.botDeathCounts.set(
+        bot.state.id,
+        (this.botDeathCounts.get(bot.state.id) ?? 0) + 1,
+      );
+      this.playerFrags += 1;
+      if (hit.headshot) this.playerHeadshots += 1;
+      this.audio.play('kill', 0.7);
+      this.audio.hitConfirm(hit.headshot, 0.5);
+      this.pushKillfeed({
+        killer: this.playerName,
+        killerLocal: true,
+        victim: hit.target.name,
+        weapon: 'rail',
+        special,
+      });
+      const medals = this.medals.onKill(this.elapsed, {
+        midAir,
+        headshot: hit.headshot,
+      });
+      for (const m of medals) this.awardMedal(m);
+    }
+
+    if (anyHit) {
+      this.playerShotsHit += 1;
+      this.hitMarker = {
+        id: this.nextEventId++,
+        kind: firstHitHeadshot ? 'headshot' : 'kill',
+        remaining: HIT_MARKER_KILL_DURATION_SEC,
+        total: HIT_MARKER_KILL_DURATION_SEC,
+      };
+      this.checkMatchEnd();
+    }
+  }
+
+  // ── Bot combat: resolve a bot's fired shot against the world ──────────────
+  private handleBotShot(intent: BotFireIntent) {
+    // Every intent is one shot fired — count it for the bot's accuracy.
+    this.botShotsFired.set(intent.botId, (this.botShotsFired.get(intent.botId) ?? 0) + 1);
+    const origin = new THREE.Vector3(intent.origin.x, intent.origin.y, intent.origin.z);
+    const dir = new THREE.Vector3(intent.dir.x, intent.dir.y, intent.dir.z).normalize();
+    const o = intent.origin;
+    const d = { x: dir.x, y: dir.y, z: dir.z };
+
+    // Nearest wall caps the beam + the shot.
+    let wallT = RAIL_RANGE;
+    for (const b of this.map.boxes) {
+      const t = rayAabb(o, d, b);
+      if (t !== null && t > 0 && t < wallT) wallT = t;
+    }
+
+    // Nearest victim (player + other bots) closer than the wall.
+    let victimKind: 'player' | 'bot' | null = null;
+    let victimId = '';
+    let victimName = '';
+    let victimPos: { x: number; y: number; z: number } | null = null;
+    let bestT = wallT;
+    if (this.killcam === null && this.localRespawnInvuln <= 0) {
+      const t = rayAabb(o, d, this.playerBounds());
+      if (t !== null && t > 0 && t < bestT) {
+        bestT = t;
+        victimKind = 'player';
+        victimId = 'player';
+        victimName = this.playerName;
+        victimPos = { ...this.player.pos };
+      }
+    }
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        if (!b.state.alive || b.state.id === intent.botId) continue;
+        const t = rayAabb(o, d, b.bounds());
+        if (t !== null && t > 0 && t < bestT) {
+          bestT = t;
+          victimKind = 'bot';
+          victimId = b.state.id;
+          victimName = b.state.name;
+          victimPos = { ...b.state.pos };
+        }
+      }
+    }
+
+    // Visible beam to the impact point (enemy fire reveals positions).
+    const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
+    this.weapon.spawnBeam(origin, end, this.scene);
+    this.audio.play('fire', 0.28);
+    if (!victimKind || !victimPos) return;
+
+    // Landed on someone (instagib = every hit is a kill) → count for accuracy.
+    this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
+    this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
+    if (victimKind === 'player') {
+      this.handleLocalDeath(intent.botName, intent.botId);
+    } else {
+      const victim = this.bots?.bots.find((b) => b.state.id === victimId);
+      if (victim) {
+        this.effects.spawnKillBurst(
+          this.scene,
+          new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
+        );
+        victim.kill();
+        this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
+      }
+      this.pushKillfeed({
+        killer: intent.botName,
+        killerLocal: false,
+        victim: victimName,
+        weapon: 'rail',
+        special: null,
+      });
+    }
+    this.botFrags.set(intent.botId, (this.botFrags.get(intent.botId) ?? 0) + 1);
+    this.checkMatchEnd();
+  }
+
+  private playerBounds(): AABB {
+    const p = this.player.pos;
+    return {
+      min: { x: p.x - PLAYER_RADIUS, y: p.y, z: p.z - PLAYER_RADIUS },
+      max: { x: p.x + PLAYER_RADIUS, y: p.y + PLAYER_HEIGHT, z: p.z + PLAYER_RADIUS },
+    };
+  }
+
+  // Local (single-player vs bots) death + respawn. Mirrors the multiplayer
+  // victim branch of handleNetKill but for a bot killer.
+  private handleLocalDeath(killerName: string, killerId: string) {
+    if (this.killcam) return;
+    const deathPos = { ...this.player.pos };
+    const spot = pickFreeSpot(this.map, this.player.pos, PLAYER_RADIUS);
+    this.player.pos = { x: spot.x, y: spot.y, z: spot.z };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.weapon.cooldown = 0;
+    this.weaponWasReady = true;
+    this.audio.play('hit', 0.6);
+    this.addShake(SHAKE_DEATH);
+    this.medals.onDeath();
+    this.playerDeaths += 1;
+    // Invuln spans the killcam plus a short grace once you respawn.
+    this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
+    this.killcam = {
+      killerId,
+      killerName,
+      deathPos,
+      remaining: KILLCAM_DURATION_SEC,
+      total: KILLCAM_DURATION_SEC,
+    };
+    const bot = this.bots?.bots.find((b) => b.state.id === killerId);
+    if (bot) {
+      this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
+    } else {
+      this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
+    }
+    this.pushKillfeed({
+      killer: killerName,
+      killerLocal: false,
+      victim: this.playerName,
+      weapon: 'rail',
+      special: null,
+    });
+  }
+
+  private checkMatchEnd() {
+    // Multiplayer match-end is server-authoritative (it triggers the map vote),
+    // training is endless — only local/bot matches end client-side.
+    if (this.matchOver || this.training || this.net) return;
+    let maxFrags = this.playerFrags;
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        maxFrags = Math.max(maxFrags, this.botFrags.get(b.state.id) ?? 0);
+      }
+    }
+    if (maxFrags >= MATCH_FRAG_LIMIT) {
+      this.endMatch(this.playerFrags >= MATCH_FRAG_LIMIT);
+    }
+  }
+
+  private endMatch(won: boolean) {
+    if (this.matchOver) return;
+    this.matchOver = true;
+    this.matchWon = won;
+    // Release the cursor and freeze the sim; the client shows a results screen.
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+    this.audio.speak(won ? 'Victory' : 'Defeat', 1);
+    this.onMatchEnd(this.collectStats(won));
+    this.emitHud();
+  }
+
+  private collectStats(won: boolean): MatchResult {
+    return {
+      won,
+      kills: this.playerFrags,
+      deaths: this.playerDeaths,
+      bestStreak: this.medals.bestStreak,
+      headshots: this.playerHeadshots,
+      shotsFired: this.playerShotsFired,
+      // Clamp: a single rail can pierce multiple remotes (collateral), so the
+      // per-kill hit count can briefly exceed shots fired — keep accuracy ≤100%.
+      shotsHit: Math.min(this.playerShotsHit, this.playerShotsFired),
+    };
+  }
+
+  // Snapshot of the current run for the client to submit if the player leaves
+  // before the frag limit is reached. Online, "won" is the server-authoritative
+  // latch (the local match never sets matchOver); offline it's the frag limit.
+  getStats(): MatchResult {
+    const won = this.net
+      ? this.wonLastMatch
+      : this.matchOver && this.playerFrags >= MATCH_FRAG_LIMIT;
+    return this.collectStats(won);
+  }
+
+  // True only when this run produced something worth recording — guards the
+  // client from POSTing an all-zero match (enter→leave / dead-lobby bounce) that
+  // would inflate totalGames and pollute win-rate / K-D-per-game (#4).
+  hasRecordableStats(): boolean {
+    return this.playerFrags > 0 || this.playerDeaths > 0 || this.playerShotsFired > 0;
+  }
+
+  // Server `kill` broadcast — drives the same effect set as a local bot kill
+  // but works for every client in the match (including the victim).
+  private handleNetKill(ev: KillEvent) {
+    const myId = this.net?.clientId ?? null;
+    const iAmKiller = ev.killerId === myId;
+    const iAmVictim = ev.victimId === myId;
+
+    // Visual effects at the victim's last-known position.
+    const burstAt = new THREE.Vector3(
+      ev.victimPos.x,
+      ev.victimPos.y + 0.9,
+      ev.victimPos.z,
+    );
+    this.effects.spawnKillBurst(this.scene, burstAt);
+
+    if (iAmKiller) {
+      // Killer: trust the server-authoritative score (next snapshot will
+      // confirm); play kill SFX + medal locally for immediate feedback.
+      this.audio.play('kill', 0.7);
+      this.audio.hitConfirm(ev.headshot, 0.5);
+      // Credit the confirmed hit so online accuracy/headshots aren't ~0 (#5).
+      // (MP has no bots, so this is the only place these increment online — no
+      // double-count with the local bot path.)
+      this.playerShotsHit += 1;
+      if (ev.headshot) this.playerHeadshots += 1;
+      // "Gibbed <name>" / "Headshot <name>" floating text near crosshair.
+      this.killConfirm = {
+        id: this.nextEventId++,
+        victimName: ev.victimName,
+        headshot: ev.headshot,
+        remaining: KILL_CONFIRM_DURATION_SEC,
+        total: KILL_CONFIRM_DURATION_SEC,
+      };
+      // midAir is unreliable a full RTT after the shot (the server doesn't
+      // report it), so don't award the Jump Shot medal on networked kills (#26a).
+      const medals = this.medals.onKill(this.elapsed, {
+        midAir: false,
+        headshot: ev.headshot,
+      });
+      for (const m of medals) this.awardMedal(m);
+    } else if (iAmVictim) {
+      // Capture deathPos for the killcam BEFORE teleporting to respawn.
+      const deathPos = { ...this.player.pos };
+      // Snap the player data to the server-picked respawn. The camera
+      // stays at deathPos during the killcam — see render().
+      this.player.pos = {
+        x: ev.respawnPos.x,
+        y: ev.respawnPos.y,
+        z: ev.respawnPos.z,
+      };
+      this.player.vel = { x: 0, y: 0, z: 0 };
+      this.weapon.cooldown = 0;
+      this.weaponWasReady = true;
+      this.audio.play('hit', 0.6);
+      this.addShake(SHAKE_DEATH);
+      this.medals.onDeath();
+      this.playerDeaths += 1;
+      this.killcam = {
+        killerId: ev.killerId,
+        killerName: ev.killerName,
+        deathPos,
+        remaining: KILLCAM_DURATION_SEC,
+        total: KILLCAM_DURATION_SEC,
+      };
+      // Initialize the killcam's smoothed look-at near the killer's
+      // current position so we don't whip from origin on the first
+      // frame.
+      const killer = this.remotePlayers.get(ev.killerId);
+      if (killer) {
+        this.killcamLookAt.set(
+          killer.group.position.x,
+          killer.centerY(),
+          killer.group.position.z,
+        );
+      } else {
+        this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
+      }
+    } else {
+      // Bystander — just hide the dead remote player briefly.
+      const rp = this.remotePlayers.get(ev.victimId);
+      if (rp) rp.markDead();
+    }
+
+    // For non-victim clients that are local-rendering the victim, hide them.
+    if (!iAmVictim) {
+      const rp = this.remotePlayers.get(ev.victimId);
+      if (rp) rp.markDead();
+    }
+
+    // Killfeed everywhere.
+    this.pushKillfeed({
+      killer: ev.killerName,
+      killerLocal: iAmKiller,
+      victim: ev.victimName,
+      weapon: 'rail',
+      special: ev.headshot ? 'headshot' : null,
+    });
+  }
+
+  private pushKillfeed(
+    opts: Omit<KillfeedEntry, 'id' | 'remaining' | 'total'>,
+  ) {
+    this.killfeed.unshift({
+      ...opts,
+      id: this.nextEventId++,
+      remaining: KILLFEED_DURATION_SEC,
+      total: KILLFEED_DURATION_SEC,
+    });
+    if (this.killfeed.length > MAX_KILLFEED_ENTRIES) {
+      this.killfeed.length = MAX_KILLFEED_ENTRIES;
+    }
+  }
+
+  private awardMedal(medal: Medal) {
+    const meta = MEDAL_LABELS[medal];
+    this.toasts.unshift({
+      id: this.nextEventId++,
+      medal,
+      title: meta.title,
+      subtitle: meta.subtitle,
+      tier: meta.tier,
+      remaining: TOAST_DURATION_SEC,
+      total: TOAST_DURATION_SEC,
+    });
+    if (this.toasts.length > MAX_TOASTS) this.toasts.length = MAX_TOASTS;
+
+    if (BANNER_MEDALS.has(medal)) {
+      this.banner = {
+        id: this.nextEventId++,
+        tier: meta.tier,
+        title: meta.title,
+        subtitle: meta.subtitle,
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+    }
+
+    const voice = MEDAL_VOICE[medal];
+    if (voice) this.audio.play(voice, 1);
+  }
+
+  private tickHudTimers(dt: number) {
+    for (let i = this.killfeed.length - 1; i >= 0; i--) {
+      this.killfeed[i].remaining -= dt;
+      if (this.killfeed[i].remaining <= 0) this.killfeed.splice(i, 1);
+    }
+    for (let i = this.toasts.length - 1; i >= 0; i--) {
+      this.toasts[i].remaining -= dt;
+      if (this.toasts[i].remaining <= 0) this.toasts.splice(i, 1);
+    }
+    if (this.banner) {
+      this.banner.remaining -= dt;
+      if (this.banner.remaining <= 0) this.banner = null;
+    }
+    if (this.hitMarker) {
+      this.hitMarker.remaining -= dt;
+      if (this.hitMarker.remaining <= 0) this.hitMarker = null;
+    }
+    if (this.killConfirm) {
+      this.killConfirm.remaining -= dt;
+      if (this.killConfirm.remaining <= 0) this.killConfirm = null;
+    }
+    if (this.killcam) {
+      this.killcam.remaining -= dt;
+      if (this.killcam.remaining <= 0) this.killcam = null;
+    }
+  }
+
+  private emitHud() {
+    const speed = Math.hypot(this.player.vel.x, this.player.vel.z);
+    const pct = (hit: number, fired: number): number | null =>
+      fired > 0 ? (hit / fired) * 100 : null;
+    const scores: PlayerScore[] = [
+      {
+        id: 'you',
+        name: this.playerName,
+        isLocal: true,
+        frags: this.playerFrags,
+        deaths: this.playerDeaths,
+        bestStreak: this.medals.bestStreak,
+        currentStreak: this.medals.currentStreak,
+        accuracy: pct(this.playerShotsHit, this.playerShotsFired),
+      },
+    ];
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        scores.push({
+          id: b.state.id,
+          name: b.state.name,
+          isLocal: false,
+          frags: this.botFrags.get(b.state.id) ?? 0,
+          deaths: this.botDeathCounts.get(b.state.id) ?? 0,
+          bestStreak: 0,
+          currentStreak: 0,
+          accuracy: pct(
+            this.botShotsHit.get(b.state.id) ?? 0,
+            this.botShotsFired.get(b.state.id) ?? 0,
+          ),
+        });
+      }
+    }
+    if (this.net) {
+      // Server tracks frag/death authoritatively for the local player; use
+      // it whenever it diverges from our local count (post-kill snapshots
+      // arrive within ~30ms on LAN).
+      const serverFrags = this.net.localFrags;
+      const serverDeaths = this.net.localDeaths;
+      if (serverFrags > this.playerFrags) this.playerFrags = serverFrags;
+      if (serverDeaths > this.playerDeaths) this.playerDeaths = serverDeaths;
+      scores[0].frags = this.playerFrags;
+      scores[0].deaths = this.playerDeaths;
+      // Local player's accuracy is tracked client-side from confirmed kills.
+      scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
+      for (const [id, snap] of this.net.remotes) {
+        scores.push({
+          id,
+          name: snap.name,
+          isLocal: false,
+          frags: snap.frags,
+          deaths: snap.deaths,
+          bestStreak: 0,
+          currentStreak: 0,
+          accuracy: null, // server doesn't report remote shot counts
+        });
+      }
+    }
+    scores.sort(
+      (a, b) =>
+        b.frags - a.frags ||
+        a.deaths - b.deaths ||
+        a.name.localeCompare(b.name),
+    );
+
+    this.onHud({
+      frags: this.playerFrags,
+      railCooldown: this.weapon.cooldown,
+      dashCooldown: this.player.dashCooldown,
+      airJumpsLeft: this.player.airJumpsLeft,
+      boostReady: this.player.boostInRange,
+      speed,
+      locked: this.locked,
+      currentStreak: this.medals.currentStreak,
+      bestStreak: this.medals.bestStreak,
+      fps: this.fps,
+      scores,
+      killfeed: this.killfeed.map((k) => ({ ...k })),
+      toasts: this.toasts.map((t) => ({ ...t })),
+      banner: this.banner ? { ...this.banner } : null,
+      hitMarker: this.hitMarker ? { ...this.hitMarker } : null,
+      killConfirm: this.killConfirm ? { ...this.killConfirm } : null,
+      killcam: this.killcam ? { ...this.killcam } : null,
+      showScoreboard: this.input.scoreboardHeld,
+      matchOver: this.matchOver ? { won: this.matchWon } : null,
+      netStatus: this.net?.status ?? 'off',
+      netPeers: this.net ? this.net.remotes.size : 0,
+      netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
+      localInvulnMs: this.net?.localInvulnMs ?? 0,
+      vote: this.vote ? { ...this.vote, counts: { ...this.vote.counts } } : null,
+    });
+  }
+
+  private render() {
+    if (this.killcam) {
+      // Killcam: camera parks at the deathPos (slightly above eye-line),
+      // looking at the killer's center. Look-at point is smoothed so the
+      // killer running around doesn't jitter the camera.
+      const killer = this.remotePlayers.get(this.killcam.killerId);
+      const killerBot = killer
+        ? null
+        : this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
+      const targetX = killer
+        ? killer.group.position.x
+        : killerBot
+          ? killerBot.state.pos.x
+          : this.killcam.deathPos.x;
+      const targetY = killer
+        ? killer.centerY()
+        : killerBot
+          ? killerBot.centerY()
+          : this.killcam.deathPos.y + 1.5;
+      const targetZ = killer
+        ? killer.group.position.z
+        : killerBot
+          ? killerBot.state.pos.z
+          : this.killcam.deathPos.z;
+      // Exponential smoothing toward the target each frame.
+      const dt = 1 / 60;
+      const a = 1 - Math.exp(-6 * dt);
+      this.killcamLookAt.x += (targetX - this.killcamLookAt.x) * a;
+      this.killcamLookAt.y += (targetY - this.killcamLookAt.y) * a;
+      this.killcamLookAt.z += (targetZ - this.killcamLookAt.z) * a;
+      this.camera.position.set(
+        this.killcam.deathPos.x,
+        this.killcam.deathPos.y + 2.2,
+        this.killcam.deathPos.z,
+      );
+      this.camera.lookAt(this.killcamLookAt);
+    } else {
+      this.camera.position.set(
+        this.player.pos.x,
+        this.player.pos.y + EYE_HEIGHT,
+        this.player.pos.z,
+      );
+      this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
+    }
+    // Screen shake: jitter the camera position, decaying each frame.
+    if (this.shake > 1e-4) {
+      this.camera.position.x += (Math.random() * 2 - 1) * this.shake;
+      this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
+      this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
+      this.shake *= 0.86;
+    }
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private handleResize() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    // Re-apply pixelRatio so moving the window to a different-DPI monitor (or a
+    // browser-zoom change) re-sharpens instead of staying at the mount-time DPR (#26j).
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  private disposeScene() {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.scene.traverse((obj) => {
+      if (obj.userData.shared) return;
+      const mesh = obj as THREE.Mesh & THREE.Line & THREE.Sprite;
+      if (mesh.isMesh || mesh.isLine || mesh.isSprite) {
+        const geom = (mesh as unknown as { geometry?: THREE.BufferGeometry })
+          .geometry;
+        if (geom) geometries.add(geom);
+        const mat = (mesh as unknown as { material?: THREE.Material | THREE.Material[] })
+          .material;
+        if (Array.isArray(mat)) mat.forEach((m) => materials.add(m));
+        else if (mat) materials.add(mat);
+      }
+    });
+    geometries.forEach((g) => g.dispose());
+    materials.forEach((m) => m.dispose());
+  }
+}
+
+// Dispose every geometry + material under a group (used when swapping the
+// arena mesh on a map change). Map meshes aren't tagged `shared`, so their
+// resources are ours to free.
+function disposeGroup(group: THREE.Object3D) {
+  const geoms = new Set<THREE.BufferGeometry>();
+  const mats = new Set<THREE.Material>();
+  group.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (mesh.geometry) geoms.add(mesh.geometry);
+    const mat = mesh.material;
+    if (Array.isArray(mat)) mat.forEach((m) => mats.add(m));
+    else if (mat) mats.add(mat);
+  });
+  geoms.forEach((g) => g.dispose());
+  mats.forEach((m) => m.dispose());
+}

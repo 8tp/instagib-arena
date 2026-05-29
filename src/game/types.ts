@@ -1,0 +1,159 @@
+export type Vec3 = { x: number; y: number; z: number };
+
+export type AABB = { min: Vec3; max: Vec3 };
+
+export type EntityId = string;
+
+export type InputState = {
+  forward: boolean;
+  back: boolean;
+  left: boolean;
+  right: boolean;
+  jump: boolean;
+  jumpPressed: boolean;
+  dash: boolean;
+  dashPressed: boolean;
+  boost: boolean;
+  boostPressed: boolean;
+  fire: boolean;
+  firePressed: boolean;
+  scoreboard: boolean;
+  yawDelta: number;
+  pitchDelta: number;
+};
+
+export type BotState = {
+  id: EntityId;
+  name: string;
+  pos: Vec3;
+  alive: boolean;
+  respawnTimer: number;
+  moveTimer: number;
+};
+
+export type Medal =
+  | 'first-blood'
+  | 'headshot'
+  | 'mid-air'
+  | 'double-kill'
+  | 'multi-kill'
+  | 'ultra-kill'
+  | 'monster-kill'
+  | 'killing-spree'
+  | 'rampage'
+  | 'dominating'
+  | 'unstoppable'
+  | 'godlike'
+  | 'comeback';
+
+export type MedalTier = 'multi' | 'streak' | 'special';
+
+export type PlayerScore = {
+  id: EntityId;
+  name: string;
+  isLocal: boolean;
+  frags: number;
+  deaths: number;
+  bestStreak: number;
+  currentStreak: number;
+  // Accuracy as a percent (0..100), or null when unknown (e.g. remote players —
+  // the server doesn't report their shot counts).
+  accuracy: number | null;
+};
+
+export type KillfeedEntry = {
+  id: number;
+  killer: string;
+  killerLocal: boolean;
+  victim: string;
+  weapon: 'rail';
+  special: 'mid-air' | 'headshot' | null;
+  remaining: number;
+  total: number;
+};
+
+export type ToastEntry = {
+  id: number;
+  medal: Medal;
+  title: string;
+  subtitle?: string;
+  tier: MedalTier;
+  remaining: number;
+  total: number;
+};
+
+export type BannerState = {
+  id: number;
+  tier: MedalTier;
+  title: string;
+  subtitle?: string;
+  remaining: number;
+  total: number;
+};
+
+export type HitMarker = {
+  id: number;
+  kind: 'hit' | 'kill' | 'headshot';
+  remaining: number;
+  total: number;
+};
+
+// "Gibbed <victim>" floating text when YOU score a kill.
+export type KillConfirm = {
+  id: number;
+  victimName: string;
+  headshot: boolean;
+  remaining: number;
+  total: number;
+};
+
+// Killcam state when YOU are dead. While non-null, the camera is locked
+// onto the killer and the player's input is ignored — clears when the
+// timer runs out and gameplay resumes from the new spawn.
+export type KillcamState = {
+  killerId: string;
+  killerName: string;
+  deathPos: Vec3;
+  remaining: number;
+  total: number;
+};
+
+export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+
+// End-of-match map vote (multiplayer). While non-null the pointer is released
+// and the vote overlay is shown; the countdown self-ticks off `endsAtClient`
+// (already converted to the local Date.now() clock).
+export type MapVoteState = {
+  options: string[]; // mapIds on the ballot
+  endsAtClient: number; // Date.now()-domain deadline
+  durationMs: number;
+  counts: Record<string, number>; // mapId → votes
+  myVote: string | null;
+};
+
+export type HudState = {
+  frags: number;
+  railCooldown: number;
+  dashCooldown: number;
+  airJumpsLeft: number;
+  boostReady: boolean; // a boostable surface is in range under the crosshair
+  speed: number;
+  locked: boolean;
+  currentStreak: number;
+  bestStreak: number;
+  fps: number;
+  scores: PlayerScore[];
+  killfeed: KillfeedEntry[];
+  toasts: ToastEntry[];
+  banner: BannerState | null;
+  hitMarker: HitMarker | null;
+  killConfirm: KillConfirm | null;
+  killcam: KillcamState | null;
+  showScoreboard: boolean;
+  matchOver: { won: boolean } | null; // non-null freezes the match → results screen
+  netStatus: NetStatus;
+  netPeers: number;
+  netRttMs: number; // round-trip time to the game server (0 when offline)
+  localInvulnMs: number; // remaining server-tracked invuln; 0 when killable
+  vote: MapVoteState | null; // non-null → end-of-match map vote in progress
+};
