@@ -34,10 +34,14 @@ export class InputManager {
     boostPressed: false,
     fire: false,
     firePressed: false,
+    zoom: false,
     scoreboard: false,
     yawDelta: 0,
     pitchDelta: 0,
   };
+  // Multiplier on look sensitivity — Game sets this to currentFov/baseFov while
+  // zoomed so aiming feel stays proportional as the FOV narrows.
+  lookScale = 1;
   private prevJump = false;
   private prevDash = false;
   private prevBoost = false;
@@ -218,6 +222,7 @@ export class InputManager {
       case 'right': this.state.right = down; break;
       case 'jump': this.state.jump = down; break;
       case 'dash': this.state.dash = down; break;
+      case 'zoom': this.state.zoom = down; break;
       case 'scoreboard': this.state.scoreboard = down; break;
     }
   }
@@ -234,7 +239,7 @@ export class InputManager {
     const my = this.normMovement(e.movementY);
     // Per-event sanity cap so a glitchy spike can't whip the view around.
     if (Math.abs(mx) > MAX_LOOK_DELTA_PX || Math.abs(my) > MAX_LOOK_DELTA_PX) return;
-    const r = this.radPerCount;
+    const r = this.radPerCount * this.lookScale;
     this.accumYaw += mx * r;
     this.accumPitch += my * r * this.vertScale;
   };
@@ -275,6 +280,7 @@ export class InputManager {
     this.state.dash = false;
     this.state.boost = false;
     this.state.fire = false;
+    this.state.zoom = false;
     this.accumYaw = 0;
     this.accumPitch = 0;
   }

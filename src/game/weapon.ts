@@ -144,6 +144,9 @@ export class Railgun {
     scene: THREE.Scene,
     boxes: AABB[],
     targets: RailTarget[],
+    // Where the VISIBLE beam starts (the gun muzzle). Hit detection still uses
+    // `origin` (the eye), so aim stays exact while the trail comes from the gun.
+    beamOrigin?: THREE.Vector3,
   ): RailFireResult | null {
     if (this.cooldown > 0) return null;
     this.cooldown = RAIL_COOLDOWN;
@@ -177,7 +180,7 @@ export class Railgun {
     hits.sort((a, b) => a.t - b.t);
 
     const end = origin.clone().addScaledVector(dir, wallT);
-    this.spawnBeam(origin.clone(), end, scene);
+    this.spawnBeam((beamOrigin ?? origin).clone(), end, scene);
 
     return { hits, end };
   }

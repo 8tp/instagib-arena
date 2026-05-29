@@ -12,253 +12,11 @@ export type ArenaMap = {
   openTop?: boolean;
 };
 
-// "Stadium" — bigger, Ratz-Instagib-flavored outdoor-style arena. ~50×38m
-// with two raised bleachers along the long sides, corner watchtowers,
-// central monolith, and several waist-high cover blocks scattered through
-// the open ground. Plenty of room for strafe jumps and long sightlines,
-// plus enough cover to break them up.
-export const STADIUM: ArenaMap = (() => {
-  const boxes: AABB[] = [];
-  // floor
-  boxes.push({ min: { x: -25, y: -1, z: -19 }, max: { x: 25, y: 0, z: 19 } });
-  // ceiling (high — feels open but caps rocket exploits)
-  boxes.push({ min: { x: -25, y: 16, z: -19 }, max: { x: 25, y: 17, z: 19 } });
-  // perimeter walls
-  boxes.push({ min: { x: -25, y: 0, z: -19 }, max: { x: -24, y: 16, z: 19 } });
-  boxes.push({ min: { x: 24, y: 0, z: -19 }, max: { x: 25, y: 16, z: 19 } });
-  boxes.push({ min: { x: -25, y: 0, z: -19 }, max: { x: 25, y: 16, z: -18 } });
-  boxes.push({ min: { x: -25, y: 0, z: 18 }, max: { x: 25, y: 16, z: 19 } });
-
-  // Long raised bleachers — north and south. Two levels each.
-  // South bleacher lower
-  boxes.push({ min: { x: -16, y: 0, z: -17 }, max: { x: 16, y: 1.2, z: -14 } });
-  // South bleacher upper
-  boxes.push({ min: { x: -16, y: 1.2, z: -17 }, max: { x: 16, y: 2.6, z: -15.5 } });
-  // North bleacher lower
-  boxes.push({ min: { x: -16, y: 0, z: 14 }, max: { x: 16, y: 1.2, z: 17 } });
-  // North bleacher upper
-  boxes.push({ min: { x: -16, y: 1.2, z: 15.5 }, max: { x: 16, y: 2.6, z: 17 } });
-
-  // Corner watchtowers — 4×4×5m solid blocks with walkable tops.
-  // SW
-  boxes.push({ min: { x: -22, y: 0, z: -16 }, max: { x: -18, y: 5, z: -12 } });
-  // SE
-  boxes.push({ min: { x: 18, y: 0, z: -16 }, max: { x: 22, y: 5, z: -12 } });
-  // NW
-  boxes.push({ min: { x: -22, y: 0, z: 12 }, max: { x: -18, y: 5, z: 16 } });
-  // NE
-  boxes.push({ min: { x: 18, y: 0, z: 12 }, max: { x: 22, y: 5, z: 16 } });
-
-  // Tower access ramps (step blocks leading up)
-  boxes.push({ min: { x: -18, y: 0, z: -12 }, max: { x: -16, y: 1.5, z: -10 } });
-  boxes.push({ min: { x: -18, y: 1.5, z: -10 }, max: { x: -16, y: 3, z: -8 } });
-  boxes.push({ min: { x: -18, y: 3, z: -8 }, max: { x: -16, y: 5, z: -6 } });
-  boxes.push({ min: { x: 16, y: 0, z: -12 }, max: { x: 18, y: 1.5, z: -10 } });
-  boxes.push({ min: { x: 16, y: 1.5, z: -10 }, max: { x: 18, y: 3, z: -8 } });
-  boxes.push({ min: { x: 16, y: 3, z: -8 }, max: { x: 18, y: 5, z: -6 } });
-  boxes.push({ min: { x: -18, y: 0, z: 10 }, max: { x: -16, y: 1.5, z: 12 } });
-  boxes.push({ min: { x: -18, y: 1.5, z: 8 }, max: { x: -16, y: 3, z: 10 } });
-  boxes.push({ min: { x: -18, y: 3, z: 6 }, max: { x: -16, y: 5, z: 8 } });
-  boxes.push({ min: { x: 16, y: 0, z: 10 }, max: { x: 18, y: 1.5, z: 12 } });
-  boxes.push({ min: { x: 16, y: 1.5, z: 8 }, max: { x: 18, y: 3, z: 10 } });
-  boxes.push({ min: { x: 16, y: 3, z: 6 }, max: { x: 18, y: 5, z: 8 } });
-
-  // Center monolith — sightline breaker mid-field
-  boxes.push({ min: { x: -1.5, y: 0, z: -1.5 }, max: { x: 1.5, y: 5, z: 1.5 } });
-
-  // Mid-field waist-high cover blocks (the "cars")
-  boxes.push({ min: { x: -8, y: 0, z: -6 }, max: { x: -5, y: 1.2, z: -3 } });
-  boxes.push({ min: { x: 5, y: 0, z: -6 }, max: { x: 8, y: 1.2, z: -3 } });
-  boxes.push({ min: { x: -8, y: 0, z: 3 }, max: { x: -5, y: 1.2, z: 6 } });
-  boxes.push({ min: { x: 5, y: 0, z: 3 }, max: { x: 8, y: 1.2, z: 6 } });
-  // Two mid pillars flanking the center
-  boxes.push({ min: { x: -11, y: 0, z: -1 }, max: { x: -9, y: 3, z: 1 } });
-  boxes.push({ min: { x: 9, y: 0, z: -1 }, max: { x: 11, y: 3, z: 1 } });
-
-  return {
-    name: 'Stadium',
-    boxes,
-    spawn: { x: 0, y: 0.05, z: 12 },
-    bounds: { min: { x: -25, y: -1, z: -19 }, max: { x: 25, y: 17, z: 19 } },
-  };
-})();
-
-// "Lockdown" — tighter Nuketown-style CQB. Kept as an alt.
-export const LOCKDOWN: ArenaMap = (() => {
-  const boxes: AABB[] = [];
-  boxes.push({ min: { x: -12, y: -1, z: -10 }, max: { x: 12, y: 0, z: 10 } });
-  boxes.push({ min: { x: -12, y: 10, z: -10 }, max: { x: 12, y: 11, z: 10 } });
-  boxes.push({ min: { x: -12, y: 0, z: -10 }, max: { x: -11, y: 10, z: 10 } });
-  boxes.push({ min: { x: 11, y: 0, z: -10 }, max: { x: 12, y: 10, z: 10 } });
-  boxes.push({ min: { x: -12, y: 0, z: -10 }, max: { x: 12, y: 10, z: -9 } });
-  boxes.push({ min: { x: -12, y: 0, z: 9 }, max: { x: 12, y: 10, z: 10 } });
-  boxes.push({ min: { x: -10, y: 0, z: -4 }, max: { x: -7, y: 1.5, z: 4 } });
-  boxes.push({ min: { x: 7, y: 0, z: -4 }, max: { x: 10, y: 1.5, z: 4 } });
-  boxes.push({ min: { x: -7, y: 0, z: -2 }, max: { x: -6, y: 0.6, z: 2 } });
-  boxes.push({ min: { x: 6, y: 0, z: -2 }, max: { x: 7, y: 0.6, z: 2 } });
-  boxes.push({ min: { x: -0.8, y: 0, z: -0.8 }, max: { x: 0.8, y: 3, z: 0.8 } });
-  boxes.push({ min: { x: -4, y: 0, z: -7 }, max: { x: -2, y: 1.1, z: -5 } });
-  boxes.push({ min: { x: 2, y: 0, z: 5 }, max: { x: 4, y: 1.1, z: 7 } });
-  return {
-    name: 'Lockdown',
-    boxes,
-    spawn: { x: 0, y: 0.05, z: 7.5 },
-    bounds: { min: { x: -12, y: -1, z: -10 }, max: { x: 12, y: 11, z: 10 } },
-  };
-})();
-
-// "Crucible" — original wider arena with high platforms + corner cubes.
-export const CRUCIBLE: ArenaMap = (() => {
-  const boxes: AABB[] = [];
-  boxes.push({ min: { x: -15, y: -1, z: -15 }, max: { x: 15, y: 0, z: 15 } });
-  boxes.push({ min: { x: -15, y: 12, z: -15 }, max: { x: 15, y: 13, z: 15 } });
-  boxes.push({ min: { x: -15, y: 0, z: -15 }, max: { x: -14, y: 12, z: 15 } });
-  boxes.push({ min: { x: 14, y: 0, z: -15 }, max: { x: 15, y: 12, z: 15 } });
-  boxes.push({ min: { x: -15, y: 0, z: -15 }, max: { x: 15, y: 12, z: -14 } });
-  boxes.push({ min: { x: -15, y: 0, z: 14 }, max: { x: 15, y: 12, z: 15 } });
-  boxes.push({ min: { x: -9, y: 2.5, z: -3 }, max: { x: -5, y: 3, z: 3 } });
-  boxes.push({ min: { x: 5, y: 2.5, z: -3 }, max: { x: 9, y: 3, z: 3 } });
-  boxes.push({ min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 4, z: 1 } });
-  boxes.push({ min: { x: -13, y: 0, z: -13 }, max: { x: -10, y: 4, z: -10 } });
-  boxes.push({ min: { x: 10, y: 0, z: 10 }, max: { x: 13, y: 4, z: 13 } });
-  return {
-    name: 'Crucible',
-    boxes,
-    spawn: { x: 0, y: 0.05, z: 11 },
-    bounds: { min: { x: -15, y: -1, z: -15 }, max: { x: 15, y: 13, z: 15 } },
-  };
-})();
-
-// "Hangar" — bigger, layered, Quake-DM-style arena. ~80×60m floor with:
-//   • four corner sniper perches (6m tall, 4×4) for railgun overlooks
-//   • two-tier bleachers along both long sides (3m up)
-//   • four quadrant platforms (3m up, 10×8 footprint) with step ramps
-//   • central 8m monolith + four inner mid-pillars
-//   • assorted waist-high cover blocks
-// Plenty of long sightlines for railgun work, with cover and verticality
-// to break up duels and reward strafe-jumping between elevations.
-export const HANGAR: ArenaMap = (() => {
-  const boxes: AABB[] = [];
-  // floor + ceiling
-  boxes.push({ min: { x: -40, y: -1, z: -30 }, max: { x: 40, y: 0, z: 30 } });
-  boxes.push({ min: { x: -40, y: 22, z: -30 }, max: { x: 40, y: 23, z: 30 } });
-  // perimeter walls
-  boxes.push({ min: { x: -40, y: 0, z: -30 }, max: { x: -39, y: 22, z: 30 } });
-  boxes.push({ min: { x: 39, y: 0, z: -30 }, max: { x: 40, y: 22, z: 30 } });
-  boxes.push({ min: { x: -40, y: 0, z: -30 }, max: { x: 40, y: 22, z: -29 } });
-  boxes.push({ min: { x: -40, y: 0, z: 29 }, max: { x: 40, y: 22, z: 30 } });
-
-  // long-side bleachers — two-tier each side
-  boxes.push({ min: { x: -28, y: 0, z: -28 }, max: { x: 28, y: 1.2, z: -24 } });
-  boxes.push({ min: { x: -28, y: 1.2, z: -28 }, max: { x: 28, y: 2.8, z: -26 } });
-  boxes.push({ min: { x: -28, y: 0, z: 24 }, max: { x: 28, y: 1.2, z: 28 } });
-  boxes.push({ min: { x: -28, y: 1.2, z: 26 }, max: { x: 28, y: 2.8, z: 28 } });
-
-  // 4 corner sniper perches — 4×4 base, 6m tall, with a 2-step ramp on the inside
-  const perches: Array<[number, number, number, number]> = [
-    [-36, -26,  1,  1],
-    [ 36, -26, -1,  1],
-    [-36,  26,  1, -1],
-    [ 36,  26, -1, -1],
-  ];
-  for (const [cx, cz, dx, dz] of perches) {
-    boxes.push({ min: { x: cx - 2, y: 0, z: cz - 2 }, max: { x: cx + 2, y: 6, z: cz + 2 } });
-    // step 1 (inward) → height 2
-    boxes.push({
-      min: { x: Math.min(cx + dx * 2, cx + dx * 4), y: 0, z: Math.min(cz + dz * 2, cz + dz * 4) },
-      max: { x: Math.max(cx + dx * 2, cx + dx * 4), y: 2, z: Math.max(cz + dz * 2, cz + dz * 4) },
-    });
-    // step 2 (further in) → height 4
-    boxes.push({
-      min: { x: Math.min(cx + dx * 4, cx + dx * 6), y: 0, z: Math.min(cz + dz * 4, cz + dz * 6) },
-      max: { x: Math.max(cx + dx * 4, cx + dx * 6), y: 4, z: Math.max(cz + dz * 4, cz + dz * 6) },
-    });
-  }
-
-  // 4 quadrant raised platforms — 10×8 footprint, 3m up
-  const quads: Array<[number, number, number]> = [
-    [-20, -16,  1],
-    [ 20, -16, -1],
-    [-20,  16,  1],
-    [ 20,  16, -1],
-  ];
-  for (const [cx, cz, dirX] of quads) {
-    boxes.push({ min: { x: cx - 5, y: 0, z: cz - 4 }, max: { x: cx + 5, y: 3, z: cz + 4 } });
-    // 2-step ramp accessing from the inside
-    boxes.push({
-      min: { x: Math.min(cx + dirX * 5, cx + dirX * 7), y: 0, z: cz - 2 },
-      max: { x: Math.max(cx + dirX * 5, cx + dirX * 7), y: 1, z: cz + 2 },
-    });
-    boxes.push({
-      min: { x: Math.min(cx + dirX * 7, cx + dirX * 9), y: 0, z: cz - 2 },
-      max: { x: Math.max(cx + dirX * 7, cx + dirX * 9), y: 2, z: cz + 2 },
-    });
-  }
-
-  // central 8m monolith
-  boxes.push({ min: { x: -2.5, y: 0, z: -2.5 }, max: { x: 2.5, y: 8, z: 2.5 } });
-
-  // four inner mid-pillars (4m tall, 2×2)
-  boxes.push({ min: { x: -11, y: 0, z: -7 }, max: { x: -9, y: 4, z: -5 } });
-  boxes.push({ min: { x: 9, y: 0, z: -7 }, max: { x: 11, y: 4, z: -5 } });
-  boxes.push({ min: { x: -11, y: 0, z: 5 }, max: { x: -9, y: 4, z: 7 } });
-  boxes.push({ min: { x: 9, y: 0, z: 5 }, max: { x: 11, y: 4, z: 7 } });
-
-  // waist-high mid covers (~1.2m tall)
-  boxes.push({ min: { x: -25, y: 0, z: -3 }, max: { x: -21, y: 1.2, z: 3 } });
-  boxes.push({ min: { x: 21, y: 0, z: -3 }, max: { x: 25, y: 1.2, z: 3 } });
-  boxes.push({ min: { x: -7, y: 0, z: -15 }, max: { x: -3, y: 1.2, z: -12 } });
-  boxes.push({ min: { x: 3, y: 0, z: 12 }, max: { x: 7, y: 1.2, z: 15 } });
-  boxes.push({ min: { x: -7, y: 0, z: 12 }, max: { x: -3, y: 1.2, z: 15 } });
-  boxes.push({ min: { x: 3, y: 0, z: -15 }, max: { x: 7, y: 1.2, z: -12 } });
-
-  return {
-    name: 'Hangar',
-    boxes,
-    spawn: { x: 0, y: 0.05, z: 22 },
-    bounds: { min: { x: -40, y: -1, z: -30 }, max: { x: 40, y: 23, z: 30 } },
-  };
-})();
-
 // ─────────────────────────────────────────────────────────────────────────
 // Air-movement maps (ratz-inspired). Designed against this game's reachability:
 // jump 1.6m, double-jump 3.2m, boost-up ~6-8m, BOOST_RANGE 4m, strafe gaps
 // ~7-18m. Boost-only ledges sit at 4.5-6m; boostable walls flank travel lanes.
 // ─────────────────────────────────────────────────────────────────────────
-
-// "Spire" — tight vertical tower. Boost-chain up the central tower's faces and
-// the offset wall ledges to a single exposed crown perch. Vertical-helix flow.
-export const SPIRE: ArenaMap = (() => {
-  const boxes: AABB[] = [];
-  boxes.push({ min: { x: -20, y: -1, z: -20 }, max: { x: 20, y: 0, z: 20 } });
-  boxes.push({ min: { x: -20, y: 25, z: -20 }, max: { x: 20, y: 26, z: 20 } });
-  boxes.push({ min: { x: -20, y: 0, z: -20 }, max: { x: -18, y: 25, z: 20 } });
-  boxes.push({ min: { x: 18, y: 0, z: -20 }, max: { x: 20, y: 25, z: 20 } });
-  boxes.push({ min: { x: -20, y: 0, z: -20 }, max: { x: 20, y: 25, z: -18 } });
-  boxes.push({ min: { x: -20, y: 0, z: 18 }, max: { x: 20, y: 25, z: 20 } });
-  // central tower 6×6, 18m — 4 boostable faces
-  boxes.push({ min: { x: -3, y: 0, z: -3 }, max: { x: 3, y: 18, z: 3 } });
-  // crown perch (elite overlook)
-  boxes.push({ min: { x: -4, y: 18, z: -4 }, max: { x: 4, y: 18.6, z: 4 } });
-  // spiral offset wall ledges (climb + rotate around the room)
-  boxes.push({ min: { x: -17, y: 4.5, z: -6 }, max: { x: -9, y: 5.1, z: -2 } });
-  boxes.push({ min: { x: -6, y: 9, z: 9 }, max: { x: -2, y: 9.6, z: 17 } });
-  boxes.push({ min: { x: 9, y: 13.5, z: -2 }, max: { x: 17, y: 14.1, z: 2 } });
-  boxes.push({ min: { x: -2, y: 18, z: -17 }, max: { x: 2, y: 18.6, z: -9 } });
-  // mid pillar to wall-boost across to the first ledge
-  boxes.push({ min: { x: -13, y: 0, z: 2 }, max: { x: -11, y: 8, z: 4 } });
-  // ground cover ring (breaks spawn sightlines)
-  boxes.push({ min: { x: -16, y: 0, z: -16 }, max: { x: -12, y: 1.2, z: -12 } });
-  boxes.push({ min: { x: 12, y: 0, z: 12 }, max: { x: 16, y: 1.2, z: 16 } });
-  boxes.push({ min: { x: 12, y: 0, z: -16 }, max: { x: 16, y: 1.2, z: -12 } });
-  boxes.push({ min: { x: -16, y: 0, z: 12 }, max: { x: -12, y: 1.2, z: 16 } });
-  return {
-    name: 'Spire',
-    boxes,
-    spawn: { x: 0, y: 0.05, z: 14 },
-    bounds: { min: { x: -20, y: -1, z: -20 }, max: { x: 20, y: 26, z: 20 } },
-  };
-})();
 
 // "Lounge" — Ratz homage: giant-furniture maze floor, a boost-only bookshelf
 // ring at 5m, a central coffee-table pad, and a floating light-fitting perch.
@@ -458,46 +216,10 @@ export const DERRICK: ArenaMap = (() => {
   return {
     name: 'Derrick',
     boxes,
-    spawn: { x: -8.5, y: 0.05, z: 8.5 },
+    // Open-floor NE corner — clear of the generator roofs (NW/SE corners),
+    // the central derrick, and the flank pillars.
+    spawn: { x: 9, y: 0.05, z: 9 },
     bounds: { min: { x: -12, y: -1, z: -12 }, max: { x: 12, y: 23, z: 12 } },
-    openTop: true,
-  };
-})();
-
-// "Scrapyard" — two floating platforms split by a 9m strafe gap with a mid-gap
-// boost pillar, plus a boost-only sniper nest over each platform.
-export const SCRAPYARD: ArenaMap = (() => {
-  const boxes: AABB[] = [];
-  boxes.push({ min: { x: -14, y: -1, z: -10 }, max: { x: 14, y: 0, z: 10 } });
-  boxes.push({ min: { x: -14, y: 14, z: -10 }, max: { x: 14, y: 15, z: 10 } });
-  boxes.push({ min: { x: -14, y: 0, z: -10 }, max: { x: -13, y: 14, z: 10 } });
-  boxes.push({ min: { x: 13, y: 0, z: -10 }, max: { x: 14, y: 14, z: 10 } });
-  boxes.push({ min: { x: -14, y: 0, z: -10 }, max: { x: 14, y: 14, z: -9 } });
-  boxes.push({ min: { x: -14, y: 0, z: 9 }, max: { x: 14, y: 14, z: 10 } });
-  // Two floating platforms split by a 9m gap + a mid-gap boost pillar.
-  boxes.push({ min: { x: -12, y: 4.0, z: -4 }, max: { x: -4, y: 4.5, z: 4 } });
-  boxes.push({ min: { x: 4, y: 4.0, z: -4 }, max: { x: 12, y: 4.5, z: 4 } });
-  boxes.push({ min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 12, z: 1 } });
-  // Boost-only sniper nests above each platform.
-  boxes.push({ min: { x: -9.5, y: 9.0, z: -1.5 }, max: { x: -6.5, y: 9.5, z: 1.5 } });
-  boxes.push({ min: { x: 6.5, y: 9.0, z: -1.5 }, max: { x: 9.5, y: 9.5, z: 1.5 } });
-  // Step ramps onto the platforms (non-booster connectivity).
-  boxes.push({ min: { x: -12, y: 0, z: -8 }, max: { x: -10, y: 1.3, z: -6 } });
-  boxes.push({ min: { x: -10, y: 1.3, z: -8 }, max: { x: -8, y: 2.6, z: -6 } });
-  boxes.push({ min: { x: -8, y: 2.6, z: -8 }, max: { x: -6, y: 4.0, z: -6 } });
-  boxes.push({ min: { x: 10, y: 0, z: 6 }, max: { x: 12, y: 1.3, z: 8 } });
-  boxes.push({ min: { x: 8, y: 1.3, z: 6 }, max: { x: 10, y: 2.6, z: 8 } });
-  boxes.push({ min: { x: 6, y: 2.6, z: 6 }, max: { x: 8, y: 4.0, z: 8 } });
-  // Ground container cover + spawn protection.
-  boxes.push({ min: { x: -7, y: 0, z: 4 }, max: { x: -3, y: 2.6, z: 7 } });
-  boxes.push({ min: { x: 3, y: 0, z: -7 }, max: { x: 7, y: 2.6, z: -4 } });
-  boxes.push({ min: { x: -12, y: 0, z: 5 }, max: { x: -10, y: 1.2, z: 8 } });
-  boxes.push({ min: { x: 10, y: 0, z: -8 }, max: { x: 12, y: 1.2, z: -5 } });
-  return {
-    name: 'Scrapyard',
-    boxes,
-    spawn: { x: -11, y: 0.05, z: 7 },
-    bounds: { min: { x: -14, y: -1, z: -10 }, max: { x: 14, y: 15, z: 10 } },
     openTop: true,
   };
 })();
@@ -556,22 +278,19 @@ export const TRAINING: ArenaMap = (() => {
   };
 })();
 
-// Selectable map registry. The air-movement maps lead; the originals remain.
+// Selectable map registry — the trimmed competitive pool plus the
+// single-player practice range. Larger maps (Causeway/Reactor/Lounge) carry
+// FFA/TDM; the tight symmetric maps (Container Yard/Derrick) carry 1v1 duels.
 export const MAPS: ReadonlyArray<{ id: string; label: string; map: ArenaMap }> = [
-  { id: 'causeway', label: 'Causeway', map: CAUSEWAY },
-  { id: 'spire', label: 'Spire', map: SPIRE },
-  { id: 'reactor', label: 'Reactor', map: REACTOR },
-  { id: 'lounge', label: 'Lounge', map: LOUNGE },
+  // larger FFA / TDM maps
+  { id: 'causeway', label: 'Causeway (FFA/TDM)', map: CAUSEWAY },
+  { id: 'reactor', label: 'Reactor (FFA/TDM)', map: REACTOR },
+  { id: 'lounge', label: 'Lounge (FFA/TDM)', map: LOUNGE },
   // 1v1 duel maps
   { id: 'containeryard', label: 'Container Yard (1v1)', map: CONTAINERYARD },
   { id: 'derrick', label: 'Derrick (1v1)', map: DERRICK },
-  { id: 'scrapyard', label: 'Scrapyard (1v1)', map: SCRAPYARD },
   // practice
   { id: 'training', label: 'Training Range', map: TRAINING },
-  { id: 'hangar', label: 'Hangar', map: HANGAR },
-  { id: 'stadium', label: 'Stadium', map: STADIUM },
-  { id: 'crucible', label: 'Crucible', map: CRUCIBLE },
-  { id: 'lockdown', label: 'Lockdown', map: LOCKDOWN },
 ];
 
 export const DEFAULT_MAP: ArenaMap = CAUSEWAY;

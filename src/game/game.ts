@@ -14,6 +14,10 @@ import {
   BOT_HEIGHT,
   DEFAULT_BOT_DIFFICULTY,
   DEFAULT_FOV,
+  DEFAULT_ZOOM_FOV,
+  MIN_ZOOM_FOV,
+  MAX_ZOOM_FOV,
+  VIEWMODEL_BASE,
   EYE_HEIGHT,
   HIT_MARKER_KILL_DURATION_SEC,
   MAX_FOV,
@@ -50,6 +54,7 @@ import { NetClient, type KillEvent } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
 import { createCamera, createRenderer, createScene } from './renderer';
+import { buildRailgun } from './weapon-model';
 import type {
   AABB,
   BannerState,
@@ -194,6 +199,21 @@ export class Game {
 
   private tmpForward = new THREE.Vector3();
   private tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private tmpRight = new THREE.Vector3();
+  private tmpUp = new THREE.Vector3();
+  private tmpBeamOrigin = new THREE.Vector3();
+
+  // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
+  // so it never blocks the crosshair; user offset + hide applied on top.
+  private viewmodel: THREE.Group | null = null;
+  private viewmodelOffset = { x: 0, y: 0, z: 0 };
+  private hideViewmodel = false;
+
+  // FOV / zoom. baseFov is the settings FOV; camera.fov lerps toward zoomFov
+  // while the zoom bind is held.
+  private baseFov = DEFAULT_FOV;
+  private zoomFov = DEFAULT_ZOOM_FOV;
+  private wantZoom = false;
 
   private onMatchEnd: MatchEndListener;
 
@@ -206,6 +226,13 @@ export class Game {
     this.renderer = createRenderer(canvas);
     this.scene = createScene(this.renderer);
     this.camera = createCamera(canvas);
+    // Parent the viewmodel to the camera so it tracks the view. The camera is
+    // added to the scene so its child (the gun) is part of the render.
+    this.scene.add(this.camera);
+    const vm = buildRailgun();
+    this.viewmodel = vm.group;
+    this.applyViewmodelTransform();
+    this.camera.add(this.viewmodel);
     this.mapMesh = buildMapMesh(this.map);
     this.scene.add(this.mapMesh);
     this.player = new Player(this.map.spawn);
@@ -264,8 +291,32 @@ export class Game {
     // Clamp + finite-guard so a corrupt/hand-edited persisted FOV can't write an
     // invalid projection matrix (black/garbled viewport with no recovery). (#25)
     const f = Number.isFinite(fov) ? fov : DEFAULT_FOV;
-    this.camera.fov = Math.max(MIN_FOV, Math.min(MAX_FOV, f));
-    this.camera.updateProjectionMatrix();
+    this.baseFov = Math.max(MIN_FOV, Math.min(MAX_FOV, f));
+    // Apply immediately unless mid-zoom (the per-frame lerp owns it then).
+    if (!this.wantZoom) {
+      this.camera.fov = this.baseFov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  setZoomFov(fov: number) {
+    const f = Number.isFinite(fov) ? fov : DEFAULT_ZOOM_FOV;
+    this.zoomFov = Math.max(MIN_ZOOM_FOV, Math.min(MAX_ZOOM_FOV, f));
+  }
+
+  setViewmodel(offset: { x: number; y: number; z: number }, hide: boolean) {
+    this.viewmodelOffset = { x: offset.x, y: offset.y, z: offset.z };
+    this.hideViewmodel = hide;
+    this.applyViewmodelTransform();
+  }
+
+  private applyViewmodelTransform() {
+    if (!this.viewmodel) return;
+    this.viewmodel.position.set(
+      VIEWMODEL_BASE.x + this.viewmodelOffset.x,
+      VIEWMODEL_BASE.y + this.viewmodelOffset.y,
+      VIEWMODEL_BASE.z + this.viewmodelOffset.z,
+    );
   }
 
   setMasterVolume(v: number) {
@@ -796,6 +847,7 @@ export class Game {
     this.elapsed += dt;
 
     const input = this.input.consume();
+    this.wantZoom = input.zoom;
     const dead = this.killcam !== null;
 
     // While dead the input is still consumed (so accumYaw/accumPitch don't
@@ -856,12 +908,22 @@ export class Game {
   private handleFire() {
     this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler);
+    this.tmpRight.set(1, 0, 0).applyEuler(this.tmpEuler);
+    this.tmpUp.set(0, 1, 0).applyEuler(this.tmpEuler);
     const eye = new THREE.Vector3(
       this.player.pos.x,
       this.player.pos.y + EYE_HEIGHT,
       this.player.pos.z,
     );
     const muzzle = eye.addScaledVector(this.tmpForward, 0.3);
+    // The VISIBLE beam leaves the gun muzzle (lower-right of the eye, tracking
+    // the viewmodel offset) instead of the crosshair, so it never blocks POV.
+    // Hits + the server shot still use `muzzle` (eye) so aim stays exact.
+    this.tmpBeamOrigin
+      .set(this.player.pos.x, this.player.pos.y + EYE_HEIGHT, this.player.pos.z)
+      .addScaledVector(this.tmpRight, 0.16 + this.viewmodelOffset.x)
+      .addScaledVector(this.tmpUp, -0.16 + this.viewmodelOffset.y)
+      .addScaledVector(this.tmpForward, 0.5);
 
     // Bots are resolved locally; remote players are resolved by the SERVER
     // (lag-compensated). So the local raycast only carries bots — the wall
@@ -886,6 +948,7 @@ export class Game {
       this.scene,
       this.map.boxes,
       targets,
+      this.tmpBeamOrigin,
     );
     // Cooldown blocked the shot → no SFX, no side effects.
     if (!result) return;
@@ -1479,6 +1542,20 @@ export class Game {
       this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
       this.shake *= 0.86;
+    }
+    // Zoom: ease FOV toward the zoom target while the bind is held in-play.
+    const zooming =
+      this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote;
+    const targetFov = zooming ? this.zoomFov : this.baseFov;
+    if (Math.abs(this.camera.fov - targetFov) > 0.01) {
+      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 / 60));
+      this.camera.updateProjectionMatrix();
+    }
+    // Scale look sensitivity with the current (lerping) FOV so zoomed aim stays steady.
+    this.input.lookScale = this.baseFov > 0 ? this.camera.fov / this.baseFov : 1;
+    // Viewmodel shows only while actively playing in first person.
+    if (this.viewmodel) {
+      this.viewmodel.visible = !this.hideViewmodel && this.locked && !this.killcam;
     }
     this.renderer.render(this.scene, this.camera);
   }

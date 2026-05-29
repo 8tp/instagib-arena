@@ -226,6 +226,19 @@ export const DEFAULT_VOLUME = 0.7;
 export const MIN_FOV = 60;
 export const MAX_FOV = 110;
 
+// Zoom (hold a bind to narrow FOV for long-range rail shots). Sensitivity is
+// scaled by currentFov/baseFov while zoomed so the feel stays consistent.
+export const DEFAULT_ZOOM_FOV = 55;
+export const MIN_ZOOM_FOV = 20;
+export const MAX_ZOOM_FOV = 85;
+
+// First-person railgun viewmodel. Base position is centered + low (Quake-style)
+// so it never blocks the crosshair; the user offsets are added on top.
+export const VIEWMODEL_BASE = { x: 0, y: -0.28, z: -0.6 } as const;
+export const DEFAULT_VIEWMODEL_OFFSET = { x: 0, y: 0, z: 0 } as const;
+export const MIN_VIEWMODEL_OFFSET = -0.5;
+export const MAX_VIEWMODEL_OFFSET = 0.5;
+
 // Source/CS2 cm-per-360 for a sensitivity + mouse DPI (for the settings readout).
 export function cm360(sensitivity: number, dpi: number): number {
   if (sensitivity <= 0 || dpi <= 0) return 0;
@@ -241,6 +254,7 @@ export type KeybindAction =
   | 'right'
   | 'jump'
   | 'dash'
+  | 'zoom'
   | 'scoreboard';
 
 export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }> = [
@@ -250,6 +264,7 @@ export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }
   { id: 'right', label: 'Strafe right' },
   { id: 'jump', label: 'Jump' },
   { id: 'dash', label: 'Dash' },
+  { id: 'zoom', label: 'Zoom (hold)' },
   { id: 'scoreboard', label: 'Scoreboard' },
 ];
 
@@ -260,5 +275,6 @@ export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   right: 'KeyD',
   jump: 'Space',
   dash: 'ShiftLeft',
+  zoom: 'KeyC',
   scoreboard: 'Tab',
 };

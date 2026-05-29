@@ -19,6 +19,7 @@ export type InputState = {
   boostPressed: boolean;
   fire: boolean;
   firePressed: boolean;
+  zoom: boolean; // held → narrow FOV
   scoreboard: boolean;
   yawDelta: number;
   pitchDelta: number;

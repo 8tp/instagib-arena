@@ -33,10 +33,6 @@ export const ARENA_NET: Record<string, ArenaNetData> = {
     { min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 22, z: 25 } },
     [p(0, 19), p(0, -19), p(-28, 0), p(28, 0), p(-12, 12), p(12, -12)],
   ),
-  spire: arena(
-    { min: { x: -20, y: -1, z: -20 }, max: { x: 20, y: 26, z: 20 } },
-    [p(0, 14), p(0, -14), p(-14, 0), p(14, 0), p(8, 8), p(-8, -8)],
-  ),
   reactor: arena(
     { min: { x: -40, y: -1, z: -28 }, max: { x: 40, y: 24, z: 28 } },
     [p(-30, 0), p(30, 0), p(0, 12), p(0, -12), p(-30, 12), p(30, -12)],
@@ -51,31 +47,13 @@ export const ARENA_NET: Record<string, ArenaNetData> = {
   ),
   derrick: arena(
     { min: { x: -12, y: -1, z: -12 }, max: { x: 12, y: 23, z: 12 } },
-    [p(-8.5, 8.5), p(8.5, -8.5), p(8.5, 8.5), p(-8.5, -8.5), p(0, 9), p(0, -9)],
-  ),
-  scrapyard: arena(
-    { min: { x: -14, y: -1, z: -10 }, max: { x: 14, y: 15, z: 10 } },
-    [p(-11, 7), p(11, -7), p(-11, -7), p(11, 7), p(0, 8), p(0, -8)],
+    // Open-floor spawns: NE/SW corners + the four mid-edges. Avoids the
+    // generator roofs (NW/SE corners), central derrick, and flank pillars.
+    [p(9, 9), p(-9, -9), p(0, 9), p(0, -9), p(-9, 0), p(9, 0)],
   ),
   training: arena(
     { min: { x: -23, y: -1, z: -20 }, max: { x: 23, y: 25, z: 20 } },
     [p(0, 17), p(-18, -10), p(18, -10), p(-18, 10), p(18, 10), p(0, 0)],
-  ),
-  hangar: arena(
-    { min: { x: -40, y: -1, z: -30 }, max: { x: 40, y: 23, z: 30 } },
-    [p(0, 22), p(0, -22), p(-30, 0), p(30, 0), p(-15, 15), p(15, -15)],
-  ),
-  stadium: arena(
-    { min: { x: -25, y: -1, z: -19 }, max: { x: 25, y: 17, z: 19 } },
-    [p(0, 12), p(0, -12), p(-20, 0), p(20, 0), p(-12, 6), p(12, -6)],
-  ),
-  crucible: arena(
-    { min: { x: -15, y: -1, z: -15 }, max: { x: 15, y: 13, z: 15 } },
-    [p(0, 11), p(0, -11), p(-11, 0), p(11, 0), p(11, -11), p(-11, 11)],
-  ),
-  lockdown: arena(
-    { min: { x: -12, y: -1, z: -10 }, max: { x: 12, y: 11, z: 10 } },
-    [p(0, 7.5), p(0, -7.5), p(-5, 7), p(5, -7), p(5, 7), p(-5, -7)],
   ),
 };
 
@@ -87,8 +65,8 @@ export function arenaNet(id: string): ArenaNetData {
 
 // Maps offered in public Quick-Match auto-rooms and as end-of-match vote
 // options. Mirrors the client's quick pool; excludes the single-player-only
-// training range and the legacy alt maps.
-export const ONLINE_MAP_POOL = ['causeway', 'spire', 'reactor', 'lounge', 'containeryard', 'derrick'] as const;
+// training range. Larger maps lead (FFA/TDM); the 1v1 duel maps round it out.
+export const ONLINE_MAP_POOL = ['causeway', 'reactor', 'lounge', 'containeryard', 'derrick'] as const;
 
 // ── Lobby / match networking constants (server + client share these) ───────
 export const MAP_VOTE_DURATION_SEC = 15; // how long the end-of-match vote runs

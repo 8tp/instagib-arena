@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { applyHighlight, type BotModel } from './bots';
 import { LocomotionBlender } from './locomotion';
+import { attachRailgunToSoldier } from './weapon-model';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
@@ -261,6 +262,7 @@ export class RemotePlayer {
     });
     this.group.add(cloned);
     this.modelRoot = cloned;
+    attachRailgunToSoldier(cloned, BOT_HEIGHT);
     this.mixer = new THREE.AnimationMixer(cloned);
     // Soldier.glb clip order: 0 idle, 1 run, 3 walk (matches the three.js
     // skinning-blending example). Prefer names, fall back to those indices.

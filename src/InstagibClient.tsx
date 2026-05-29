@@ -12,6 +12,8 @@ import {
   DEFAULT_KEYBINDS,
   DEFAULT_DPI,
   DEFAULT_FOV,
+  DEFAULT_ZOOM_FOV,
+  DEFAULT_VIEWMODEL_OFFSET,
   DEFAULT_RAW_INPUT,
   DEFAULT_SENSITIVITY,
   DEFAULT_VERT_SCALE,
@@ -23,11 +25,15 @@ import {
   MATCH_FRAG_LIMIT,
   MAX_DPI,
   MAX_FOV,
+  MAX_ZOOM_FOV,
+  MAX_VIEWMODEL_OFFSET,
   MAX_PLAYERS,
   MAX_SENSITIVITY,
   MAX_VERT_SCALE,
   MIN_DPI,
   MIN_FOV,
+  MIN_ZOOM_FOV,
+  MIN_VIEWMODEL_OFFSET,
   MIN_SENSITIVITY,
   MIN_VERT_SCALE,
   KEYBIND_ACTIONS,
@@ -66,6 +72,18 @@ export type CrosshairConfig = {
 };
 
 const CROSSHAIR_STYLES = ['cross', 'cross-dot', 'dot', 'circle'] as const;
+
+// Quick-apply shape presets (each sets the full shape config; color/outline are
+// kept from the current crosshair). Three visually-distinct starting points.
+const CROSSHAIR_SHAPE_PRESETS: Array<{
+  id: string;
+  label: string;
+  cfg: Partial<CrosshairConfig>;
+}> = [
+  { id: 'plus-gap', label: 'Plus · gap', cfg: { style: 'cross', size: 6, thickness: 2, gap: 4, dotSize: 0 } },
+  { id: 'plus-solid', label: 'Plus · solid', cfg: { style: 'cross', size: 8, thickness: 2, gap: 0, dotSize: 0 } },
+  { id: 'dot', label: 'Dot', cfg: { style: 'dot', size: 0, thickness: 2, gap: 0, dotSize: 3 } },
+];
 
 // Compact, URL-safe, copy-pasteable share code (prefixed so it's recognizable).
 function encodeCrosshair(c: CrosshairConfig): string {
@@ -122,6 +140,9 @@ type Settings = {
   rawInput: boolean; // pointer-lock unadjustedMovement
   keybinds: Record<KeybindAction, string>; // action → KeyboardEvent.code
   fov: number;
+  zoomFov: number; // FOV while the zoom bind is held
+  viewmodelOffset: { x: number; y: number; z: number }; // railgun viewmodel nudge
+  hideViewmodel: boolean; // hide the first-person gun
   volume: number; // master
   sfxVolume: number;
   announcerVolume: number;
@@ -179,6 +200,9 @@ const DEFAULT_SETTINGS: Settings = {
   rawInput: DEFAULT_RAW_INPUT,
   keybinds: DEFAULT_KEYBINDS,
   fov: DEFAULT_FOV,
+  zoomFov: DEFAULT_ZOOM_FOV,
+  viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET },
+  hideViewmodel: false,
   volume: DEFAULT_VOLUME,
   sfxVolume: 1,
   announcerVolume: 1,
@@ -211,6 +235,7 @@ function loadSettings(): Settings {
       // Nested objects need an explicit merge so newly-added fields survive.
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
       keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
+      viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
     };
     // Migrate legacy sensitivity: the old model stored radians/pixel (~0.0022).
     // Anything below the new minimum is a legacy value → convert to the
@@ -255,6 +280,8 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setRawInput?.(s.rawInput);
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
+  game.setZoomFov?.(s.zoomFov);
+  game.setViewmodel?.(s.viewmodelOffset, s.hideViewmodel);
   game.setMasterVolume?.(s.volume);
   game.setSfxVolume?.(s.sfxVolume);
   game.setAnnouncerVolume?.(s.announcerVolume);
@@ -1710,7 +1737,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 
 /* ───────────────────────── Lobby ───────────────────────── */
 
-const QUICK_MAP_POOL = ['causeway', 'spire', 'reactor', 'lounge'];
+const QUICK_MAP_POOL = ['causeway', 'reactor', 'lounge'];
 // Maps offered for online matches (no bots online → human-friendly pool).
 const ONLINE_MAP_IDS: readonly string[] = ONLINE_MAP_POOL;
 
@@ -1922,8 +1949,13 @@ function Lobby({
                   ◭ Solo vs Bots
                 </DeckButton>
               </div>
-              <DeckButton onClick={() => setStatsOpen(true)}>Stats</DeckButton>
-              <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
+              <div className='col-span-2 grid grid-cols-3 gap-3'>
+                <DeckButton onClick={() => setStatsOpen(true)}>Stats</DeckButton>
+                <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
+                <DeckButton onClick={() => setSettingsOpen(true)} accent='cyan'>
+                  ⚙ Settings
+                </DeckButton>
+              </div>
             </div>
 
             {lastResult && <LastMatchBanner result={lastResult} />}
@@ -1942,10 +1974,7 @@ function Lobby({
 
         {/* ── Footer ─────────────────────────────────────────────────── */}
         <footer className='flex shrink-0 items-center justify-between border-t border-white/10 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
-          <button onClick={() => setSettingsOpen(true)} className='transition hover:text-cyan-200'>
-            ⚙ Settings
-          </button>
-          <span className='hidden sm:inline'>Quick match · up to {MAX_PLAYERS} players</span>
+          <span>Quick match · up to {MAX_PLAYERS} players</span>
           <span className='text-white/25'>Instagib Arena</span>
         </footer>
       </div>
@@ -2697,11 +2726,69 @@ function SettingsModal({
             format={(v) => `${v.toFixed(0)}°`}
             onChange={(v) => onChange({ ...settings, fov: v })}
           />
+          <SliderField
+            label='Zoom FOV'
+            value={settings.zoomFov}
+            min={MIN_ZOOM_FOV}
+            max={MAX_ZOOM_FOV}
+            step={1}
+            format={(v) => `${v.toFixed(0)}°`}
+            onChange={(v) => onChange({ ...settings, zoomFov: v })}
+          />
           <ToggleField
             label='Show FPS'
             value={settings.showFps}
             onChange={(v) => onChange({ ...settings, showFps: v })}
           />
+
+          <Section label='Weapon viewmodel'>
+            <ToggleField
+              label='Hide viewmodel'
+              value={settings.hideViewmodel}
+              onChange={(v) => onChange({ ...settings, hideViewmodel: v })}
+            />
+            {!settings.hideViewmodel && (
+              <>
+                <SliderField
+                  label='Offset X'
+                  value={settings.viewmodelOffset.x}
+                  min={MIN_VIEWMODEL_OFFSET}
+                  max={MAX_VIEWMODEL_OFFSET}
+                  step={0.01}
+                  format={(v) => v.toFixed(2)}
+                  onChange={(v) =>
+                    onChange({ ...settings, viewmodelOffset: { ...settings.viewmodelOffset, x: v } })
+                  }
+                />
+                <SliderField
+                  label='Offset Y'
+                  value={settings.viewmodelOffset.y}
+                  min={MIN_VIEWMODEL_OFFSET}
+                  max={MAX_VIEWMODEL_OFFSET}
+                  step={0.01}
+                  format={(v) => v.toFixed(2)}
+                  onChange={(v) =>
+                    onChange({ ...settings, viewmodelOffset: { ...settings.viewmodelOffset, y: v } })
+                  }
+                />
+                <SliderField
+                  label='Offset Z'
+                  value={settings.viewmodelOffset.z}
+                  min={MIN_VIEWMODEL_OFFSET}
+                  max={MAX_VIEWMODEL_OFFSET}
+                  step={0.01}
+                  format={(v) => v.toFixed(2)}
+                  onChange={(v) =>
+                    onChange({ ...settings, viewmodelOffset: { ...settings.viewmodelOffset, z: v } })
+                  }
+                />
+              </>
+            )}
+            <div className='text-[10px] normal-case tracking-normal text-white/40'>
+              The railgun sits centered &amp; low so it never blocks your aim. Bind “Zoom (hold)”
+              under Keybinds to narrow your FOV.
+            </div>
+          </Section>
 
           <Section label='Audio'>
             <SliderField
@@ -2741,6 +2828,29 @@ function SettingsModal({
           </Section>
 
           <Section label='Crosshair'>
+            <div className='flex flex-col gap-1.5'>
+              <span className='font-mono text-[10px] uppercase tracking-[0.22em] text-white/45'>
+                Presets
+              </span>
+              <div className='grid grid-cols-3 gap-2'>
+                {CROSSHAIR_SHAPE_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setCh(p.cfg)}
+                    className='clip-deck-sm flex flex-col items-center gap-1.5 border border-white/12 bg-white/[0.03] px-2 py-2.5 transition hover:border-cyan-300/50 hover:bg-white/10'
+                  >
+                    <span className='flex h-7 items-center justify-center'>
+                      <CrosshairGraphic
+                        cfg={{ ...DEFAULT_CROSSHAIR, ...p.cfg, color: '#d6f4ff', outline: false }}
+                      />
+                    </span>
+                    <span className='font-mono text-[9px] uppercase tracking-[0.1em] text-white/60'>
+                      {p.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className='flex items-center justify-between gap-4'>
               <div className='flex-1'>
                 <ButtonGroup

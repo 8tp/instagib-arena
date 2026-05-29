@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
+  AIR_JUMPS,
+  BOOST_FORWARD_BIAS,
+  BOOST_IMPULSE,
   BOT_DIFFICULTY,
   BOT_EYE_FRAC,
   BOT_HEADSHOT_THRESHOLD,
@@ -10,12 +13,19 @@ import {
   BOT_MOVE_INTERVAL_MIN,
   BOT_RADIUS,
   BOT_RESPAWN_DELAY,
+  DASH_COOLDOWN,
+  DASH_DURATION,
+  DASH_SPEED,
   DEFAULT_BOT_DIFFICULTY,
   GRAVITY,
+  JUMP_SPEED,
+  MAX_HORIZONTAL_SPEED,
+  WALK_SPEED,
   type BotDifficulty,
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
 import { LocomotionBlender } from './locomotion';
+import { attachRailgunToSoldier } from './weapon-model';
 import type { BotState, EntityId, Vec3 } from './types';
 
 const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse', 'Echo'];
@@ -24,6 +34,35 @@ const BOT_FACING_LERP = 12;
 // close the gap when farther than MAX, otherwise circle-strafe.
 const COMBAT_RANGE_MIN = 8;
 const COMBAT_RANGE_MAX = 18;
+
+// ── Bot MOVEMENT difficulty table ────────────────────────────────────────────
+// Local (NOT in constants.ts) per-difficulty tuning for the human-like movement
+// layer: jumping, double-jumping, dashing, boosting, dodging and air control.
+// This is purely about HOW a bot moves; aim/combat danger still comes from
+// BOT_DIFFICULTY in constants.ts. Easy bots are clumsy and earthbound; hard bots
+// are slippery — they double-jump, dash to close/juke, and rocket-boost to high
+// ground. All probabilities are evaluated against a per-bot decision clock that
+// ticks a few times a second so behaviour isn't re-rolled every 64Hz frame.
+type BotMove = {
+  decideInterval: number; // seconds between movement re-decisions (lower = twitchier)
+  jumpChance: number;     // P(rhythm-breaking hop) when grounded & strafing in combat
+  dodgeReact: number;     // P(dodge-jump) per decision when engaged at mid range / shot-at
+  airJumpChance: number;  // P(spend an air jump) at the apex of a combat hop
+  dashChance: number;     // P(dash) per decision to close distance or juke sideways
+  boostChance: number;    // P(rocket-boost) per decision when it would gain height/escape
+  boostCooldown: number;  // min seconds between boosts (slower than the player's)
+  airControl: number;     // 0..1 how strongly air movement steers toward the wish dir
+  jumpGapReach: number;   // P(hop) when roaming toward a higher/farther wander point
+};
+const BOT_MOVE: Record<BotDifficulty, BotMove> = {
+  // Easy: mostly shuffles; the rare clumsy hop, almost never dashes/boosts, and
+  // barely steers in the air so its jumps are committed and easy to punish.
+  easy:   { decideInterval: 0.55, jumpChance: 0.08, dodgeReact: 0.10, airJumpChance: 0.05, dashChance: 0.04, boostChance: 0.015, boostCooldown: 9.0, airControl: 0.20, jumpGapReach: 0.20 },
+  medium: { decideInterval: 0.40, jumpChance: 0.18, dodgeReact: 0.32, airJumpChance: 0.25, dashChance: 0.14, boostChance: 0.05,  boostCooldown: 6.0, airControl: 0.45, jumpGapReach: 0.40 },
+  // Hard: slippery — frequent dodge-jumps + double-jumps, dashes to juke, and
+  // boosts to high ground / out of danger, with strong air control to carve.
+  hard:   { decideInterval: 0.28, jumpChance: 0.30, dodgeReact: 0.55, airJumpChance: 0.55, dashChance: 0.28, boostChance: 0.12,  boostCooldown: 4.0, airControl: 0.70, jumpGapReach: 0.60 },
+};
 
 // An enemy a bot can target (the local player or another bot).
 export type BotTarget = { id: string; pos: Vec3 };
@@ -250,6 +289,17 @@ export class Bot {
   // ramps/cover instead of being glued to the ground plane (#7).
   private vel: Vec3 = { x: 0, y: 0, z: 0 };
   private onGround = false;
+  // ── Human-like movement state (jump / double-jump / dash / boost) ──
+  private mv: BotMove;
+  private airJumpsLeft = AIR_JUMPS;     // reset to AIR_JUMPS on ground contact
+  private decideTimer = 0;              // movement re-decision clock
+  private dashTimer = 0;                // >0 while a dash burst is active
+  private dashCooldown = 0;
+  private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
+  private boostCooldown = 0;
+  private jumping = false;              // true between takeoff and landing (drives the jump anim)
+  private wasOnGround = true;           // for landing-edge detection
+  private shotAtTimer = 0;              // counts down after the bot is recently shot near; raises dodge reactivity
   // Combat state
   private diff: (typeof BOT_DIFFICULTY)[BotDifficulty];
   private engagedId: string | null = null; // current target id, null = roaming
@@ -274,6 +324,8 @@ export class Bot {
     difficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY,
   ) {
     this.diff = BOT_DIFFICULTY[difficulty];
+    this.mv = BOT_MOVE[difficulty];
+    this.decideTimer = rand(0, this.mv.decideInterval); // desync decision clocks across bots
     this.state = {
       id,
       name,
@@ -305,6 +357,12 @@ export class Bot {
   step(dt: number, map: ArenaMap, enemies: BotTarget[]): BotFireIntent | null {
     if (this.mixer) this.mixer.update(dt);
     if (this.shootCooldown > 0) this.shootCooldown = Math.max(0, this.shootCooldown - dt);
+    // Movement timers (run while alive; harmless while dead since velocity is zeroed).
+    if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
+    if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+    if (this.boostCooldown > 0) this.boostCooldown = Math.max(0, this.boostCooldown - dt);
+    if (this.shotAtTimer > 0) this.shotAtTimer = Math.max(0, this.shotAtTimer - dt);
+    if (this.decideTimer > 0) this.decideTimer -= dt;
 
     if (!this.state.alive) {
       if (this.dyingTimer > 0) {
@@ -319,6 +377,14 @@ export class Bot {
         this.target = { ...spot };
         this.vel = { x: 0, y: 0, z: 0 };
         this.onGround = false;
+        this.airJumpsLeft = AIR_JUMPS;
+        this.dashTimer = 0;
+        this.dashCooldown = 0;
+        this.boostCooldown = 0;
+        this.jumping = false;
+        this.wasOnGround = true;
+        this.shotAtTimer = 0;
+        this.decideTimer = rand(0, this.mv.decideInterval);
         this.group.position.set(spot.x, spot.y, spot.z);
         this.state.alive = true;
         this.group.visible = true;
@@ -350,6 +416,11 @@ export class Bot {
     if (best) {
       this.seenForSec = this.engagedId === best.id ? this.seenForSec + dt : 0;
       this.engagedId = best.id;
+      // Threat proxy: in a firefight at fighting range with reciprocal LOS, the
+      // bot treats itself as "being shot at" — this keeps dodge reactivity high
+      // for ~1s after the duel breaks (no external shot-at signal is available
+      // without changing the public API / game.ts).
+      if (bestDist < COMBAT_RANGE_MAX * 1.4) this.shotAtTimer = 1.0;
       const px = this.state.pos.x;
       const pz = this.state.pos.z;
       // Track the target with human-like lag + measure its lateral speed.
@@ -360,6 +431,13 @@ export class Bot {
         this.strafeSign *= -1;
         this.strafeFlipTimer = rand(1.2, 3);
       }
+      // Decide jumps/dashes/boosts BEFORE integrate so they fold into this tick.
+      const toX = best.pos.x - this.state.pos.x;
+      const toZ = best.pos.z - this.state.pos.z;
+      const tlen = Math.hypot(toX, toZ) || 1;
+      const perpX = (-toZ / tlen) * this.strafeSign;
+      const perpZ = (toX / tlen) * this.strafeSign;
+      this.decideCombatMove(bestDist, toX, toZ, perpX, perpZ);
       const desired = this.combatMove(dt, best.pos, bestDist);
       const { blocked } = this.integrate(dt, map, desired);
       if (blocked) this.strafeSign *= -1; // bounce off walls
@@ -425,21 +503,77 @@ export class Bot {
   // Integrate a desired horizontal displacement with gravity + auto-step. One
   // movePlayer pass resolves X/Z/Y; if a wall blocks us while grounded we retry
   // lifted by a step height so bots can climb ramps/cover instead of stalling.
+  //
+  // `desired` is the AI's wished horizontal displacement for this tick (already
+  // scaled by dt). On top of that this method now layers the human-like air
+  // game: an active dash overrides horizontal travel with a flat burst; while
+  // airborne the bot keeps a horizontal momentum vector and only partially
+  // steers it toward the wish dir (air control), so jumps/boosts carry instead
+  // of stopping dead; and a positive vel.y (from a jump/double-jump/boost) lofts
+  // the bot up before gravity reclaims it. Landing resets the air-jump budget
+  // and drops out of the jump animation.
   private integrate(dt: number, map: ArenaMap, desired: { x: number; z: number }): { blocked: boolean } {
     const size: Vec3 = { x: BOT_RADIUS * 2, y: BOT_HEIGHT, z: BOT_RADIUS * 2 };
-    this.vel.y -= GRAVITY * dt;
-    let r = movePlayer(this.state.pos, size, { x: desired.x, y: this.vel.y * dt, z: desired.z }, map.boxes);
+
+    // Resolve the horizontal displacement to actually apply this tick.
+    let hx: number;
+    let hz: number;
+    if (this.dashTimer > 0) {
+      // Dash: a flat burst along the locked dash dir, independent of wishspeed.
+      hx = this.dashDir.x * DASH_SPEED * dt;
+      hz = this.dashDir.z * DASH_SPEED * dt;
+    } else if (this.onGround) {
+      // Grounded: move exactly as the AI wished; remember it as our momentum so
+      // a subsequent jump launches with the speed we left the ground at.
+      hx = desired.x;
+      hz = desired.z;
+      this.vel.x = dt > 1e-5 ? hx / dt : 0;
+      this.vel.z = dt > 1e-5 ? hz / dt : 0;
+    } else {
+      // Airborne: carry horizontal momentum, steering it toward the wish dir by
+      // the difficulty's air-control amount (partial, so jumps aren't free to
+      // pivot but also aren't fully committed).
+      const wishLen = Math.hypot(desired.x, desired.z);
+      if (wishLen > 1e-5) {
+        const wishVx = desired.x / dt;
+        const wishVz = desired.z / dt;
+        const k = this.mv.airControl;
+        this.vel.x += (wishVx - this.vel.x) * k;
+        this.vel.z += (wishVz - this.vel.z) * k;
+      }
+      const horiz = Math.hypot(this.vel.x, this.vel.z);
+      if (horiz > MAX_HORIZONTAL_SPEED) {
+        const scale = MAX_HORIZONTAL_SPEED / horiz;
+        this.vel.x *= scale;
+        this.vel.z *= scale;
+      }
+      hx = this.vel.x * dt;
+      hz = this.vel.z * dt;
+    }
+
+    // Dash holds you on the ground plane (no fall during the burst), exactly
+    // like the player's ground dash; otherwise gravity pulls vel.y down.
+    if (this.dashTimer > 0) {
+      this.vel.y = 0;
+    } else {
+      this.vel.y -= GRAVITY * dt;
+    }
+
+    let r = movePlayer(this.state.pos, size, { x: hx, y: this.vel.y * dt, z: hz }, map.boxes);
     let blocked = r.blocked.x || r.blocked.z;
     if (blocked && this.onGround) {
       const STEP = 1.7; // clears the maps' 1.2–1.5m step-ramps + waist cover
       const up = movePlayer(this.state.pos, size, { x: 0, y: STEP, z: 0 }, map.boxes);
-      const over = movePlayer(up.position, size, { x: desired.x, y: 0, z: desired.z }, map.boxes);
+      const over = movePlayer(up.position, size, { x: hx, y: 0, z: hz }, map.boxes);
       if (!over.blocked.x && !over.blocked.z) {
         // Cleared at the raised height — settle back down onto the step top.
         r = movePlayer(over.position, size, { x: 0, y: -STEP, z: 0 }, map.boxes);
         blocked = false;
       }
     }
+    // Kill horizontal momentum into a wall so a bot doesn't smear along it.
+    if (r.blocked.x) this.vel.x = 0;
+    if (r.blocked.z) this.vel.z = 0;
     this.state.pos = r.position;
     if (r.groundContact) {
       this.vel.y = 0;
@@ -448,8 +582,173 @@ export class Bot {
       if (r.blocked.y && this.vel.y > 0) this.vel.y = 0; // bonked a ceiling
       this.onGround = false;
     }
+    // Landing edge: refill the air-jump budget and end the jump animation.
+    if (this.onGround && !this.wasOnGround) {
+      this.airJumpsLeft = AIR_JUMPS;
+      if (this.jumping) {
+        this.jumping = false;
+        this.loco?.start(); // back to the speed-blended locomotion
+      }
+    }
+    this.wasOnGround = this.onGround;
     this.group.position.set(this.state.pos.x, this.state.pos.y, this.state.pos.z);
     return { blocked };
+  }
+
+  // ── Movement actions ───────────────────────────────────────────────────────
+  // Each sets velocity directly; integrate() applies it with collision next.
+
+  // Ground jump (or wall-clearing hop). Launches straight up at JUMP_SPEED and
+  // plays the jump clip un-blended for the airtime.
+  private doJump() {
+    this.vel.y = JUMP_SPEED;
+    this.onGround = false;
+    this.startJumpAnim();
+  }
+
+  // Mid-air second hop — spends an air jump. Optionally redirect horizontal
+  // momentum toward `dir` so a double-jump can also be a sideways dodge.
+  private doAirJump(dir?: { x: number; z: number }) {
+    if (this.airJumpsLeft <= 0) return false;
+    this.airJumpsLeft -= 1;
+    this.vel.y = JUMP_SPEED;
+    if (dir) {
+      const len = Math.hypot(dir.x, dir.z) || 1;
+      const speed = Math.max(WALK_SPEED * 0.6, Math.hypot(this.vel.x, this.vel.z));
+      this.vel.x = (dir.x / len) * speed;
+      this.vel.z = (dir.z / len) * speed;
+    }
+    this.startJumpAnim();
+    return true;
+  }
+
+  // Start a ground dash burst in the given horizontal direction.
+  private doDash(dirX: number, dirZ: number) {
+    const len = Math.hypot(dirX, dirZ);
+    if (len < 1e-4) return;
+    this.dashDir = { x: dirX / len, y: 0, z: dirZ / len };
+    this.dashTimer = DASH_DURATION;
+    this.dashCooldown = DASH_COOLDOWN;
+  }
+
+  // Damage-free rocket-boost: a strong up+forward impulse along (toward target /
+  // current heading) like the player's floor-boost, used to gain height or bail.
+  // Bots take NO self-damage. Cancels downward velocity first so a falling bot
+  // still gets the full launch.
+  private doBoost(headX: number, headZ: number) {
+    if (this.vel.y < 0) this.vel.y = 0;
+    const len = Math.hypot(headX, headZ) || 1;
+    const fx = headX / len;
+    const fz = headZ / len;
+    // Launch dir = straight up blended with the forward bias (mirrors the
+    // player's floor boost: up AND forward for an arcing traversal).
+    let dx = BOOST_FORWARD_BIAS * fx;
+    let dy = 1;
+    let dz = BOOST_FORWARD_BIAS * fz;
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl;
+    dy /= dl;
+    dz /= dl;
+    this.vel.x += dx * BOOST_IMPULSE;
+    this.vel.y += dy * BOOST_IMPULSE;
+    this.vel.z += dz * BOOST_IMPULSE;
+    this.onGround = false;
+    this.airJumpsLeft = AIR_JUMPS; // a boost refreshes the air jump, like the player's
+    this.boostCooldown = this.mv.boostCooldown;
+    this.startJumpAnim();
+  }
+
+  private startJumpAnim() {
+    if (this.jumping) return;
+    this.jumping = true;
+    if (this.actions.jump) {
+      this.loco?.stop(); // play the jump clip un-blended for the airtime
+      this.playOneShot('jump');
+    }
+  }
+
+  // Combat movement brain: pick + execute the per-tick jump/dash/boost on top of
+  // the circle-strafe. Called once per combat tick BEFORE integrate so the
+  // chosen impulses are folded into this tick's physics.
+  private decideCombatMove(dist: number, toX: number, toZ: number, perpX: number, perpZ: number) {
+    const len = Math.hypot(toX, toZ) || 1;
+    const dirX = toX / len; // unit toward target
+    const dirZ = toZ / len;
+    // Threat is highest at mid range with a clear sightline (LOS is reciprocal —
+    // if we see them, they see us) and ramps up further if we were recently
+    // shot near. This gates the dodge reactivity.
+    const midRange = dist > COMBAT_RANGE_MIN && dist < COMBAT_RANGE_MAX * 1.4;
+    const threatened = midRange || this.shotAtTimer > 0;
+
+    // The double-jump is checked EVERY tick (not on the decision clock) so a hop
+    // can be followed by a second hop within its brief apex window — but it still
+    // burns the per-decision roll budget so it isn't spammed.
+    if (!this.onGround) {
+      if (
+        this.decideTimer <= 0 &&
+        this.vel.y < JUMP_SPEED * 0.45 &&
+        this.airJumpsLeft > 0 &&
+        Math.random() < this.mv.airJumpChance
+      ) {
+        this.decideTimer = this.mv.decideInterval * (0.7 + Math.random() * 0.6);
+        this.doAirJump({ x: perpX, z: perpZ });
+      }
+      return;
+    }
+
+    // Ground decisions: re-rolled only a few times per second so behaviour isn't
+    // re-decided every frame (and so one roll governs a coherent movement burst).
+    if (this.decideTimer > 0) return;
+    this.decideTimer = this.mv.decideInterval * (0.7 + Math.random() * 0.6);
+
+    // 1) Dodge-jump: when threatened, hop while strafing to throw off aim,
+    //    redirecting momentum sideways (the dodge direction is the strafe perp).
+    if (threatened && Math.random() < this.mv.dodgeReact) {
+      this.vel.x = perpX * (WALK_SPEED * 0.9);
+      this.vel.z = perpZ * (WALK_SPEED * 0.9);
+      this.doJump();
+      return;
+    }
+    // 2) Dash: close the gap when far, or juke sideways when in the band.
+    if (this.dashCooldown <= 0 && this.dashTimer <= 0 && Math.random() < this.mv.dashChance) {
+      if (dist > COMBAT_RANGE_MAX) this.doDash(dirX, dirZ);
+      else this.doDash(perpX, perpZ);
+      return;
+    }
+    // 3) Boost to high ground / dramatic reposition — sparingly.
+    if (this.boostCooldown <= 0 && Math.random() < this.mv.boostChance) {
+      // Boost away from the target (escape) at close range, toward otherwise.
+      const bx = dist < COMBAT_RANGE_MIN ? -dirX : dirX;
+      const bz = dist < COMBAT_RANGE_MIN ? -dirZ : dirZ;
+      this.doBoost(bx, bz);
+      return;
+    }
+    // 4) Plain rhythm-breaking hop while strafing.
+    if (Math.random() < this.mv.jumpChance) {
+      this.vel.x = perpX * (WALK_SPEED * 0.7);
+      this.vel.z = perpZ * (WALK_SPEED * 0.7);
+      this.doJump();
+    }
+  }
+
+  // Roam movement brain: occasional hops to clear gaps / reach a higher or
+  // distant wander point, plus the rare boost to mount high ground.
+  private decideRoamMove(dx: number, dz: number) {
+    if (this.decideTimer > 0) return;
+    this.decideTimer = this.mv.decideInterval * (0.7 + Math.random() * 0.6);
+    if (!this.onGround) return;
+    const dist = Math.hypot(dx, dz);
+    const len = dist || 1;
+    const higher = this.target.y - this.state.pos.y > 0.6; // wander point is up a ledge
+    // Boost up onto high ground occasionally when the target point is clearly above.
+    if (higher && this.boostCooldown <= 0 && Math.random() < this.mv.boostChance * 1.5) {
+      this.doBoost(dx / len, dz / len);
+      return;
+    }
+    // Hop when heading somewhere higher or just far enough to want momentum.
+    if ((higher || dist > 4) && Math.random() < this.mv.jumpGapReach) {
+      this.doJump();
+    }
   }
 
   // Drive the locomotion blend from how far the bot actually moved this tick.
@@ -520,13 +819,17 @@ export class Bot {
     const distSq = dx * dx + dz * dz;
     if (distSq > 0.36) {
       const dist = Math.sqrt(distSq);
+      // Maybe hop/boost to clear a gap or mount higher ground before moving.
+      this.decideRoamMove(dx, dz);
       const step = Math.min(dist, this.diff.moveSpeed * 0.7 * dt);
       const { blocked } = this.integrate(dt, map, { x: (dx / dist) * step, z: (dz / dist) * step });
       const desiredFacing = Math.atan2(dx, dz);
       const lerpT = 1 - Math.exp(-BOT_FACING_LERP * dt);
       this.facing = lerpAngle(this.facing, desiredFacing, lerpT);
       this.applyFacing();
-      if (blocked) this.target = pickFreeSpot(map, null);
+      // Only re-pick the wander point if we're stuck on the GROUND — an airborne
+      // bot is "blocked" mid-arc against geometry it'll clear, so don't bail.
+      if (blocked && this.onGround) this.target = pickFreeSpot(map, null);
     } else {
       // Standing still: still integrate (gravity) so a bot left on a ledge settles.
       this.integrate(dt, map, { x: 0, z: 0 });
@@ -632,6 +935,7 @@ export class Bot {
     });
     this.group.add(cloned);
     this.modelRoot = cloned;
+    attachRailgunToSoldier(cloned, BOT_HEIGHT);
     this.mixer = new THREE.AnimationMixer(cloned);
 
     const idleClip = pickClip(model.animations, ['idle'], 0);
