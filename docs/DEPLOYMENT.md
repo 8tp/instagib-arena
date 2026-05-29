@@ -64,25 +64,50 @@ HTTPS origin so the WebSocket origin allow-list accepts your browser clients.
 
 ---
 
-## 3. PaaS (fly.io / Railway / similar)
+## 3. Railway (recommended PaaS)
 
-This is a single **web service** — deploy the image (or let the platform build
-from the `Dockerfile`) as one container:
+Instagib Arena is an ideal fit for Railway: one always-on container with
+WebSockets, a persistent volume, and a free HTTPS domain. The repo ships a
+[`railway.json`](../railway.json) that builds from the `Dockerfile` and
+health-checks `/api/health`.
 
-- Bind to the platform's injected `PORT` (the server already reads `PORT`; the
-  default is `8787`).
-- Attach a **persistent volume mounted at `/app/data`** for the SQLite DB. Most
-  PaaS containers have ephemeral filesystems — without a volume, stats reset on
-  every redeploy.
-- Set `APP_BASE_URL` to your public HTTPS origin (see below).
+**One-time setup**
 
-Platform notes:
+1. **Create the project** — Railway → _New Project → Deploy from GitHub_ (or
+   `railway init` then `railway up`). It auto-detects the `Dockerfile` +
+   `railway.json`.
+2. **Add a Volume mounted at `/app/data`** (service → _Volumes_). The SQLite
+   stats DB lives there; without it, stats reset on every redeploy.
+3. **Pick the region closest to your players** (service → _Settings → Region_).
+   It's an FPS — round-trip latency is the whole game, and you're single-region
+   by design.
+4. **Generate a domain** (_Settings → Networking → Generate Domain_) and set
+   `APP_BASE_URL` to that `https://…up.railway.app` origin (_Variables_) — it's
+   the WebSocket origin allow-list.
 
-- **fly.io** — `fly launch` detects the Dockerfile; create a volume
-  (`fly volumes create data`) and mount it at `/app/data` in `fly.toml`. The
-  platform terminates TLS and upgrades WebSockets for you.
-- **Railway** — deploy from the repo (Dockerfile build); add a volume mounted at
-  `/app/data`; Railway provides a public HTTPS domain with WS support.
+> **Critical: run exactly ONE instance.** The game server holds all room/match
+> state in memory and stats in local SQLite, so it must not be horizontally
+> scaled. Keep replicas at **1** (the default; `railway.json` also pins
+> `numReplicas: 1`). Two+ instances would split players across isolated,
+> non-communicating servers and fork the SQLite file.
+
+**Notes**
+
+- Railway injects `PORT`; the server already binds to it — no port config needed.
+- WebSockets + TLS are handled at Railway's edge, so `/ws/instagib` works on the
+  generated domain with no extra setup.
+- Use a plan where the service **does not sleep** — a sleeping multiplayer server
+  means dead lobbies (idle-sleep is a hobby-tier behavior).
+- Healthcheck is `/api/health` (already set in `railway.json`).
+- Cost: a small always-on container is a few dollars/month on usage pricing.
+
+### Other PaaS (fly.io, Render, …)
+
+Same single-service shape: build the `Dockerfile`, bind the injected `PORT`,
+mount a volume at `/app/data`, set `APP_BASE_URL`, and keep it to **one
+instance**. On **fly.io**: `fly launch` detects the Dockerfile, `fly volumes
+create data`, mount it at `/app/data` in `fly.toml`; TLS + WS upgrades are
+automatic.
 
 ---
 

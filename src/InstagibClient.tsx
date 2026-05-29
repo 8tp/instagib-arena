@@ -1833,112 +1833,121 @@ function Lobby({
   const playDisabled = touchOnly;
 
   return (
-    <div className='fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-zinc-950 py-8 text-white'>
-      <div className='pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,rgba(103,232,249,0.12),transparent_60%)]' />
-      <div className='relative w-[640px] max-w-[94vw] rounded-2xl border border-cyan-500/25 bg-zinc-900/70 p-8 font-mono shadow-2xl backdrop-blur-xl'>
-        <div className='flex items-center gap-3'>
-          <div
-            className='text-2xl font-extrabold uppercase tracking-[0.2em] text-cyan-300'
-            style={{ filter: 'drop-shadow(0 0 16px rgba(103,232,249,0.5))' }}
+    <div className='deck-bg deck-scan fixed inset-0 z-50 overflow-hidden text-white'>
+      <div className='relative mx-auto flex h-full w-full max-w-6xl flex-col gap-4 px-5 py-5 sm:px-8 sm:py-6'>
+        {/* ── Top status bar ─────────────────────────────────────────── */}
+        <header className='deck-rise flex items-center gap-3' style={{ animationDelay: '0ms' }}>
+          <h1
+            className='font-display text-3xl font-bold uppercase leading-none tracking-[0.16em] text-cyan-300 sm:text-[2.5rem]'
+            style={{ filter: 'drop-shadow(0 0 18px rgba(34,211,238,0.45))' }}
           >
             Instagib
-          </div>
-          <div className='text-[10px] uppercase tracking-[0.3em] text-white/45'>Arena · FFA</div>
-          <div className='ml-auto'>
+          </h1>
+          <span className='font-display mt-0.5 text-xs font-semibold uppercase tracking-[0.55em] text-white/35'>
+            Arena
+          </span>
+          <div className='ml-auto flex items-center gap-3'>
+            <span className='hidden font-mono text-[10px] uppercase tracking-[0.2em] text-white/40 sm:inline'>
+              {settings.playerName || 'Player'}
+            </span>
             <ServerStatusChip status={lobbyStatus} />
           </div>
-        </div>
-        <p className='mt-2 text-sm text-white/55'>
-          One railgun. One shot. Pure movement. First to {MATCH_FRAG_LIMIT} frags.
-        </p>
+        </header>
+        <div className='h-px w-full shrink-0 bg-gradient-to-r from-cyan-400/50 via-white/10 to-transparent' />
 
-        {lastResult && <LastMatchBanner result={lastResult} />}
+        {/* ── Main grid: actions (left) · live feed (right) ──────────── */}
+        <main className='grid min-h-0 flex-1 gap-4 lg:grid-cols-[1.15fr_0.85fr]'>
+          {/* Left — mode + actions */}
+          <section className='deck-scroll flex min-h-0 flex-col gap-3 overflow-y-auto pr-1'>
+            <p className='deck-rise text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>
+              One railgun. One shot. Pure movement — strafe, dash, wall-jump.
+            </p>
 
-        {touchOnly && (
-          <div className='mt-5 rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-center text-[12px] text-amber-100'>
-            Instagib needs a <span className='font-bold'>mouse + keyboard</span>. Open this on a
-            desktop to play.
-          </div>
-        )}
+            {touchOnly && (
+              <div className='clip-deck-sm border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-center text-[12px] text-amber-100'>
+                Instagib needs a <span className='font-bold'>mouse + keyboard</span>. Open this on a
+                desktop to play.
+              </div>
+            )}
 
-        <ModePicker value={selectedMode} onChange={setSelectedMode} />
+            <div className='deck-rise' style={{ animationDelay: '120ms' }}>
+              <ModePicker value={selectedMode} onChange={setSelectedMode} />
+            </div>
 
-        <div className='mt-4 grid grid-cols-2 gap-3'>
-          <button
-            onClick={() => {
-              if (searching || !online || playDisabled) return; // double-fire guard
-              setSearching(true);
-              lobbyRef.current?.quickMatch(selectedMode);
-              // Safety reset if the server never resolves (it normally navigates
-              // away via onResolved, unmounting this view).
-              window.setTimeout(() => setSearching(false), 6000);
-            }}
-            disabled={!online || playDisabled || searching}
-            className='col-span-2 rounded-lg bg-emerald-400 px-6 py-4 text-base font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40'
-          >
-            {searching ? 'Searching…' : 'Play · Quick Match'}
-          </button>
-          <button
-            onClick={() => setCreateOnlineOpen(true)}
-            disabled={!online || playDisabled}
-            className='rounded-lg border border-cyan-300/40 bg-cyan-300/10 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-40'
-          >
-            Create Match
-          </button>
-          <button
-            onClick={() =>
-              onStart({
-                mode: 'local',
-                mapId: 'training',
-                botCount: 4,
-                difficulty: settings.difficulty,
-                training: true,
-              })
-            }
-            disabled={playDisabled}
-            className='rounded-lg border border-amber-300/40 bg-amber-300/10 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-40'
-          >
-            Practice Range
-          </button>
-          <button
-            onClick={() => setSoloOpen(true)}
-            disabled={playDisabled}
-            className='col-span-2 rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40'
-          >
-            Solo vs Bots
-          </button>
-          <button
-            onClick={() => setStatsOpen(true)}
-            className='rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10'
-          >
-            Stats
-          </button>
-          <button
-            onClick={() => setLeaderboardOpen(true)}
-            className='rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10'
-          >
-            Leaderboard
-          </button>
-        </div>
+            {/* Primary CTA */}
+            <button
+              onClick={() => {
+                if (searching || !online || playDisabled) return; // double-fire guard
+                setSearching(true);
+                lobbyRef.current?.quickMatch(selectedMode);
+                // Safety reset if the server never resolves (it normally navigates
+                // away via onResolved, unmounting this view).
+                window.setTimeout(() => setSearching(false), 6000);
+              }}
+              disabled={!online || playDisabled || searching}
+              className='clip-deck deck-rise bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
+              style={{ animationDelay: '180ms' }}
+            >
+              <span className='flex items-center gap-3'>
+                <span className='text-2xl leading-none'>▶</span>
+                {searching ? 'Searching…' : 'Quick Match'}
+                <span className='ml-auto font-mono text-[11px] font-semibold tracking-[0.1em] text-zinc-950/60'>
+                  {modeLabel(selectedMode)}
+                </span>
+              </span>
+            </button>
 
-        <OpenLobbies
-          rooms={rooms}
-          online={online}
-          onJoin={(r) => startOnline(r.id, r.mapId)}
-          onRefresh={() => lobbyRef.current?.refresh()}
-        />
+            {/* Secondary actions */}
+            <div className='deck-rise grid grid-cols-2 gap-3' style={{ animationDelay: '240ms' }}>
+              <DeckButton onClick={() => setCreateOnlineOpen(true)} disabled={!online || playDisabled} accent='cyan'>
+                + Create Match
+              </DeckButton>
+              <DeckButton
+                onClick={() =>
+                  onStart({
+                    mode: 'local',
+                    mapId: 'training',
+                    botCount: 4,
+                    difficulty: settings.difficulty,
+                    training: true,
+                  })
+                }
+                disabled={playDisabled}
+                accent='amber'
+              >
+                ⌖ Practice Range
+              </DeckButton>
+              <div className='col-span-2'>
+                <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled} full>
+                  ◭ Solo vs Bots
+                </DeckButton>
+              </div>
+              <DeckButton onClick={() => setStatsOpen(true)}>Stats</DeckButton>
+              <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
+            </div>
 
-        <div className='mt-4 flex items-center justify-between'>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className='text-[11px] uppercase tracking-[0.2em] text-white/50 transition hover:text-white'
-          >
-            Settings
+            {lastResult && <LastMatchBanner result={lastResult} />}
+          </section>
+
+          {/* Right — live lobby feed */}
+          <aside className='deck-rise min-h-0' style={{ animationDelay: '200ms' }}>
+            <OpenLobbies
+              rooms={rooms}
+              online={online}
+              onJoin={(r) => startOnline(r.id, r.mapId)}
+              onRefresh={() => lobbyRef.current?.refresh()}
+            />
+          </aside>
+        </main>
+
+        {/* ── Footer ─────────────────────────────────────────────────── */}
+        <footer className='flex shrink-0 items-center justify-between border-t border-white/10 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
+          <button onClick={() => setSettingsOpen(true)} className='transition hover:text-cyan-200'>
+            ⚙ Settings
           </button>
-          <div className='text-[10px] uppercase tracking-[0.2em] text-white/35'>
-            Quick match · up to {MAX_PLAYERS} players
-          </div>
-        </div>
+          <span className='hidden sm:inline'>Quick match · up to {MAX_PLAYERS} players</span>
+          <span className='text-white/25'>Instagib Arena</span>
+        </footer>
       </div>
 
       {soloOpen && (
@@ -1994,6 +2003,38 @@ function modeLabel(mode: GameMode): string {
   return GAME_MODES.find((m) => m.id === mode)?.label ?? mode;
 }
 
+// Angular command-deck action button. Accent tints the hover/border; `full`
+// stretches it. Labels use the squared display face for the FPS-UI feel.
+function DeckButton({
+  onClick,
+  disabled,
+  accent = 'plain',
+  full,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  accent?: 'cyan' | 'amber' | 'plain';
+  full?: boolean;
+  children: ReactNode;
+}) {
+  const tone =
+    accent === 'cyan'
+      ? 'border-cyan-300/40 bg-cyan-300/10 text-cyan-100 hover:border-cyan-300/70 hover:bg-cyan-300/20'
+      : accent === 'amber'
+        ? 'border-amber-300/40 bg-amber-300/10 text-amber-100 hover:border-amber-300/70 hover:bg-amber-300/20'
+        : 'border-white/12 bg-white/[0.04] text-white/85 hover:border-white/30 hover:bg-white/10';
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`clip-deck-sm border px-5 py-3 text-left font-display text-sm font-semibold uppercase tracking-[0.12em] transition disabled:cursor-not-allowed disabled:opacity-40 ${tone} ${full ? 'w-full' : ''}`}
+    >
+      {children}
+    </button>
+  );
+}
+
 // Compact mode badge — color-coded by mode for quick scanning in lobby rows.
 function ModeBadge({ mode }: { mode: GameMode }) {
   const color =
@@ -2002,7 +2043,7 @@ function ModeBadge({ mode }: { mode: GameMode }) {
     'bg-emerald-300/20 text-emerald-200';
   const short = mode === 'tdm' ? 'TDM' : mode === 'duel' ? '1v1' : 'FFA';
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold tracking-[0.08em] ${color}`}>
+    <span className={`rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] ${color}`}>
       {short}
     </span>
   );
@@ -2019,38 +2060,44 @@ function ModePicker({
 }) {
   const blurb = GAME_MODES.find((m) => m.id === value)?.blurb ?? '';
   return (
-    <div className='mt-7 flex flex-col gap-1.5'>
-      <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Game mode</span>
+    <div className='flex flex-col gap-1.5'>
+      <span className='font-mono text-[10px] uppercase tracking-[0.22em] text-white/45'>Mode</span>
       <div className='grid grid-cols-3 gap-2'>
-        {GAME_MODES.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => onChange(m.id)}
-            className={`rounded-md border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
-              value === m.id
-                ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
-                : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
-            }`}
-          >
-            {m.label}
-          </button>
-        ))}
+        {GAME_MODES.map((m) => {
+          const active = value === m.id;
+          return (
+            <button
+              key={m.id}
+              onClick={() => onChange(m.id)}
+              className={`clip-deck-sm border px-3 py-2.5 font-display text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
+                active
+                  ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-100 shadow-[0_0_18px_-6px_rgba(34,211,238,0.9)]'
+                  : 'border-white/12 bg-white/[0.03] text-white/55 hover:bg-white/10 hover:text-white/80'
+              }`}
+            >
+              {m.label}
+            </button>
+          );
+        })}
       </div>
-      <div className='text-[10px] normal-case tracking-normal text-white/40'>{blurb}</div>
+      <div className='font-mono text-[10px] normal-case tracking-normal text-white/40'>{blurb}</div>
     </div>
   );
 }
 
 function ServerStatusChip({ status }: { status: LobbyStatus }) {
   const map = {
-    open: { c: 'bg-emerald-400/85 text-emerald-950', t: 'Online' },
-    connecting: { c: 'bg-amber-400/85 text-amber-950', t: 'Connecting' },
-    closed: { c: 'bg-rose-400/85 text-rose-950', t: 'Offline' },
-    error: { c: 'bg-rose-400/85 text-rose-950', t: 'Offline' },
+    open: { dot: 'bg-emerald-400', ring: 'border-emerald-400/40 text-emerald-200', t: 'Online' },
+    connecting: { dot: 'bg-amber-400', ring: 'border-amber-400/40 text-amber-200', t: 'Linking' },
+    closed: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline' },
+    error: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline' },
   } as const;
   const s = map[status];
   return (
-    <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] ${s.c}`}>
+    <span
+      className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.18em] ${s.ring}`}
+    >
+      <span className={`deck-pulse h-1.5 w-1.5 rounded-full ${s.dot}`} />
       {s.t}
     </span>
   );
@@ -2068,59 +2115,64 @@ function OpenLobbies({
   onRefresh: () => void;
 }) {
   return (
-    <div className='mt-6 rounded-xl border border-white/10 bg-black/30 p-4'>
-      <div className='mb-3 flex items-center justify-between'>
-        <span className='text-[11px] font-bold uppercase tracking-[0.2em] text-white/65'>
-          Open Lobbies
+    <div className='clip-deck flex h-full min-h-0 flex-col border border-white/10 bg-black/40 backdrop-blur-sm'>
+      <div className='flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3'>
+        <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
+          Live Lobbies
+          {online && rooms.length > 0 && (
+            <span className='ml-2 font-mono text-white/40'>[{rooms.length}]</span>
+          )}
         </span>
         <button
           onClick={onRefresh}
           disabled={!online}
-          className='text-[10px] uppercase tracking-[0.18em] text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
+          className='font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
         >
-          Refresh
+          ↻ Refresh
         </button>
       </div>
-      {!online ? (
-        <div className='py-4 text-center text-[11px] uppercase tracking-[0.16em] text-white/35'>
-          Connecting to server…
-        </div>
-      ) : rooms.length === 0 ? (
-        <div className='py-4 text-center text-[11px] uppercase tracking-[0.16em] text-white/35'>
-          No open lobbies — start one with Quick Match or Create Match
-        </div>
-      ) : (
-        <div className='flex max-h-56 flex-col gap-2 overflow-y-auto pr-1'>
-          {rooms.map((r) => (
-            <div
-              key={r.id}
-              className='flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5'
-            >
-              <div className='min-w-0'>
-                <div className='truncate text-[13px] font-semibold text-white'>{r.name}</div>
-                <div className='mt-0.5 flex items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-white/45'>
-                  <ModeBadge mode={r.mode} />
-                  <span>{mapLabel(r.mapId)}</span>
-                  <span className='text-white/25'>·</span>
-                  <span className='tabular-nums'>
-                    {r.players}/{r.capacity}
-                  </span>
-                  {r.state === 'voting' && (
-                    <span className='rounded bg-cyan-300/20 px-1.5 py-0.5 text-cyan-200'>voting</span>
-                  )}
-                </div>
-              </div>
-              <button
-                onClick={() => onJoin(r)}
-                disabled={!r.joinable}
-                className='shrink-0 rounded-md bg-emerald-400 px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-white/45'
+      <div className='deck-scroll min-h-0 flex-1 overflow-y-auto p-3'>
+        {!online ? (
+          <div className='flex h-full items-center justify-center px-4 py-10 text-center font-mono text-[11px] uppercase tracking-[0.14em] text-white/30'>
+            Linking to server…
+          </div>
+        ) : rooms.length === 0 ? (
+          <div className='flex h-full items-center justify-center px-6 py-10 text-center font-mono text-[11px] uppercase leading-relaxed tracking-[0.12em] text-white/30'>
+            No open lobbies — start one with Quick&nbsp;Match or Create.
+          </div>
+        ) : (
+          <div className='flex flex-col gap-2'>
+            {rooms.map((r) => (
+              <div
+                key={r.id}
+                className='clip-deck-sm flex items-center justify-between gap-3 border border-white/8 bg-white/[0.03] px-3 py-2.5 transition hover:border-cyan-300/30 hover:bg-white/[0.06]'
               >
-                {r.joinable ? 'Join' : 'Full'}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                <div className='min-w-0'>
+                  <div className='truncate font-display text-[13px] font-semibold text-white'>{r.name}</div>
+                  <div className='mt-1 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.1em] text-white/45'>
+                    <ModeBadge mode={r.mode} />
+                    <span>{mapLabel(r.mapId)}</span>
+                    <span className='text-white/20'>·</span>
+                    <span className='tabular-nums text-white/70'>
+                      {r.players}/{r.capacity}
+                    </span>
+                    {r.state === 'voting' && (
+                      <span className='rounded-sm bg-cyan-300/20 px-1.5 py-0.5 text-cyan-200'>voting</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onJoin(r)}
+                  disabled={!r.joinable}
+                  className='clip-deck-sm shrink-0 bg-emerald-400 px-4 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/40'
+                >
+                  {r.joinable ? 'Join' : 'Full'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2341,18 +2393,20 @@ function ModalShell({
         aria-modal='true'
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
-        className='w-[440px] max-w-[92vw] rounded-xl border border-cyan-500/25 bg-zinc-950/95 p-6 font-mono shadow-2xl'
+        className='clip-deck deck-rise w-[440px] max-w-[92vw] border border-cyan-500/30 bg-zinc-950/95 p-6 shadow-[0_0_60px_-12px_rgba(34,211,238,0.4)]'
       >
-        <div className='mb-5 flex items-center justify-between'>
-          <div className='text-base font-semibold uppercase tracking-[0.18em]'>{title}</div>
+        <div className='mb-5 flex items-center justify-between border-b border-white/10 pb-3'>
+          <div className='font-display text-base font-bold uppercase tracking-[0.18em] text-cyan-100'>
+            {title}
+          </div>
           <button
             onClick={onClose}
-            className='text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-white'
+            className='font-mono text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-cyan-200'
           >
-            Close
+            ✕ Esc
           </button>
         </div>
-        <div className='flex flex-col gap-5'>{children}</div>
+        <div className='flex flex-col gap-5 font-mono'>{children}</div>
       </div>
     </div>
   );
