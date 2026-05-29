@@ -35,7 +35,11 @@ import {
   SHAKE_MAX,
   TICK_DT,
   TOAST_DURATION_SEC,
+  TEAM_COLORS,
+  TDM_FRIEND_COLOR,
+  DUEL_ROUNDS_TO_WIN,
   type BotDifficulty,
+  type GameMode,
   type KeybindAction,
 } from './constants';
 import { EffectsManager } from './effects';
@@ -49,6 +53,7 @@ import { createCamera, createRenderer, createScene } from './renderer';
 import type {
   AABB,
   BannerState,
+  DuelHud,
   HitMarker,
   HudState,
   KillConfirm,
@@ -165,6 +170,11 @@ export class Game {
   // vote-start winnerId; matchSubmitted guards a single stats POST per match.
   private wonLastMatch = false;
   private matchSubmitted = false;
+  // Active online game mode + this client's team (TDM). Offline is always FFA.
+  private netMode: GameMode = 'ffa';
+  private localTeam: number | null = null;
+  // Duel round tracking (mirrors the server; drives the round HUD).
+  private duel: DuelHud | null = null;
 
   private killfeed: KillfeedEntry[] = [];
   private toasts: ToastEntry[] = [];
@@ -344,7 +354,9 @@ export class Game {
 
   private applyEnemyStyle() {
     if (this.bots) for (const b of this.bots.bots) b.setHighlight(this.enemyColor);
-    for (const rp of this.remotePlayers.values()) rp.setHighlight(this.enemyColor);
+    // Remotes may be team-colored (TDM) — recolor through the team-aware path so
+    // the enemy-color setting doesn't clobber team identification.
+    this.recolorRemotes();
   }
 
   // Swap the arena in place (keeps the renderer/canvas — a second WebGL context
@@ -489,6 +501,7 @@ export class Game {
           onVoteStart: (v) => this.handleVoteStart(v),
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
+          onRound: (r) => this.handleNetRound(r),
         },
       });
       this.net.connect();
@@ -496,6 +509,9 @@ export class Game {
       this.net.dispose();
       this.net = null;
       this.vote = null;
+      this.netMode = 'ffa';
+      this.localTeam = null;
+      this.duel = null;
       for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
       this.remotePlayers.clear();
     }
@@ -503,7 +519,25 @@ export class Game {
 
   // Server confirmed our room join → adopt the room's authoritative map and
   // drop onto the server-assigned spawn.
-  private handleNetJoined(info: { mapId: string; spawn: { x: number; y: number; z: number }; state: 'active' | 'voting' }) {
+  private handleNetJoined(info: {
+    mapId: string;
+    spawn: { x: number; y: number; z: number };
+    state: 'active' | 'voting';
+    mode: GameMode;
+    team: number | null;
+    roundsToWin: number | null;
+  }) {
+    this.netMode = info.mode;
+    this.localTeam = info.team;
+    this.duel =
+      info.mode === 'duel'
+        ? {
+            roundNum: 1,
+            roundsToWin: info.roundsToWin ?? DUEL_ROUNDS_TO_WIN,
+            myWins: 0,
+            oppWins: 0,
+          }
+        : null;
     const desired = mapById(info.mapId);
     if (desired !== this.map) this.setMap(desired);
     this.player.pos = { x: info.spawn.x, y: info.spawn.y, z: info.spawn.z };
@@ -512,6 +546,8 @@ export class Game {
     this.killcam = null;
     this.matchSubmitted = false;
     this.wonLastMatch = false;
+    // Recolor any already-present remotes for the new mode (team colors in TDM).
+    this.recolorRemotes();
     if (info.state !== 'voting') this.vote = null;
     // "Now playing: <map>" so a server map adoption on join isn't silent (#26g).
     this.banner = {
@@ -532,11 +568,14 @@ export class Game {
     this.player.onGround = false;
   }
 
-  private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null }) {
+  private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null; winnerTeam: number | null }) {
     // The vote opening IS the end of the online match — this is the moment to
     // latch win/loss and submit stats exactly once, BEFORE handleVoteResult
-    // resets the counters for the next map (#4).
-    this.wonLastMatch = v.winnerId != null && v.winnerId === this.net?.clientId;
+    // resets the counters for the next map (#4). In TDM the winner is a team.
+    this.wonLastMatch =
+      v.winnerTeam != null
+        ? this.localTeam != null && v.winnerTeam === this.localTeam
+        : v.winnerId != null && v.winnerId === this.net?.clientId;
     if (this.net && !this.matchSubmitted) {
       this.matchSubmitted = true;
       this.onMatchEnd(this.collectStats(this.wonLastMatch));
@@ -600,6 +639,72 @@ export class Game {
     // ClickToPlay overlay is the fallback.
     this.input.requestLock();
     this.emitHud();
+  }
+
+  // Duel: the server ended a round and reset the scoreboard. Mirror the reset
+  // locally (emitHud only RAISES frags from snapshots, so we must lower them
+  // here), update the round tally, and show a "Round N" banner.
+  private handleNetRound(r: {
+    roundNum: number;
+    roundWins: Record<string, number>;
+    winnerId: string | null;
+    resumeAtClient: number;
+  }) {
+    const myId = this.net?.clientId ?? '';
+    const myWins = r.roundWins[myId] ?? 0;
+    let oppWins = 0;
+    for (const [id, w] of Object.entries(r.roundWins)) {
+      if (id !== myId) oppWins = Math.max(oppWins, w);
+    }
+    this.duel = {
+      roundNum: r.roundNum,
+      roundsToWin: this.duel?.roundsToWin ?? DUEL_ROUNDS_TO_WIN,
+      myWins,
+      oppWins,
+    };
+    this.playerFrags = 0;
+    this.playerDeaths = 0;
+    this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
+    const iWon = r.winnerId != null && r.winnerId === myId;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: `Round ${r.roundNum}`,
+      subtitle: iWon ? 'You won the round' : 'Round lost',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.input.requestLock();
+    this.emitHud();
+  }
+
+  // TDM team highlight: friendlies green, foes wear their team color. Returns
+  // null in non-TDM modes so the caller falls back to the enemy-highlight color.
+  private teamColorHex(team: number | null): string | null {
+    if (this.netMode !== 'tdm' || this.localTeam == null || team == null) {
+      return null;
+    }
+    return team === this.localTeam
+      ? TDM_FRIEND_COLOR
+      : TEAM_COLORS[team] ?? TEAM_COLORS[0];
+  }
+
+  private applyRemoteColor(rp: RemotePlayer) {
+    const hex = this.teamColorHex(rp.team);
+    if (hex) {
+      rp.setHighlight(new THREE.Color(hex));
+      rp.setNameColor(hex);
+    } else {
+      rp.setHighlight(this.enemyColor);
+      rp.setNameColor(null);
+    }
+  }
+
+  private recolorRemotes() {
+    for (const rp of this.remotePlayers.values()) this.applyRemoteColor(rp);
   }
 
   // Submit a map vote (called from the client overlay via the Game wrapper).
@@ -670,8 +775,12 @@ export class Game {
       if (!rp) {
         rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
         rp.group.position.set(snap.pos.x, snap.pos.y, snap.pos.z);
-        rp.setHighlight(this.enemyColor);
+        rp.team = snap.team;
+        this.applyRemoteColor(rp);
         this.remotePlayers.set(id, rp);
+      } else if (rp.team !== snap.team) {
+        rp.team = snap.team;
+        this.applyRemoteColor(rp);
       }
       rp.apply(snap, dt);
       rp.setInvuln(snap.invulnMs);
@@ -1224,6 +1333,7 @@ export class Game {
         bestStreak: this.medals.bestStreak,
         currentStreak: this.medals.currentStreak,
         accuracy: pct(this.playerShotsHit, this.playerShotsFired),
+        team: this.localTeam,
       },
     ];
     if (this.bots) {
@@ -1265,6 +1375,7 @@ export class Game {
           bestStreak: 0,
           currentStreak: 0,
           accuracy: null, // server doesn't report remote shot counts
+          team: snap.team,
         });
       }
     }
@@ -1274,6 +1385,17 @@ export class Game {
         a.deaths - b.deaths ||
         a.name.localeCompare(b.name),
     );
+
+    // TDM team frag totals [red, blue] from the (authoritative) scoreboard.
+    let teamScores: [number, number] | null = null;
+    if (this.netMode === 'tdm') {
+      const totals: [number, number] = [0, 0];
+      for (const s of scores) {
+        if (s.team === 0) totals[0] += s.frags;
+        else if (s.team === 1) totals[1] += s.frags;
+      }
+      teamScores = totals;
+    }
 
     this.onHud({
       frags: this.playerFrags,
@@ -1300,6 +1422,10 @@ export class Game {
       netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
       localInvulnMs: this.net?.localInvulnMs ?? 0,
       vote: this.vote ? { ...this.vote, counts: { ...this.vote.counts } } : null,
+      mode: this.netMode,
+      localTeam: this.localTeam,
+      teamScores,
+      duel: this.duel ? { ...this.duel } : null,
     });
   }
 

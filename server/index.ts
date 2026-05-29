@@ -16,6 +16,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { statsRouter } from './stats';
+import { leaderboardRouter } from './leaderboard';
 import { attachInstagibWs } from './instagib-game';
 
 const INSTAGIB_WS_PATH = '/ws/instagib';
@@ -57,6 +58,7 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, build: hasBuild });
 });
 app.use('/api', statsRouter);
+app.use('/api', leaderboardRouter);
 
 if (hasBuild) {
   // Long-cache fingerprinted assets; never cache the HTML shell.

@@ -1,3 +1,5 @@
+import type { GameMode } from './constants';
+
 export type Vec3 = { x: number; y: number; z: number };
 
 export type RemotePlayerSnapshot = {
@@ -9,6 +11,7 @@ export type RemotePlayerSnapshot = {
   frags: number;
   deaths: number;
   invulnMs: number; // remaining spawn-protection ms, 0 = killable
+  team: number | null; // team index in TDM; null otherwise
   receivedAt: number;
 };
 
@@ -34,6 +37,7 @@ type StatePlayer = {
   frags: number;
   deaths: number;
   invulnMs: number;
+  team?: number | null;
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number };
@@ -52,10 +56,13 @@ type KillBroadcast = {
 type JoinedMessage = {
   type: 'joined';
   roomId: string;
+  mode?: GameMode;
+  team?: number | null;
   mapId: string;
   spawn: Vec3;
   state: 'active' | 'voting';
   fragLimit: number;
+  roundsToWin?: number;
 };
 type VoteStartMessage = {
   type: 'vote-start';
@@ -63,6 +70,14 @@ type VoteStartMessage = {
   endsAt: number; // server-clock ms
   durationMs: number;
   winnerId?: string | null; // client who reached the frag limit (match winner)
+  winnerTeam?: number | null; // winning team index in TDM
+};
+type RoundMessage = {
+  type: 'round';
+  roundNum: number;
+  roundWins: Record<string, number>;
+  winnerId: string | null; // who won the round that just ended
+  resumeAt: number; // server-clock ms; play resumes after this breather
 };
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
 type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number };
@@ -75,6 +90,7 @@ type ServerMessage =
   | VoteStartMessage
   | VoteUpdateMessage
   | VoteResultMessage
+  | RoundMessage
   | RespawnMessage
   | { type: 'join-failed'; reason: string }
   | { type: 'peer-joined'; clientId: string; name: string }
@@ -94,12 +110,32 @@ export type KillListener = (ev: KillEvent) => void;
 // Room / match lifecycle events the Game subscribes to.
 export type NetEvents = {
   onKill: KillListener;
-  onJoined?: (info: { roomId: string; mapId: string; spawn: Vec3; state: 'active' | 'voting' }) => void;
+  onJoined?: (info: {
+    roomId: string;
+    mapId: string;
+    spawn: Vec3;
+    state: 'active' | 'voting';
+    mode: GameMode;
+    team: number | null;
+    roundsToWin: number | null;
+  }) => void;
   onJoinFailed?: (reason: string) => void;
   onRespawn?: (pos: Vec3, reason: string) => void;
-  onVoteStart?: (v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null }) => void;
+  onVoteStart?: (v: {
+    options: string[];
+    endsAtClient: number;
+    durationMs: number;
+    winnerId: string | null;
+    winnerTeam: number | null;
+  }) => void;
   onVoteUpdate?: (counts: Record<string, number>) => void;
   onVoteResult?: (r: { mapId: string; resumeAtClient: number }) => void;
+  onRound?: (r: {
+    roundNum: number;
+    roundWins: Record<string, number>;
+    winnerId: string | null;
+    resumeAtClient: number;
+  }) => void;
 };
 
 const RECONNECT_DELAY_MS = 1500;
@@ -127,6 +163,8 @@ export class NetClient {
   localFrags = 0;
   localDeaths = 0;
   localInvulnMs = 0;
+  localTeam: number | null = null; // your team index in TDM; null otherwise
+  mode: GameMode = 'ffa';
   rttMs = 0;
   private clockOffset = 0; // serverClock - clientClock (ms); estimatedServerNow = Date.now() + offset
   private clockSeeded = false;
@@ -276,6 +314,7 @@ export class NetClient {
         frags: b.frags ?? 0,
         deaths: b.deaths ?? 0,
         invulnMs: b.invulnMs ?? 0,
+        team: b.team ?? null,
         receivedAt: now,
       });
     }
@@ -330,6 +369,7 @@ export class NetClient {
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
           this.localInvulnMs = p.invulnMs ?? 0;
+          if (p.team !== undefined) this.localTeam = p.team;
         }
       }
       // Keep buffer ordered by server time; drop anything older than the window.
@@ -354,11 +394,16 @@ export class NetClient {
       return;
     }
     if (msg.type === 'joined') {
+      this.mode = msg.mode ?? 'ffa';
+      this.localTeam = msg.team ?? null;
       this.events.onJoined?.({
         roomId: msg.roomId,
         mapId: msg.mapId,
         spawn: msg.spawn,
         state: msg.state,
+        mode: this.mode,
+        team: this.localTeam,
+        roundsToWin: msg.roundsToWin ?? null,
       });
       return;
     }
@@ -378,6 +423,17 @@ export class NetClient {
         endsAtClient,
         durationMs: msg.durationMs,
         winnerId: msg.winnerId ?? null,
+        winnerTeam: msg.winnerTeam ?? null,
+      });
+      return;
+    }
+    if (msg.type === 'round') {
+      const resumeAtClient = Date.now() + (msg.resumeAt - this.estimatedServerNow());
+      this.events.onRound?.({
+        roundNum: msg.roundNum,
+        roundWins: msg.roundWins,
+        winnerId: msg.winnerId ?? null,
+        resumeAtClient,
       });
       return;
     }
@@ -433,6 +489,7 @@ function lerpAngle(a: number, b: number, t: number): number {
 export type LobbyRoom = {
   id: string;
   name: string;
+  mode: GameMode;
   mapId: string;
   players: number;
   capacity: number;
@@ -508,11 +565,11 @@ export class LobbyClient {
     this.send({ type: 'list' });
   }
 
-  quickMatch() {
-    this.send({ type: 'quickmatch', name: this.name });
+  quickMatch(mode: GameMode = 'ffa') {
+    this.send({ type: 'quickmatch', name: this.name, mode });
   }
 
-  createRoom(opts: { mapId: string; isPublic: boolean; capacity: number }) {
+  createRoom(opts: { mapId: string; isPublic: boolean; capacity: number; mode: GameMode }) {
     this.send({ type: 'create', name: this.name, ...opts });
   }
 

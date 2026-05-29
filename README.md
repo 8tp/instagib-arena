@@ -18,14 +18,15 @@ on the hot path, no per-frame React reconciliation.
 
 - **One-shot railgun.** No health, no armor, no other weapons. Pure duel of aim + movement.
 - **Quake-style movement.** Strafe-jump acceleration, air control, directional dash, double-jump, wall-jump.
+- **Three game modes** — Free-for-all, **Duel** (1v1, best-of rounds), and **Team Deathmatch** (Red vs Blue, friendly-fire off).
 - **Server-authoritative multiplayer** over WebSocket:
   - Lag compensation — the server rewinds every target to the shooter's render time before raycasting hitboxes.
   - Clock sync, 32 Hz snapshots, client-side interpolation of remote players.
   - Distance/rate-based anti-cheat (fire-rate gate, shot-origin sanity, speed clamp, message-rate flood guard).
-- **Rooms & lobby.** Quick-match, public custom lobbies, and private invite-code matches. End-of-match **map voting**.
+- **Rooms & lobby.** Quick-match (per mode), public custom lobbies, and private invite-code matches. End-of-match **map voting**.
 - **Offline play.** Bots with adjustable difficulty + a training range — no server needed.
 - **Juice.** Killcams, multi-kill medals, an announcer, hit markers, and a configurable crosshair.
-- **Anonymous per-browser stats.** K/D, accuracy, streaks, headshots — persisted with no login.
+- **Anonymous stats + global leaderboard.** Per-browser K/D, accuracy, streaks, headshots (no login) and a server-wide leaderboard (top fraggers / wins / accuracy).
 
 ---
 
@@ -107,6 +108,23 @@ configurable in the in-game **Settings** menu and persist in `localStorage`.
 
 ---
 
+## Game modes
+
+Pick a mode in the menu before Quick Match or Create Match (quick-match only
+pairs you with rooms of the same mode).
+
+| Mode | Players | Win condition |
+| ---- | ------- | ------------- |
+| **Free-for-all** | up to 8 | First player to the frag limit ends the match → map vote. |
+| **Duel (1v1)** | 2 | Best-of rounds: each round is a race to a frag count; first to win the round majority takes the match. A short freeze + reset between rounds. Leaving mid-match forfeits. |
+| **Team Deathmatch** | up to 8 | Red vs Blue. Friendly fire is off; first team to the team frag limit wins. Teammates are tinted green, foes wear their team color. |
+
+Mode tunables (frag/round limits, team sizes, colors) live in
+`src/game/constants.ts` and are shared verbatim by the client and the
+authoritative server.
+
+---
+
 ## Configuration
 
 Copy `.env.example` to `.env` (or set the vars in your process manager). All are
@@ -148,9 +166,10 @@ instagib-arena/
 │     ├─ effects.ts, renderer.ts, textures.ts, medals.ts, input.ts
 ├─ server/
 │  ├─ index.ts            # http + express static + /api + WS upgrade routing
-│  ├─ instagib-game.ts    # authoritative game server (rooms, lag comp, anti-cheat)
-│  ├─ stats.ts            # anonymous cookie identity + /api/stats router
-│  └─ db.ts               # better-sqlite3 store (table + prepared statements)
+│  ├─ instagib-game.ts    # authoritative game server (modes, rooms, lag comp, anti-cheat)
+│  ├─ stats.ts            # anonymous cookie identity + /api/stats router (rate-limited)
+│  ├─ leaderboard.ts      # GET /api/leaderboard router
+│  └─ db.ts               # better-sqlite3 store (stats + leaderboard queries)
 ├─ public/
 │  ├─ models/instagib/    # *.glb player models
 │  └─ sounds/instagib/    # *.ogg announcer + medal callouts
@@ -171,6 +190,10 @@ and stores it in an `httpOnly` cookie; stats persist per-browser in SQLite. The
 display name is cosmetic (sent from local settings). Stats are **best-effort and
 unranked** — the in-browser game reports them, so they're clamped server-side but
 not anti-cheated. Clearing cookies resets a player's stats.
+
+The **global leaderboard** (`GET /api/leaderboard?sort=kills|wins|accuracy`)
+ranks all stored players; the in-game **Leaderboard** menu shows it. Because
+identity is per-browser, `POST /api/stats` is rate-limited as a light abuse guard.
 
 ---
 

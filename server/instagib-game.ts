@@ -22,6 +22,13 @@ import {
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
+  DUEL_ROUND_FRAG_LIMIT,
+  DUEL_ROUNDS_TO_WIN,
+  DUEL_ROUND_BREAK_SEC,
+  TDM_FRAG_LIMIT,
+  TEAM_COUNT,
+  modeCapacity,
+  type GameMode,
 } from '../src/game/constants';
 import {
   ARENA_NET,
@@ -81,19 +88,30 @@ type ClientRecord = {
   msgWindowStart: number; // inbound message-rate window start
   msgCount: number; // messages seen in the current window
   history: HistorySample[]; // ascending by t
+  team: number | null; // team index (0/1) in TDM; null otherwise
 };
 
 type Room = {
   id: RoomId;
   name: string;
+  mode: GameMode;
   mapId: string;
   isPublic: boolean;
   capacity: number;
   hostId: ClientId | null;
   members: Set<ClientId>;
   state: 'active' | 'voting';
-  vote: { options: string[]; votes: Map<ClientId, string>; endsAt: number; winnerId: ClientId | null } | null;
+  vote: {
+    options: string[];
+    votes: Map<ClientId, string>;
+    endsAt: number;
+    winnerId: ClientId | null;
+    winnerTeam: number | null;
+  } | null;
   resumeAt: number; // ms timestamp; shots ignored until then (post-vote breather)
+  // Duel: per-player round wins + the current round number (1-based).
+  roundWins: Map<ClientId, number>;
+  roundNum: number;
   emptySince: number; // ms timestamp it became empty, 0 if occupied
   wasEverOccupied: boolean; // distinguishes a never-joined invite room from a post-match empty
   createdAt: number;
@@ -102,8 +120,8 @@ type Room = {
 type ClientMessage =
   | { type: 'hello'; name?: string }
   | { type: 'list' }
-  | { type: 'create'; name?: string; mapId?: string; isPublic?: boolean; capacity?: number }
-  | { type: 'quickmatch'; name?: string }
+  | { type: 'create'; name?: string; mapId?: string; isPublic?: boolean; capacity?: number; mode?: string }
+  | { type: 'quickmatch'; name?: string; mode?: string }
   | { type: 'join'; roomId?: string; name?: string }
   | { type: 'leave' }
   | { type: 'vote'; mapId?: string }
@@ -133,6 +151,10 @@ function clampInt(v: unknown, lo: number, hi: number, fb: number): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return fb;
   return Math.max(lo, Math.min(hi, Math.round(n)));
+}
+
+function parseMode(v: unknown): GameMode {
+  return v === 'duel' || v === 'tdm' ? v : 'ffa';
 }
 
 // Ray vs axis-aligned box; returns entry distance t (along a unit dir) or null.
@@ -199,22 +221,30 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   const createRoom = (opts: {
     name: string;
+    mode: GameMode;
     mapId: string;
     isPublic: boolean;
     capacity: number;
     hostId: ClientId | null;
   }): Room => {
+    // Duel is locked to 2; ffa/tdm clamp the requested capacity to the mode max.
+    const maxCap = modeCapacity(opts.mode);
+    const capacity =
+      opts.mode === 'duel' ? 2 : clampInt(opts.capacity, 2, maxCap, maxCap);
     const room: Room = {
       id: genRoomCode(),
       name: opts.name,
+      mode: opts.mode,
       mapId: isKnownArena(opts.mapId) ? opts.mapId : DEFAULT_ARENA_ID,
       isPublic: opts.isPublic,
-      capacity: clampInt(opts.capacity, 2, DEFAULT_CAPACITY, DEFAULT_CAPACITY),
+      capacity,
       hostId: opts.hostId,
       members: new Set(),
       state: 'active',
       vote: null,
       resumeAt: 0,
+      roundWins: new Map(),
+      roundNum: 1,
       emptySince: Date.now(),
       wasEverOccupied: false,
       createdAt: Date.now(),
@@ -222,6 +252,38 @@ export function attachInstagibWs(wss: WebSocketServer) {
     rooms.set(room.id, room);
     return room;
   };
+
+  // ── Teams (TDM) ───────────────────────────────────────────────────────
+  // Assign the joining player to the smaller team (ties → team 0) so sides
+  // stay balanced. Returns null outside TDM.
+  const assignTeam = (room: Room): number | null => {
+    if (room.mode !== 'tdm') return null;
+    const counts = new Array<number>(TEAM_COUNT).fill(0);
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c && c.team != null) counts[c.team] += 1;
+    }
+    let team = 0;
+    for (let i = 1; i < TEAM_COUNT; i++) if (counts[i] < counts[team]) team = i;
+    return team;
+  };
+
+  const teamFrags = (room: Room, team: number): number => {
+    let total = 0;
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c && c.team === team) total += c.frags;
+    }
+    return total;
+  };
+
+  // The frag target the HUD shows: per-round in duel, per-match otherwise.
+  const fragLimitFor = (room: Room): number =>
+    room.mode === 'duel'
+      ? DUEL_ROUND_FRAG_LIMIT
+      : room.mode === 'tdm'
+        ? TDM_FRAG_LIMIT
+        : MATCH_FRAG_LIMIT;
 
   const pickSpawn = (room: Room, avoid: Vec | null): Vec => {
     const spawns = arenaNet(room.mapId).spawns;
@@ -247,10 +309,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
     leaveRoom(record); // ensure single-room invariant
     listers.delete(record.id);
     record.roomId = room.id;
+    record.team = assignTeam(room); // null outside TDM
     room.members.add(record.id);
     room.emptySince = 0;
     room.wasEverOccupied = true;
     if (!room.hostId) room.hostId = record.id;
+    if (room.mode === 'duel') room.roundWins.set(record.id, 0);
     // Spawn into the room's current map.
     const spawn = pickSpawn(room, null);
     record.pos = { ...spawn };
@@ -263,10 +327,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
     sendRaw(record.socket, {
       type: 'joined',
       roomId: room.id,
+      mode: room.mode,
+      team: record.team,
       mapId: room.mapId,
       spawn,
       state: room.state,
-      fragLimit: MATCH_FRAG_LIMIT,
+      fragLimit: fragLimitFor(room),
+      roundsToWin: room.mode === 'duel' ? DUEL_ROUNDS_TO_WIN : undefined,
     });
     // Late joiner during an end-of-match vote: replay the ballot so they get
     // the overlay + pointer release instead of running around firing dead shots.
@@ -286,8 +353,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (!record.roomId) return;
     const room = rooms.get(record.roomId);
     record.roomId = null;
+    record.team = null;
     if (!room) return;
     room.members.delete(record.id);
+    room.roundWins.delete(record.id);
     broadcastRoom(room, { type: 'peer-left', clientId: record.id });
     // Drop their ballot so a departed player can't skew the tally or trip the
     // "everyone voted" early-resolve. Re-check resolution after pruning.
@@ -304,6 +373,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
     } else if (room.hostId === record.id) {
       room.hostId = room.members.values().next().value ?? null;
     }
+    // Duel: a player bailing mid-match forfeits — the lone survivor wins and the
+    // map vote opens (size === 1 means the room had 2 and one just left).
+    if (room.mode === 'duel' && room.state === 'active' && room.members.size === 1) {
+      const remaining = room.members.values().next().value;
+      if (remaining) startVote(room, remaining);
+    }
     broadcastRoomList();
   };
 
@@ -315,6 +390,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       .map((r) => ({
         id: r.id,
         name: r.name,
+        mode: r.mode,
         mapId: r.mapId,
         players: r.members.size,
         capacity: r.capacity,
@@ -341,6 +417,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       players.push({
         id: c.id,
         name: c.name,
+        team: c.team,
         x: c.pos.x,
         y: c.pos.y,
         z: c.pos.z,
@@ -380,20 +457,31 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // `winnerId` is the client who reached the frag limit — the match winner. It
   // rides the vote-start so each client can latch its own win/loss for stats
   // (the match "ends" the moment the vote opens).
-  const startVote = (room: Room, winnerId: ClientId | null = null) => {
+  const startVote = (
+    room: Room,
+    winnerId: ClientId | null = null,
+    winnerTeam: number | null = null,
+  ) => {
     room.state = 'voting';
     const pool: string[] = ONLINE_MAP_POOL.filter((m) => m !== room.mapId);
     // Shuffle and take the first N as the ballot.
     const shuffled = [...pool].sort(() => Math.random() - 0.5);
     const options: string[] = shuffled.slice(0, Math.min(MAP_VOTE_OPTIONS, shuffled.length));
     if (options.length === 0) options.push(room.mapId);
-    room.vote = { options, votes: new Map(), endsAt: Date.now() + MAP_VOTE_DURATION_SEC * 1000, winnerId };
+    room.vote = {
+      options,
+      votes: new Map(),
+      endsAt: Date.now() + MAP_VOTE_DURATION_SEC * 1000,
+      winnerId,
+      winnerTeam,
+    };
     broadcastRoom(room, {
       type: 'vote-start',
       options,
       endsAt: room.vote.endsAt,
       durationMs: MAP_VOTE_DURATION_SEC * 1000,
       winnerId,
+      winnerTeam,
     });
     broadcastRoomList();
   };
@@ -423,6 +511,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.state = 'active';
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
+    // Fresh match on the new map: reset duel rounds.
+    room.roundNum = 1;
+    room.roundWins.clear();
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -434,6 +525,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.history.length = 0;
       c.pos = { ...pickSpawn(room, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
+      if (room.mode === 'duel') room.roundWins.set(id, 0);
     }
     broadcastRoom(room, {
       type: 'vote-result',
@@ -441,6 +533,33 @@ export function attachInstagibWs(wss: WebSocketServer) {
       resumeAt: room.resumeAt,
     });
     broadcastRoomList();
+  };
+
+  // Duel: a round was won — bump the round, reset both players + scoreboard,
+  // and tell clients (who show a "Round N" banner and the round tally). A short
+  // breather (resumeAt) freezes shots so nobody dies during the reset.
+  const startNewRound = (room: Room, lastWinnerId: ClientId) => {
+    room.roundNum += 1;
+    const now = Date.now();
+    room.resumeAt = now + DUEL_ROUND_BREAK_SEC * 1000;
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (!c) continue;
+      c.frags = 0;
+      c.deaths = 0;
+      c.history.length = 0;
+      c.pos = { ...pickSpawn(room, null) };
+      c.invulnUntilMs = now + SPAWN_INVULN_MS + DUEL_ROUND_BREAK_SEC * 1000;
+    }
+    const roundWins: Record<string, number> = {};
+    for (const [id, w] of room.roundWins) roundWins[id] = w;
+    broadcastRoom(room, {
+      type: 'round',
+      roundNum: room.roundNum,
+      roundWins,
+      winnerId: lastWinnerId,
+      resumeAt: room.resumeAt,
+    });
   };
 
   // ── Shooting ──────────────────────────────────────────────────────────
@@ -494,6 +613,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (id === shooter.id) continue;
       const victim = clients.get(id);
       if (!victim) continue;
+      // TDM: no friendly fire — teammates can't be hit.
+      if (room.mode === 'tdm' && victim.team != null && victim.team === shooter.team) continue;
       if (victim.invulnUntilMs > now) continue;
       const pp = rewind(victim, rt);
       const min: Vec = { x: pp.x - PLAYER_RADIUS, y: pp.y, z: pp.z - PLAYER_RADIUS };
@@ -530,7 +651,21 @@ export function attachInstagibWs(wss: WebSocketServer) {
     victim.history.length = 0;
     victim.invulnUntilMs = now + SPAWN_INVULN_MS;
 
-    if (shooter.frags >= MATCH_FRAG_LIMIT) startVote(room, shooter.id);
+    // Mode-aware resolution of the kill.
+    if (room.mode === 'tdm') {
+      if (shooter.team != null && teamFrags(room, shooter.team) >= TDM_FRAG_LIMIT) {
+        startVote(room, null, shooter.team); // team win
+      }
+    } else if (room.mode === 'duel') {
+      if (shooter.frags >= DUEL_ROUND_FRAG_LIMIT) {
+        const wins = (room.roundWins.get(shooter.id) ?? 0) + 1;
+        room.roundWins.set(shooter.id, wins);
+        if (wins >= DUEL_ROUNDS_TO_WIN) startVote(room, shooter.id); // match win
+        else startNewRound(room, shooter.id);
+      }
+    } else if (shooter.frags >= MATCH_FRAG_LIMIT) {
+      startVote(room, shooter.id); // FFA
+    }
   };
 
   // Out-of-bounds recovery: if a live player has fallen out of the world, snap
@@ -573,6 +708,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       msgWindowStart: now,
       msgCount: 0,
       history: [],
+      team: null,
     };
     clients.set(id, record);
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now });
@@ -618,10 +754,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
             record.name = msg.name.slice(0, 24);
           }
           const isPublic = msg.isPublic !== false; // default public
+          const mode = parseMode(msg.mode);
           const label =
             isPublic ? `${record.name}'s Lobby` : `${record.name}'s Private Match`;
           const room = createRoom({
             name: label,
+            mode,
             mapId: typeof msg.mapId === 'string' ? msg.mapId : DEFAULT_ARENA_ID,
             isPublic,
             capacity: clampInt(msg.capacity, 2, DEFAULT_CAPACITY, DEFAULT_CAPACITY),
@@ -630,6 +768,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           sendRaw(socket, {
             type: 'created',
             roomId: room.id,
+            mode: room.mode,
             mapId: room.mapId,
             isPublic: room.isPublic,
           });
@@ -640,13 +779,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
           if (typeof msg.name === 'string' && msg.name.trim()) {
             record.name = msg.name.slice(0, 24);
           }
-          // Find the fullest joinable public room that isn't mid-vote. A room
-          // that was JUST created (still empty during the matched→join handoff)
-          // counts as a target too (#9), so two players who quick-match within
-          // the same ~second land together instead of in two separate empties.
+          // Find the fullest joinable public room of the SAME mode that isn't
+          // mid-vote. A room that was JUST created (still empty during the
+          // matched→join handoff) counts as a target too (#9), so two players
+          // who quick-match within the same ~second land together instead of in
+          // two separate empties.
+          const mode = parseMode(msg.mode);
           let target: Room | null = null;
           for (const r of rooms.values()) {
             if (!r.isPublic) continue;
+            if (r.mode !== mode) continue;
             if (r.members.size >= r.capacity) continue;
             if (r.state !== 'active') continue;
             const reserved =
@@ -659,10 +801,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
           if (!target) {
             const mapId = ONLINE_MAP_POOL[Math.floor(Math.random() * ONLINE_MAP_POOL.length)];
             target = createRoom({
-              name: 'Quick Match',
+              name: mode === 'duel' ? 'Quick Duel' : mode === 'tdm' ? 'Quick TDM' : 'Quick Match',
+              mode,
               mapId,
               isPublic: true,
-              capacity: DEFAULT_CAPACITY,
+              capacity: modeCapacity(mode),
               hostId: null,
             });
           }

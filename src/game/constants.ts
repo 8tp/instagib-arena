@@ -146,8 +146,42 @@ export const DEFAULT_BOT_DIFFICULTY: BotDifficulty = 'medium';
 
 // Match config
 export const MAX_PLAYERS = 8; // total slots (you + bots) in a match
-export const MATCH_FRAG_LIMIT = 25; // first to this many frags ends the match
+export const MATCH_FRAG_LIMIT = 25; // FFA: first to this many frags ends the match
 export const LOCAL_RESPAWN_INVULN_SEC = 1.5; // grace after you respawn vs bots
+
+// ── Game modes ─────────────────────────────────────────────────────────────
+// Shared client+server. FFA is the original mode; duel + tdm build on the same
+// room/snapshot machinery (see server/instagib-game.ts).
+export type GameMode = 'ffa' | 'duel' | 'tdm';
+export const DEFAULT_GAME_MODE: GameMode = 'ffa';
+export const GAME_MODES: ReadonlyArray<{
+  id: GameMode;
+  label: string;
+  blurb: string;
+}> = [
+  { id: 'ffa', label: 'Free-for-all', blurb: 'Everyone for themselves — first to the frag limit.' },
+  { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one, best-of rounds.' },
+  { id: 'tdm', label: 'Team Deathmatch', blurb: 'Red vs Blue — first team to the frag limit.' },
+];
+
+// Duel: each round is a race to DUEL_ROUND_FRAG_LIMIT frags; the first player to
+// win DUEL_ROUNDS_TO_WIN rounds takes the match (then the map vote opens).
+export const DUEL_ROUND_FRAG_LIMIT = 7;
+export const DUEL_ROUNDS_TO_WIN = 3; // best of 5
+export const DUEL_ROUND_BREAK_SEC = 4; // between-round freeze/reset
+
+// TDM: two teams; first team to TDM_FRAG_LIMIT total frags wins.
+export const TDM_FRAG_LIMIT = 40;
+export const TEAM_COUNT = 2;
+export const TEAM_NAMES = ['Red', 'Blue'] as const;
+export const TEAM_COLORS = ['#ff5a5a', '#5a9bff'] as const; // index 0 = red, 1 = blue
+// Highlight a friendly teammate this color in TDM (foes use their team color).
+export const TDM_FRIEND_COLOR = '#43d17a';
+
+// Total slot capacity for a room of the given mode.
+export function modeCapacity(mode: GameMode): number {
+  return mode === 'duel' ? 2 : MAX_PLAYERS;
+}
 
 // Screen shake (camera positional jitter, metres). Decays per render frame.
 export const SHAKE_FIRE = 0.025; // recoil kick on firing the rail

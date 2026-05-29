@@ -1,3 +1,5 @@
+import type { GameMode } from './constants';
+
 export type Vec3 = { x: number; y: number; z: number };
 
 export type AABB = { min: Vec3; max: Vec3 };
@@ -59,6 +61,16 @@ export type PlayerScore = {
   // Accuracy as a percent (0..100), or null when unknown (e.g. remote players —
   // the server doesn't report their shot counts).
   accuracy: number | null;
+  // Team index (0 = red, 1 = blue) in TDM; null in FFA/Duel.
+  team?: number | null;
+};
+
+// Duel HUD: round number + each side's round wins.
+export type DuelHud = {
+  roundNum: number;
+  roundsToWin: number;
+  myWins: number;
+  oppWins: number;
 };
 
 export type KillfeedEntry = {
@@ -156,4 +168,11 @@ export type HudState = {
   netRttMs: number; // round-trip time to the game server (0 when offline)
   localInvulnMs: number; // remaining server-tracked invuln; 0 when killable
   vote: MapVoteState | null; // non-null → end-of-match map vote in progress
+  // Active game mode (offline defaults to 'ffa').
+  mode: GameMode;
+  localTeam: number | null; // your team index in TDM; null otherwise
+  // TDM team frag totals [red, blue]; null outside TDM.
+  teamScores: [number, number] | null;
+  // Duel round state; null outside Duel.
+  duel: DuelHud | null;
 };

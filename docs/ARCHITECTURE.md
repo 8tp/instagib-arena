@@ -180,7 +180,19 @@ unranked and best-effort.
 ## 7. Rooms, lobby & map voting (`server/instagib-game.ts`)
 
 Every match is a **Room**. A socket is either a **lister** (browsing the lobby)
-or **in** exactly one room.
+or **in** exactly one room. Each room has a **mode** (`ffa` | `duel` | `tdm`)
+chosen at create/quick-match time; the mode drives capacity and the win
+condition, evaluated server-side after every kill:
+
+- **FFA** — first player to `MATCH_FRAG_LIMIT` ends the match → map vote.
+- **Duel** — capacity 2. A kill that reaches `DUEL_ROUND_FRAG_LIMIT` ends the
+  round; the server bumps `roundNum`, resets both scoreboards, repositions both
+  players, and broadcasts `round` (with the round tally) after a short freeze.
+  First to `DUEL_ROUNDS_TO_WIN` rounds wins the match → vote. A mid-match leave
+  forfeits to the survivor.
+- **TDM** — players are balanced onto two teams on join (`team` index 0/1).
+  Friendly fire is rejected in `handleShoot`; the first team whose summed frags
+  reach `TDM_FRAG_LIMIT` wins (the win rides `vote-start` as `winnerTeam`).
 
 - **Quick-match** drops you into the fullest joinable public room, or makes one.
 - **Create** makes a public ("Custom Lobby") or private (invite-code) room.
@@ -201,10 +213,14 @@ invite rooms so a shared code doesn't race a reap).
 
 **Client → server:** `hello` · `list` · `create` · `quickmatch` · `join` ·
 `leave` · `vote` · `pos` · `ping` · `shoot`
+(`create` and `quickmatch` carry a `mode` — `ffa` | `duel` | `tdm`.)
 
 **Server → client:** `welcome` · `rooms` · `created` · `matched` · `joined` ·
 `join-failed` · `peer-joined` · `peer-left` · `state` · `kill` · `respawn` ·
-`vote-start` · `vote-update` · `vote-result` · `pong`
+`vote-start` · `vote-update` · `vote-result` · `round` · `pong`
+(`joined` carries `mode`/`team`/`roundsToWin`; `state` players carry `team`;
+`vote-start` carries `winnerTeam` for TDM; `round` is the Duel between-round
+reset with the round tally.)
 
 The wire format is JSON. (The original plan called for a hand-packed binary
 snapshot path; JSON is what ships today and is comfortable at the current snapshot
@@ -225,4 +241,11 @@ rate — see the plan doc for the binary-protocol notes if you want to revisit i
 
 The store is a single SQLite table created on first import — no ORM, no
 migrations. It lives under `DATA_DIR` (default `./data`).
+
+`GET /api/leaderboard?sort=kills|wins|accuracy&limit=N` (`server/leaderboard.ts`)
+reads the same table — one prepared statement per sort column (no user input
+reaches SQL), `kills` riding the `idx_instagib_stats_kills` index, only surfacing
+players with `total_games > 0`. To keep the board from being trivially inflated,
+`POST /api/stats` is rate-limited (a dependency-free in-memory sliding window:
+~30 submits per identity per minute, keyed by the player cookie or IP).
 ```

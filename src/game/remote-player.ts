@@ -71,10 +71,14 @@ function makeNameSprite(name: string, color: string): THREE.Sprite {
 
 const DEAD_HIDE_DURATION_SEC = 1.4;
 
+const DEFAULT_NAME_COLOR = '#c7e0ff';
+
 export class RemotePlayer {
   id: string;
   name: string;
+  team: number | null = null; // TDM team index; null otherwise (set by Game)
   group: THREE.Group;
+  private nameColor = DEFAULT_NAME_COLOR;
   // When > 0, the model is hidden and visually "dead" until it ticks down.
   // Set by Game on receiving a server `kill` broadcast for this player.
   deadTimer = 0;
@@ -96,7 +100,7 @@ export class RemotePlayer {
     this.group = new THREE.Group();
     if (model) this.installModel(model);
     else this.installFallback();
-    this.nameSprite = makeNameSprite(name, '#c7e0ff');
+    this.nameSprite = makeNameSprite(name, this.nameColor);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
 
@@ -213,7 +217,22 @@ export class RemotePlayer {
     smMat.map?.dispose();
     smMat.dispose();
     this.group.remove(this.nameSprite);
-    this.nameSprite = makeNameSprite(name, '#c7e0ff');
+    this.nameSprite = makeNameSprite(name, this.nameColor);
+    this.nameSprite.position.y = BOT_HEIGHT + 0.35;
+    this.group.add(this.nameSprite);
+  }
+
+  // Tint the nameplate (TDM team color). Pass null to restore the default.
+  // No-ops when the color is unchanged so we don't rebuild the sprite per frame.
+  setNameColor(hex: string | null) {
+    const next = hex ?? DEFAULT_NAME_COLOR;
+    if (next === this.nameColor) return;
+    this.nameColor = next;
+    const smMat = this.nameSprite.material as THREE.SpriteMaterial;
+    smMat.map?.dispose();
+    smMat.dispose();
+    this.group.remove(this.nameSprite);
+    this.nameSprite = makeNameSprite(this.name, this.nameColor);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
   }

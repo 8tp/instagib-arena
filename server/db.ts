@@ -137,3 +137,74 @@ export function getStats(playerId: string): PublicStats {
 export function recordMatch(delta: MatchDelta): PublicStats {
   return toPublic(upsertStmt.get(delta) as Row | undefined);
 }
+
+// --- Global leaderboard -----------------------------------------------------
+
+export type LeaderboardEntry = {
+  userName: string;
+  totalKills: number;
+  totalDeaths: number;
+  totalGames: number;
+  totalWins: number;
+  bestKillStreak: number;
+  headshots: number;
+  bestAccuracy: number;
+  kd: number; // totalDeaths > 0 ? kills/deaths : kills, rounded to 2dp
+};
+
+// One prepared statement per sort column so we never interpolate user input
+// into SQL — the router whitelists `sort`, and we pick a stmt from this map.
+// kills uses the existing idx_instagib_stats_kills index; all tiebreak on
+// total_kills DESC. We only surface players who have actually played a match
+// (total_games > 0). `limit` is bound as a parameter (and clamped by callers).
+const LEADERBOARD_COLS = `user_name, total_kills, total_deaths, total_games,
+          total_wins, best_kill_streak, headshots, best_accuracy`;
+
+const leaderboardStmts = {
+  kills: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS}
+      FROM instagib_stats
+     WHERE total_games > 0
+     ORDER BY total_kills DESC
+     LIMIT ?`),
+  wins: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS}
+      FROM instagib_stats
+     WHERE total_games > 0
+     ORDER BY total_wins DESC, total_kills DESC
+     LIMIT ?`),
+  accuracy: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS}
+      FROM instagib_stats
+     WHERE total_games > 0
+     ORDER BY best_accuracy DESC, total_kills DESC
+     LIMIT ?`),
+} as const;
+
+type LeaderboardRow = Row & { user_name: string };
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+const toLeaderboardEntry = (row: LeaderboardRow): LeaderboardEntry => ({
+  userName: row.user_name,
+  totalKills: row.total_kills,
+  totalDeaths: row.total_deaths,
+  totalGames: row.total_games,
+  totalWins: row.total_wins,
+  bestKillStreak: row.best_kill_streak,
+  headshots: row.headshots,
+  bestAccuracy: row.best_accuracy,
+  kd: round2(
+    row.total_deaths > 0 ? row.total_kills / row.total_deaths : row.total_kills,
+  ),
+});
+
+export function getLeaderboard(opts: {
+  sort: 'kills' | 'wins' | 'accuracy';
+  limit: number;
+}): LeaderboardEntry[] {
+  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit)));
+  const stmt = leaderboardStmts[opts.sort] ?? leaderboardStmts.kills;
+  const rows = stmt.all(limit) as LeaderboardRow[];
+  return rows.map(toLeaderboardEntry);
+}

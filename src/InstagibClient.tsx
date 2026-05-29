@@ -8,6 +8,7 @@ import {
   cm360,
   DASH_COOLDOWN,
   DEFAULT_BOT_DIFFICULTY,
+  DEFAULT_GAME_MODE,
   DEFAULT_KEYBINDS,
   DEFAULT_DPI,
   DEFAULT_FOV,
@@ -15,6 +16,7 @@ import {
   DEFAULT_SENSITIVITY,
   DEFAULT_VERT_SCALE,
   DEFAULT_VOLUME,
+  GAME_MODES,
   HIT_MARKER_DURATION_SEC,
   HIT_MARKER_KILL_DURATION_SEC,
   M_YAW_DEG,
@@ -31,8 +33,11 @@ import {
   KEYBIND_ACTIONS,
   RAIL_COOLDOWN,
   SENSITIVITY_STEP,
+  TEAM_COLORS,
+  TEAM_NAMES,
   TOAST_FADE_SEC,
   type BotDifficulty,
+  type GameMode,
   type KeybindAction,
 } from './game/constants';
 import type {
@@ -299,6 +304,10 @@ const INITIAL_HUD: HudState = {
   netRttMs: 0,
   localInvulnMs: 0,
   vote: null,
+  mode: 'ffa',
+  localTeam: null,
+  teamScores: null,
+  duel: null,
 };
 
 export default function InstagibClient() {
@@ -816,6 +825,10 @@ function HudOverlay({ hud, settings }: { hud: HudState; settings: Settings }) {
       <Killfeed entries={hud.killfeed} />
       <ToastStack toasts={hud.toasts} />
       <MiniLeaderboard scores={hud.scores} />
+      {hud.mode === 'tdm' && hud.teamScores && (
+        <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
+      )}
+      {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
       <BannerOverlay banner={hud.banner} />
       <KillConfirmOverlay confirm={hud.killConfirm} />
       <KillcamOverlay killcam={hud.killcam} />
@@ -834,7 +847,9 @@ function HudOverlay({ hud, settings }: { hud: HudState; settings: Settings }) {
       {hud.netStatus !== 'off' && hud.localInvulnMs > 0 && (
         <InvulnPill remainingMs={hud.localInvulnMs} />
       )}
-      {hud.showScoreboard && <FullScoreboard scores={hud.scores} netStatus={hud.netStatus} />}
+      {hud.showScoreboard && (
+        <FullScoreboard scores={hud.scores} netStatus={hud.netStatus} mode={hud.mode} />
+      )}
     </div>
   );
 }
@@ -957,6 +972,102 @@ function NetStatusPill({
   return (
     <div className={`absolute left-6 bottom-28 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] ${color}`}>
       {label}
+    </div>
+  );
+}
+
+/* ───────────────────────── TDM team score bar (top-center) ───────────────────────── */
+
+// Compact Red vs Blue total-frag readout. Your team gets a "YOU" tag + a glowing
+// outline so it's obvious which side you're on.
+function TeamScoreBar({
+  scores,
+  localTeam,
+}: {
+  scores: [number, number];
+  localTeam: number | null;
+}) {
+  return (
+    <div className='absolute left-1/2 top-4 -translate-x-1/2'>
+      <div className='flex items-stretch overflow-hidden rounded-lg border border-white/15 bg-black/60 font-mono backdrop-blur-sm'>
+        {([0, 1] as const).map((team) => {
+          const mine = localTeam === team;
+          return (
+            <div
+              key={team}
+              className='flex min-w-[88px] flex-col items-center px-4 py-1.5'
+              style={{
+                backgroundColor: mine ? `${TEAM_COLORS[team]}26` : 'transparent',
+                boxShadow: mine ? `inset 0 0 0 1.5px ${TEAM_COLORS[team]}` : undefined,
+              }}
+            >
+              <div className='flex items-center gap-1.5'>
+                <span
+                  className='text-[10px] font-bold uppercase tracking-[0.18em]'
+                  style={{ color: TEAM_COLORS[team] }}
+                >
+                  {TEAM_NAMES[team]}
+                </span>
+                {mine && (
+                  <span
+                    className='rounded px-1 text-[8px] font-bold uppercase tracking-[0.1em] text-black'
+                    style={{ backgroundColor: TEAM_COLORS[team] }}
+                  >
+                    You
+                  </span>
+                )}
+              </div>
+              <div
+                className='text-2xl font-extrabold tabular-nums leading-none'
+                style={{ color: TEAM_COLORS[team] }}
+              >
+                {scores[team]}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Duel round indicator (top-center) ───────────────────────── */
+
+// "ROUND N" + a You vs Opp round tally rendered as pips (filled = won), first to
+// roundsToWin takes the match.
+function DuelRoundHud({ duel }: { duel: HudState['duel'] }) {
+  if (!duel) return null;
+  const { roundNum, roundsToWin, myWins, oppWins } = duel;
+  const pips = (won: number, color: string) =>
+    Array.from({ length: roundsToWin }).map((_, i) => (
+      <span
+        key={i}
+        className='h-2.5 w-2.5 rounded-full'
+        style={{
+          backgroundColor: i < won ? color : 'rgba(255,255,255,0.15)',
+          boxShadow: i < won ? `0 0 6px ${color}` : undefined,
+        }}
+      />
+    ));
+  return (
+    <div className='absolute left-1/2 top-4 -translate-x-1/2'>
+      <div className='flex flex-col items-center gap-1 rounded-lg border border-white/15 bg-black/60 px-5 py-1.5 font-mono backdrop-blur-sm'>
+        <div className='text-[10px] font-bold uppercase tracking-[0.3em] text-white/70'>
+          Round {roundNum}
+        </div>
+        <div className='flex items-center gap-3'>
+          <span className='text-[10px] uppercase tracking-[0.16em] text-emerald-300'>You</span>
+          <div className='flex items-center gap-1'>{pips(myWins, '#34d399')}</div>
+          <span className='text-sm font-bold tabular-nums text-white/85'>
+            {myWins}–{oppWins}
+          </span>
+          <div className='flex items-center gap-1'>{pips(oppWins, '#fb7185')}</div>
+          <span className='text-[10px] uppercase tracking-[0.16em] text-rose-300'>Opp</span>
+        </div>
+        <div className='text-[9px] uppercase tracking-[0.2em] text-white/35'>
+          First to {roundsToWin}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1376,33 +1487,98 @@ function FpsCounter({ fps }: { fps: number }) {
 function FullScoreboard({
   scores,
   netStatus,
+  mode,
 }: {
   scores: PlayerScore[];
   netStatus: HudState['netStatus'];
+  mode: GameMode;
 }) {
   const title = netStatus !== 'off' ? 'Instagib Arena — Online' : 'Instagib Arena';
+  const tag = mode === 'tdm' ? 'TDM' : mode === 'duel' ? 'Duel' : 'FFA';
+  const isTeam = mode === 'tdm';
   return (
     <div className='absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm'>
       <div className='w-[640px] max-w-[92vw] rounded-xl border border-white/15 bg-zinc-950/85 p-6 font-mono shadow-2xl'>
         <div className='mb-4 flex items-end justify-between'>
           <div>
-            <div className='text-[10px] uppercase tracking-[0.3em] text-white/55'>FFA</div>
+            <div className='text-[10px] uppercase tracking-[0.3em] text-white/55'>{tag}</div>
             <div className='text-xl font-semibold'>{title}</div>
           </div>
           <div className='text-[10px] uppercase tracking-[0.25em] text-white/45'>Hold Tab</div>
         </div>
-        <div className='grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-6 gap-y-1 text-[12px]'>
-          <Th>Player</Th>
-          <Th align='right'>Frags</Th>
-          <Th align='right'>Deaths</Th>
-          <Th align='right'>K/D</Th>
-          <Th align='right'>Acc</Th>
-          <Th align='right'>Best Streak</Th>
-          {scores.map((s) => (
-            <ScoreboardRow key={s.id} score={s} />
-          ))}
-        </div>
+        {isTeam ? (
+          <div className='flex flex-col gap-5'>
+            {([0, 1] as const).map((team) => (
+              <TeamScoreSection
+                key={team}
+                team={team}
+                players={scores.filter((s) => s.team === team)}
+              />
+            ))}
+            {scores.some((s) => s.team == null) && (
+              <ScoreTable players={scores.filter((s) => s.team == null)} />
+            )}
+          </div>
+        ) : (
+          <ScoreTable players={scores} />
+        )}
       </div>
+    </div>
+  );
+}
+
+// A scoreboard table body (header + rows). Reused for the flat FFA/Duel
+// scoreboard and each TDM team section.
+function ScoreTable({
+  players,
+  teamColor,
+}: {
+  players: PlayerScore[];
+  teamColor?: string;
+}) {
+  return (
+    <div className='grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-6 gap-y-1 text-[12px]'>
+      <Th>Player</Th>
+      <Th align='right'>Frags</Th>
+      <Th align='right'>Deaths</Th>
+      <Th align='right'>K/D</Th>
+      <Th align='right'>Acc</Th>
+      <Th align='right'>Best Streak</Th>
+      {players.map((s) => (
+        <ScoreboardRow key={s.id} score={s} nameColor={teamColor} />
+      ))}
+    </div>
+  );
+}
+
+// A TDM team block: a colored header with the team's total frags, then the
+// roster (names tinted in the team color).
+function TeamScoreSection({
+  team,
+  players,
+}: {
+  team: number;
+  players: PlayerScore[];
+}) {
+  const color = TEAM_COLORS[team] ?? '#ffffff';
+  const total = players.reduce((sum, s) => sum + s.frags, 0);
+  return (
+    <div>
+      <div
+        className='mb-2 flex items-center justify-between rounded-md px-3 py-1.5'
+        style={{ backgroundColor: `${color}22`, boxShadow: `inset 0 0 0 1px ${color}55` }}
+      >
+        <span
+          className='text-sm font-bold uppercase tracking-[0.2em]'
+          style={{ color }}
+        >
+          {TEAM_NAMES[team] ?? `Team ${team}`}
+        </span>
+        <span className='text-sm font-bold tabular-nums' style={{ color }}>
+          {total}
+        </span>
+      </div>
+      <ScoreTable players={players} teamColor={color} />
     </div>
   );
 }
@@ -1425,15 +1601,23 @@ function Th({
   );
 }
 
-function ScoreboardRow({ score }: { score: PlayerScore }) {
+function ScoreboardRow({ score, nameColor }: { score: PlayerScore; nameColor?: string }) {
   const kd =
     score.deaths === 0
       ? score.frags.toFixed(1)
       : (score.frags / Math.max(1, score.deaths)).toFixed(2);
+  // Local player always stays emerald + bold (so "you" reads at a glance); other
+  // players use the team tint in TDM, falling back to the neutral default.
+  const useTeamTint = !score.isLocal && nameColor != null;
   return (
     <>
       <div className='flex items-center gap-2 py-1.5'>
-        <span className={`truncate ${score.isLocal ? 'font-bold text-emerald-300' : 'text-white/90'}`}>
+        <span
+          className={`truncate ${
+            score.isLocal ? 'font-bold text-emerald-300' : useTeamTint ? 'font-semibold' : 'text-white/90'
+          }`}
+          style={useTeamTint ? { color: nameColor } : undefined}
+        >
           {score.name}
         </span>
         {score.currentStreak >= 3 && (
@@ -1585,11 +1769,14 @@ function Lobby({
   const [soloOpen, setSoloOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
   const [lobbyStatus, setLobbyStatus] = useState<LobbyStatus>('connecting');
   const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
+  // Selected online game mode for Quick Match + Create Match (FFA / Duel / TDM).
+  const [selectedMode, setSelectedMode] = useState<GameMode>(DEFAULT_GAME_MODE);
 
   const serverUrl = settings.serverUrl || defaultServerUrl();
   const lobbyRef = useRef<LobbyClient | null>(null);
@@ -1674,12 +1861,14 @@ function Lobby({
           </div>
         )}
 
-        <div className='mt-7 grid grid-cols-2 gap-3'>
+        <ModePicker value={selectedMode} onChange={setSelectedMode} />
+
+        <div className='mt-4 grid grid-cols-2 gap-3'>
           <button
             onClick={() => {
               if (searching || !online || playDisabled) return; // double-fire guard
               setSearching(true);
-              lobbyRef.current?.quickMatch();
+              lobbyRef.current?.quickMatch(selectedMode);
               // Safety reset if the server never resolves (it normally navigates
               // away via onResolved, unmounting this view).
               window.setTimeout(() => setSearching(false), 6000);
@@ -1714,7 +1903,7 @@ function Lobby({
           <button
             onClick={() => setSoloOpen(true)}
             disabled={playDisabled}
-            className='rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40'
+            className='col-span-2 rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40'
           >
             Solo vs Bots
           </button>
@@ -1723,6 +1912,12 @@ function Lobby({
             className='rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10'
           >
             Stats
+          </button>
+          <button
+            onClick={() => setLeaderboardOpen(true)}
+            className='rounded-lg border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition hover:bg-white/10'
+          >
+            Leaderboard
           </button>
         </div>
 
@@ -1760,7 +1955,9 @@ function Lobby({
       {createOnlineOpen && (
         <CreateOnlineModal
           settings={settings}
+          mode={selectedMode}
           onChangeSettings={onChangeSettings}
+          onChangeMode={setSelectedMode}
           onClose={() => setCreateOnlineOpen(false)}
           onCreate={(opts) => {
             setCreateOnlineOpen(false);
@@ -1780,6 +1977,7 @@ function Lobby({
         />
       )}
       {statsOpen && <StatsModal onClose={() => setStatsOpen(false)} />}
+      {leaderboardOpen && <LeaderboardModal onClose={() => setLeaderboardOpen(false)} />}
       {settingsOpen && (
         <SettingsModal
           settings={settings}
@@ -1787,6 +1985,58 @@ function Lobby({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// Short badge label for a mode (used in lobby rows + create modal).
+function modeLabel(mode: GameMode): string {
+  return GAME_MODES.find((m) => m.id === mode)?.label ?? mode;
+}
+
+// Compact mode badge — color-coded by mode for quick scanning in lobby rows.
+function ModeBadge({ mode }: { mode: GameMode }) {
+  const color =
+    mode === 'tdm' ? 'bg-sky-300/20 text-sky-200' :
+    mode === 'duel' ? 'bg-fuchsia-300/20 text-fuchsia-200' :
+    'bg-emerald-300/20 text-emerald-200';
+  const short = mode === 'tdm' ? 'TDM' : mode === 'duel' ? '1v1' : 'FFA';
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold tracking-[0.08em] ${color}`}>
+      {short}
+    </span>
+  );
+}
+
+// Segmented game-mode picker for the main menu, mirroring the
+// ButtonGroup/DifficultyPicker patterns used elsewhere.
+function ModePicker({
+  value,
+  onChange,
+}: {
+  value: GameMode;
+  onChange: (m: GameMode) => void;
+}) {
+  const blurb = GAME_MODES.find((m) => m.id === value)?.blurb ?? '';
+  return (
+    <div className='mt-7 flex flex-col gap-1.5'>
+      <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Game mode</span>
+      <div className='grid grid-cols-3 gap-2'>
+        {GAME_MODES.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => onChange(m.id)}
+            className={`rounded-md border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
+              value === m.id
+                ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
+                : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <div className='text-[10px] normal-case tracking-normal text-white/40'>{blurb}</div>
     </div>
   );
 }
@@ -1849,6 +2099,7 @@ function OpenLobbies({
               <div className='min-w-0'>
                 <div className='truncate text-[13px] font-semibold text-white'>{r.name}</div>
                 <div className='mt-0.5 flex items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-white/45'>
+                  <ModeBadge mode={r.mode} />
                   <span>{mapLabel(r.mapId)}</span>
                   <span className='text-white/25'>·</span>
                   <span className='tabular-nums'>
@@ -1934,14 +2185,18 @@ function InviteModal({
 
 function CreateOnlineModal({
   settings,
+  mode,
   onChangeSettings,
+  onChangeMode,
   onClose,
   onCreate,
 }: {
   settings: Settings;
+  mode: GameMode;
   onChangeSettings: (s: Settings) => void;
+  onChangeMode: (m: GameMode) => void;
   onClose: () => void;
-  onCreate: (opts: { mapId: string; isPublic: boolean; capacity: number }) => void;
+  onCreate: (opts: { mapId: string; isPublic: boolean; capacity: number; mode: GameMode }) => void;
 }) {
   const [players, setPlayers] = useState(MAX_PLAYERS);
   const [mapId, setMapId] = useState(settings.mapId);
@@ -1950,29 +2205,46 @@ function CreateOnlineModal({
   // Online play has no bots — restrict to the human-friendly online pool.
   const onlineMaps = MAPS.filter((m) => ONLINE_MAP_IDS.includes(m.id));
 
+  // Duel is always 1v1 — force the capacity to 2 regardless of the slider.
+  const isDuel = mode === 'duel';
+  const capacity = isDuel ? 2 : players;
+
   const create = () => {
     onChangeSettings({ ...settings, mapId });
-    onCreate({ mapId, isPublic, capacity: players });
+    onCreate({ mapId, isPublic, capacity, mode });
   };
 
   return (
     <ModalShell title='Create Match' onClose={onClose}>
+      <ButtonGroup
+        label='Game mode'
+        value={mode}
+        options={GAME_MODES.map((m) => ({ id: m.id, label: m.label }))}
+        onChange={(v) => onChangeMode(v)}
+      />
       <SelectField label='Arena' value={mapId} options={onlineMaps} onChange={setMapId} />
-      <label className='flex flex-col gap-1.5'>
+      {isDuel ? (
         <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
-          <span>Max players</span>
-          <span className='tabular-nums text-white/85'>{players}</span>
+          <span>Players</span>
+          <span className='tabular-nums text-white/85'>1v1 (2 players)</span>
         </div>
-        <input
-          type='range'
-          min={2}
-          max={MAX_PLAYERS}
-          step={1}
-          value={players}
-          onChange={(e) => setPlayers(Number(e.target.value))}
-          className='w-full accent-emerald-400'
-        />
-      </label>
+      ) : (
+        <label className='flex flex-col gap-1.5'>
+          <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
+            <span>Max players</span>
+            <span className='tabular-nums text-white/85'>{players}</span>
+          </div>
+          <input
+            type='range'
+            min={2}
+            max={MAX_PLAYERS}
+            step={1}
+            value={players}
+            onChange={(e) => setPlayers(Number(e.target.value))}
+            className='w-full accent-emerald-400'
+          />
+        </label>
+      )}
       <ButtonGroup
         label='Visibility'
         value={isPublic ? 'public' : 'private'}
@@ -2221,6 +2493,100 @@ function BigStat({ label, value }: { label: string; value: string | number }) {
       <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{label}</div>
       <div className='mt-1 text-2xl font-bold tabular-nums text-cyan-200'>{value}</div>
     </div>
+  );
+}
+
+/* ───────────────────────── Global leaderboard modal ───────────────────────── */
+
+type LeaderboardSort = 'kills' | 'wins' | 'accuracy';
+
+type LeaderboardEntry = {
+  userName: string;
+  totalKills: number;
+  totalDeaths: number;
+  totalGames: number;
+  totalWins: number;
+  bestKillStreak: number;
+  headshots: number;
+  bestAccuracy: number;
+  kd: number;
+};
+
+const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> = [
+  { id: 'kills', label: 'Kills' },
+  { id: 'wins', label: 'Wins' },
+  { id: 'accuracy', label: 'Accuracy' },
+];
+
+function LeaderboardModal({ onClose }: { onClose: () => void }) {
+  const [sort, setSort] = useState<LeaderboardSort>('kills');
+  const [rows, setRows] = useState<LeaderboardEntry[]>([]);
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+
+  useEffect(() => {
+    let active = true;
+    setState('loading');
+    fetch(`/api/leaderboard?sort=${sort}&limit=25`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
+      .then((d: { leaderboard?: LeaderboardEntry[] }) => {
+        if (!active) return;
+        setRows(Array.isArray(d.leaderboard) ? d.leaderboard : []);
+        setState('ready');
+      })
+      .catch(() => {
+        if (active) setState('error');
+      });
+    return () => {
+      active = false;
+    };
+  }, [sort]);
+
+  return (
+    <ModalShell title='Leaderboard' onClose={onClose}>
+      <ButtonGroup
+        label='Sort by'
+        value={sort}
+        options={LEADERBOARD_SORTS}
+        onChange={setSort}
+      />
+      {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
+      {state === 'error' && (
+        <div className='text-sm text-white/55'>Couldn&apos;t load the leaderboard. Try again later.</div>
+      )}
+      {state === 'ready' && rows.length === 0 && (
+        <div className='text-sm text-white/55'>No ranked players yet — finish a match to appear here.</div>
+      )}
+      {state === 'ready' && rows.length > 0 && (
+        <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
+          <div className='grid grid-cols-[1.75rem_1fr_2.75rem_2.75rem_2.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
+            <Th align='right'>#</Th>
+            <Th>Player</Th>
+            <Th align='right'>K</Th>
+            <Th align='right'>K/D</Th>
+            <Th align='right'>W</Th>
+            <Th align='right'>Acc</Th>
+            {rows.map((row, i) => (
+              <LeaderboardRow key={`${row.userName}-${i}`} rank={i + 1} row={row} />
+            ))}
+          </div>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+function LeaderboardRow({ rank, row }: { rank: number; row: LeaderboardEntry }) {
+  const medal =
+    rank === 1 ? 'text-amber-300' : rank === 2 ? 'text-zinc-300' : rank === 3 ? 'text-orange-300' : 'text-white/45';
+  return (
+    <>
+      <div className={`py-1.5 text-right tabular-nums font-bold ${medal}`}>{rank}</div>
+      <div className='truncate py-1.5 text-white/90'>{row.userName}</div>
+      <div className='py-1.5 text-right tabular-nums'>{row.totalKills}</div>
+      <div className='py-1.5 text-right tabular-nums text-white/65'>{row.kd.toFixed(2)}</div>
+      <div className='py-1.5 text-right tabular-nums text-white/65'>{row.totalWins}</div>
+      <div className='py-1.5 text-right tabular-nums text-cyan-200/80'>{row.bestAccuracy.toFixed(1)}%</div>
+    </>
   );
 }
 
