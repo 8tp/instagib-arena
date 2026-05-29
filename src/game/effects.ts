@@ -43,6 +43,29 @@ export class EffectsManager {
     });
   }
 
+  // Muzzle flash: a brief bright additive burst at the gun muzzle on fire.
+  spawnMuzzleFlash(scene: THREE.Scene, at: THREE.Vector3, color = 0x9fe8ff) {
+    const group = new THREE.Group();
+    const geom = new THREE.SphereGeometry(0.14, 8, 6);
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const m = new THREE.Mesh(geom, mat);
+    m.position.copy(at);
+    group.add(m);
+    scene.add(group);
+    this.bursts.push({
+      group,
+      remaining: 0.07,
+      total: 0.07,
+      velocities: [new THREE.Vector3(0, 0, 0)],
+      gravity: 0,
+    });
+  }
+
   // Kill effect: short vertical column of sparks rising above the bot.
   // Stays well above the player's eye-line so it never blocks the view,
   // even on point-blank kills.

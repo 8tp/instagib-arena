@@ -55,13 +55,15 @@ type BotMove = {
   jumpGapReach: number;   // P(hop) when roaming toward a higher/farther wander point
 };
 const BOT_MOVE: Record<BotDifficulty, BotMove> = {
-  // Easy: mostly shuffles; the rare clumsy hop, almost never dashes/boosts, and
-  // barely steers in the air so its jumps are committed and easy to punish.
-  easy:   { decideInterval: 0.55, jumpChance: 0.08, dodgeReact: 0.10, airJumpChance: 0.05, dashChance: 0.04, boostChance: 0.015, boostCooldown: 9.0, airControl: 0.20, jumpGapReach: 0.20 },
-  medium: { decideInterval: 0.40, jumpChance: 0.18, dodgeReact: 0.32, airJumpChance: 0.25, dashChance: 0.14, boostChance: 0.05,  boostCooldown: 6.0, airControl: 0.45, jumpGapReach: 0.40 },
-  // Hard: slippery — frequent dodge-jumps + double-jumps, dashes to juke, and
-  // boosts to high ground / out of danger, with strong air control to carve.
-  hard:   { decideInterval: 0.28, jumpChance: 0.30, dodgeReact: 0.55, airJumpChance: 0.55, dashChance: 0.28, boostChance: 0.12,  boostCooldown: 4.0, airControl: 0.70, jumpGapReach: 0.60 },
+  // Even Easy bots now visibly hop, dash, and rocket-boost around — just less
+  // often and with looser air control so they're easier to read/punish.
+  easy:   { decideInterval: 0.45, jumpChance: 0.30, dodgeReact: 0.30, airJumpChance: 0.25, dashChance: 0.18, boostChance: 0.10, boostCooldown: 5.0, airControl: 0.30, jumpGapReach: 0.45 },
+  // Medium: bouncy and aggressive — hops/dashes constantly, regular double-jumps
+  // and rocket-boosts for traversal and dodging.
+  medium: { decideInterval: 0.34, jumpChance: 0.50, dodgeReact: 0.55, airJumpChance: 0.50, dashChance: 0.35, boostChance: 0.20, boostCooldown: 3.5, airControl: 0.55, jumpGapReach: 0.65 },
+  // Hard: extremely slippery — near-constant air game: dodge-jumps, double-jumps,
+  // dashes to juke, frequent boosts to high ground, strong air control to carve.
+  hard:   { decideInterval: 0.26, jumpChance: 0.68, dodgeReact: 0.78, airJumpChance: 0.72, dashChance: 0.50, boostChance: 0.34, boostCooldown: 2.4, airControl: 0.82, jumpGapReach: 0.85 },
 };
 
 // An enemy a bot can target (the local player or another bot).
@@ -731,22 +733,39 @@ export class Bot {
     }
   }
 
-  // Roam movement brain: occasional hops to clear gaps / reach a higher or
-  // distant wander point, plus the rare boost to mount high ground.
+  // Roam movement brain: bots bounce, dash, and rocket-boost around the map even
+  // with no target, so the movement reads as alive (not a ground shuffle).
   private decideRoamMove(dx: number, dz: number) {
+    // Air: chain a double-jump near the apex for extra bounce.
+    if (!this.onGround) {
+      if (
+        this.decideTimer <= 0 &&
+        this.vel.y < JUMP_SPEED * 0.45 &&
+        this.airJumpsLeft > 0 &&
+        Math.random() < this.mv.airJumpChance * 0.8
+      ) {
+        this.decideTimer = this.mv.decideInterval * (0.7 + Math.random() * 0.6);
+        this.doAirJump();
+      }
+      return;
+    }
     if (this.decideTimer > 0) return;
     this.decideTimer = this.mv.decideInterval * (0.7 + Math.random() * 0.6);
-    if (!this.onGround) return;
     const dist = Math.hypot(dx, dz);
     const len = dist || 1;
     const higher = this.target.y - this.state.pos.y > 0.6; // wander point is up a ledge
-    // Boost up onto high ground occasionally when the target point is clearly above.
-    if (higher && this.boostCooldown <= 0 && Math.random() < this.mv.boostChance * 1.5) {
+    // Rocket-boost for traversal / to mount high ground — frequent enough to see.
+    if (this.boostCooldown <= 0 && Math.random() < this.mv.boostChance * (higher ? 1.8 : 1.0)) {
       this.doBoost(dx / len, dz / len);
       return;
     }
-    // Hop when heading somewhere higher or just far enough to want momentum.
-    if ((higher || dist > 4) && Math.random() < this.mv.jumpGapReach) {
+    // Dash to cover ground.
+    if (this.dashCooldown <= 0 && this.dashTimer <= 0 && dist > 2.5 && Math.random() < this.mv.dashChance) {
+      this.doDash(dx / len, dz / len);
+      return;
+    }
+    // Hop often while moving — strafe-jump feel, not just for ledges/gaps.
+    if ((higher || dist > 1.5) && Math.random() < this.mv.jumpGapReach) {
       this.doJump();
     }
   }

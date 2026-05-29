@@ -206,8 +206,14 @@ export class Game {
   // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
   // so it never blocks the crosshair; user offset + hide applied on top.
   private viewmodel: THREE.Group | null = null;
+  private viewmodelGlow: THREE.MeshStandardMaterial | null = null;
   private viewmodelOffset = { x: 0, y: 0, z: 0 };
   private hideViewmodel = false;
+  // Weapon feedback: recoil kicks the viewmodel back+up; viewKick punches the
+  // view up. Both are transient and decay to 0 each frame (aim is unaffected —
+  // viewKick is purely visual, layered on top of the real pitch).
+  private recoil = 0;
+  private viewKick = 0;
 
   // FOV / zoom. baseFov is the settings FOV; camera.fov lerps toward zoomFov
   // while the zoom bind is held.
@@ -231,6 +237,7 @@ export class Game {
     this.scene.add(this.camera);
     const vm = buildRailgun();
     this.viewmodel = vm.group;
+    this.viewmodelGlow = vm.glow;
     this.applyViewmodelTransform();
     this.camera.add(this.viewmodel);
     this.mapMesh = buildMapMesh(this.map);
@@ -959,6 +966,12 @@ export class Game {
     this.playerShotsFired += 1;
     this.audio.play('fire', 0.55);
     this.addShake(SHAKE_FIRE);
+    // Weapon feedback: recoil the gun, punch the view up, flash the muzzle, and
+    // spike the gun's energy glow (all decay back over the next few frames).
+    this.recoil = 1;
+    this.viewKick = 0.03;
+    if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
 
     // Hand the shot to the server for authoritative, lag-compensated hit
     // detection against remote players. maxDist = distance to the nearest wall.
@@ -1534,7 +1547,9 @@ export class Game {
         this.player.pos.y + EYE_HEIGHT,
         this.player.pos.z,
       );
-      this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
+      // viewKick is a transient upward view-punch on fire — visual only, so it
+      // never alters the authoritative aim (player.pitch).
+      this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');
     }
     // Screen shake: jitter the camera position, decaying each frame.
     if (this.shake > 1e-4) {
@@ -1553,9 +1568,23 @@ export class Game {
     }
     // Scale look sensitivity with the current (lerping) FOV so zoomed aim stays steady.
     this.input.lookScale = this.baseFov > 0 ? this.camera.fov / this.baseFov : 1;
-    // Viewmodel shows only while actively playing in first person.
+    // Decay weapon feedback (frame-approximate easing — pure juice).
+    this.recoil *= 0.84;
+    this.viewKick *= 0.82;
+    if (this.viewmodelGlow) {
+      this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * 0.18;
+    }
+    // Viewmodel: show only while actively playing in first person; apply recoil
+    // (kicks back toward the camera + muzzle tilts up, easing back to rest).
     if (this.viewmodel) {
       this.viewmodel.visible = !this.hideViewmodel && this.locked && !this.killcam;
+      const r = this.recoil;
+      this.viewmodel.position.set(
+        VIEWMODEL_BASE.x + this.viewmodelOffset.x,
+        VIEWMODEL_BASE.y + this.viewmodelOffset.y + r * 0.02,
+        VIEWMODEL_BASE.z + this.viewmodelOffset.z + r * 0.08,
+      );
+      this.viewmodel.rotation.x = r * 0.22;
     }
     this.renderer.render(this.scene, this.camera);
   }
