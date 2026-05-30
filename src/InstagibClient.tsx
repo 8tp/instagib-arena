@@ -2785,7 +2785,7 @@ function SettingsModal({
               </>
             )}
             <div className='text-[10px] normal-case tracking-normal text-white/40'>
-              The railgun sits centered &amp; low so it never blocks your aim. Bind “Zoom (hold)”
+              The railgun sits low and to the side so it never blocks your aim. Bind “Zoom (hold)”
               under Keybinds to narrow your FOV.
             </div>
           </Section>

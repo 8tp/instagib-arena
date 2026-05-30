@@ -18,6 +18,7 @@ import {
   MIN_ZOOM_FOV,
   MAX_ZOOM_FOV,
   VIEWMODEL_BASE,
+  VIEWMODEL_SCALE,
   EYE_HEIGHT,
   HIT_MARKER_KILL_DURATION_SEC,
   MAX_FOV,
@@ -237,6 +238,7 @@ export class Game {
     this.scene.add(this.camera);
     const vm = buildRailgun();
     this.viewmodel = vm.group;
+    this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
     this.applyViewmodelTransform();
     this.camera.add(this.viewmodel);

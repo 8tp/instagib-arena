@@ -232,9 +232,12 @@ export const DEFAULT_ZOOM_FOV = 55;
 export const MIN_ZOOM_FOV = 20;
 export const MAX_ZOOM_FOV = 85;
 
-// First-person railgun viewmodel. Base position is centered + low (Quake-style)
-// so it never blocks the crosshair; the user offsets are added on top.
-export const VIEWMODEL_BASE = { x: 0, y: -0.28, z: -0.6 } as const;
+// First-person railgun viewmodel. Base position sits the gun low and slightly
+// to the right so its side profile reads and the crosshair / centre of the
+// screen stays clear; the user offsets are added on top. VIEWMODEL_SCALE keeps
+// the (third-person-sized) model from overflowing the view up close.
+export const VIEWMODEL_BASE = { x: 0.12, y: -0.31, z: -0.5 } as const;
+export const VIEWMODEL_SCALE = 0.8;
 export const DEFAULT_VIEWMODEL_OFFSET = { x: 0, y: 0, z: 0 } as const;
 export const MIN_VIEWMODEL_OFFSET = -0.5;
 export const MAX_VIEWMODEL_OFFSET = 0.5;
