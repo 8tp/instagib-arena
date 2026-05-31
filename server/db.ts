@@ -642,6 +642,7 @@ export function claimChallenge(playerId: string, id: string, now: number): Claim
 // --- Global leaderboard -----------------------------------------------------
 
 export type LeaderboardEntry = {
+  id: string; // player_id — lets the client highlight the local player's row
   userName: string;
   totalKills: number;
   totalDeaths: number;
@@ -658,7 +659,11 @@ export type LeaderboardEntry = {
 // kills uses the existing idx_instagib_stats_kills index; all tiebreak on
 // total_kills DESC. We only surface players who have actually played a match
 // (total_games > 0). `limit` is bound as a parameter (and clamped by callers).
-const LEADERBOARD_COLS = `user_name, total_kills, total_deaths, total_games,
+// Minimum games before a player appears on / is ranked by the accuracy board —
+// stops a single lucky 1-shot 100% match from topping the standings.
+const MIN_ACC_GAMES = 5;
+
+const LEADERBOARD_COLS = `player_id, user_name, total_kills, total_deaths, total_games,
           total_wins, best_kill_streak, headshots, best_accuracy`;
 
 const leaderboardStmts = {
@@ -677,16 +682,28 @@ const leaderboardStmts = {
   accuracy: sqlite.prepare(`
     SELECT ${LEADERBOARD_COLS}
       FROM instagib_stats
-     WHERE total_games > 0
+     WHERE total_games >= ${MIN_ACC_GAMES}
      ORDER BY best_accuracy DESC, total_kills DESC
      LIMIT ?`),
 } as const;
 
-type LeaderboardRow = Row & { user_name: string };
+// Rank = 1 + (players strictly ahead on the primary metric). Ties share a rank.
+const rankStmts = {
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+} as const;
+
+const playerStatsRowStmt = sqlite.prepare(
+  `SELECT ${LEADERBOARD_COLS} FROM instagib_stats WHERE player_id = ?`,
+);
+
+type LeaderboardRow = Row & { user_name: string; player_id: string };
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 const toLeaderboardEntry = (row: LeaderboardRow): LeaderboardEntry => ({
+  id: row.player_id,
   userName: row.user_name,
   totalKills: row.total_kills,
   totalDeaths: row.total_deaths,
@@ -708,4 +725,21 @@ export function getLeaderboard(opts: {
   const stmt = leaderboardStmts[opts.sort] ?? leaderboardStmts.kills;
   const rows = stmt.all(limit) as LeaderboardRow[];
   return rows.map(toLeaderboardEntry);
+}
+
+// The requesting player's global rank + their own entry, for the "you are #N"
+// pin. `rank: 0` means unranked (no games, or below the accuracy-board floor).
+export function getPlayerRank(
+  playerId: string,
+  sort: 'kills' | 'wins' | 'accuracy',
+): { rank: number; entry: LeaderboardEntry } | null {
+  if (!playerId) return null;
+  const row = playerStatsRowStmt.get(playerId) as LeaderboardRow | undefined;
+  if (!row || row.total_games <= 0) return null;
+  const entry = toLeaderboardEntry(row);
+  if (sort === 'accuracy' && row.total_games < MIN_ACC_GAMES) return { rank: 0, entry };
+  const metric =
+    sort === 'kills' ? row.total_kills : sort === 'wins' ? row.total_wins : row.best_accuracy;
+  const above = (rankStmts[sort].get(metric) as { n: number }).n;
+  return { rank: above + 1, entry };
 }

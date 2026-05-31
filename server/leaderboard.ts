@@ -8,7 +8,7 @@
 // /api, exposing GET /api/leaderboard.
 
 import { Router } from 'express';
-import { getLeaderboard } from './db';
+import { getLeaderboard, getPlayerRank } from './db';
 
 type Sort = 'kills' | 'wins' | 'accuracy';
 const SORTS: readonly Sort[] = ['kills', 'wins', 'accuracy'];
@@ -31,5 +31,9 @@ leaderboardRouter.get('/leaderboard', (req, res) => {
   const sort = parseSort(req.query.sort);
   const limit = parseLimit(req.query.limit);
   const leaderboard = getLeaderboard({ sort, limit });
-  res.json({ leaderboard, sort, count: leaderboard.length });
+  // If the caller carries the anonymous progression cookie, also return their
+  // own rank + entry so the client can pin "you are #N" even when outside top-N.
+  const igpid = (req.cookies?.igpid as string | undefined) ?? '';
+  const you = igpid ? getPlayerRank(igpid, sort) : null;
+  res.json({ leaderboard, sort, count: leaderboard.length, you });
 });

@@ -201,6 +201,7 @@ type Settings = {
   sfxVolume: number;
   announcerVolume: number;
   announcerEnabled: boolean;
+  captions: boolean; // a11y: show announcer/medal/match callouts as on-screen text
   showFps: boolean;
   fpsLimit: number; // 0 = VSync (display), >0 = cap to N fps, -1 = uncapped
   resolutionScale: number; // render resolution multiplier (perf ↔ sharpness)
@@ -284,6 +285,7 @@ const DEFAULT_SETTINGS: Settings = {
   sfxVolume: 1,
   announcerVolume: 1,
   announcerEnabled: true,
+  captions: false,
   showFps: false,
   fpsLimit: 0,
   resolutionScale: 1,
@@ -1119,9 +1121,19 @@ function Locker({
               type='button'
               onClick={openCase}
               disabled={busy === '__case' || (profile != null && profile.credits < HAT_CASE_COST)}
+              title={
+                profile != null && profile.credits < HAT_CASE_COST
+                  ? `Need ${HAT_CASE_COST - profile.credits} more credits — earn them by playing online matches`
+                  : undefined
+              }
               className='flex items-center justify-center gap-2 rounded-lg border border-fuchsia-400/40 bg-gradient-to-r from-fuchsia-500/15 to-amber-400/15 px-3 py-2 text-[12px] font-bold uppercase tracking-[0.12em] text-amber-100 transition hover:from-fuchsia-500/25 hover:to-amber-400/25 disabled:opacity-40'
             >
-              🎁 {busy === '__case' ? 'Opening…' : `Open Hat Case · ${HAT_CASE_COST} ⛁`}
+              🎁{' '}
+              {busy === '__case'
+                ? 'Opening…'
+                : profile != null && profile.credits < HAT_CASE_COST
+                  ? `Need ${HAT_CASE_COST - profile.credits} more ⛁`
+                  : `Open Hat Case · ${HAT_CASE_COST} ⛁`}
             </button>
           )}
           <div className='grid grid-cols-2 gap-2'>
@@ -1818,6 +1830,7 @@ function HudOverlay({
       )}
       {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
       <BannerOverlay banner={hud.banner} />
+      <CaptionLayer hud={hud} captions={settings.captions} />
       <FragPopup confirm={hud.killConfirm} />
       {hud.killConfirm && localCard && (
         <div className='pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2'>
@@ -2383,6 +2396,39 @@ function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
   );
 }
 
+/* ───────────── Accessibility: announcer captions + SR live region ───────────── */
+
+// The medal/drama/match callouts are otherwise audio + transient visuals only.
+// This mirrors the current callout into an always-on screen-reader live region
+// (so AT users hear "Double Kill", "Victory", etc.) and, when captions are on,
+// shows it as on-screen text for deaf/HoH players.
+function captionText(hud: HudState): string {
+  if (hud.matchOver) return hud.matchOver.won ? 'Victory' : 'Defeat';
+  if (hud.warmupMsLeft > 0) return 'Match starting…';
+  if (hud.banner) return hud.banner.subtitle ? `${hud.banner.title} — ${hud.banner.subtitle}` : hud.banner.title;
+  return '';
+}
+
+function CaptionLayer({ hud, captions }: { hud: HudState; captions: boolean }) {
+  const text = captionText(hud);
+  return (
+    <>
+      {/* Always present so screen readers announce callouts regardless of the
+          visible-captions toggle. Only re-announces when the text changes. */}
+      <div aria-live='assertive' aria-atomic='true' className='sr-only'>
+        {text}
+      </div>
+      {captions && text && (
+        <div className='pointer-events-none absolute bottom-28 left-1/2 -translate-x-1/2'>
+          <span className='rounded-md bg-black/70 px-3 py-1.5 font-mono text-sm font-semibold uppercase tracking-[0.16em] text-white/90 shadow-lg'>
+            {text}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ───────────── Banner (top-center, BIG kill announce) ───────────── */
 
 function BannerOverlay({ banner }: { banner: BannerState | null }) {
@@ -2847,6 +2893,10 @@ function Lobby({
   const [challengesOpen, setChallengesOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
+  const [lobbyProfile, setLobbyProfile] = useState<InstagibProfile | null>(null);
+  const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
+  const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
   const [lobbyStatus, setLobbyStatus] = useState<LobbyStatus>('connecting');
   const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
@@ -2896,6 +2946,34 @@ function Lobby({
     lobbyRef.current?.setName(settings.playerName || 'Player');
   }, [settings.playerName]);
 
+  // Pull credits/level + the claimable-challenge count for the lobby chrome.
+  // Re-pulls whenever a modal that can change them closes (refreshTick).
+  useEffect(() => {
+    let active = true;
+    fetch('/api/profile', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
+      .then((d: { profile?: InstagibProfile }) => {
+        if (active && d.profile) setLobbyProfile(d.profile);
+      })
+      .catch(() => {});
+    fetch('/api/challenges', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ch'))))
+      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
+        if (!active || !d.challenges) return;
+        const all = [...d.challenges.daily, ...d.challenges.weekly];
+        setClaimable(all.filter((c) => c.complete && !c.claimed).length);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [refreshTick]);
+
+  const openSettingsAt = (t: SettingsTab) => {
+    setSettingsTab(t);
+    setSettingsOpen(true);
+  };
+
   const online = lobbyStatus === 'open';
 
   // The game needs a mouse + keyboard + pointer lock. On touch-only devices that
@@ -2926,6 +3004,17 @@ function Lobby({
             <span className='hidden font-mono text-[10px] uppercase tracking-[0.2em] text-white/40 sm:inline'>
               {settings.playerName || 'Player'}
             </span>
+            {lobbyProfile && (
+              <button
+                type='button'
+                onClick={() => openSettingsAt('locker')}
+                title='Open the Locker — spend credits on cosmetics'
+                className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
+              >
+                <span className='text-white/45'>Lv {lobbyProfile.level}</span>
+                <span>{lobbyProfile.credits} ⛁</span>
+              </button>
+            )}
             <ServerStatusChip status={lobbyStatus} />
           </div>
         </header>
@@ -3000,9 +3089,24 @@ function Lobby({
               </div>
               <div className='col-span-2 grid grid-cols-2 gap-3'>
                 <DeckButton onClick={() => setStatsOpen(true)}>Stats</DeckButton>
-                <DeckButton onClick={() => setChallengesOpen(true)}>Challenges</DeckButton>
+                <DeckButton onClick={() => setChallengesOpen(true)}>
+                  <span className='inline-flex items-center gap-2'>
+                    Challenges
+                    {claimable > 0 && (
+                      <span
+                        title={`${claimable} reward${claimable > 1 ? 's' : ''} ready to claim`}
+                        className='inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-400 px-1 text-[10px] font-bold text-emerald-950'
+                      >
+                        {claimable}
+                      </span>
+                    )}
+                  </span>
+                </DeckButton>
                 <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
-                <DeckButton onClick={() => setSettingsOpen(true)} accent='cyan'>
+                <DeckButton onClick={() => openSettingsAt('locker')} accent='fuchsia'>
+                  🎽 Locker
+                </DeckButton>
+                <DeckButton onClick={() => openSettingsAt('controls')} accent='cyan' full>
                   ⚙ Settings
                 </DeckButton>
               </div>
@@ -3065,13 +3169,24 @@ function Lobby({
         />
       )}
       {statsOpen && <StatsModal onClose={() => setStatsOpen(false)} />}
-      {challengesOpen && <ChallengesModal onClose={() => setChallengesOpen(false)} />}
+      {challengesOpen && (
+        <ChallengesModal
+          onClose={() => {
+            setChallengesOpen(false);
+            setRefreshTick((t) => t + 1); // claiming changed credits + claim count
+          }}
+        />
+      )}
       {leaderboardOpen && <LeaderboardModal onClose={() => setLeaderboardOpen(false)} />}
       {settingsOpen && (
         <SettingsModal
           settings={settings}
           onChange={onChangeSettings}
-          onClose={() => setSettingsOpen(false)}
+          initialTab={settingsTab}
+          onClose={() => {
+            setSettingsOpen(false);
+            setRefreshTick((t) => t + 1); // Locker buys/cases changed credits
+          }}
         />
       )}
     </div>
@@ -3094,7 +3209,7 @@ function DeckButton({
 }: {
   onClick: () => void;
   disabled?: boolean;
-  accent?: 'cyan' | 'amber' | 'plain';
+  accent?: 'cyan' | 'amber' | 'fuchsia' | 'plain';
   full?: boolean;
   children: ReactNode;
 }) {
@@ -3103,7 +3218,9 @@ function DeckButton({
       ? 'border-cyan-300/40 bg-cyan-300/10 text-cyan-100 hover:border-cyan-300/70 hover:bg-cyan-300/20'
       : accent === 'amber'
         ? 'border-amber-300/40 bg-amber-300/10 text-amber-100 hover:border-amber-300/70 hover:bg-amber-300/20'
-        : 'border-white/12 bg-white/[0.04] text-white/85 hover:border-white/30 hover:bg-white/10';
+        : accent === 'fuchsia'
+          ? 'border-fuchsia-300/40 bg-fuchsia-300/10 text-fuchsia-100 hover:border-fuchsia-300/70 hover:bg-fuchsia-300/20'
+          : 'border-white/12 bg-white/[0.04] text-white/85 hover:border-white/30 hover:bg-white/10';
   return (
     <button
       onClick={onClick}
@@ -3167,14 +3284,15 @@ function ModePicker({
 
 function ServerStatusChip({ status }: { status: LobbyStatus }) {
   const map = {
-    open: { dot: 'bg-emerald-400', ring: 'border-emerald-400/40 text-emerald-200', t: 'Online' },
-    connecting: { dot: 'bg-amber-400', ring: 'border-amber-400/40 text-amber-200', t: 'Linking' },
-    closed: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline' },
-    error: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline' },
+    open: { dot: 'bg-emerald-400', ring: 'border-emerald-400/40 text-emerald-200', t: 'Online', title: 'Connected — online play available' },
+    connecting: { dot: 'bg-amber-400', ring: 'border-amber-400/40 text-amber-200', t: 'Linking', title: 'Connecting to the match server…' },
+    closed: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline', title: 'Match server unreachable — solo vs bots still works' },
+    error: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline', title: 'Match server unreachable — solo vs bots still works' },
   } as const;
   const s = map[status];
   return (
     <span
+      title={s.title}
       className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.18em] ${s.ring}`}
     >
       <span className={`deck-pulse h-1.5 w-1.5 rounded-full ${s.dot}`} />
@@ -3816,6 +3934,7 @@ function BigStat({ label, value }: { label: string; value: string | number }) {
 type LeaderboardSort = 'kills' | 'wins' | 'accuracy';
 
 type LeaderboardEntry = {
+  id: string;
   userName: string;
   totalKills: number;
   totalDeaths: number;
@@ -3827,6 +3946,8 @@ type LeaderboardEntry = {
   kd: number;
 };
 
+type LeaderboardYou = { rank: number; entry: LeaderboardEntry } | null;
+
 const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> = [
   { id: 'kills', label: 'Kills' },
   { id: 'wins', label: 'Wins' },
@@ -3836,16 +3957,18 @@ const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> =
 function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const [sort, setSort] = useState<LeaderboardSort>('kills');
   const [rows, setRows] = useState<LeaderboardEntry[]>([]);
+  const [you, setYou] = useState<LeaderboardYou>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   useEffect(() => {
     let active = true;
     setState('loading');
-    fetch(`/api/leaderboard?sort=${sort}&limit=25`)
+    fetch(`/api/leaderboard?sort=${sort}&limit=25`, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
-      .then((d: { leaderboard?: LeaderboardEntry[] }) => {
+      .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
         if (!active) return;
         setRows(Array.isArray(d.leaderboard) ? d.leaderboard : []);
+        setYou(d.you ?? null);
         setState('ready');
       })
       .catch(() => {
@@ -3855,6 +3978,10 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
       active = false;
     };
   }, [sort]);
+
+  const youId = you?.entry.id;
+  // Is the local player already visible in the top-N? If not, we pin them below.
+  const youInTop = youId != null && rows.some((r) => r.id === youId);
 
   return (
     <ModalShell title='Leaderboard' onClose={onClose}>
@@ -3881,23 +4008,44 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
             <Th align='right'>W</Th>
             <Th align='right'>Acc</Th>
             {rows.map((row, i) => (
-              <LeaderboardRow key={`${row.userName}-${i}`} rank={i + 1} row={row} />
+              <LeaderboardRow key={row.id || `${row.userName}-${i}`} rank={i + 1} row={row} you={row.id === youId} />
             ))}
+            {/* Pin the local player below the top-N if they didn't make the cut. */}
+            {you && you.rank > 0 && !youInTop && (
+              <>
+                <div className='col-span-6 my-1 border-t border-dashed border-white/15' />
+                <LeaderboardRow rank={you.rank} row={you.entry} you />
+              </>
+            )}
           </div>
+          {sort === 'accuracy' && (
+            <div className='mt-3 text-[10px] text-white/40'>
+              Accuracy board needs at least 5 games played.
+            </div>
+          )}
+          {you && you.rank === 0 && sort === 'accuracy' && (
+            <div className='mt-1 text-[10px] text-amber-200/70'>
+              Play {5 - you.entry.totalGames} more game{5 - you.entry.totalGames === 1 ? '' : 's'} to rank on accuracy.
+            </div>
+          )}
         </div>
       )}
     </ModalShell>
   );
 }
 
-function LeaderboardRow({ rank, row }: { rank: number; row: LeaderboardEntry }) {
+function LeaderboardRow({ rank, row, you = false }: { rank: number; row: LeaderboardEntry; you?: boolean }) {
   const medal =
     rank === 1 ? 'text-amber-300' : rank === 2 ? 'text-zinc-300' : rank === 3 ? 'text-orange-300' : 'text-white/45';
+  const tint = you ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/90';
   return (
     <>
-      <div className={`py-1.5 text-right tabular-nums font-bold ${medal}`}>{rank}</div>
-      <div className='truncate py-1.5 text-white/90'>{row.userName}</div>
-      <div className='py-1.5 text-right tabular-nums'>{row.totalKills}</div>
+      <div className={`py-1.5 text-right tabular-nums font-bold ${you ? 'text-cyan-200' : medal}`}>{rank}</div>
+      <div className={`truncate py-1.5 ${tint}`}>
+        {row.userName}
+        {you && <span className='ml-1.5 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
+      </div>
+      <div className={`py-1.5 text-right tabular-nums ${you ? 'text-cyan-100' : ''}`}>{row.totalKills}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.kd.toFixed(2)}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.totalWins}</div>
       <div className='py-1.5 text-right tabular-nums text-cyan-200/80'>{row.bestAccuracy.toFixed(1)}%</div>
@@ -3937,15 +4085,17 @@ function SettingsModal({
   settings,
   onChange,
   onClose,
+  initialTab = 'controls',
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   onClose: () => void;
+  initialTab?: SettingsTab;
 }) {
   const ch = settings.crosshair;
   const setCh = (patch: Partial<CrosshairConfig>) =>
     onChange({ ...settings, crosshair: { ...ch, ...patch } });
-  const [tab, setTab] = useState<SettingsTab>('controls');
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [search, setSearch] = useState('');
   const visibleTabs = filterTabs(search);
   const onSearch = (q: string) => {
@@ -4008,7 +4158,9 @@ function SettingsModal({
             </button>
           ))}
         </div>
-        <div className='flex flex-col gap-5 overflow-y-auto pr-1' role='tabpanel'>
+        {/* Fixed-height scroll area so the modal doesn't grow/shrink (and the
+            header jump) as you switch between short + tall tabs. */}
+        <div className='flex h-[58vh] flex-col gap-5 overflow-y-auto pr-1' role='tabpanel'>
           {visibleTabs.length === 0 ? (
             <div className='text-sm text-white/55'>No settings match “{search.trim()}”.</div>
           ) : (
@@ -4216,6 +4368,12 @@ function SettingsModal({
                 onChange={(v) => onChange({ ...settings, announcerVolume: v })}
               />
             )}
+            <ToggleField
+              label='Announcer captions'
+              hint='Show medal/match callouts as on-screen text (for deaf/HoH players). Callouts are also exposed to screen readers.'
+              value={settings.captions}
+              onChange={(v) => onChange({ ...settings, captions: v })}
+            />
             </Section>
           )}
 
@@ -4452,29 +4610,35 @@ function ToggleField({
   label,
   value,
   onChange,
+  hint,
 }: {
   label: string;
   value: boolean;
   onChange: (v: boolean) => void;
+  hint?: string;
 }) {
   return (
-    <label className='flex cursor-pointer items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-white/65'>
-      <span>{label}</span>
-      <button
-        type='button'
-        role='switch'
-        aria-checked={value}
-        onClick={() => onChange(!value)}
-        className={`relative h-6 w-11 rounded-full transition ${
-          value ? 'bg-emerald-400' : 'bg-white/15'
-        }`}
-      >
-        <span
-          className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${
-            value ? 'left-6' : 'left-1'
+    <label className='flex cursor-pointer flex-col gap-1'>
+      <span className='flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-white/65'>
+        <span>{label}</span>
+        <button
+          type='button'
+          role='switch'
+          aria-checked={value}
+          aria-label={label}
+          onClick={() => onChange(!value)}
+          className={`relative h-6 w-11 shrink-0 rounded-full transition ${
+            value ? 'bg-emerald-400' : 'bg-white/15'
           }`}
-        />
-      </button>
+        >
+          <span
+            className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${
+              value ? 'left-6' : 'left-1'
+            }`}
+          />
+        </button>
+      </span>
+      {hint && <span className='text-[10px] normal-case tracking-normal text-white/35'>{hint}</span>}
     </label>
   );
 }
