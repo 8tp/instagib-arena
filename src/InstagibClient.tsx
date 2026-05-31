@@ -61,6 +61,7 @@ import type {
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
 import { PodiumScene, type PodiumWinner } from './game/podium';
+import { CharacterPreview } from './game/character-preview';
 import {
   KILL_EFFECTS,
   RAIL_COLORS,
@@ -708,7 +709,6 @@ function GameView({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
-  const [localCard, setLocalCard] = useState<CardPayload | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
   // Online: the results podium is shown briefly at match-end BEFORE the map vote.
   // We freeze the final standings here so a late snapshot can't change the podium.
@@ -776,7 +776,6 @@ function GameView({
       .then((d: { profile?: InstagibProfile }) => {
         if (!active || !d.profile) return;
         const card = buildCardPayload(d.profile, settings);
-        setLocalCard(card);
         gameRef.current?.setCardPayload?.(card);
       })
       .catch(() => {});
@@ -835,7 +834,7 @@ function GameView({
   return (
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
-      <HudOverlay hud={hud} settings={settings} localCard={localCard} />
+      <HudOverlay hud={hud} settings={settings} />
       {hud.vote && !onlineResults && <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />}
       {onlineResults && (
         <OnlineMatchResults
@@ -969,6 +968,52 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
 // owned items can be equipped, credit-priced ones bought, level-gated ones show
 // their unlock. Degrades to local-only selection if the profile can't be
 // fetched (offline / no backend), so the picker always works.
+// Live 3D preview of the equipped loadout: your soldier wearing the equipped hat
+// + unusual, playing the equipped emote, firing the equipped rail colour into the
+// equipped kill effect. Mounts once; pushes cosmetic changes in without remount.
+function LockerPreview({ settings }: { settings: Settings }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const previewRef = useRef<CharacterPreview | null>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const preview = new CharacterPreview(canvas, {
+      hatId: settings.hat,
+      unusualId: settings.unusual,
+      emoteId: settings.emote,
+      railColor: settings.railColor,
+      killEffect: settings.killEffect,
+    });
+    previewRef.current = preview;
+    preview.start();
+    const onResize = () => preview.resize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      preview.dispose();
+      previewRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    previewRef.current?.setCosmetics({
+      hatId: settings.hat,
+      unusualId: settings.unusual,
+      emoteId: settings.emote,
+      railColor: settings.railColor,
+      killEffect: settings.killEffect,
+    });
+  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.killEffect]);
+  return (
+    <div className='relative h-60 w-full overflow-hidden rounded-lg border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
+      <canvas ref={ref} className='block h-full w-full' />
+      <div className='pointer-events-none absolute bottom-1.5 right-2 text-[9px] uppercase tracking-[0.18em] text-white/35'>
+        Live preview
+      </div>
+    </div>
+  );
+}
+
 function Locker({
   settings,
   onChange,
@@ -1113,6 +1158,7 @@ function Locker({
         )}
       </div>
       {note && <div className='text-[11px] text-rose-300'>{note}</div>}
+      <LockerPreview settings={settings} />
       {LOCKER_SLOTS.map((sl) => (
         <div key={sl.slot} className='flex flex-col gap-2'>
           <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{sl.label}</div>
@@ -1801,11 +1847,9 @@ function JoinErrorOverlay({
 function HudOverlay({
   hud,
   settings,
-  localCard,
 }: {
   hud: HudState;
   settings: Settings;
-  localCard: CardPayload | null;
 }) {
   const dead = hud.killcam !== null;
   const s = settings.uiScale || 1;
@@ -1832,11 +1876,8 @@ function HudOverlay({
       <BannerOverlay banner={hud.banner} />
       <CaptionLayer hud={hud} captions={settings.captions} />
       <FragPopup confirm={hud.killConfirm} />
-      {hud.killConfirm && localCard && (
-        <div className='pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2'>
-          <PlayerCard card={localCard} size='small' />
-        </div>
-      )}
+      {/* Your own card is NOT shown on your kills — it's broadcast so the VICTIM
+          sees it on their killcam. The killer's card shows on YOUR killcam below. */}
       <KillcamOverlay killcam={hud.killcam} />
       {!dead && <SpeedAndStreak speed={hud.speed} streak={hud.currentStreak} />}
       {!dead && (

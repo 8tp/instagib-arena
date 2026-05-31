@@ -112,8 +112,6 @@ export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb` },
   { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'credits', price: 400 }, model: `${HAT_DIR}/hard-hat.glb` },
   { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 5 },     model: `${HAT_DIR}/graduation-cap.glb` },
-  { id: 'hat.fedora',     name: 'Fedora',         blurb: 'Tip of the brim.',                       rarity: 'rare',   source: { type: 'credits', price: 600 }, model: `${HAT_DIR}/fedora.glb` },
-  { id: 'hat.cowboy',     name: 'Wrangler',       blurb: 'A ten-gallon hat.',                      rarity: 'rare',   source: { type: 'level', level: 9 },     model: `${HAT_DIR}/cowboy-hat.glb` },
   { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'credits', price: 1000 }, model: `${HAT_DIR}/top-hat.glb` },
   { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 14 },    model: `${HAT_DIR}/propeller-hat.glb` },
   { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'credits', price: 1800 }, model: `${HAT_DIR}/wizard-hat.glb` },

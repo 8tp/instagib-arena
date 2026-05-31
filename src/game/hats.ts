@@ -8,8 +8,8 @@ import { hatById, unusualById, type UnusualKind } from './cosmetics';
 // target width from the model's own bounding box) was verified across hats whose
 // source scales ranged from 3 to 300 units, so no per-hat tuning is needed.
 
-const TARGET_WIDTH = 0.22; // metres — fits the soldier head
-const CROWN_OFFSET = 0.22; // metres above the head bone where the hat sits
+const TARGET_WIDTH = 0.34; // metres — sits a bit wider than the head so it reads
+const CROWN_OFFSET = 0.16; // metres above the head bone where the hat's brim sits
 
 const loader = new GLTFLoader();
 const sourceCache = new Map<string, Promise<THREE.Object3D>>();
@@ -196,7 +196,9 @@ export class WornHat {
 
     const mesh = src.clone(true);
     // Center on X/Z and drop the bottom to Y=0 (at native scale), then uniformly
-    // scale so the widest horizontal extent is TARGET_WIDTH.
+    // scale so the widest horizontal extent is TARGET_WIDTH. (The catalog only
+    // ships hats with clean geometry — two malformed CC0 assets whose vertices
+    // were scattered across ~500k units were dropped rather than special-cased.)
     const box = new THREE.Box3().setFromObject(mesh);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());

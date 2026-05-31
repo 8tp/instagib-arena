@@ -681,10 +681,10 @@ export class Game {
     this.localRespawnInvuln = LOCAL_WARMUP_SEC + LOCAL_RESPAWN_INVULN_SEC;
   }
 
-  // Offline pre-match window: shots are suppressed and the countdown shows.
-  // Online warmup is server-driven (resumeAt), so it's never "in warmup" here.
-  private get inWarmup(): boolean {
-    return !this.net && performance.now() < this.localWarmupUntil;
+  // The 3-2-1 pre-match countdown — offline (localWarmupUntil) OR online
+  // (server resumeAt). During it nobody can move OR fire; bots stay put too.
+  private get inCountdown(): boolean {
+    return this.warmupMsLeft() > 0;
   }
 
   private warmupMsLeft(): number {
@@ -1076,7 +1076,7 @@ export class Game {
     // While dead the input is still consumed (so accumYaw/accumPitch don't
     // pile up and snap the view on respawn), but it does NOT apply to the
     // player. The camera is owned by the killcam in render().
-    if (!dead) this.player.step(input, dt, this.map);
+    if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
 
     // Boost-jump feedback: a cyan spark at the surface the player kicked off.
     if (this.player.didBoost) {
@@ -1098,9 +1098,9 @@ export class Game {
       for (const b of this.bots.bots) {
         if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos });
       }
-      const intents = this.bots.step(dt, this.map, enemies);
-      // Bots move + aim during warmup but can't frag yet (intents discarded).
-      if (!this.inWarmup) for (const intent of intents) this.handleBotShot(intent);
+      const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
+      // During the countdown bots are frozen (no intents); afterwards they frag.
+      if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
     }
 
     // Cooldown-to-ready transition → reload-ready ping. Fires once per shot.
@@ -1110,7 +1110,7 @@ export class Game {
     }
     this.weaponWasReady = ready;
 
-    if (input.firePressed && !dead && !this.inWarmup) this.handleFire();
+    if (input.firePressed && !dead && !this.inCountdown) this.handleFire();
 
     // Throttled position broadcast
     if (this.net) {

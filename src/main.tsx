@@ -9,6 +9,7 @@ import Landing from './pages/Landing';
 // it lazily; Landing stays eager so the splash is instant.
 const InstagibClient = lazy(() => import('./InstagibClient'));
 const PodiumLab = lazy(() => import('./PodiumLab'));
+const LockerLab = lazy(() => import('./LockerLab'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
@@ -50,6 +51,14 @@ createRoot(document.getElementById('root')!).render(
         element={
           <Suspense fallback={<Loading />}>
             <PodiumLab />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/lockerlab"
+        element={
+          <Suspense fallback={<Loading />}>
+            <LockerLab />
           </Suspense>
         }
       />

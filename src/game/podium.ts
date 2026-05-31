@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { WornHat } from './hats';
 import { emoteById, type EmoteKind } from './cosmetics';
+import { applyEmote, buildEmoteRig, type EmoteRig } from './emotes';
 
 // End-of-match podium: the top-3 players on pedestals (1st tallest, center),
 // wearing their hats and playing their equipped emote. A self-contained Three.js
@@ -27,7 +28,7 @@ export type PodiumWinner = {
 
 let soldierPromise: Promise<{ scene: THREE.Object3D; animations: THREE.AnimationClip[] }> | null =
   null;
-function loadSoldier() {
+export function loadSoldier() {
   if (!soldierPromise) {
     soldierPromise = new GLTFLoader()
       .loadAsync(SOLDIER_URL)
@@ -36,7 +37,7 @@ function loadSoldier() {
   return soldierPromise;
 }
 
-function pickClip(clips: THREE.AnimationClip[], names: string[], fallback = 0): THREE.AnimationClip {
+export function pickClip(clips: THREE.AnimationClip[], names: string[], fallback = 0): THREE.AnimationClip {
   for (const n of names) {
     const c = clips.find((cl) => cl.name.toLowerCase().includes(n));
     if (c) return c;
@@ -88,17 +89,8 @@ type Character = {
   mixer: THREE.AnimationMixer;
   hat: WornHat;
   kind: EmoteKind;
-  bones: Record<string, THREE.Bone | undefined>;
-  rest: Record<string, THREE.Quaternion>;
-  phase: number;
+  rig: EmoteRig;
 };
-
-const ARM_BONES = [
-  'mixamorigRightArm',
-  'mixamorigLeftArm',
-  'mixamorigRightForeArm',
-  'mixamorigLeftForeArm',
-];
 
 export class PodiumScene {
   private renderer: THREE.WebGLRenderer;
@@ -108,8 +100,6 @@ export class PodiumScene {
   private raf: number | null = null;
   private clock = { last: 0 };
   private disposed = false;
-  private readonly tmpQ = new THREE.Quaternion();
-  private readonly tmpE = new THREE.Euler();
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -224,14 +214,7 @@ export class PodiumScene {
 
       const mixer = new THREE.AnimationMixer(model);
       mixer.clipAction(pickClip(src.animations, ['idle'], 0)).play();
-
-      const bones: Record<string, THREE.Bone | undefined> = {};
-      const rest: Record<string, THREE.Quaternion> = {};
-      for (const name of ARM_BONES) {
-        const b = model.getObjectByName(name) as THREE.Bone | undefined;
-        bones[name] = b;
-        if (b) rest[name] = b.quaternion.clone();
-      }
+      const rig = buildEmoteRig(model, (w.place - 1) * 1.7);
 
       const hat = new WornHat(group, model);
       void hat.setHat(w.hatId);
@@ -247,61 +230,8 @@ export class PodiumScene {
         mixer,
         hat,
         kind: emoteById(w.emoteId).kind,
-        bones,
-        rest,
-        phase: Math.random() * Math.PI * 2,
+        rig,
       });
-    }
-  }
-
-  // Procedural emote: the idle clip plays underneath (natural stance); we layer
-  // whole-body motion + arm-bone offsets on top after the mixer writes the pose.
-  private applyEmote(c: Character, t: number) {
-    const k = c.kind;
-    const p = c.phase;
-    // reset body transform each frame (mixer doesn't touch the outer group)
-    c.group.position.y = c.baseY;
-    c.group.rotation.set(0, Math.PI, 0);
-
-    if (k === 'spin') {
-      c.group.rotation.y = Math.PI + t * 2.4;
-      c.group.position.y = c.baseY + Math.abs(Math.sin(t * 4)) * 0.05;
-    } else if (k === 'cheer') {
-      c.group.position.y = c.baseY + Math.abs(Math.sin(t * 6 + p)) * 0.16; // jumping
-    } else if (k === 'dance') {
-      c.group.rotation.z = Math.sin(t * 6 + p) * 0.12; // hip sway
-      c.group.position.y = c.baseY + Math.abs(Math.sin(t * 6 + p)) * 0.06;
-      c.group.rotation.y = Math.PI + Math.sin(t * 3 + p) * 0.25;
-    } else if (k === 'wave') {
-      c.group.rotation.z = Math.sin(t * 5 + p) * 0.04;
-    } else if (k === 'flex') {
-      c.group.rotation.y = Math.PI + Math.sin(t * 1.2) * 0.5; // slow show-off turn
-    }
-
-    // Arm offsets on top of the idle pose (in each bone's local frame).
-    const armUp = (boneName: string, sign: number, amount: number) => {
-      const b = c.bones[boneName];
-      const rest = c.rest[boneName];
-      if (!b || !rest) return;
-      this.tmpE.set(0, 0, sign * amount, 'XYZ');
-      this.tmpQ.setFromEuler(this.tmpE);
-      b.quaternion.copy(rest).multiply(this.tmpQ);
-    };
-    if (k === 'cheer') {
-      armUp('mixamorigRightArm', -1, 1.5);
-      armUp('mixamorigLeftArm', 1, 1.5);
-    } else if (k === 'wave') {
-      armUp('mixamorigRightArm', -1, 1.7);
-      armUp('mixamorigRightForeArm', -1, 0.4 + Math.sin(t * 9 + p) * 0.5);
-    } else if (k === 'flex') {
-      armUp('mixamorigRightArm', -1, 1.2);
-      armUp('mixamorigLeftArm', 1, 1.2);
-      armUp('mixamorigRightForeArm', -1, 1.4);
-      armUp('mixamorigLeftForeArm', 1, 1.4);
-    } else if (k === 'dance') {
-      const s = Math.sin(t * 6 + p);
-      armUp('mixamorigRightArm', -1, 1.0 + s * 0.5);
-      armUp('mixamorigLeftArm', 1, 1.0 - s * 0.5);
     }
   }
 
@@ -314,7 +244,7 @@ export class PodiumScene {
       this.clock.last = now;
       for (const c of this.chars) {
         c.mixer.update(dt);
-        this.applyEmote(c, now);
+        applyEmote(c.rig, c.group, Math.PI, c.baseY, now, c.kind);
         c.hat.update(dt);
       }
       this.renderer.render(this.scene, this.camera);

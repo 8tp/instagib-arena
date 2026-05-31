@@ -378,11 +378,17 @@ export class Bot {
   // Returns a fire intent when the bot decides to shoot this tick, else null.
   // `enemies` is every targetable entity (player + other bots); the bot filters
   // itself out by id.
-  step(dt: number, map: ArenaMap, enemies: BotTarget[]): BotFireIntent | null {
+  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
     if (this.mixer) this.mixer.update(dt);
     // Pin the gun-carry pose over the animated arms while alive; let the death
     // clip flail freely when dead.
     if (this.state.alive) this.hold?.apply();
+    // Countdown freeze: keep animating (idle plays via the mixer above) but stay
+    // put — no movement, decisions, or fire until the match goes live.
+    if (frozen) {
+      this.vel = { x: 0, y: 0, z: 0 };
+      return null;
+    }
     if (this.shootCooldown > 0) this.shootCooldown = Math.max(0, this.shootCooldown - dt);
     // Movement timers (run while alive; harmless while dead since velocity is zeroed).
     if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
@@ -1089,10 +1095,10 @@ export class BotManager {
   // Steps every bot and returns the fire intents they produced this tick.
   // `enemies` should include the local player and all bots (each bot skips
   // itself); Game resolves the returned shots against the world.
-  step(dt: number, map: ArenaMap, enemies: BotTarget[]): BotFireIntent[] {
+  step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent[] {
     const intents: BotFireIntent[] = [];
     for (const b of this.bots) {
-      const intent = b.step(dt, map, enemies);
+      const intent = b.step(dt, map, enemies, frozen);
       if (intent) intents.push(intent);
       b.updateHat(dt);
     }

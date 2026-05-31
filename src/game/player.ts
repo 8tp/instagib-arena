@@ -55,11 +55,19 @@ export class Player {
     this.pos = { ...spawn };
   }
 
-  step(input: InputState, dt: number, map: ArenaMap) {
+  step(input: InputState, dt: number, map: ArenaMap, frozen = false) {
     this.yaw -= input.yawDelta;
     this.pitch -= input.pitchDelta;
     if (this.pitch < -PITCH_LIMIT) this.pitch = -PITCH_LIMIT;
     if (this.pitch > PITCH_LIMIT) this.pitch = PITCH_LIMIT;
+
+    // Countdown freeze: you can look around, but you can't move/jump/boost yet.
+    if (frozen) {
+      this.vel.x = 0;
+      this.vel.y = 0;
+      this.vel.z = 0;
+      return;
+    }
 
     const fx = -Math.sin(this.yaw);
     const fz = -Math.cos(this.yaw);
