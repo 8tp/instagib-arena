@@ -27,6 +27,8 @@ import {
   KILLCAM_DURATION_SEC,
   KILLFEED_DURATION_SEC,
   LOCAL_RESPAWN_INVULN_SEC,
+  LOCAL_WARMUP_SEC,
+  MERCY_LEAD,
   MATCH_FRAG_LIMIT,
   MAX_KILLFEED_ENTRIES,
   MAX_PLAYERS,
@@ -185,6 +187,7 @@ export class Game {
   private matchPointAnnounced = false; // "Match point" banner fires once per match
   private training = false; // endless practice — never hit the frag limit
   private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
+  private localWarmupUntil = 0; // perf.now() ms; offline pre-match no-fire window
   private shake = 0; // camera screen-shake amount, decays each render frame
 
   // Visual customization
@@ -231,6 +234,7 @@ export class Game {
   private fpsFrames = 0;
   private fpsAccumMs = 0;
   private hudAccumMs = 0; // throttles HUD delivery in runLoop (#24)
+  private frameDt = 1 / 60; // last real frame delta (s) — for framerate-independent juice
 
   private tmpForward = new THREE.Vector3();
   private tmpEuler = new THREE.Euler(0, 0, 0, 'YXZ');
@@ -656,6 +660,10 @@ export class Game {
         this.botFrags.set(b.state.id, 0);
       }
       this.applyEnemyStyle();
+      // A real (non-training) offline match opens with a short warmup: a
+      // countdown during which neither side can frag, plus first-spawn grace so
+      // the cold open isn't a free kill for whoever the bots target first.
+      if (!this.training && !this.net) this.beginLocalWarmup();
     } else if (!this.wantBots && this.bots) {
       this.bots.dispose(this.scene);
       this.bots = null;
@@ -664,6 +672,23 @@ export class Game {
       this.botShotsFired.clear();
       this.botShotsHit.clear();
     }
+  }
+
+  private beginLocalWarmup() {
+    this.localWarmupUntil = performance.now() + LOCAL_WARMUP_SEC * 1000;
+    // Invuln spans the warmup AND a beat past it (ticks down each frame), so the
+    // first live moment still has the normal respawn grace.
+    this.localRespawnInvuln = LOCAL_WARMUP_SEC + LOCAL_RESPAWN_INVULN_SEC;
+  }
+
+  // Offline pre-match window: shots are suppressed and the countdown shows.
+  // Online warmup is server-driven (resumeAt), so it's never "in warmup" here.
+  private get inWarmup(): boolean {
+    return !this.net && performance.now() < this.localWarmupUntil;
+  }
+
+  private warmupMsLeft(): number {
+    return this.net ? this.net.warmupMsLeft : Math.max(0, this.localWarmupUntil - performance.now());
   }
 
   private applyMultiplayerState() {
@@ -925,6 +950,7 @@ export class Game {
       this.tickHudTimers(dt);
       this.tickFps(dt);
       this.syncRemotePlayers(dt);
+      this.frameDt = dt;
       this.render();
       // Throttle HUD delivery to ~20Hz so React isn't re-rendering ~14 overlay
       // components every animation frame (the 3D render stays full-rate). Event
@@ -1073,7 +1099,8 @@ export class Game {
         if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos });
       }
       const intents = this.bots.step(dt, this.map, enemies);
-      for (const intent of intents) this.handleBotShot(intent);
+      // Bots move + aim during warmup but can't frag yet (intents discarded).
+      if (!this.inWarmup) for (const intent of intents) this.handleBotShot(intent);
     }
 
     // Cooldown-to-ready transition → reload-ready ping. Fires once per shot.
@@ -1083,7 +1110,7 @@ export class Game {
     }
     this.weaponWasReady = ready;
 
-    if (input.firePressed && !dead) this.handleFire();
+    if (input.firePressed && !dead && !this.inWarmup) this.handleFire();
 
     // Throttled position broadcast
     if (this.net) {
@@ -1336,7 +1363,10 @@ export class Game {
   private handleLocalDeath(killerName: string, killerId: string) {
     if (this.killcam) return;
     const deathPos = { ...this.player.pos };
-    const spot = pickFreeSpot(this.map, this.player.pos, PLAYER_RADIUS);
+    // Respawn away from where we died AND from every live bot (not just one).
+    const avoid = [this.player.pos];
+    if (this.bots) for (const b of this.bots.bots) if (b.state.alive) avoid.push(b.state.pos);
+    const spot = pickFreeSpot(this.map, avoid, PLAYER_RADIUS);
     this.player.pos = { x: spot.x, y: spot.y, z: spot.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
@@ -1374,14 +1404,19 @@ export class Game {
     // Multiplayer match-end is server-authoritative (it triggers the map vote),
     // training is endless — only local/bot matches end client-side.
     if (this.matchOver || this.training || this.net) return;
-    let maxFrags = this.playerFrags;
+    const counts = [this.playerFrags];
     if (this.bots) {
-      for (const b of this.bots.bots) {
-        maxFrags = Math.max(maxFrags, this.botFrags.get(b.state.id) ?? 0);
-      }
+      for (const b of this.bots.bots) counts.push(this.botFrags.get(b.state.id) ?? 0);
     }
-    if (maxFrags >= MATCH_FRAG_LIMIT) {
-      this.endMatch(this.playerFrags >= MATCH_FRAG_LIMIT);
+    counts.sort((a, b) => b - a);
+    const top = counts[0];
+    const second = counts[1] ?? 0;
+    // End on the frag limit, OR a mercy blowout: a commanding lead past the
+    // halfway mark, so a lopsided stomp doesn't grind out the full limit.
+    const limitReached = top >= MATCH_FRAG_LIMIT;
+    const mercy = top >= Math.ceil(MATCH_FRAG_LIMIT / 2) && top - second >= MERCY_LEAD;
+    if (limitReached || mercy) {
+      this.endMatch(this.playerFrags >= top); // you win iff you (co-)lead
     }
   }
 
@@ -1714,7 +1749,7 @@ export class Game {
       netStatus: this.net?.status ?? 'off',
       netPeers: this.net ? this.net.remotes.size : 0,
       netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
-      warmupMsLeft: this.net ? this.net.warmupMsLeft : 0,
+      warmupMsLeft: this.warmupMsLeft(),
       localInvulnMs: this.net?.localInvulnMs ?? 0,
       vote: this.vote ? { ...this.vote, counts: { ...this.vote.counts } } : null,
       mode: this.netMode,
@@ -1813,8 +1848,8 @@ export class Game {
         : killerBot
           ? killerBot.state.pos.z
           : this.killcam.deathPos.z;
-      // Exponential smoothing toward the target each frame.
-      const dt = 1 / 60;
+      // Exponential smoothing toward the target (real dt → framerate-independent).
+      const dt = this.frameDt;
       const a = 1 - Math.exp(-6 * dt);
       this.killcamLookAt.x += (targetX - this.killcamLookAt.x) * a;
       this.killcamLookAt.y += (targetY - this.killcamLookAt.y) * a;
@@ -1840,14 +1875,14 @@ export class Game {
       this.camera.position.x += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
-      this.shake *= 0.86;
+      this.shake *= Math.exp(-9.05 * this.frameDt); // ≈ 0.86/frame at 60fps, fps-independent
     }
     // Zoom: ease FOV toward the zoom target while the bind is held in-play.
     const zooming =
       this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote;
     const targetFov = zooming ? this.zoomFov : this.baseFov;
     if (Math.abs(this.camera.fov - targetFov) > 0.01) {
-      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 / 60));
+      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 * this.frameDt));
       this.camera.updateProjectionMatrix();
     }
     // Scale look sensitivity with the current (lerping) FOV so zoomed aim stays
@@ -1859,11 +1894,15 @@ export class Game {
         ? Math.max(0, Math.min(1, (this.baseFov - this.camera.fov) / (this.baseFov - this.zoomFov)))
         : 0;
     this.input.lookScale = fovRatio * (1 + (this.zoomSensMul - 1) * zoomT);
-    // Decay weapon feedback (frame-approximate easing — pure juice).
-    this.recoil *= 0.84;
-    this.viewKick *= 0.82;
+    // Decay weapon feedback — exp easing keyed to real dt so the punch feels the
+    // same at 60fps and uncapped (the marketed FPS-uncap would otherwise change
+    // recoil/kick feel with framerate). Constants match the old /frame factors.
+    const fdt = this.frameDt;
+    this.recoil *= Math.exp(-10.46 * fdt); // ≈ 0.84/frame at 60fps
+    this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
     if (this.viewmodelGlow) {
-      this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * 0.18;
+      const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
+      this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * g;
     }
     // Viewmodel: show only while actively playing in first person; apply recoil
     // (kicks back toward the camera + muzzle tilts up, easing back to rest).

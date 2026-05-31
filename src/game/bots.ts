@@ -157,7 +157,14 @@ function pointInsideAnyBox(p: Vec3, map: ArenaMap, r = 0): boolean {
   return false;
 }
 
-export function pickFreeSpot(map: ArenaMap, avoid: Vec3 | null = null, radius = BOT_RADIUS): Vec3 {
+export function pickFreeSpot(
+  map: ArenaMap,
+  avoid: Vec3 | Vec3[] | null = null,
+  radius = BOT_RADIUS,
+): Vec3 {
+  // Accept one point or many — spawn clear of EVERY live opponent, not just one,
+  // so you don't drop into someone's crosshair.
+  const avoidList = avoid == null ? [] : Array.isArray(avoid) ? avoid : [avoid];
   // Inset the sample box by the radius too, so we never sample flush to a wall.
   const xExt = (map.bounds.max.x - map.bounds.min.x) / 2 - 1.5 - radius;
   const zExt = (map.bounds.max.z - map.bounds.min.z) / 2 - 1.5 - radius;
@@ -173,9 +180,9 @@ export function pickFreeSpot(map: ArenaMap, avoid: Vec3 | null = null, radius = 
       !pointInsideAnyBox({ x, y: y + BOT_HEIGHT - 0.1, z }, map, radius)
     ) {
       // First clear spot is a safe fallback; keep searching for one far from
-      // `avoid` so we don't telefrag/stack on the thing we're avoiding.
+      // every avoid point so we don't telefrag/stack on a live opponent.
       if (!fallback) fallback = { x, y, z };
-      if (!avoid || Math.hypot(x - avoid.x, z - avoid.z) > 5) {
+      if (avoidList.every((a) => Math.hypot(x - a.x, z - a.z) > 5)) {
         return { x, y, z };
       }
     }

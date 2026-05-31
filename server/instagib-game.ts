@@ -19,6 +19,7 @@
 import type { WebSocketServer, WebSocket } from 'ws';
 import {
   MATCH_FRAG_LIMIT,
+  MERCY_LEAD,
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
@@ -339,6 +340,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
     return total;
   };
 
+  // Highest frag count among everyone in the room except `exceptId` — used for
+  // duel deuce/advantage and FFA mercy-lead checks.
+  const topOtherFrags = (room: Room, exceptId: ClientId): number => {
+    let m = 0;
+    for (const id of room.members) {
+      if (id === exceptId) continue;
+      const c = clients.get(id);
+      if (c) m = Math.max(m, c.frags);
+    }
+    return m;
+  };
+
   // The frag target the HUD shows: per-round in duel, per-match otherwise.
   const fragLimitFor = (room: Room): number =>
     room.mode === 'duel'
@@ -350,19 +363,24 @@ export function attachInstagibWs(wss: WebSocketServer) {
   const pickSpawn = (room: Room, avoid: Vec | null): Vec => {
     const spawns = arenaNet(room.mapId).spawns;
     if (spawns.length === 0) return { x: 0, y: 0.05, z: 0 };
-    let best = spawns[Math.floor(Math.random() * spawns.length)];
-    if (avoid) {
-      // Bias toward the spawn farthest from `avoid` (with a little randomness).
-      const shuffled = [...spawns].sort(() => Math.random() - 0.5);
-      let bestD = -Infinity;
-      for (const s of shuffled) {
-        const d = Math.hypot(s.x - avoid.x, s.z - avoid.z);
-        if (d > bestD) {
-          bestD = d;
-          best = s;
-        }
-      }
+    // Spawn AWAY FROM EVERY live opponent, not just the killer — score each
+    // candidate by its distance to the nearest player and pick among the safest
+    // few (so it isn't perfectly predictable). This avoids spawning in someone's
+    // crosshair and doubles as a telefrag guard (an occupied spawn scores ~0).
+    const enemies: Vec[] = [];
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c) enemies.push(c.pos);
     }
+    if (avoid) enemies.push(avoid);
+    const scored = spawns.map((s) => {
+      let nearest = Infinity;
+      for (const e of enemies) nearest = Math.min(nearest, Math.hypot(s.x - e.x, s.z - e.z));
+      return { s, nearest };
+    });
+    scored.sort((a, b) => b.nearest - a.nearest);
+    const topK = scored.slice(0, Math.min(3, scored.length));
+    const best = topK[Math.floor(Math.random() * topK.length)].s;
     // Small jitter so stacked respawns don't perfectly overlap.
     return { x: best.x + (Math.random() - 0.5), y: best.y, z: best.z + (Math.random() - 0.5) };
   };
@@ -732,18 +750,28 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
     // Mode-aware resolution of the kill.
     if (room.mode === 'tdm') {
-      if (shooter.team != null && teamFrags(room, shooter.team) >= TDM_FRAG_LIMIT) {
-        startVote(room, null, shooter.team); // team win
+      if (shooter.team != null) {
+        const mine = teamFrags(room, shooter.team);
+        const other = teamFrags(room, shooter.team === 0 ? 1 : 0);
+        // Limit reached, OR a mercy blowout (big team lead past the halfway mark).
+        const mercy = mine >= Math.ceil(TDM_FRAG_LIMIT / 2) && mine - other >= MERCY_LEAD;
+        if (mine >= TDM_FRAG_LIMIT || mercy) startVote(room, null, shooter.team);
       }
     } else if (room.mode === 'duel') {
-      if (shooter.frags >= DUEL_ROUND_FRAG_LIMIT) {
+      // Deuce/advantage: a round needs the frag limit AND a 2-frag lead, so a
+      // neck-and-neck round goes to sudden-death instead of ending on a tie.
+      const oppFrags = topOtherFrags(room, shooter.id);
+      if (shooter.frags >= DUEL_ROUND_FRAG_LIMIT && shooter.frags - oppFrags >= 2) {
         const wins = (room.roundWins.get(shooter.id) ?? 0) + 1;
         room.roundWins.set(shooter.id, wins);
         if (wins >= DUEL_ROUNDS_TO_WIN) startVote(room, shooter.id); // match win
         else startNewRound(room, shooter.id);
       }
-    } else if (shooter.frags >= MATCH_FRAG_LIMIT) {
-      startVote(room, shooter.id); // FFA
+    } else {
+      // FFA: first to the limit, OR a mercy blowout over the field.
+      const second = topOtherFrags(room, shooter.id);
+      const mercy = shooter.frags >= Math.ceil(MATCH_FRAG_LIMIT / 2) && shooter.frags - second >= MERCY_LEAD;
+      if (shooter.frags >= MATCH_FRAG_LIMIT || mercy) startVote(room, shooter.id);
     }
   };
 

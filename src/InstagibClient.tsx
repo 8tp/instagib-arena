@@ -1840,8 +1840,7 @@ function HudOverlay({
       {hud.netStatus !== 'off' && hud.localInvulnMs > 0 && (
         <InvulnPill remainingMs={hud.localInvulnMs} />
       )}
-      {hud.netStatus !== 'off' &&
-        hud.warmupMsLeft > 0 &&
+      {hud.warmupMsLeft > 0 &&
         !hud.vote &&
         !hud.matchOver &&
         !hud.killcam && <WarmupOverlay remainingMs={hud.warmupMsLeft} />}
