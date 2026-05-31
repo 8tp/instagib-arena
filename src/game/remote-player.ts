@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { applyHighlight, type BotModel } from './bots';
 import { LocomotionBlender } from './locomotion';
-import { attachRailgunToSoldier } from './weapon-model';
+import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
+import { WornHat } from './hats';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
@@ -84,8 +85,12 @@ export class RemotePlayer {
   // Set by Game on receiving a server `kill` broadcast for this player.
   deadTimer = 0;
   private modelRoot: THREE.Object3D | null = null;
+  private hat: WornHat | null = null;
+  private hatId = 'hat.none';
+  private unusualId = 'unusual.none';
   private mixer: THREE.AnimationMixer | null = null;
   private loco: LocomotionBlender | null = null;
+  private hold: WeaponHold | null = null;
   private nameSprite: THREE.Sprite;
   private fallbackBody: THREE.Mesh | null = null;
   private shieldMesh: THREE.Mesh;
@@ -163,6 +168,9 @@ export class RemotePlayer {
     }
 
     if (this.mixer) this.mixer.update(dt);
+    // Pin the gun-carry pose over the animated arms (dead remotes already
+    // returned above, so this only runs while the model is visible/alive).
+    this.hold?.apply();
 
     this.targetPos.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
 
@@ -185,6 +193,17 @@ export class RemotePlayer {
     if (this.modelRoot) {
       this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
     }
+
+    // Equipped hat + unusual (echoed from the server). Swap on change, re-seat.
+    if (snapshot.hat !== this.hatId) {
+      this.hatId = snapshot.hat;
+      void this.hat?.setHat(this.hatId);
+    }
+    if (snapshot.unusual !== this.unusualId) {
+      this.unusualId = snapshot.unusual;
+      this.hat?.setUnusual(this.unusualId);
+    }
+    this.hat?.update(dt);
   }
 
   bounds(): AABB {
@@ -239,6 +258,7 @@ export class RemotePlayer {
   }
 
   dispose(scene: THREE.Scene) {
+    this.hat?.dispose();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -262,7 +282,10 @@ export class RemotePlayer {
     });
     this.group.add(cloned);
     this.modelRoot = cloned;
+    this.hat = new WornHat(this.group, cloned);
+    void this.hat.setHat(this.hatId);
     attachRailgunToSoldier(cloned, BOT_HEIGHT);
+    this.hold = new WeaponHold(cloned);
     this.mixer = new THREE.AnimationMixer(cloned);
     // Soldier.glb clip order: 0 idle, 1 run, 3 walk (matches the three.js
     // skinning-blending example). Prefer names, fall back to those indices.

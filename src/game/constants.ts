@@ -185,8 +185,12 @@ export function modeCapacity(mode: GameMode): number {
 
 // Screen shake (camera positional jitter, metres). Decays per render frame.
 export const SHAKE_FIRE = 0.025; // recoil kick on firing the rail
+export const SHAKE_KILL = 0.05; // crisp confirming kick when you land a kill
 export const SHAKE_DEATH = 0.12; // big jolt when you die
 export const SHAKE_MAX = 0.22;
+
+// Full-screen kill-confirmation flash (edge vignette pulse).
+export const KILL_FLASH_DURATION_SEC = 0.4;
 
 // Medals
 export const MULTIKILL_WINDOW_SEC = 3.5;

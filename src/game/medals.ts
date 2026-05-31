@@ -71,7 +71,7 @@ export const MEDAL_LABELS: Record<
   'dominating':     { title: 'Dominating',     subtitle: '15 streak',   tier: 'streak'  },
   'unstoppable':    { title: 'Unstoppable',    subtitle: '20 streak',   tier: 'streak'  },
   'godlike':        { title: 'Godlike',        subtitle: '30 streak',   tier: 'streak'  },
-  'comeback':       { title: 'Comeback',                                tier: 'special' },
+  'comeback':       { title: 'Comeback',        subtitle: 'against the odds', tier: 'special' },
 };
 
 // Medals that warrant the big center-screen banner (vs. just a toast)
@@ -86,4 +86,5 @@ export const BANNER_MEDALS = new Set<Medal>([
   'dominating',
   'unstoppable',
   'godlike',
+  'comeback',
 ]);

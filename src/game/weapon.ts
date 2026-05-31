@@ -26,7 +26,12 @@ const UP = new THREE.Vector3(0, 1, 0);
 // Quake-III CG_RailTrail look: a bright solid core cylinder, a soft additive
 // glow sleeve, and a helix spiralling around the axis. All additive so trails
 // read as light against the dark arena and stack nicely where they cross.
-function buildRailBeam(origin: THREE.Vector3, end: THREE.Vector3): Beam {
+function buildRailBeam(
+  origin: THREE.Vector3,
+  end: THREE.Vector3,
+  core: number,
+  helix: number,
+): Beam {
   const group = new THREE.Group();
   const parts: Beam['parts'] = [];
 
@@ -56,8 +61,8 @@ function buildRailBeam(origin: THREE.Vector3, end: THREE.Vector3): Beam {
     parts.push({ mat, base: opacity });
   };
 
-  addCylinder(RAIL_GLOW_RADIUS, RAIL_HELIX_COLOR, 0.28); // outer glow
-  addCylinder(RAIL_CORE_RADIUS, RAIL_CORE_COLOR, 1); // solid core
+  addCylinder(RAIL_GLOW_RADIUS, helix, 0.28); // outer glow
+  addCylinder(RAIL_CORE_RADIUS, core, 1); // solid core
 
   // Helix: perpendicular basis (u, v) about the axis, points stepped along it.
   const u = new THREE.Vector3();
@@ -80,7 +85,7 @@ function buildRailBeam(origin: THREE.Vector3, end: THREE.Vector3): Beam {
   }
   const helixGeom = new THREE.BufferGeometry().setFromPoints(pts);
   const helixMat = new THREE.LineBasicMaterial({
-    color: RAIL_HELIX_COLOR,
+    color: helix,
     transparent: true,
     opacity: 0.85,
     blending: THREE.AdditiveBlending,
@@ -119,6 +124,15 @@ export type RailFireResult = {
 export class Railgun {
   cooldown = 0;
   private beams: Beam[] = [];
+  // The local player's equipped rail-beam colors (railColor cosmetic). Enemy
+  // beams keep the defaults — spawnBeam's params fall back to the constants.
+  private beamCore = RAIL_CORE_COLOR;
+  private beamHelix = RAIL_HELIX_COLOR;
+
+  setBeamColors(core: number, helix: number) {
+    this.beamCore = core;
+    this.beamHelix = helix;
+  }
 
   step(dt: number, scene: THREE.Scene) {
     if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - dt);
@@ -180,15 +194,24 @@ export class Railgun {
     hits.sort((a, b) => a.t - b.t);
 
     const end = origin.clone().addScaledVector(dir, wallT);
-    this.spawnBeam((beamOrigin ?? origin).clone(), end, scene);
+    // The player's OWN beam uses their equipped rail colors.
+    this.spawnBeam((beamOrigin ?? origin).clone(), end, scene, this.beamCore, this.beamHelix);
 
     return { hits, end };
   }
 
   // Draw a standalone rail trail (no cooldown / hit logic). Used for bot shots
   // so enemy fire is visible without going through the player's weapon state.
-  spawnBeam(origin: THREE.Vector3, end: THREE.Vector3, scene: THREE.Scene) {
-    const beam = buildRailBeam(origin.clone(), end.clone());
+  // Colors default to the stock rail (enemy beams), or the player's equipped
+  // colors when fire() passes them.
+  spawnBeam(
+    origin: THREE.Vector3,
+    end: THREE.Vector3,
+    scene: THREE.Scene,
+    core: number = RAIL_CORE_COLOR,
+    helix: number = RAIL_HELIX_COLOR,
+  ) {
+    const beam = buildRailBeam(origin.clone(), end.clone(), core, helix);
     scene.add(beam.group);
     this.beams.push(beam);
   }

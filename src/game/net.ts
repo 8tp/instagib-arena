@@ -1,4 +1,5 @@
 import type { GameMode } from './constants';
+import type { CardPayload } from './types';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -12,6 +13,9 @@ export type RemotePlayerSnapshot = {
   deaths: number;
   invulnMs: number; // remaining spawn-protection ms, 0 = killable
   team: number | null; // team index in TDM; null otherwise
+  hat: string; // equipped hat cosmetic id
+  unusual: string; // equipped unusual-effect cosmetic id
+  emote: string; // equipped podium-emote cosmetic id
   receivedAt: number;
 };
 
@@ -23,6 +27,7 @@ export type KillEvent = {
   headshot: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
+  killerCard?: CardPayload;
   t: number;
 };
 
@@ -38,10 +43,13 @@ type StatePlayer = {
   deaths: number;
   invulnMs: number;
   team?: number | null;
+  hat?: string;
+  unusual?: string;
+  emote?: string;
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number };
-type StateMessage = { type: 'state'; t: number; players: StatePlayer[] };
+type StateMessage = { type: 'state'; t: number; players: StatePlayer[]; resumeAt?: number };
 type KillBroadcast = {
   type: 'kill';
   killerId: string;
@@ -51,6 +59,7 @@ type KillBroadcast = {
   headshot: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
+  killerCard?: CardPayload;
   t: number;
 };
 type JoinedMessage = {
@@ -63,6 +72,7 @@ type JoinedMessage = {
   state: 'active' | 'voting';
   fragLimit: number;
   roundsToWin?: number;
+  resumeAt?: number; // warmup/breather end (server clock)
 };
 type VoteStartMessage = {
   type: 'vote-start';
@@ -160,12 +170,19 @@ export class NetClient {
   status: NetStatus = 'idle';
   // Interpolated view of remote players, refreshed by interpolate() each frame.
   remotes = new Map<string, RemotePlayerSnapshot>();
+  localHat = 'hat.none'; // equipped hat id, sent to the server so remotes render it
+  localUnusual = 'unusual.none'; // equipped unusual-effect id
+  localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
+  localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
   localInvulnMs = 0;
   localTeam: number | null = null; // your team index in TDM; null otherwise
   mode: GameMode = 'ffa';
   rttMs = 0;
+  // Warmup / breather end, converted to the local clock. `warmupMsLeft` drives
+  // the client's "GET READY" countdown; 0 once play is live.
+  private warmupUntilClient = 0;
   private clockOffset = 0; // serverClock - clientClock (ms); estimatedServerNow = Date.now() + offset
   private clockSeeded = false;
   private snapBuffer: BufferedSnapshot[] = [];
@@ -268,6 +285,40 @@ export class NetClient {
     return Date.now() + this.clockOffset;
   }
 
+  // Equip a hat: remember it and tell the server (which echoes it in snapshots so
+  // other players render it). Safe to call before connect — sent on the next hello.
+  setLocalHat(id: string): void {
+    this.localHat = id;
+    this.send({ type: 'hat', id });
+  }
+
+  setLocalUnusual(id: string): void {
+    this.localUnusual = id;
+    this.send({ type: 'unusual', id });
+  }
+
+  setLocalEmote(id: string): void {
+    this.localEmote = id;
+    this.send({ type: 'emote', id });
+  }
+
+  setLocalCard(card: CardPayload): void {
+    this.localCard = card;
+    this.send({ type: 'card', card });
+  }
+
+  // ms until the current warmup/breather ends (0 once play is live).
+  get warmupMsLeft(): number {
+    return Math.max(0, this.warmupUntilClient - Date.now());
+  }
+
+  // Convert a server-clock `resumeAt` to the local clock and stash it.
+  private setResume(serverResumeAt: number | undefined) {
+    if (typeof serverResumeAt === 'number' && Number.isFinite(serverResumeAt)) {
+      this.warmupUntilClient = Date.now() + (serverResumeAt - this.estimatedServerNow());
+    }
+  }
+
   // Rebuild `remotes` as the interpolated view at (serverNow - INTERP_DELAY).
   // Call once per render frame before reading positions.
   interpolate() {
@@ -315,6 +366,9 @@ export class NetClient {
         deaths: b.deaths ?? 0,
         invulnMs: b.invulnMs ?? 0,
         team: b.team ?? null,
+        hat: b.hat ?? 'hat.none',
+        unusual: b.unusual ?? 'unusual.none',
+        emote: b.emote ?? 'emote.cheer',
         receivedAt: now,
       });
     }
@@ -342,6 +396,11 @@ export class NetClient {
   private handle(msg: ServerMessage) {
     if (msg.type === 'welcome') {
       this.clientId = msg.clientId;
+      // Tell the server our equipped cosmetics so it echoes them to other players.
+      this.send({ type: 'hat', id: this.localHat });
+      this.send({ type: 'unusual', id: this.localUnusual });
+      this.send({ type: 'emote', id: this.localEmote });
+      if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       if (!this.clockSeeded) {
         this.clockOffset = msg.serverTime - Date.now();
@@ -362,6 +421,7 @@ export class NetClient {
       return;
     }
     if (msg.type === 'state') {
+      this.setResume(msg.resumeAt);
       const players = new Map<string, StatePlayer>();
       for (const p of msg.players) {
         players.set(p.id, p);
@@ -389,6 +449,7 @@ export class NetClient {
         headshot: msg.headshot,
         victimPos: msg.victimPos,
         respawnPos: msg.respawnPos,
+        killerCard: msg.killerCard,
         t: msg.t,
       });
       return;
@@ -396,6 +457,7 @@ export class NetClient {
     if (msg.type === 'joined') {
       this.mode = msg.mode ?? 'ffa';
       this.localTeam = msg.team ?? null;
+      this.setResume(msg.resumeAt);
       this.events.onJoined?.({
         roomId: msg.roomId,
         mapId: msg.mapId,
@@ -428,6 +490,7 @@ export class NetClient {
       return;
     }
     if (msg.type === 'round') {
+      this.setResume(msg.resumeAt);
       const resumeAtClient = Date.now() + (msg.resumeAt - this.estimatedServerNow());
       this.events.onRound?.({
         roundNum: msg.roundNum,
@@ -442,6 +505,7 @@ export class NetClient {
       return;
     }
     if (msg.type === 'vote-result') {
+      this.setResume(msg.resumeAt);
       const resumeAtClient = Date.now() + (msg.resumeAt - this.estimatedServerNow());
       this.events.onVoteResult?.({ mapId: msg.mapId, resumeAtClient });
       return;

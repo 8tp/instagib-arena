@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { MAPS, mapById } from './game/map';
 import { LobbyClient, type LobbyRoom, type LobbyStatus } from './game/net';
@@ -48,9 +48,10 @@ import {
 } from './game/constants';
 import type {
   BannerState,
+  CardPayload,
   HitMarker,
   HudState,
-  KillConfirm,
+  KillFlash,
   KillcamState,
   KillfeedEntry,
   MapVoteState,
@@ -58,6 +59,33 @@ import type {
   PlayerScore,
   ToastEntry,
 } from './game/types';
+import { FragPopup } from './game/kill-overlays';
+import { PodiumScene, type PodiumWinner } from './game/podium';
+import {
+  KILL_EFFECTS,
+  RAIL_COLORS,
+  HATS,
+  UNUSUALS,
+  CARD_STYLES,
+  EMOTES,
+  DEFAULT_KILL_EFFECT,
+  DEFAULT_RAIL_COLOR,
+  DEFAULT_HAT,
+  DEFAULT_UNUSUAL,
+  DEFAULT_CARD,
+  DEFAULT_EMOTE,
+  cardById,
+  HAT_CASE_COST,
+  caseHats,
+  hatById,
+  killEffectById,
+  sourceLabel,
+  type KillEffectStyle,
+  type Rarity,
+  type CosmeticSource,
+  type HatCosmetic,
+} from './game/cosmetics';
+import { levelProgress } from './game/progression';
 
 export type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
@@ -133,10 +161,36 @@ function decodeCrosshair(code: string): CrosshairConfig | null {
   }
 }
 
+// Full-settings share code (IGS-) — base64url of the settings JSON, for backing
+// up / moving a complete config between browsers. Mirrors the crosshair code.
+function encodeSettings(s: Settings): string {
+  const b64 = btoa(JSON.stringify(s)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `IGS-${b64}`;
+}
+
+function decodeSettings(code: string): Settings | null {
+  try {
+    const body = code.trim().replace(/^IGS-/i, '').replace(/-/g, '+').replace(/_/g, '/');
+    const parsed = JSON.parse(atob(body)) as Partial<Settings>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    // Merge over defaults so a partial/older code fills gaps and new fields survive.
+    return {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
+      keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
+      viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
+    };
+  } catch {
+    return null;
+  }
+}
+
 type Settings = {
   sensitivity: number; // Source/CS2-style sens number
   dpi: number; // mouse DPI (feeds cm/360 readout only)
   vertScale: number; // vertical (pitch) sensitivity multiplier
+  zoomSens: number; // ADS/zoom sensitivity multiplier (1 = FOV-scaled default)
   rawInput: boolean; // pointer-lock unadjustedMovement
   keybinds: Record<KeybindAction, string>; // action → KeyboardEvent.code
   fov: number;
@@ -148,6 +202,10 @@ type Settings = {
   announcerVolume: number;
   announcerEnabled: boolean;
   showFps: boolean;
+  fpsLimit: number; // 0 = VSync (display), >0 = cap to N fps, -1 = uncapped
+  resolutionScale: number; // render resolution multiplier (perf ↔ sharpness)
+  lowSpec: boolean; // cap high-DPI at 1× + thin particle effects
+  uiScale: number; // HUD scale multiplier
   botsEnabled: boolean;
   multiplayer: boolean;
   serverUrl: string;
@@ -159,7 +217,25 @@ type Settings = {
   worldBrightness: number; // 0..1 full-bright emissive boost on surfaces
   enemyColor: string; // hex highlight applied to enemies when enemyBright is on
   enemyBright: boolean; // make enemies glow bright for visibility (Ratz-style)
+  killEffect: KillEffectStyle; // equipped kill-effect cosmetic (the frag explosion)
+  railColor: string; // equipped rail-beam color cosmetic
+  hat: string; // equipped hat cosmetic (worn on the player model)
+  unusual: string; // equipped unusual particle effect (on the hat)
+  card: string; // equipped playercard style (kill banner)
+  cardStats: string[]; // up to 3 career-stat keys shown on the card
+  emote: string; // equipped emote (played on the end-of-match podium)
+  reducedEffects: boolean; // accessibility: suppress camera shake + kill flash + heavy bursts
 };
+
+// Default the reduced-effects toggle to the OS "reduce motion" preference.
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
 
 export type MatchConfig =
   | {
@@ -197,6 +273,7 @@ const DEFAULT_SETTINGS: Settings = {
   sensitivity: DEFAULT_SENSITIVITY,
   dpi: DEFAULT_DPI,
   vertScale: DEFAULT_VERT_SCALE,
+  zoomSens: 1,
   rawInput: DEFAULT_RAW_INPUT,
   keybinds: DEFAULT_KEYBINDS,
   fov: DEFAULT_FOV,
@@ -208,6 +285,10 @@ const DEFAULT_SETTINGS: Settings = {
   announcerVolume: 1,
   announcerEnabled: true,
   showFps: false,
+  fpsLimit: 0,
+  resolutionScale: 1,
+  lowSpec: false,
+  uiScale: 1,
   botsEnabled: true,
   multiplayer: false,
   serverUrl: '',
@@ -219,9 +300,182 @@ const DEFAULT_SETTINGS: Settings = {
   worldBrightness: 0,
   enemyColor: '#ff2bd6',
   enemyBright: false,
+  killEffect: DEFAULT_KILL_EFFECT,
+  railColor: DEFAULT_RAIL_COLOR,
+  hat: DEFAULT_HAT,
+  unusual: DEFAULT_UNUSUAL,
+  card: DEFAULT_CARD,
+  cardStats: ['kills', 'wins', 'kd'],
+  emote: DEFAULT_EMOTE,
+  reducedEffects: prefersReducedMotion(),
 };
 
 const SETTINGS_KEY = 'instagib-settings-v2';
+
+// Rarity → accent color for cosmetic cards in the Locker.
+const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
+  common: 'text-white/45',
+  rare: 'text-sky-300',
+  epic: 'text-fuchsia-300',
+};
+
+// Career stats a player can show on their playercard (the kill banner).
+const CARD_STAT_DEFS: ReadonlyArray<{
+  key: string;
+  label: string;
+  from: (s: InstagibStats) => string;
+}> = [
+  { key: 'kills', label: 'KILLS', from: (s) => String(s.totalKills) },
+  { key: 'deaths', label: 'DEATHS', from: (s) => String(s.totalDeaths) },
+  { key: 'wins', label: 'WINS', from: (s) => String(s.totalWins) },
+  { key: 'games', label: 'GAMES', from: (s) => String(s.totalGames) },
+  {
+    key: 'kd',
+    label: 'K/D',
+    from: (s) => (s.totalDeaths > 0 ? (s.totalKills / s.totalDeaths).toFixed(2) : String(s.totalKills)),
+  },
+  { key: 'streak', label: 'BEST STREAK', from: (s) => String(s.bestKillStreak) },
+  { key: 'headshots', label: 'HEADSHOTS', from: (s) => String(s.headshots) },
+  { key: 'accuracy', label: 'ACCURACY', from: (s) => `${Math.round(s.bestAccuracy)}%` },
+];
+
+const MAX_CARD_STATS = 3;
+
+function buildCardPayload(profile: InstagibProfile, settings: Settings): CardPayload {
+  const stats = settings.cardStats
+    .map((k) => CARD_STAT_DEFS.find((d) => d.key === k))
+    .filter((d): d is (typeof CARD_STAT_DEFS)[number] => !!d)
+    .slice(0, MAX_CARD_STATS)
+    .map((d) => ({ label: d.label, value: d.from(profile.stats) }));
+  return {
+    name: settings.playerName || 'Player',
+    level: profile.level,
+    style: settings.card,
+    stats,
+  };
+}
+
+// Pick up to 3 career stats for the playercard, with a live preview.
+function CardStatsEditor({
+  settings,
+  onChange,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+}) {
+  const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/profile', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
+      .then((d: { profile?: InstagibProfile }) => {
+        if (active && d.profile) setProfile(d.profile);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const toggle = (key: string) => {
+    const cur = settings.cardStats;
+    let next: string[];
+    if (cur.includes(key)) next = cur.filter((k) => k !== key);
+    else if (cur.length < MAX_CARD_STATS) next = [...cur, key];
+    else next = [...cur.slice(1), key]; // at the cap → drop the oldest
+    onChange({ ...settings, cardStats: next });
+  };
+
+  const preview: CardPayload = profile
+    ? buildCardPayload(profile, settings)
+    : {
+        name: settings.playerName || 'Player',
+        level: 1,
+        style: settings.card,
+        stats: settings.cardStats.map((k) => ({
+          label: CARD_STAT_DEFS.find((d) => d.key === k)?.label ?? k.toUpperCase(),
+          value: '—',
+        })),
+      };
+
+  return (
+    <Section label='Card Stats'>
+      <div className='flex justify-center py-1'>
+        <PlayerCard card={preview} size='small' />
+      </div>
+      <div className='grid grid-cols-2 gap-2'>
+        {CARD_STAT_DEFS.map((d) => {
+          const on = settings.cardStats.includes(d.key);
+          return (
+            <button
+              key={d.key}
+              type='button'
+              onClick={() => toggle(d.key)}
+              className={`rounded-md border px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
+                on
+                  ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-200'
+                  : 'border-white/10 bg-white/[0.03] text-white/55 hover:border-white/25'
+              }`}
+            >
+              {d.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className='text-[10px] normal-case tracking-normal text-white/40'>
+        Pick up to {MAX_CARD_STATS}. This card is shown to a player on their killcam
+        when you frag them — your graphic, level, and stats.
+      </p>
+    </Section>
+  );
+}
+
+// The kill banner: an unlockable card graphic + the player's level + their chosen
+// stats. Shown on the killcam (the killer's card) and as your own kill-confirm flex.
+function PlayerCard({ card, size = 'normal' }: { card: CardPayload; size?: 'normal' | 'small' }) {
+  const style = cardById(card.style);
+  const small = size === 'small';
+  return (
+    <div
+      className={`relative overflow-hidden rounded-xl border border-white/15 font-mono shadow-2xl ${
+        small ? 'w-[260px] p-3' : 'w-[340px] p-4'
+      }`}
+      style={{ background: style.bg }}
+    >
+      <div className='absolute inset-0 bg-black/10' />
+      <div className='relative flex items-center gap-3'>
+        <div
+          className='flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-lg border'
+          style={{ borderColor: style.accent, color: style.accent, background: 'rgba(0,0,0,0.25)' }}
+        >
+          <span className='text-[7px] uppercase tracking-[0.16em] opacity-80'>Lvl</span>
+          <span className='text-lg font-extrabold leading-none'>{card.level}</span>
+        </div>
+        <div className='min-w-0 flex-1'>
+          <div className={`truncate font-bold text-white ${small ? 'text-sm' : 'text-lg'}`}>
+            {card.name}
+          </div>
+          <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Instagib Arena</div>
+        </div>
+      </div>
+      {card.stats.length > 0 && (
+        <div className='relative mt-3 flex gap-2'>
+          {card.stats.map((s, i) => (
+            <div
+              key={i}
+              className='flex flex-1 flex-col items-center rounded-md bg-black/30 px-1 py-1.5'
+            >
+              <span className='text-base font-extrabold tabular-nums' style={{ color: style.accent }}>
+                {s.value}
+              </span>
+              <span className='text-[8px] uppercase tracking-[0.1em] text-white/55'>{s.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function loadSettings(): Settings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
@@ -277,7 +531,9 @@ function saveSettings(s: Settings) {
 function applySettingsToGame(game: Game, s: Settings) {
   game.setSensitivity?.(s.sensitivity);
   game.setVertScale?.(s.vertScale);
+  game.setZoomSens?.(s.zoomSens);
   game.setRawInput?.(s.rawInput);
+  game.setQuality?.(s.resolutionScale, s.lowSpec);
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
   game.setZoomFov?.(s.zoomFov);
@@ -289,6 +545,13 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setPlayerName?.(s.playerName);
   game.setWorldStyle?.(s.worldColor, s.worldBrightness);
   game.setEnemyStyle?.(s.enemyBright ? s.enemyColor : null);
+  game.setKillEffect?.(s.killEffect);
+  game.setRailColor?.(s.railColor);
+  game.setHat?.(s.hat);
+  game.setUnusual?.(s.unusual);
+  game.setEmote?.(s.emote);
+  game.setReducedEffects?.(s.reducedEffects);
+  game.setFpsLimit?.(s.fpsLimit);
 }
 
 // Configures a freshly-created Game for a match before start().
@@ -323,12 +586,14 @@ const INITIAL_HUD: HudState = {
   banner: null,
   hitMarker: null,
   killConfirm: null,
+  killFlash: null,
   killcam: null,
   showScoreboard: false,
   matchOver: null,
   netStatus: 'off',
   netPeers: 0,
   netRttMs: 0,
+  warmupMsLeft: 0,
   localInvulnMs: 0,
   vote: null,
   mode: 'ffa',
@@ -440,17 +705,35 @@ function GameView({
   const [hud, setHud] = useState<HudState>(INITIAL_HUD);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
+  const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
+  const [localCard, setLocalCard] = useState<CardPayload | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  // Online: the results podium is shown briefly at match-end BEFORE the map vote.
+  // We freeze the final standings here so a late snapshot can't change the podium.
+  const [onlineResults, setOnlineResults] = useState(false);
+  const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
+  const hudRef = useRef<HudState>(INITIAL_HUD);
+  const offlineMatch = config.mode !== 'multiplayer';
 
   useEffect(() => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
-    const listener: HudListener = (state) => setHud(state);
+    const listener: HudListener = (state) => {
+      hudRef.current = state;
+      setHud(state);
+    };
     // Match ended (frag limit): submit stats once + keep the result for the
-    // results overlay. Navigation happens from the overlay buttons.
+    // results overlay. Offline navigates from the overlay buttons; online shows
+    // the results podium, then continues to the server-driven map vote.
     const game = new Game(canvas, listener, (result) => {
       setEndResult(result);
-      void submitMatchStats(result);
+      void submitMatchStats(result, offlineMatch).then((p) => {
+        if (p) setEndProgression(p);
+      });
+      if (config.mode === 'multiplayer') {
+        setPodiumScores(hudRef.current.scores);
+        setOnlineResults(true);
+      }
     });
     gameRef.current = game;
     game.setNetEventListener((ev: NetMatchEvent) => {
@@ -481,6 +764,25 @@ function GameView({
     if (game) applySettingsToGame(game, settings);
   }, [settings]);
 
+  // Build the playercard from the live profile + card settings, hand it to the
+  // engine (which broadcasts it for the victim's killcam), and keep a copy for
+  // the local kill-confirm flex.
+  useEffect(() => {
+    let active = true;
+    fetch('/api/profile', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
+      .then((d: { profile?: InstagibProfile }) => {
+        if (!active || !d.profile) return;
+        const card = buildCardPayload(d.profile, settings);
+        setLocalCard(card);
+        gameRef.current?.setCardPayload?.(card);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [settings.card, settings.cardStats, settings.playerName]);
+
   const requestPlay = useCallback(() => {
     const game = gameRef.current;
     const container = containerRef.current;
@@ -508,9 +810,9 @@ function GameView({
     exitFullscreen();
     const game = gameRef.current;
     const r = game?.getStats() ?? null;
-    if (r && game?.hasRecordableStats()) void submitMatchStats(r);
+    if (r && game?.hasRecordableStats()) void submitMatchStats(r, offlineMatch);
     onExit(r);
-  }, [onExit]);
+  }, [onExit, offlineMatch]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck
@@ -531,8 +833,18 @@ function GameView({
   return (
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
-      <HudOverlay hud={hud} settings={settings} />
-      {hud.vote && <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />}
+      <HudOverlay hud={hud} settings={settings} localCard={localCard} />
+      {hud.vote && !onlineResults && <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />}
+      {onlineResults && (
+        <OnlineMatchResults
+          won={endResult?.won ?? false}
+          scores={podiumScores}
+          settings={settings}
+          result={endResult}
+          progression={endProgression}
+          onContinue={() => setOnlineResults(false)}
+        />
+      )}
       {joinError && (
         <JoinErrorOverlay
           message={joinError}
@@ -548,7 +860,7 @@ function GameView({
           onLeave={leave}
         />
       )}
-      {!hud.locked && !hud.matchOver && !hud.vote && !joinError && !waiting && (
+      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && (
         <ClickToPlay
           onPlay={requestPlay}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -561,7 +873,9 @@ function GameView({
         <MatchOverOverlay
           won={hud.matchOver.won}
           scores={hud.scores}
+          settings={settings}
           result={endResult}
+          progression={endProgression}
           onPlayAgain={() => {
             exitFullscreen();
             onPlayAgain();
@@ -583,72 +897,656 @@ function GameView({
   );
 }
 
+type LockerProfile = {
+  unlocked: string[];
+  credits: number;
+  equipped: Record<string, string>;
+  level: number;
+};
+
+type LockerItem = {
+  id: string;
+  name: string;
+  blurb: string;
+  rarity: Rarity;
+  source: CosmeticSource;
+};
+type LockerSlotDef = {
+  slot: 'killEffect' | 'railColor' | 'hat' | 'unusual' | 'card' | 'emote';
+  label: string;
+  items: readonly LockerItem[];
+  current: (s: Settings) => string;
+  apply: (s: Settings, id: string) => Settings;
+};
+const LOCKER_SLOTS: LockerSlotDef[] = [
+  {
+    slot: 'killEffect',
+    label: 'Kill Effect',
+    items: KILL_EFFECTS,
+    current: (s) => s.killEffect,
+    apply: (s, id) => ({ ...s, killEffect: id as KillEffectStyle }),
+  },
+  {
+    slot: 'railColor',
+    label: 'Rail Beam',
+    items: RAIL_COLORS,
+    current: (s) => s.railColor,
+    apply: (s, id) => ({ ...s, railColor: id }),
+  },
+  {
+    slot: 'hat',
+    label: 'Hat',
+    items: HATS,
+    current: (s) => s.hat,
+    apply: (s, id) => ({ ...s, hat: id }),
+  },
+  {
+    slot: 'unusual',
+    label: 'Unusual Effect',
+    items: UNUSUALS,
+    current: (s) => s.unusual,
+    apply: (s, id) => ({ ...s, unusual: id }),
+  },
+  {
+    slot: 'card',
+    label: 'Player Card',
+    items: CARD_STYLES,
+    current: (s) => s.card,
+    apply: (s, id) => ({ ...s, card: id }),
+  },
+  {
+    slot: 'emote',
+    label: 'Podium Emote',
+    items: EMOTES,
+    current: (s) => s.emote,
+    apply: (s, id) => ({ ...s, emote: id }),
+  },
+];
+
+// The Locker: pick your equipped cosmetics across every slot. Server-backed —
+// owned items can be equipped, credit-priced ones bought, level-gated ones show
+// their unlock. Degrades to local-only selection if the profile can't be
+// fetched (offline / no backend), so the picker always works.
+function Locker({
+  settings,
+  onChange,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+}) {
+  const [profile, setProfile] = useState<LockerProfile | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [caseSpin, setCaseSpin] = useState<{ won: string; dupe: boolean; refund: number } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/profile', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
+      .then((d: { profile?: InstagibProfile }) => {
+        if (!active || !d.profile) return;
+        const p = d.profile;
+        setProfile({
+          unlocked: p.unlocked ?? [],
+          credits: p.credits ?? 0,
+          equipped: p.equipped ?? {},
+          level: p.level ?? 1,
+        });
+        // Sync the server's equipped choices into the live game (once, on open).
+        let patch: Settings | null = null;
+        for (const sl of LOCKER_SLOTS) {
+          const eq = p.equipped?.[sl.slot];
+          if (eq && eq !== sl.current(settings) && (p.unlocked ?? []).includes(eq)) {
+            patch = sl.apply(patch ?? settings, eq);
+          }
+        }
+        if (patch) onChange(patch);
+      })
+      .catch(() => {
+        /* offline / no backend → local-only selection below */
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const owns = (id: string, source: CosmeticSource) =>
+    !profile || profile.unlocked.includes(id) || source.type === 'default';
+
+  const equip = async (sl: LockerSlotDef, id: string) => {
+    if (!profile) {
+      onChange(sl.apply(settings, id)); // local-only fallback
+      return;
+    }
+    setBusy(id);
+    setNote(null);
+    try {
+      const res = await fetch('/api/equip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ slot: sl.slot, id }),
+      });
+      const d = (await res.json()) as { ok?: boolean; equipped?: Record<string, string> };
+      if (res.ok && d.ok) {
+        onChange(sl.apply(settings, id));
+        setProfile((p) => (p ? { ...p, equipped: d.equipped ?? p.equipped } : p));
+      } else setNote('Could not equip that.');
+    } catch {
+      setNote('Network error.');
+    }
+    setBusy(null);
+  };
+
+  const buy = async (sl: LockerSlotDef, id: string) => {
+    setBusy(id);
+    setNote(null);
+    try {
+      const res = await fetch('/api/shop/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ id }),
+      });
+      const d = (await res.json()) as {
+        ok?: boolean;
+        reason?: string;
+        credits?: number;
+        unlocked?: string[];
+      };
+      if (res.ok && d.ok) {
+        setProfile((p) =>
+          p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
+        );
+        await equip(sl, id);
+      } else setNote(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not buy that.');
+    } catch {
+      setNote('Network error.');
+    }
+    setBusy(null);
+  };
+
+  const openCase = async () => {
+    if (busy || (profile != null && profile.credits < HAT_CASE_COST)) return;
+    setBusy('__case');
+    setNote(null);
+    try {
+      const res = await fetch('/api/shop/open-case', { method: 'POST', credentials: 'same-origin' });
+      const d = (await res.json()) as {
+        ok?: boolean;
+        reason?: string;
+        won?: string;
+        dupe?: boolean;
+        refund?: number;
+        credits?: number;
+        unlocked?: string[];
+      };
+      if (res.ok && d.ok && d.won) {
+        // Apply the new credits/unlocked now; the spinner reveals the win.
+        setProfile((p) =>
+          p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
+        );
+        setCaseSpin({ won: d.won, dupe: !!d.dupe, refund: d.refund ?? 0 });
+      } else setNote(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not open the case.');
+    } catch {
+      setNote('Network error.');
+    }
+    setBusy(null);
+  };
+
+  return (
+    <>
+    <Section label='Locker'>
+      <div className='flex items-center justify-between'>
+        <p className='text-[11px] leading-relaxed text-white/45'>
+          Cosmetics — purely visual, never affect aim, movement, or hits.
+        </p>
+        {profile && (
+          <span className='ml-3 shrink-0 text-[11px] font-semibold text-amber-300'>
+            {profile.credits} ⛁
+          </span>
+        )}
+      </div>
+      {note && <div className='text-[11px] text-rose-300'>{note}</div>}
+      {LOCKER_SLOTS.map((sl) => (
+        <div key={sl.slot} className='flex flex-col gap-2'>
+          <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{sl.label}</div>
+          {sl.slot === 'hat' && (
+            <button
+              type='button'
+              onClick={openCase}
+              disabled={busy === '__case' || (profile != null && profile.credits < HAT_CASE_COST)}
+              className='flex items-center justify-center gap-2 rounded-lg border border-fuchsia-400/40 bg-gradient-to-r from-fuchsia-500/15 to-amber-400/15 px-3 py-2 text-[12px] font-bold uppercase tracking-[0.12em] text-amber-100 transition hover:from-fuchsia-500/25 hover:to-amber-400/25 disabled:opacity-40'
+            >
+              🎁 {busy === '__case' ? 'Opening…' : `Open Hat Case · ${HAT_CASE_COST} ⛁`}
+            </button>
+          )}
+          <div className='grid grid-cols-2 gap-2'>
+            {sl.items.map((item) => {
+              const equipped = sl.current(settings) === item.id;
+              const owned = owns(item.id, item.source);
+              const buyable = !owned && item.source.type === 'credits';
+              const affordable =
+                !owned &&
+                item.source.type === 'credits' &&
+                profile != null &&
+                profile.credits >= item.source.price;
+              const working = busy === item.id;
+              return (
+                <div
+                  key={item.id}
+                  data-cosmetic={item.id}
+                  data-state={equipped ? 'equipped' : owned ? 'owned' : buyable ? 'buyable' : 'locked'}
+                  className={`flex flex-col rounded-lg border px-3 py-2 ${
+                    equipped
+                      ? 'border-cyan-300/80 bg-cyan-300/10'
+                      : owned
+                        ? 'border-white/10 bg-white/[0.03]'
+                        : 'border-white/5 bg-white/[0.01] opacity-80'
+                  }`}
+                >
+                  <div className='flex items-center justify-between gap-2'>
+                    <span className={`text-sm font-semibold ${owned ? 'text-white' : 'text-white/60'}`}>
+                      {item.name}
+                    </span>
+                    <span className={`text-[9px] uppercase tracking-[0.14em] ${RARITY_STYLE[item.rarity]}`}>
+                      {item.rarity}
+                    </span>
+                  </div>
+                  <div className='mt-1 flex-1 text-[11px] leading-snug text-white/50'>{item.blurb}</div>
+                  <div className='mt-2'>
+                    {equipped ? (
+                      <div className='text-[9px] uppercase tracking-[0.18em] text-cyan-300'>
+                        ✓ Equipped
+                      </div>
+                    ) : owned ? (
+                      <button
+                        type='button'
+                        data-action='equip'
+                        disabled={working}
+                        onClick={() => equip(sl, item.id)}
+                        className='w-full rounded-md border border-cyan-400/40 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-200 transition hover:bg-cyan-400/20 disabled:opacity-50'
+                      >
+                        {working ? '…' : 'Equip'}
+                      </button>
+                    ) : buyable ? (
+                      <button
+                        type='button'
+                        data-action='buy'
+                        disabled={working || !affordable}
+                        onClick={() => buy(sl, item.id)}
+                        className='w-full rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-amber-200 transition hover:bg-amber-400/20 disabled:opacity-40'
+                        title={affordable ? '' : 'Not enough credits'}
+                      >
+                        {working ? '…' : `Buy · ${item.source.type === 'credits' ? item.source.price : 0} ⛁`}
+                      </button>
+                    ) : (
+                      <div className='text-[10px] uppercase tracking-[0.12em] text-white/35'>
+                        🔒 {sourceLabel(item.source)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </Section>
+    {caseSpin && (
+      <CaseSpinner
+        won={caseSpin.won}
+        dupe={caseSpin.dupe}
+        refund={caseSpin.refund}
+        onClose={() => setCaseSpin(null)}
+      />
+    )}
+    </>
+  );
+}
+
+// Krunker-style unboxing roulette: a horizontal reel of hat cards that decelerates
+// onto the server-decided winner under a center ticker, then reveals it.
+function CaseSpinner({
+  won,
+  dupe,
+  refund,
+  onClose,
+}: {
+  won: string;
+  dupe: boolean;
+  refund: number;
+  onClose: () => void;
+}) {
+  const LAND = 48; // index the winner is placed at in the reel
+  const LEN = 56;
+  const CARD = 104;
+  const GAP = 8;
+  const STRIDE = CARD + GAP;
+  const reelRef = useRef<HatCosmetic[] | null>(null);
+  if (!reelRef.current) {
+    const pool = caseHats();
+    const arr: HatCosmetic[] = [];
+    for (let i = 0; i < LEN; i++) {
+      arr.push(i === LAND ? hatById(won) : pool[Math.floor(Math.random() * pool.length)]);
+    }
+    reelRef.current = arr;
+  }
+  const reel = reelRef.current;
+  const [offset, setOffset] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const vpRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const vp = vpRef.current?.clientWidth ?? 480;
+    const jitter = (Math.random() - 0.5) * (CARD * 0.55); // land slightly off-center for suspense
+    const target = LAND * STRIDE + CARD / 2 - vp / 2 + jitter;
+    const a = requestAnimationFrame(() => requestAnimationFrame(() => setOffset(-target)));
+    const t = window.setTimeout(() => setRevealed(true), 4500);
+    return () => {
+      cancelAnimationFrame(a);
+      window.clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const wonHat = hatById(won);
+  return (
+    <div
+      className='fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'
+      onClick={revealed ? onClose : undefined}
+    >
+      <div
+        className='w-[560px] max-w-[94vw] rounded-2xl border border-fuchsia-500/30 bg-zinc-950/95 p-6 font-mono shadow-2xl'
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className='mb-3 text-center text-[11px] uppercase tracking-[0.3em] text-fuchsia-200/80'>
+          {revealed ? (dupe ? 'Duplicate' : 'Unboxed!') : 'Opening case…'}
+        </div>
+        <div
+          ref={vpRef}
+          className='relative h-28 overflow-hidden rounded-lg border border-white/10 bg-black/40'
+        >
+          <div className='pointer-events-none absolute left-1/2 top-0 z-10 h-full w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.9)]' />
+          <div
+            className='absolute top-1/2 flex -translate-y-1/2 gap-2'
+            style={{
+              transform: `translateX(${offset}px)`,
+              transition: offset !== 0 ? 'transform 4.4s cubic-bezier(0.12,0.85,0.18,1)' : 'none',
+            }}
+          >
+            {reel.map((h, i) => (
+              <HatReelCard key={i} hat={h} width={CARD} />
+            ))}
+          </div>
+        </div>
+        {revealed && (
+          <div className='mt-4 flex flex-col items-center gap-1 text-center'>
+            <div className={`text-xl font-extrabold ${RARITY_STYLE[wonHat.rarity]}`}>
+              {wonHat.name}
+            </div>
+            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>
+              {wonHat.rarity} hat
+            </div>
+            {dupe && (
+              <div className='mt-1 text-sm font-semibold text-amber-300'>
+                Duplicate — refunded {refund} ⛁
+              </div>
+            )}
+            <button
+              onClick={onClose}
+              className='mt-3 rounded-lg bg-emerald-400 px-6 py-2 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
+            >
+              Nice
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HatReelCard({ hat, width }: { hat: HatCosmetic; width: number }) {
+  const ring =
+    hat.rarity === 'epic'
+      ? 'border-fuchsia-400/60'
+      : hat.rarity === 'rare'
+        ? 'border-sky-400/50'
+        : 'border-white/15';
+  return (
+    <div
+      style={{ width }}
+      className={`flex h-24 shrink-0 flex-col items-center justify-center gap-1 rounded-md border-2 bg-white/[0.04] px-2 ${ring}`}
+    >
+      <span className='text-2xl'>🎩</span>
+      <span className='line-clamp-2 text-center text-[10px] leading-tight text-white/80'>
+        {hat.name}
+      </span>
+      <span className={`text-[8px] uppercase tracking-[0.12em] ${RARITY_STYLE[hat.rarity]}`}>
+        {hat.rarity}
+      </span>
+    </div>
+  );
+}
+
+// End-of-match XP moment: animated XP bar, +XP / +credits, a LEVEL UP flourish,
+// and any new cosmetic unlocks. Driven entirely by the server's POST /api/stats
+// response so the numbers are authoritative.
+function XpReward({ progression }: { progression: ProgressionResp }) {
+  const lp = levelProgress(progression.progression.totalXp);
+  const target = lp.xpForNext > 0 ? Math.min(100, (lp.xpIntoLevel / lp.xpForNext) * 100) : 100;
+  const [fill, setFill] = useState(0);
+  useEffect(() => {
+    const t = window.setTimeout(() => setFill(target), 80);
+    return () => window.clearTimeout(t);
+  }, [target]);
+  const unlocks = progression.newUnlocks.map((id) => killEffectById(id).name);
+  return (
+    <div className='mt-4 rounded-lg border border-cyan-500/20 bg-cyan-300/[0.04] px-4 py-3'>
+      <div className='flex items-baseline justify-between'>
+        <span className='text-[11px] uppercase tracking-[0.2em] text-cyan-200/80'>
+          Level {lp.level}
+        </span>
+        <span className='text-sm font-bold tabular-nums text-cyan-200'>
+          +{progression.xpGained} XP
+          {progression.creditsGained > 0 && (
+            <span className='ml-2 text-amber-300'>+{progression.creditsGained} ⛁</span>
+          )}
+        </span>
+      </div>
+      <div className='mt-2 h-2.5 overflow-hidden rounded-full bg-white/10'>
+        <div
+          className='h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300 transition-[width] duration-700 ease-out'
+          style={{ width: `${fill}%` }}
+        />
+      </div>
+      <div className='mt-1 flex items-center justify-between text-[10px] tabular-nums text-white/40'>
+        <span>
+          {lp.xpForNext > 0 ? `${lp.xpIntoLevel} / ${lp.xpForNext}` : 'MAX LEVEL'}
+        </span>
+        {progression.leveledUp && (
+          <span className='font-bold uppercase tracking-[0.18em] text-emerald-300'>
+            ★ Level up!
+          </span>
+        )}
+      </div>
+      {unlocks.length > 0 && (
+        <div className='mt-2 text-[11px] text-amber-200'>
+          Unlocked: <span className='font-semibold'>{unlocks.join(', ')}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Deterministic 32-bit hash (FNV-1a) so a given name always maps to the same
+// podium hat/emote when we don't know its real loadout (offline bots / remotes).
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// Build the top-3 podium roster from the final scoreboard. Each player's real
+// equipped hat/emote is used when known — the local player from settings, and
+// (online) remotes from the broadcast carried on their PlayerScore. Offline bots
+// have no known loadout, so they fall back to a stable name-hashed hat/emote.
+function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWinner[] {
+  const caseHatIds = caseHats().map((h) => h.id);
+  const emoteIds = EMOTES.map((e) => e.id);
+  return scores.slice(0, 3).map((s, i) => {
+    const h = hashStr(s.name);
+    const hatId = s.isLocal ? settings.hat : s.hat ?? caseHatIds[h % caseHatIds.length] ?? DEFAULT_HAT;
+    const emoteId = s.isLocal
+      ? settings.emote
+      : s.emote ?? emoteIds[(h >>> 4) % emoteIds.length] ?? DEFAULT_EMOTE;
+    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId };
+  });
+}
+
+// Mounts the Three.js podium scene on a canvas and tears it down on unmount.
+function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const scene = new PodiumScene(canvas);
+    void scene.setWinners(winners);
+    scene.start();
+    const onResize = () => scene.resize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      scene.dispose();
+    };
+  }, [winners]);
+  return <canvas ref={ref} className='block h-full w-full' />;
+}
+
+// Shared results panel: Victory/Defeat header, the 3D top-3 podium, the full
+// scoreboard, match stats + XP reward, and a caller-supplied footer (offline =
+// Play Again/Lobby; online = Continue to the map vote).
+function ResultsPanel({
+  won,
+  scores,
+  settings,
+  result,
+  progression,
+  footer,
+}: {
+  won: boolean;
+  scores: PlayerScore[];
+  settings: Settings;
+  result: MatchResult | null;
+  progression: ProgressionResp | null;
+  footer: ReactNode;
+}) {
+  const acc = result && result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
+  // Stable winners identity so the 3D scene mounts once (not every HUD tick).
+  const rosterKey = scores.slice(0, 3).map((s) => `${s.id}:${s.frags}:${s.hat ?? ''}:${s.emote ?? ''}`).join('|');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote]);
+
+  return (
+    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
+      <div className='max-h-[94vh] w-[760px] max-w-[96vw] overflow-y-auto rounded-2xl border border-cyan-500/25 bg-zinc-950/95 font-mono shadow-2xl'>
+        {/* Header: Victory/Defeat title (kept clear of the 3D labels below) */}
+        <div className='border-b border-white/10 bg-black/40 py-3 text-center'>
+          <span
+            className={`text-2xl font-extrabold uppercase tracking-[0.24em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
+            style={{
+              filter: won
+                ? 'drop-shadow(0 0 16px rgba(52,211,153,0.55))'
+                : 'drop-shadow(0 0 16px rgba(244,63,94,0.55))',
+            }}
+          >
+            {won ? 'Victory' : 'Defeat'}
+          </span>
+          <span className='ml-3 text-[10px] uppercase tracking-[0.3em] text-white/40'>Final Standings</span>
+        </div>
+        {/* Hero: the 3D podium of the top 3 (hats + emotes) */}
+        <div className='h-[340px] w-full bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
+          <PodiumResults winners={winners} />
+        </div>
+
+        <div className='p-6 pt-4'>
+          {/* Full scoreboard (all players, compact) */}
+          <div className='overflow-hidden rounded-lg border border-white/10'>
+            <div className='grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-white/45'>
+              <span>#</span>
+              <span>Player</span>
+              <span className='text-right'>K</span>
+              <span className='text-right'>D</span>
+            </div>
+            {scores.map((s, i) => (
+              <div
+                key={s.id}
+                className={`grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 px-3 py-1.5 text-sm ${
+                  s.isLocal ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/80'
+                }`}
+              >
+                <span className='tabular-nums text-white/45'>{i + 1}</span>
+                <span className='truncate'>
+                  {s.name}
+                  {s.isLocal && ' (you)'}
+                </span>
+                <span className='text-right tabular-nums'>{s.frags}</span>
+                <span className='text-right tabular-nums'>{s.deaths}</span>
+              </div>
+            ))}
+          </div>
+
+          {result && (
+            <div className='mt-4 grid grid-cols-4 gap-2 text-center'>
+              <MiniStat label='Kills' value={result.kills} />
+              <MiniStat label='Deaths' value={result.deaths} />
+              <MiniStat label='Streak' value={result.bestStreak} />
+              <MiniStat label='Acc' value={`${acc}%`} />
+            </div>
+          )}
+
+          {progression && <XpReward progression={progression} />}
+
+          <div className='mt-6 flex gap-3'>{footer}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Offline (vs-bots) results — replay or bail to the lobby.
 function MatchOverOverlay({
   won,
   scores,
+  settings,
   result,
+  progression,
   onPlayAgain,
   onLobby,
 }: {
   won: boolean;
   scores: PlayerScore[];
+  settings: Settings;
   result: MatchResult | null;
+  progression: ProgressionResp | null;
   onPlayAgain: () => void;
   onLobby: () => void;
 }) {
-  const acc = result && result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
   return (
-    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
-      <div className='w-[520px] max-w-[94vw] rounded-2xl border border-cyan-500/25 bg-zinc-950/95 p-7 font-mono shadow-2xl'>
-        <div
-          className={`text-center text-3xl font-extrabold uppercase tracking-[0.22em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
-          style={{
-            filter: won
-              ? 'drop-shadow(0 0 18px rgba(52,211,153,0.5))'
-              : 'drop-shadow(0 0 18px rgba(244,63,94,0.5))',
-          }}
-        >
-          {won ? 'Victory' : 'Defeat'}
-        </div>
-        <div className='mt-1 text-center text-[10px] uppercase tracking-[0.3em] text-white/45'>
-          Match complete · First to {MATCH_FRAG_LIMIT}
-        </div>
-
-        <div className='mt-5 overflow-hidden rounded-lg border border-white/10'>
-          <div className='grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-white/45'>
-            <span>#</span>
-            <span>Player</span>
-            <span className='text-right'>K</span>
-            <span className='text-right'>D</span>
-          </div>
-          {scores.map((s, i) => (
-            <div
-              key={s.id}
-              className={`grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 px-3 py-1.5 text-sm ${
-                s.isLocal ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/80'
-              }`}
-            >
-              <span className='tabular-nums text-white/45'>{i + 1}</span>
-              <span className='truncate'>
-                {s.name}
-                {s.isLocal && ' (you)'}
-              </span>
-              <span className='text-right tabular-nums'>{s.frags}</span>
-              <span className='text-right tabular-nums'>{s.deaths}</span>
-            </div>
-          ))}
-        </div>
-
-        {result && (
-          <div className='mt-4 grid grid-cols-4 gap-2 text-center'>
-            <MiniStat label='Kills' value={result.kills} />
-            <MiniStat label='Deaths' value={result.deaths} />
-            <MiniStat label='Streak' value={result.bestStreak} />
-            <MiniStat label='Acc' value={`${acc}%`} />
-          </div>
-        )}
-
-        <div className='mt-6 flex gap-3'>
+    <ResultsPanel
+      won={won}
+      scores={scores}
+      settings={settings}
+      result={result}
+      progression={progression}
+      footer={
+        <>
           <button
             onClick={onPlayAgain}
             className='flex-1 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
@@ -661,9 +1559,56 @@ function MatchOverOverlay({
           >
             Lobby
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    />
+  );
+}
+
+// Online results — same podium, then auto-advances to the map vote (or click).
+// Kept shorter than the 15s vote so players still get time to pick a map.
+function OnlineMatchResults({
+  won,
+  scores,
+  settings,
+  result,
+  progression,
+  onContinue,
+}: {
+  won: boolean;
+  scores: PlayerScore[];
+  settings: Settings;
+  result: MatchResult | null;
+  progression: ProgressionResp | null;
+  onContinue: () => void;
+}) {
+  const [secs, setSecs] = useState(8);
+  useEffect(() => {
+    if (secs <= 0) {
+      onContinue();
+      return;
+    }
+    const t = setTimeout(() => setSecs((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secs]);
+
+  return (
+    <ResultsPanel
+      won={won}
+      scores={scores}
+      settings={settings}
+      result={result}
+      progression={progression}
+      footer={
+        <button
+          onClick={onContinue}
+          className='flex-1 rounded-lg bg-cyan-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
+        >
+          Continue to Map Vote → {secs > 0 ? `(${secs})` : ''}
+        </button>
+      }
+    />
   );
 }
 
@@ -841,11 +1786,27 @@ function JoinErrorOverlay({
 
 /* ───────────────────────── HUD layout ───────────────────────── */
 
-function HudOverlay({ hud, settings }: { hud: HudState; settings: Settings }) {
+function HudOverlay({
+  hud,
+  settings,
+  localCard,
+}: {
+  hud: HudState;
+  settings: Settings;
+  localCard: CardPayload | null;
+}) {
   const dead = hud.killcam !== null;
+  const s = settings.uiScale || 1;
+  // UI scale: a counter-sized wrapper rendered at 1/s then transform-scaled by s,
+  // so corner-anchored HUD elements keep their anchors while everything resizes.
   return (
     <div className='pointer-events-none absolute inset-0 select-none'>
-      {!dead && <BoostRing active={hud.boostReady} />}
+      <div
+        className='absolute left-0 top-0 origin-top-left'
+        style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
+      >
+        {!dead && <BoostRing active={hud.boostReady} />}
+      <KillFlashLayer flash={hud.killFlash} />
       {!dead && <Crosshair cfg={settings.crosshair} />}
       {!dead && <ReloadBar railCooldown={hud.railCooldown} />}
       {!dead && <HitMarkerLayer marker={hud.hitMarker} />}
@@ -857,7 +1818,12 @@ function HudOverlay({ hud, settings }: { hud: HudState; settings: Settings }) {
       )}
       {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
       <BannerOverlay banner={hud.banner} />
-      <KillConfirmOverlay confirm={hud.killConfirm} />
+      <FragPopup confirm={hud.killConfirm} />
+      {hud.killConfirm && localCard && (
+        <div className='pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2'>
+          <PlayerCard card={localCard} size='small' />
+        </div>
+      )}
       <KillcamOverlay killcam={hud.killcam} />
       {!dead && <SpeedAndStreak speed={hud.speed} streak={hud.currentStreak} />}
       {!dead && (
@@ -874,9 +1840,37 @@ function HudOverlay({ hud, settings }: { hud: HudState; settings: Settings }) {
       {hud.netStatus !== 'off' && hud.localInvulnMs > 0 && (
         <InvulnPill remainingMs={hud.localInvulnMs} />
       )}
+      {hud.netStatus !== 'off' &&
+        hud.warmupMsLeft > 0 &&
+        !hud.vote &&
+        !hud.matchOver &&
+        !hud.killcam && <WarmupOverlay remainingMs={hud.warmupMsLeft} />}
       {hud.showScoreboard && (
         <FullScoreboard scores={hud.scores} netStatus={hud.netStatus} mode={hud.mode} />
       )}
+      </div>
+    </div>
+  );
+}
+
+// Match-start "get ready" countdown. The server freezes shots during this
+// window (resumeAt), so it's a fair start — nobody can be fragged on the bell.
+function WarmupOverlay({ remainingMs }: { remainingMs: number }) {
+  const secs = Math.max(1, Math.ceil(remainingMs / 1000));
+  return (
+    <div className='pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center'>
+      <div className='text-[11px] font-semibold uppercase tracking-[0.4em] text-cyan-200/80'>
+        Get ready
+      </div>
+      <div
+        className='mt-1 font-mono text-7xl font-extrabold tabular-nums text-cyan-100'
+        style={{ filter: 'drop-shadow(0 0 22px rgba(103,232,249,0.55))' }}
+      >
+        {secs}
+      </div>
+      <div className='mt-1 text-[10px] uppercase tracking-[0.3em] text-white/45'>
+        Match starting
+      </div>
     </div>
   );
 }
@@ -899,43 +1893,6 @@ function InvulnPill({ remainingMs }: { remainingMs: number }) {
         <span className='tabular-nums text-white/90'>{secs}s</span>
       </div>
     </>
-  );
-}
-
-function KillConfirmOverlay({ confirm }: { confirm: KillConfirm | null }) {
-  if (!confirm) return null;
-  const t = 1 - confirm.remaining / confirm.total;
-  const enter = Math.min(1, t / 0.12);
-  const exit = confirm.remaining < 0.4 ? clamp01(confirm.remaining / 0.4) : 1;
-  const opacity = enter * exit;
-  const scale = 0.9 + 0.12 * enter;
-  const ty = (1 - enter) * 8;
-  const verb = confirm.headshot ? 'Headshot' : 'Gibbed';
-  const verbColor = confirm.headshot ? 'text-amber-300' : 'text-rose-300';
-  const glow = confirm.headshot
-    ? 'drop-shadow(0 0 14px rgba(252,211,77,0.55))'
-    : 'drop-shadow(0 0 14px rgba(244,63,94,0.55))';
-  return (
-    <div
-      key={confirm.id}
-      className='absolute inset-x-0 flex justify-center'
-      style={{ top: 'calc(50% + 64px)' }}
-    >
-      <div
-        className='flex items-baseline gap-3 font-mono'
-        style={{ opacity, transform: `translateY(${ty}px) scale(${scale})` }}
-      >
-        <span
-          className={`text-base font-extrabold uppercase tracking-[0.22em] ${verbColor}`}
-          style={{ filter: glow }}
-        >
-          {verb}
-        </span>
-        <span className='text-lg font-bold tracking-wide text-white'>
-          {confirm.victimName}
-        </span>
-      </div>
-    </div>
   );
 }
 
@@ -965,6 +1922,11 @@ function KillcamOverlay({ killcam }: { killcam: KillcamState | null }) {
         >
           {killcam.killerName}
         </div>
+        {killcam.killerCard && (
+          <div className='mt-5'>
+            <PlayerCard card={killcam.killerCard} />
+          </div>
+        )}
         <div className='mt-6 text-[11px] uppercase tracking-[0.3em] text-white/55'>
           Respawning in{' '}
           <span className='text-white'>{Math.max(0, killcam.remaining).toFixed(1)}s</span>
@@ -1197,11 +2159,34 @@ function ReloadBar({ railCooldown }: { railCooldown: number }) {
   );
 }
 
+// Full-screen kill-confirmation flash: an edge vignette that pulses in and out
+// so it reads as "frag!" without ever covering the crosshair. Cyan for body
+// kills, amber for headshots.
+function KillFlashLayer({ flash }: { flash: KillFlash | null }) {
+  if (!flash) return null;
+  const t = 1 - flash.remaining / flash.total;
+  // Quick pulse: ramp up over the first ~25%, ease out over the rest.
+  const pulse = t < 0.25 ? t / 0.25 : clamp01(1 - (t - 0.25) / 0.75);
+  const edge = flash.headshot ? 'rgba(252,211,77,0.40)' : 'rgba(120,230,255,0.34)';
+  return (
+    <div
+      key={flash.id}
+      className='absolute inset-0'
+      style={{
+        opacity: pulse,
+        background: `radial-gradient(ellipse at center, transparent 52%, ${edge} 100%)`,
+      }}
+    />
+  );
+}
+
 function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
   if (!marker) return null;
   const max = marker.kind === 'hit' ? HIT_MARKER_DURATION_SEC : HIT_MARKER_KILL_DURATION_SEC;
   const t = 1 - marker.remaining / max;
-  const scale = 1 + t * 0.35;
+  const isKill = marker.kind !== 'hit';
+  // Kills get a snappier, bigger pop than plain hits.
+  const scale = isKill ? 1.15 + t * 0.75 : 1 + t * 0.35;
   const opacity = clamp01(marker.remaining / (max * 0.6));
   const stroke =
     marker.kind === 'headshot' ? '#facc15' :
@@ -1210,11 +2195,26 @@ function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
   // Use flex centering — exact crosshair alignment regardless of marker
   // size or scale. The previous translate(-50%) math drifted off-pixel
   // when the wrapper's intrinsic size didn't match the SVG viewBox.
+  // Kill markers fire an expanding ring (a quick shockwave around the X).
+  const ringScale = 0.5 + t * 2.0;
+  const ringOpacity = isKill ? clamp01(1 - t) * 0.85 : 0;
   return (
     <div
       key={marker.id}
       className='absolute inset-0 flex items-center justify-center'
     >
+      {isKill && (
+        <svg
+          width='42' height='42' viewBox='0 0 42 42' aria-hidden
+          className='absolute'
+          style={{ opacity: ringOpacity, transform: `scale(${ringScale})`, transformOrigin: '50% 50%' }}
+        >
+          <circle
+            cx='21' cy='21' r='13' fill='none' stroke={stroke} strokeWidth='2'
+            style={{ filter: `drop-shadow(0 0 5px ${stroke}aa)` }}
+          />
+        </svg>
+      )}
       <svg
         width='42'
         height='42'
@@ -1224,7 +2224,7 @@ function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
       >
         <g
           stroke={stroke}
-          strokeWidth='2.5'
+          strokeWidth={isKill ? '3' : '2.5'}
           strokeLinecap='round'
           style={{ filter: `drop-shadow(0 0 4px ${stroke}aa)` }}
         >
@@ -1320,6 +2320,9 @@ function ToastChip({ toast }: { toast: ToastEntry }) {
 
 function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
   const top = scores.slice(0, 5);
+  // If you're not in the top 5, show your own rank in a pinned extra row.
+  const localIndex = scores.findIndex((s) => s.isLocal);
+  const you = localIndex >= 5 ? scores[localIndex] : null;
   return (
     <div className='absolute left-6 top-6 w-64 rounded-md border border-white/10 bg-black/55 px-3 py-2.5 font-mono text-[12px] backdrop-blur-sm'>
       <div className='mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-white/55'>
@@ -1353,6 +2356,26 @@ function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
             </div>
           </div>
         ))}
+        {you && (
+          <div className='mt-0.5 flex items-center justify-between gap-2 border-t border-white/10 pt-1'>
+            <div className='flex min-w-0 items-center gap-2'>
+              <span className='w-4 text-right text-emerald-300/70'>{localIndex + 1}.</span>
+              <span className='truncate font-bold text-emerald-300'>{you.name}</span>
+              {you.currentStreak >= 3 && (
+                <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
+                  {you.currentStreak}
+                </span>
+              )}
+            </div>
+            <div className='shrink-0 tabular-nums'>
+              <span className='text-white'>{you.frags}</span>
+              <span className='mx-1 text-white/30'>·</span>
+              <span className='text-white/55'>{you.deaths}</span>
+              <span className='mx-1 text-white/30'>·</span>
+              <span className='text-cyan-200/80'>{formatAccuracy(you.accuracy)}</span>
+            </div>
+          </div>
+        )}
       </div>
       <div className='mt-2 border-t border-white/10 pt-1.5 text-[10px] uppercase tracking-[0.16em] text-white/40'>
         Tab — full scoreboard
@@ -1406,7 +2429,10 @@ function SpeedAndStreak({ speed, streak }: { speed: number; streak: number }) {
   return (
     <div className='absolute bottom-6 left-6 font-mono'>
       <div className='text-[10px] uppercase tracking-[0.25em] text-white/55'>Speed</div>
-      <div className='text-3xl font-bold tabular-nums leading-none'>{speed.toFixed(1)}</div>
+      <div className='text-3xl font-bold tabular-nums leading-none'>
+        {speed.toFixed(1)}
+        <span className='ml-1 text-sm font-normal text-white/40'>m/s</span>
+      </div>
       {streak >= 2 && (
         <div className='mt-3 flex items-center gap-2'>
           <span className='text-[10px] uppercase tracking-[0.25em] text-amber-300/85'>Streak</span>
@@ -1767,18 +2793,41 @@ function savedPlayerName(): string | undefined {
   }
 }
 
-async function submitMatchStats(result: MatchResult) {
+// Progression delta returned by POST /api/stats — drives the end-of-match XP
+// moment. Mirrors the server `MatchRecordResult` (minus the legacy `stats`).
+type ProgressionResp = {
+  xpGained: number;
+  creditsGained: number;
+  leveledUp: boolean;
+  newUnlocks: string[];
+  progression: {
+    totalXp: number;
+    level: number;
+    credits: number;
+    unlocked: string[];
+    equipped: Record<string, string>;
+  };
+};
+
+async function submitMatchStats(
+  result: MatchResult,
+  offline: boolean,
+): Promise<ProgressionResp | null> {
   try {
     // Stats are keyed server-side by an anonymous per-browser cookie; the name
-    // is cosmetic (for a future leaderboard), so send the local display name.
-    await fetch('/api/stats', {
+    // is cosmetic (for the leaderboard), so send the local display name. The
+    // `offline` flag scales XP server-side (practice shouldn't be the best farm).
+    const res = await fetch('/api/stats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ ...result, name: savedPlayerName() }),
+      body: JSON.stringify({ ...result, name: savedPlayerName(), offline }),
     });
+    if (!res.ok) return null;
+    return (await res.json()) as ProgressionResp;
   } catch {
     // Best-effort — ignore network errors so play never blocks on stats.
+    return null;
   }
 }
 
@@ -1796,6 +2845,7 @@ function Lobby({
   const [soloOpen, setSoloOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [challengesOpen, setChallengesOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
@@ -1949,8 +2999,9 @@ function Lobby({
                   ◭ Solo vs Bots
                 </DeckButton>
               </div>
-              <div className='col-span-2 grid grid-cols-3 gap-3'>
+              <div className='col-span-2 grid grid-cols-2 gap-3'>
                 <DeckButton onClick={() => setStatsOpen(true)}>Stats</DeckButton>
+                <DeckButton onClick={() => setChallengesOpen(true)}>Challenges</DeckButton>
                 <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
                 <DeckButton onClick={() => setSettingsOpen(true)} accent='cyan'>
                   ⚙ Settings
@@ -2015,6 +3066,7 @@ function Lobby({
         />
       )}
       {statsOpen && <StatsModal onClose={() => setStatsOpen(false)} />}
+      {challengesOpen && <ChallengesModal onClose={() => setChallengesOpen(false)} />}
       {leaderboardOpen && <LeaderboardModal onClose={() => setLeaderboardOpen(false)} />}
       {settingsOpen && (
         <SettingsModal
@@ -2522,17 +3574,28 @@ function DifficultyPicker({
   );
 }
 
+type InstagibProfile = {
+  level: number;
+  totalXp: number;
+  xpIntoLevel: number;
+  xpForNext: number;
+  credits: number;
+  unlocked: string[];
+  equipped: Record<string, string>;
+  stats: InstagibStats;
+};
+
 function StatsModal({ onClose }: { onClose: () => void }) {
-  const [stats, setStats] = useState<InstagibStats | null>(null);
+  const [profile, setProfile] = useState<InstagibProfile | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   useEffect(() => {
     let active = true;
-    fetch('/api/stats')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('stats unavailable'))))
-      .then((d: { stats?: InstagibStats }) => {
+    fetch('/api/profile')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile unavailable'))))
+      .then((d: { profile?: InstagibProfile }) => {
         if (!active) return;
-        setStats(d.stats ?? null);
+        setProfile(d.profile ?? null);
         setState('ready');
       })
       .catch(() => {
@@ -2543,27 +3606,197 @@ function StatsModal({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
+  const stats = profile?.stats ?? null;
   const kd =
     stats && stats.totalDeaths > 0
       ? (stats.totalKills / stats.totalDeaths).toFixed(2)
       : String(stats?.totalKills ?? 0);
+  const xpPct =
+    profile && profile.xpForNext > 0
+      ? Math.min(100, Math.round((profile.xpIntoLevel / profile.xpForNext) * 100))
+      : 100;
 
   return (
-    <ModalShell title='Your Instagib Stats' onClose={onClose}>
+    <ModalShell title='Your Profile' onClose={onClose}>
       {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
       {state === 'error' && (
         <div className='text-sm text-white/55'>
-          Couldn&apos;t load stats. Sign in and finish a match to start tracking.
+          Couldn&apos;t load your profile. Finish a match to start tracking.
         </div>
       )}
-      {state === 'ready' && stats && (
-        <div className='grid grid-cols-2 gap-3'>
-          <BigStat label='Kills' value={stats.totalKills} />
-          <BigStat label='Deaths' value={stats.totalDeaths} />
-          <BigStat label='K / D' value={kd} />
-          <BigStat label='Wins' value={`${stats.totalWins} / ${stats.totalGames}`} />
-          <BigStat label='Best streak' value={stats.bestKillStreak} />
-          <BigStat label='Headshots' value={stats.headshots} />
+      {state === 'ready' && profile && stats && (
+        <>
+          {/* Level ring + XP bar + credits */}
+          <div className='mb-4 flex items-center gap-4 rounded-xl border border-cyan-500/20 bg-cyan-300/[0.04] p-4'>
+            <div className='flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-full border-2 border-cyan-400/60 bg-cyan-300/10'>
+              <div className='text-[8px] uppercase tracking-[0.18em] text-cyan-200/70'>Level</div>
+              <div className='text-2xl font-extrabold leading-none text-cyan-100'>{profile.level}</div>
+            </div>
+            <div className='min-w-0 flex-1'>
+              <div className='flex items-baseline justify-between text-[11px]'>
+                <span className='uppercase tracking-[0.16em] text-white/50'>
+                  {profile.xpForNext > 0 ? 'Next level' : 'Max level'}
+                </span>
+                <span className='font-semibold text-amber-300'>{profile.credits} ⛁ credits</span>
+              </div>
+              <div className='mt-1.5 h-2.5 overflow-hidden rounded-full bg-white/10'>
+                <div
+                  className='h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300'
+                  style={{ width: `${xpPct}%` }}
+                />
+              </div>
+              <div className='mt-1 text-[10px] tabular-nums text-white/40'>
+                {profile.xpForNext > 0
+                  ? `${profile.xpIntoLevel} / ${profile.xpForNext} XP · ${profile.totalXp} total`
+                  : `${profile.totalXp} XP total`}
+              </div>
+            </div>
+          </div>
+          <div className='grid grid-cols-2 gap-3'>
+            <BigStat label='Kills' value={stats.totalKills} />
+            <BigStat label='Deaths' value={stats.totalDeaths} />
+            <BigStat label='K / D' value={kd} />
+            <BigStat label='Wins' value={`${stats.totalWins} / ${stats.totalGames}`} />
+            <BigStat label='Best streak' value={stats.bestKillStreak} />
+            <BigStat label='Headshots' value={stats.headshots} />
+          </div>
+        </>
+      )}
+    </ModalShell>
+  );
+}
+
+type ChallengeView = {
+  id: string;
+  title: string;
+  period: 'daily' | 'weekly';
+  goal: number;
+  progress: number;
+  claimed: boolean;
+  complete: boolean;
+  rewardXp: number;
+  rewardCredits: number;
+};
+
+function ChallengesModal({ onClose }: { onClose: () => void }) {
+  const [data, setData] = useState<{ daily: ChallengeView[]; weekly: ChallengeView[] } | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [claiming, setClaiming] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    fetch('/api/challenges', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenges'))))
+      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
+        if (d.challenges) {
+          setData(d.challenges);
+          setState('ready');
+        } else setState('error');
+      })
+      .catch(() => setState('error'));
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const claim = async (id: string) => {
+    setClaiming(id);
+    setFlash(null);
+    try {
+      const res = await fetch('/api/challenges/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ id }),
+      });
+      const d = (await res.json()) as { ok?: boolean; xpGained?: number; creditsGained?: number };
+      if (res.ok && d.ok) {
+        setFlash(`+${d.xpGained} XP · +${d.creditsGained} ⛁`);
+        load();
+      }
+    } catch {
+      /* ignore */
+    }
+    setClaiming(null);
+  };
+
+  const Row = (c: ChallengeView) => {
+    const pct = Math.min(100, Math.round((c.progress / c.goal) * 100));
+    return (
+      <div
+        key={c.id}
+        data-challenge={c.id}
+        data-complete={c.complete ? '1' : '0'}
+        data-claimed={c.claimed ? '1' : '0'}
+        className='rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5'
+      >
+        <div className='flex items-center justify-between gap-2'>
+          <span className='text-sm text-white/90'>{c.title}</span>
+          <span className='shrink-0 text-[10px] uppercase tracking-[0.12em] text-amber-300/90'>
+            {c.rewardXp} XP · {c.rewardCredits} ⛁
+          </span>
+        </div>
+        <div className='mt-2 flex items-center gap-2'>
+          <div className='h-2 flex-1 overflow-hidden rounded-full bg-white/10'>
+            <div
+              className={`h-full rounded-full ${c.complete ? 'bg-emerald-400' : 'bg-cyan-400/80'}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <span className='w-14 shrink-0 text-right text-[11px] tabular-nums text-white/55'>
+            {Math.min(c.progress, c.goal)}/{c.goal}
+          </span>
+          {c.claimed ? (
+            <span className='w-16 shrink-0 text-right text-[10px] uppercase tracking-[0.14em] text-white/35'>
+              Claimed
+            </span>
+          ) : (
+            <button
+              type='button'
+              data-action='claim'
+              disabled={!c.complete || claiming === c.id}
+              onClick={() => claim(c.id)}
+              className='w-16 shrink-0 rounded-md border border-emerald-400/50 bg-emerald-400/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-emerald-200 transition hover:bg-emerald-400/20 disabled:border-white/10 disabled:bg-transparent disabled:text-white/25'
+            >
+              {claiming === c.id ? '…' : 'Claim'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <ModalShell title='Challenges' onClose={onClose}>
+      {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
+      {state === 'error' && (
+        <div className='text-sm text-white/55'>
+          Couldn&apos;t load challenges. Play an online match to start earning.
+        </div>
+      )}
+      {state === 'ready' && data && (
+        <div className='flex flex-col gap-4'>
+          {flash && (
+            <div className='rounded-md border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-center text-sm font-bold text-emerald-200'>
+              Reward claimed: {flash}
+            </div>
+          )}
+          <div>
+            <div className='mb-2 text-[10px] uppercase tracking-[0.22em] text-white/45'>
+              Daily · resets every day
+            </div>
+            <div className='flex flex-col gap-2'>{data.daily.map(Row)}</div>
+          </div>
+          <div>
+            <div className='mb-2 text-[10px] uppercase tracking-[0.22em] text-white/45'>
+              Weekly · bigger rewards
+            </div>
+            <div className='flex flex-col gap-2'>{data.weekly.map(Row)}</div>
+          </div>
+          <div className='text-[10px] normal-case tracking-normal text-white/35'>
+            Challenges progress from online matches only. Complete one, then Claim
+            its XP + credits.
+          </div>
         </div>
       )}
     </ModalShell>
@@ -2675,6 +3908,32 @@ function LeaderboardRow({ rank, row }: { rank: number; row: LeaderboardEntry }) 
 
 /* ───────────────────────── Settings modal ───────────────────────── */
 
+type SettingsTab =
+  | 'controls'
+  | 'crosshair'
+  | 'video'
+  | 'audio'
+  | 'accessibility'
+  | 'locker'
+  | 'profile';
+
+// `keywords` powers the settings search (matched alongside the label).
+const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: string; keywords: string }> = [
+  { id: 'controls', label: 'Controls', keywords: 'sensitivity sens mouse dpi raw input fov zoom ads aim keybind bind move jump dash strafe vertical' },
+  { id: 'crosshair', label: 'Crosshair', keywords: 'crosshair reticle dot cross circle color outline gap size thickness preset share' },
+  { id: 'video', label: 'Video', keywords: 'fps framerate frame rate vsync unlimited resolution quality low spec performance ui scale hud viewmodel weapon offset map brightness tint shadows particles' },
+  { id: 'audio', label: 'Audio', keywords: 'audio volume sound sfx announcer master mute' },
+  { id: 'accessibility', label: 'Access.', keywords: 'accessibility reduced effects shake flash motion bright enemies colorblind visibility' },
+  { id: 'locker', label: 'Locker', keywords: 'locker cosmetic kill effect explosion rail beam color skin equip buy credits unlock' },
+  { id: 'profile', label: 'Profile', keywords: 'profile name player server url lan import export share code backup' },
+];
+
+function filterTabs(query: string): typeof SETTINGS_TABS {
+  const q = query.trim().toLowerCase();
+  if (!q) return SETTINGS_TABS;
+  return SETTINGS_TABS.filter((t) => `${t.label} ${t.keywords}`.toLowerCase().includes(q));
+}
+
 function SettingsModal({
   settings,
   onChange,
@@ -2687,6 +3946,14 @@ function SettingsModal({
   const ch = settings.crosshair;
   const setCh = (patch: Partial<CrosshairConfig>) =>
     onChange({ ...settings, crosshair: { ...ch, ...patch } });
+  const [tab, setTab] = useState<SettingsTab>('controls');
+  const [search, setSearch] = useState('');
+  const visibleTabs = filterTabs(search);
+  const onSearch = (q: string) => {
+    setSearch(q);
+    const m = filterTabs(q);
+    if (m.length && !m.some((t) => t.id === tab)) setTab(m[0].id);
+  };
   useEscapeToClose(onClose);
   return (
     <div
@@ -2698,9 +3965,9 @@ function SettingsModal({
         aria-modal='true'
         aria-label='Settings'
         onClick={(e) => e.stopPropagation()}
-        className='flex max-h-[88vh] w-[480px] max-w-[92vw] flex-col rounded-xl border border-white/12 bg-zinc-950/95 p-6 font-mono shadow-2xl'
+        className='flex max-h-[88vh] w-[520px] max-w-[92vw] flex-col rounded-xl border border-white/12 bg-zinc-950/95 p-6 font-mono shadow-2xl'
       >
-        <div className='mb-5 flex items-center justify-between'>
+        <div className='mb-4 flex items-center justify-between'>
           <div className='text-base font-semibold uppercase tracking-[0.18em]'>
             Settings
           </div>
@@ -2711,37 +3978,142 @@ function SettingsModal({
             Close
           </button>
         </div>
-        <div className='flex flex-col gap-5 overflow-y-auto pr-1'>
-          <MouseSettings settings={settings} onChange={onChange} />
-          <KeybindsSection
-            keybinds={settings.keybinds}
-            onChange={(b) => onChange({ ...settings, keybinds: b })}
-          />
-          <SliderField
-            label='Field of view'
-            value={settings.fov}
-            min={MIN_FOV}
-            max={MAX_FOV}
-            step={1}
-            format={(v) => `${v.toFixed(0)}°`}
-            onChange={(v) => onChange({ ...settings, fov: v })}
-          />
-          <SliderField
-            label='Zoom FOV'
-            value={settings.zoomFov}
-            min={MIN_ZOOM_FOV}
-            max={MAX_ZOOM_FOV}
-            step={1}
-            format={(v) => `${v.toFixed(0)}°`}
-            onChange={(v) => onChange({ ...settings, zoomFov: v })}
-          />
-          <ToggleField
-            label='Show FPS'
-            value={settings.showFps}
-            onChange={(v) => onChange({ ...settings, showFps: v })}
-          />
+        <input
+          type='search'
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          placeholder='Search settings…'
+          aria-label='Search settings'
+          className='mb-3 w-full rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white placeholder:text-white/30 outline-none transition focus:border-cyan-400/60'
+        />
+        {/* Tab bar */}
+        <div
+          role='tablist'
+          aria-label='Settings sections'
+          className='mb-4 flex flex-wrap gap-1.5 border-b border-white/10 pb-3'
+        >
+          {visibleTabs.map((t) => (
+            <button
+              key={t.id}
+              role='tab'
+              aria-selected={tab === t.id}
+              data-tab={t.id}
+              onClick={() => setTab(t.id)}
+              className={`rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition ${
+                tab === t.id
+                  ? 'bg-cyan-300/15 text-cyan-200'
+                  : 'text-white/50 hover:bg-white/5 hover:text-white/80'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className='flex flex-col gap-5 overflow-y-auto pr-1' role='tabpanel'>
+          {visibleTabs.length === 0 ? (
+            <div className='text-sm text-white/55'>No settings match “{search.trim()}”.</div>
+          ) : (
+            <>
+          {tab === 'controls' && (
+            <>
+              <MouseSettings settings={settings} onChange={onChange} />
+              <KeybindsSection
+                keybinds={settings.keybinds}
+                onChange={(b) => onChange({ ...settings, keybinds: b })}
+              />
+              <SliderField
+                label='Field of view'
+                value={settings.fov}
+                min={MIN_FOV}
+                max={MAX_FOV}
+                step={1}
+                format={(v) => `${v.toFixed(0)}°`}
+                onChange={(v) => onChange({ ...settings, fov: v })}
+              />
+              <SliderField
+                label='Zoom FOV'
+                value={settings.zoomFov}
+                min={MIN_ZOOM_FOV}
+                max={MAX_ZOOM_FOV}
+                step={1}
+                format={(v) => `${v.toFixed(0)}°`}
+                onChange={(v) => onChange({ ...settings, zoomFov: v })}
+              />
+              <SliderField
+                label='ADS / zoom sensitivity'
+                value={settings.zoomSens}
+                min={0.1}
+                max={2}
+                step={0.05}
+                format={(v) => `${v.toFixed(2)}×`}
+                onChange={(v) => onChange({ ...settings, zoomSens: v })}
+              />
+              <div className='-mt-2 text-[10px] normal-case tracking-normal text-white/40'>
+                Look speed while zoomed, multiplied on top of the FOV-scaled
+                default. 1.00× keeps the standard feel; lower it for precise
+                long-range flicks.
+              </div>
+            </>
+          )}
 
-          <Section label='Weapon viewmodel'>
+          {tab === 'video' && (
+            <>
+              <ToggleField
+                label='Show FPS'
+                value={settings.showFps}
+                onChange={(v) => onChange({ ...settings, showFps: v })}
+              />
+              <SelectField
+                label='Frame rate limit'
+                value={String(settings.fpsLimit)}
+                options={[
+                  { id: '0', label: 'VSync (display refresh)' },
+                  { id: '240', label: '240 fps' },
+                  { id: '144', label: '144 fps' },
+                  { id: '120', label: '120 fps' },
+                  { id: '60', label: '60 fps' },
+                  { id: '-1', label: 'Unlimited (uncapped)' },
+                ]}
+                onChange={(v) => onChange({ ...settings, fpsLimit: Number(v) })}
+              />
+              <div className='-mt-2 text-[10px] normal-case tracking-normal text-white/40'>
+                VSync matches your monitor (smoothest). Caps below it save power.
+                “Unlimited” renders past your refresh rate for the lowest input
+                latency — at much higher CPU/GPU use.
+              </div>
+
+              <Section label='Quality'>
+                <SliderField
+                  label='Resolution scale'
+                  value={settings.resolutionScale}
+                  min={0.5}
+                  max={2}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, resolutionScale: v })}
+                />
+                <ToggleField
+                  label='Low-spec mode'
+                  value={settings.lowSpec}
+                  onChange={(v) => onChange({ ...settings, lowSpec: v })}
+                />
+                <SliderField
+                  label='UI scale'
+                  value={settings.uiScale}
+                  min={0.7}
+                  max={1.5}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, uiScale: v })}
+                />
+                <div className='text-[10px] normal-case tracking-normal text-white/40'>
+                  Lower resolution scale or Low-spec mode (caps high-DPI rendering
+                  and thins particle effects) if the game runs hot. UI scale resizes
+                  the in-match HUD.
+                </div>
+              </Section>
+
+              <Section label='Weapon viewmodel'>
             <ToggleField
               label='Hide viewmodel'
               value={settings.hideViewmodel}
@@ -2790,7 +4162,27 @@ function SettingsModal({
             </div>
           </Section>
 
-          <Section label='Audio'>
+              <Section label='Map'>
+                <ColorField
+                  label='Map tint'
+                  value={settings.worldColor}
+                  onChange={(v) => onChange({ ...settings, worldColor: v })}
+                />
+                <SliderField
+                  label='Map brightness'
+                  value={settings.worldBrightness}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, worldBrightness: v })}
+                />
+              </Section>
+            </>
+          )}
+
+          {tab === 'audio' && (
+            <Section label='Audio'>
             <SliderField
               label='Master volume'
               value={settings.volume}
@@ -2825,9 +4217,11 @@ function SettingsModal({
                 onChange={(v) => onChange({ ...settings, announcerVolume: v })}
               />
             )}
-          </Section>
+            </Section>
+          )}
 
-          <Section label='Crosshair'>
+          {tab === 'crosshair' && (
+            <Section label='Crosshair'>
             <div className='flex flex-col gap-1.5'>
               <span className='font-mono text-[10px] uppercase tracking-[0.22em] text-white/45'>
                 Presets
@@ -2884,52 +4278,64 @@ function SettingsModal({
               </>
             )}
             <CrosshairShare cfg={ch} onImport={(next) => onChange({ ...settings, crosshair: next })} />
-          </Section>
+            </Section>
+          )}
 
-          <Section label='Visuals'>
-            <ColorField
-              label='Map tint'
-              value={settings.worldColor}
-              onChange={(v) => onChange({ ...settings, worldColor: v })}
-            />
-            <SliderField
-              label='Map brightness'
-              value={settings.worldBrightness}
-              min={0}
-              max={1}
-              step={0.05}
-              format={(v) => `${Math.round(v * 100)}%`}
-              onChange={(v) => onChange({ ...settings, worldBrightness: v })}
-            />
-            <ToggleField
-              label='Bright enemies'
-              value={settings.enemyBright}
-              onChange={(v) => onChange({ ...settings, enemyBright: v })}
-            />
-            {settings.enemyBright && (
-              <ColorField
-                label='Enemy color'
-                value={settings.enemyColor}
-                onChange={(v) => onChange({ ...settings, enemyColor: v })}
+          {tab === 'accessibility' && (
+            <Section label='Accessibility'>
+              <ToggleField
+                label='Reduced effects (shake & flash)'
+                value={settings.reducedEffects}
+                onChange={(v) => onChange({ ...settings, reducedEffects: v })}
               />
-            )}
-          </Section>
+              <ToggleField
+                label='Bright enemies'
+                value={settings.enemyBright}
+                onChange={(v) => onChange({ ...settings, enemyBright: v })}
+              />
+              {settings.enemyBright && (
+                <ColorField
+                  label='Enemy color'
+                  value={settings.enemyColor}
+                  onChange={(v) => onChange({ ...settings, enemyColor: v })}
+                />
+              )}
+              <div className='text-[10px] normal-case tracking-normal text-white/40'>
+                “Reduced effects” suppresses camera shake, the kill-flash, and heavy
+                explosions (uses small sparks instead) — defaults to your system’s
+                reduce-motion setting. “Bright enemies” makes opponents glow a color
+                you pick, for visibility / colorblindness.
+              </div>
+            </Section>
+          )}
 
-          <Section label='Profile &amp; LAN'>
-            <TextField
-              label='Player name'
-              value={settings.playerName}
-              placeholder='Player'
-              maxLength={24}
-              onChange={(v) => onChange({ ...settings, playerName: v })}
-            />
-            <TextField
-              label='Server URL (blank = this server)'
-              value={settings.serverUrl}
-              placeholder='wss://your-server.example/ws/instagib'
-              onChange={(v) => onChange({ ...settings, serverUrl: v.trim() })}
-            />
-          </Section>
+          {tab === 'locker' && (
+            <>
+              <Locker settings={settings} onChange={onChange} />
+              <CardStatsEditor settings={settings} onChange={onChange} />
+            </>
+          )}
+
+          {tab === 'profile' && (
+            <Section label='Profile &amp; LAN'>
+              <TextField
+                label='Player name'
+                value={settings.playerName}
+                placeholder='Player'
+                maxLength={24}
+                onChange={(v) => onChange({ ...settings, playerName: v })}
+              />
+              <TextField
+                label='Server URL (blank = this server)'
+                value={settings.serverUrl}
+                placeholder='wss://your-server.example/ws/instagib'
+                onChange={(v) => onChange({ ...settings, serverUrl: v.trim() })}
+              />
+              <SettingsShare settings={settings} onImport={onChange} />
+            </Section>
+          )}
+            </>
+          )}
         </div>
         <div className='mt-6 flex items-center justify-between border-t border-white/10 pt-4'>
           <button
@@ -3181,6 +4587,81 @@ function CrosshairVisibilityPreview({ cfg }: { cfg: CrosshairConfig }) {
           <CrosshairGraphic cfg={cfg} />
         </div>
       ))}
+    </div>
+  );
+}
+
+function SettingsShare({
+  settings,
+  onImport,
+}: {
+  settings: Settings;
+  onImport: (s: Settings) => void;
+}) {
+  const code = encodeSettings(settings);
+  const [paste, setPaste] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const flash = (m: string) => {
+    setMsg(m);
+    setTimeout(() => setMsg(null), 1500);
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      flash('Copied!');
+    } catch {
+      flash('Copy failed');
+    }
+  };
+  const doImport = () => {
+    const next = decodeSettings(paste);
+    if (next) {
+      onImport(next);
+      setPaste('');
+      flash('Imported!');
+    } else {
+      flash('Invalid code');
+    }
+  };
+  return (
+    <div className='flex flex-col gap-2 rounded-md border border-white/10 bg-black/30 p-3'>
+      <div className='flex items-center justify-between'>
+        <span className='text-[10px] uppercase tracking-[0.16em] text-white/55'>
+          All-settings code (backup / transfer)
+        </span>
+        {msg && (
+          <span className='text-[10px] uppercase tracking-[0.14em] text-emerald-300'>{msg}</span>
+        )}
+      </div>
+      <div className='flex items-center gap-2'>
+        <input
+          readOnly
+          value={code}
+          onFocus={(e) => e.currentTarget.select()}
+          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] text-white/80 outline-none'
+        />
+        <button
+          onClick={copy}
+          className='shrink-0 rounded bg-emerald-400 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300'
+        >
+          Copy
+        </button>
+      </div>
+      <div className='flex items-center gap-2'>
+        <input
+          value={paste}
+          onChange={(e) => setPaste(e.target.value)}
+          placeholder='Paste an IGS- code to import…'
+          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] text-white/80 placeholder:text-white/30 outline-none'
+        />
+        <button
+          onClick={doImport}
+          disabled={!paste.trim()}
+          className='shrink-0 rounded border border-white/20 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-white/10 disabled:opacity-40'
+        >
+          Import
+        </button>
+      </div>
     </div>
   );
 }

@@ -16,6 +16,9 @@
     "server",
     "src/game/constants.ts",
     "src/game/arena-data.ts",
-    "src/game/types.ts"
+    "src/game/types.ts",
+    "src/game/cosmetics.ts",
+    "src/game/progression.ts",
+    "src/game/challenges.ts"
   ]
 }

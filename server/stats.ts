@@ -7,7 +7,16 @@
 
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
-import { getStats, recordMatch } from './db';
+import {
+  buyCosmetic,
+  claimChallenge,
+  getChallenges,
+  getProfile,
+  getStats,
+  openCase,
+  recordMatch,
+  setEquipped,
+} from './db';
 
 const COOKIE_NAME = 'igpid';
 const COOKIE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
@@ -90,16 +99,23 @@ statsRouter.post('/stats', (req, res) => {
   const id = playerId(req, res);
   const body = (req.body ?? {}) as Record<string, unknown>;
 
-  const kills = clampInt(body.kills, 100_000);
-  const deaths = clampInt(body.deaths, 100_000);
-  const bestStreak = clampInt(body.bestStreak, 1_000);
-  const headshots = clampInt(body.headshots, 100_000);
-  const shotsFired = clampInt(body.shotsFired, 1_000_000);
-  const shotsHit = Math.min(clampInt(body.shotsHit, 1_000_000), shotsFired);
+  // Clamp to PLAUSIBLE per-match values, then cross-validate so a forged body
+  // can't manufacture an impossible match (e.g. 100k headshots / 0 kills) to
+  // farm cosmetic XP. This is a client-authoritative game with no in-match
+  // anti-cheat, so these caps — plus the per-match XP cap and rate limit — are
+  // what bound progression abuse. Stakes are low (cosmetic-only, self-affecting).
+  const kills = clampInt(body.kills, 200);
+  const deaths = clampInt(body.deaths, 500);
+  const shotsFired = clampInt(body.shotsFired, 5_000);
+  const shotsHit = Math.min(clampInt(body.shotsHit, 5_000), shotsFired);
+  // You can't headshot or streak more times than you have kills.
+  const headshots = Math.min(clampInt(body.headshots, 200), kills);
+  const bestStreak = Math.min(clampInt(body.bestStreak, 200), kills);
   const wins = body.won === true ? 1 : 0;
+  const offline = body.offline === true;
   const accuracy = shotsFired > 0 ? (shotsHit / shotsFired) * 100 : 0;
 
-  const stats = recordMatch({
+  const result = recordMatch({
     playerId: id,
     userName: cleanName(body.name),
     kills,
@@ -110,8 +126,92 @@ statsRouter.post('/stats', (req, res) => {
     shotsFired,
     shotsHit,
     accuracy,
+    offline,
     now: Date.now(),
   });
 
-  res.json({ stats });
+  // Stats (legacy shape) plus the progression delta so the client can show the
+  // end-of-match XP bar / LEVEL UP / new-unlock moment immediately.
+  res.json({
+    stats: result.stats,
+    xpGained: result.xpGained,
+    creditsGained: result.creditsGained,
+    leveledUp: result.leveledUp,
+    newUnlocks: result.newUnlocks,
+    progression: result.progression,
+  });
+});
+
+// Full profile for the lobby (level/XP/credits/unlocked/equipped + career stats).
+statsRouter.get('/profile', (req, res) => {
+  const id = playerId(req, res);
+  res.json({ profile: getProfile(id) });
+});
+
+// Equip an owned cosmetic. Rate-limited + server-validated.
+statsRouter.post('/equip', (req, res) => {
+  const existingPid = req.cookies?.[COOKIE_NAME];
+  const rateKey =
+    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const id = playerId(req, res);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const slot = typeof body.slot === 'string' ? body.slot : '';
+  const cosmeticId = typeof body.id === 'string' ? body.id : '';
+  const result = setEquipped(id, slot, cosmeticId);
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+// Buy a credits-priced cosmetic. Rate-limited + server-validated.
+statsRouter.post('/shop/buy', (req, res) => {
+  const existingPid = req.cookies?.[COOKIE_NAME];
+  const rateKey =
+    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const id = playerId(req, res);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const cosmeticId = typeof body.id === 'string' ? body.id : '';
+  const result = buyCosmetic(id, cosmeticId);
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+// Open a hat case (credits-funded, server-authoritative roll). Rate-limited.
+statsRouter.post('/shop/open-case', (req, res) => {
+  const existingPid = req.cookies?.[COOKIE_NAME];
+  const rateKey =
+    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const id = playerId(req, res);
+  res.status(200).json(openCase(id));
+});
+
+// Current daily/weekly challenges with progress + claim state.
+statsRouter.get('/challenges', (req, res) => {
+  const id = playerId(req, res);
+  res.json({ challenges: getChallenges(id, Date.now()) });
+});
+
+// Claim a completed challenge's reward. Rate-limited + server-validated.
+statsRouter.post('/challenges/claim', (req, res) => {
+  const existingPid = req.cookies?.[COOKIE_NAME];
+  const rateKey =
+    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  if (!allowPost(rateKey, Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const id = playerId(req, res);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const challengeId = typeof body.id === 'string' ? body.id : '';
+  const result = claimChallenge(id, challengeId, Date.now());
+  res.status(result.ok ? 200 : 400).json(result);
 });

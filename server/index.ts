@@ -51,6 +51,10 @@ const isAllowedWsOrigin = (
 
 const app = express();
 app.disable('x-powered-by');
+// Behind the Cloudflare tunnel / reverse proxy: trust the first proxy hop so
+// `req.ip` is the real client IP (used as the rate-limit fallback for
+// cookie-less callers), not the proxy's socket address.
+app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use(express.json({ limit: '16kb' }));
 

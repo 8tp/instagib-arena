@@ -153,3 +153,40 @@ export function attachRailgunToSoldier(root: THREE.Object3D, height = 1.8): THRE
   }
   return group;
 }
+
+// The soldier's idle/walk/run clips swing the arms freely, so a hand-attached
+// gun flails. soldier.glb has no weapon-carry animation, so we pin the arm
+// chains to a fixed two-handed "rifle at the ready" pose every frame AFTER the
+// mixer runs. The legs + torso keep animating (the locomotion still reads), but
+// the upper body holds the gun steady. The RIGHT arm is the model's own
+// idle-arm pose — which is what attachRailgunToSoldier's gun transform was
+// tuned against, so the barrel keeps pointing forward — and the LEFT arm was
+// solved (numeric IK) to bring the support hand onto the gun's foregrip. Skip
+// this while the death clip is playing so the ragdoll-ish death still flails.
+const HOLD_POSE: Record<string, [number, number, number]> = {
+  mixamorigRightShoulder: [0.031, 0.125, 1.679],
+  mixamorigRightArm: [-0.392, -0.069, 1.103],
+  mixamorigRightForeArm: [0.746, 0.042, 0.121],
+  mixamorigRightHand: [0.197, -0.071, 0.241],
+  // Left arm: support hand on the foregrip (solved IK, residual ~3 mm).
+  mixamorigLeftShoulder: [-3.113, -0.025, -0.198],
+  mixamorigLeftArm: [0.263, -0.796, 1.428],
+  mixamorigLeftForeArm: [-0.022, 0.123, 0.045],
+  mixamorigLeftHand: [0.005, 0.273, -0.202],
+};
+
+export class WeaponHold {
+  private readonly bones: Array<{ obj: THREE.Object3D; e: [number, number, number] }> = [];
+
+  constructor(root: THREE.Object3D) {
+    for (const [name, e] of Object.entries(HOLD_POSE)) {
+      const obj = root.getObjectByName(name);
+      if (obj) this.bones.push({ obj, e });
+    }
+  }
+
+  // Call once per frame, AFTER mixer.update(dt), while the entity is alive.
+  apply(): void {
+    for (const { obj, e } of this.bones) obj.rotation.set(e[0], e[1], e[2]);
+  }
+}

@@ -14,7 +14,9 @@ export type SoundClipName =
   | 'unstoppable'
   | 'godlike'
   | 'headshot'
-  | 'humiliation';
+  | 'humiliation'
+  | 'comeback'
+  | 'match-point';
 
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
@@ -35,6 +37,8 @@ export const SOUND_URLS: Record<SoundClipName, string> = {
   'godlike':       '/sounds/instagib/godlike.ogg',
   'headshot':      '/sounds/instagib/headshot.ogg',
   'humiliation':   '/sounds/instagib/humiliation.ogg',
+  'comeback':      '/sounds/instagib/comeback.ogg',
+  'match-point':   '/sounds/instagib/match-point.ogg',
 };
 
 const SPOKEN_TEXT: Record<SoundClipName, string> = {
@@ -54,6 +58,8 @@ const SPOKEN_TEXT: Record<SoundClipName, string> = {
   'godlike':       'God like',
   'headshot':      'Headshot',
   'humiliation':   'Humiliation',
+  'comeback':      'Comeback',
+  'match-point':   'Match point',
 };
 
 // Which clips are announcer voice lines (vs. weapon SFX). Drives the
@@ -71,6 +77,8 @@ const ANNOUNCER_CLIPS: ReadonlySet<SoundClipName> = new Set<SoundClipName>([
   'godlike',
   'headshot',
   'humiliation',
+  'comeback',
+  'match-point',
 ]);
 
 export class SoundManager {

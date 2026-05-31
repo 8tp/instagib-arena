@@ -34,14 +34,18 @@ import {
   NUM_BOTS,
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
+  KILL_FLASH_DURATION_SEC,
   RAIL_RANGE,
   SHAKE_DEATH,
   SHAKE_FIRE,
+  SHAKE_KILL,
   SHAKE_MAX,
   TICK_DT,
   TOAST_DURATION_SEC,
   TEAM_COLORS,
   TDM_FRIEND_COLOR,
+  TDM_FRAG_LIMIT,
+  DUEL_ROUND_FRAG_LIMIT,
   DUEL_ROUNDS_TO_WIN,
   type BotDifficulty,
   type GameMode,
@@ -51,6 +55,20 @@ import { EffectsManager } from './effects';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
+import {
+  DEFAULT_KILL_EFFECT,
+  DEFAULT_RAIL_COLOR,
+  DEFAULT_HAT,
+  DEFAULT_UNUSUAL,
+  DEFAULT_EMOTE,
+  isKillEffectStyle,
+  isRailColor,
+  isHat,
+  isUnusual,
+  isEmote,
+  railColorById,
+  type KillEffectStyle,
+} from './cosmetics';
 import { NetClient, type KillEvent } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
@@ -59,10 +77,12 @@ import { buildRailgun } from './weapon-model';
 import type {
   AABB,
   BannerState,
+  CardPayload,
   DuelHud,
   HitMarker,
   HudState,
   KillConfirm,
+  KillFlash,
   KillcamState,
   KillfeedEntry,
   MapVoteState,
@@ -109,6 +129,7 @@ const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
   'godlike':       'godlike',
   'headshot':      'headshot',
   'mid-air':       'humiliation',
+  'comeback':      'comeback',
 };
 
 export class Game {
@@ -129,6 +150,13 @@ export class Game {
   private accumulator = 0;
   private lastTime = 0;
   private rafHandle: number | null = null;
+  // Frame scheduler: 0 = VSync (rAF, default), >0 = cap to that fps (setTimeout),
+  // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
+  // input latency, at high CPU cost). See scheduleFrame().
+  private fpsLimit = 0;
+  private frameTimeout: ReturnType<typeof setTimeout> | null = null;
+  private fpsChannel: MessageChannel | null = null;
+  private tickFn: ((now: number) => void) | null = null;
   private disposed = false;
   private resizeHandler: () => void;
   private elapsed = 0;
@@ -150,6 +178,11 @@ export class Game {
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private matchOver = false;
   private matchWon = false;
+  // Match "drama" cues, evaluated from the scoreboard in emitHud. One-shot per
+  // match (offline: a fresh Game per match; online: reset on vote/round).
+  private worstDeficit = 0; // largest frag gap you've trailed the leader by
+  private comebackAwarded = false; // Comeback medal fires at most once per match
+  private matchPointAnnounced = false; // "Match point" banner fires once per match
   private training = false; // endless practice — never hit the frag limit
   private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
   private shake = 0; // camera screen-shake amount, decays each render frame
@@ -187,6 +220,7 @@ export class Game {
   private banner: BannerState | null = null;
   private hitMarker: HitMarker | null = null;
   private killConfirm: KillConfirm | null = null;
+  private killFlash: KillFlash | null = null;
   private killcam: KillcamState | null = null;
   private killcamLookAt = new THREE.Vector3();
   private nextEventId = 1;
@@ -210,6 +244,12 @@ export class Game {
   private viewmodelGlow: THREE.MeshStandardMaterial | null = null;
   private viewmodelOffset = { x: 0, y: 0, z: 0 };
   private hideViewmodel = false;
+  private killEffectStyle: KillEffectStyle = DEFAULT_KILL_EFFECT;
+  private localHat: string = DEFAULT_HAT; // equipped hat (broadcast to remotes)
+  private localUnusual: string = DEFAULT_UNUSUAL; // equipped unusual effect
+  private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
+  private localCard: CardPayload | null = null; // your playercard (kill banner)
+  private reducedEffects = false; // accessibility: gate shake/flash/heavy bursts
   // Weapon feedback: recoil kicks the viewmodel back+up; viewKick punches the
   // view up. Both are transient and decay to 0 each frame (aim is unaffected —
   // viewKick is purely visual, layered on top of the real pitch).
@@ -220,7 +260,11 @@ export class Game {
   // while the zoom bind is held.
   private baseFov = DEFAULT_FOV;
   private zoomFov = DEFAULT_ZOOM_FOV;
+  private zoomSensMul = 1; // ADS sensitivity multiplier (blends in while zoomed)
   private wantZoom = false;
+  // Graphics quality
+  private resolutionScale = 1;
+  private lowSpec = false;
 
   private onMatchEnd: MatchEndListener;
 
@@ -311,6 +355,31 @@ export class Game {
   setZoomFov(fov: number) {
     const f = Number.isFinite(fov) ? fov : DEFAULT_ZOOM_FOV;
     this.zoomFov = Math.max(MIN_ZOOM_FOV, Math.min(MAX_ZOOM_FOV, f));
+  }
+
+  // Independent zoom/ADS sensitivity multiplier (1 = same feel as the FOV-scaled
+  // default; <1 = slower while zoomed for precise long-range flicks).
+  setZoomSens(mul: number) {
+    this.zoomSensMul = Number.isFinite(mul) ? Math.max(0.1, Math.min(3, mul)) : 1;
+  }
+
+  // Render quality. resolutionScale scales the render resolution (perf ↔ sharp);
+  // lowSpec caps high-DPI rendering at 1× and thins out particle effects.
+  setQuality(resolutionScale: number, lowSpec: boolean) {
+    this.resolutionScale = Number.isFinite(resolutionScale)
+      ? Math.max(0.4, Math.min(2, resolutionScale))
+      : 1;
+    this.lowSpec = !!lowSpec;
+    this.applyPixelRatio();
+    this.effects.setQuality(lowSpec ? 0.5 : 1);
+  }
+
+  private applyPixelRatio() {
+    if (typeof window === 'undefined') return;
+    const dpr = window.devicePixelRatio || 1;
+    const cap = this.lowSpec ? 1 : 2; // low-spec ignores high-DPI displays
+    const pr = Math.min(Math.min(dpr, cap) * this.resolutionScale, this.lowSpec ? 1.5 : 3);
+    this.renderer.setPixelRatio(pr);
   }
 
   setViewmodel(offset: { x: number; y: number; z: number }, hide: boolean) {
@@ -412,6 +481,52 @@ export class Game {
     this.applyEnemyStyle();
   }
 
+  // Equipped kill-effect cosmetic (the explosion that plays at YOUR frags).
+  // Cosmetic-only; unknown IDs fall back to the default so a stale/forged value
+  // can never break rendering.
+  setKillEffect(id: string) {
+    this.killEffectStyle = isKillEffectStyle(id) ? id : DEFAULT_KILL_EFFECT;
+  }
+
+  // Equipped rail-beam color cosmetic — recolors only the local player's beam.
+  setRailColor(id: string) {
+    const c = railColorById(isRailColor(id) ? id : DEFAULT_RAIL_COLOR);
+    this.weapon.setBeamColors(c.data.core, c.data.helix);
+  }
+
+  // Equipped hat — worn on the local player's model (seen by others online + in
+  // the killcam). Stored here; the net layer broadcasts it so remotes render it.
+  setHat(id: string) {
+    this.localHat = isHat(id) ? id : DEFAULT_HAT;
+    this.net?.setLocalHat(this.localHat);
+  }
+
+  // Equipped unusual particle effect — broadcast so remotes render it on your hat.
+  setUnusual(id: string) {
+    this.localUnusual = isUnusual(id) ? id : DEFAULT_UNUSUAL;
+    this.net?.setLocalUnusual(this.localUnusual);
+  }
+
+  // Equipped podium emote — broadcast so remotes show it on the results podium.
+  setEmote(id: string) {
+    this.localEmote = isEmote(id) ? id : DEFAULT_EMOTE;
+    this.net?.setLocalEmote(this.localEmote);
+  }
+
+  // Your playercard (built client-side from your profile + card settings).
+  // Broadcast so the victim's killcam shows it when you frag them.
+  setCardPayload(card: CardPayload) {
+    this.localCard = card;
+    this.net?.setLocalCard(card);
+  }
+
+  // Accessibility: when on, suppress camera shake + full-screen kill flash and
+  // swap the 3D kill burst for a small spark (WCAG vestibular / flashing). The
+  // hit marker, kill-confirm text, killfeed, and SFX still fire (informational).
+  setReducedEffects(v: boolean) {
+    this.reducedEffects = v;
+  }
+
   private applyEnemyStyle() {
     if (this.bots) for (const b of this.bots.bots) b.setHighlight(this.enemyColor);
     // Remotes may be team-colored (TDM) — recolor through the team-aware path so
@@ -495,6 +610,15 @@ export class Game {
     this.disposed = true;
     if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
     this.rafHandle = null;
+    if (this.frameTimeout !== null) clearTimeout(this.frameTimeout);
+    this.frameTimeout = null;
+    if (this.fpsChannel) {
+      this.fpsChannel.port1.onmessage = null;
+      this.fpsChannel.port1.close();
+      this.fpsChannel.port2.close();
+      this.fpsChannel = null;
+    }
+    this.tickFn = null;
     this.input.detach();
     window.removeEventListener('resize', this.resizeHandler);
     this.weapon.disposeAll(this.scene);
@@ -676,6 +800,7 @@ export class Game {
     this.playerShotsHit = 0;
     this.matchSubmitted = false;
     this.wonLastMatch = false;
+    this.resetMatchDrama();
     const desired = mapById(r.mapId);
     if (desired !== this.map) {
       this.setMap(desired);
@@ -724,6 +849,7 @@ export class Game {
     };
     this.playerFrags = 0;
     this.playerDeaths = 0;
+    this.resetMatchDrama();
     this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
@@ -776,8 +902,15 @@ export class Game {
     this.emitHud();
   }
 
+  // Frame-rate limit. 0 = VSync (display refresh), a positive number caps to
+  // that fps, a negative value uncaps (renders as fast as the machine allows,
+  // beyond vsync). Applied on the next scheduled frame.
+  setFpsLimit(n: number) {
+    this.fpsLimit = Number.isFinite(n) ? Math.trunc(n) : 0;
+  }
+
   private runLoop() {
-    const tick = (now: number) => {
+    this.tickFn = (now: number) => {
       if (this.disposed) return;
       const dt = Math.min(0.1, (now - this.lastTime) / 1000);
       this.lastTime = now;
@@ -802,9 +935,37 @@ export class Game {
         this.hudAccumMs = 0;
         this.emitHud();
       }
-      this.rafHandle = requestAnimationFrame(tick);
+      this.scheduleFrame();
     };
-    this.rafHandle = requestAnimationFrame(tick);
+    this.scheduleFrame();
+  }
+
+  // Schedule the next frame according to the FPS-limit mode. Exactly one frame
+  // is queued per tick, so switching modes at runtime is seamless (no overlap).
+  private scheduleFrame() {
+    const fn = this.tickFn;
+    if (this.disposed || !fn) return;
+    const limit = this.fpsLimit;
+    if (limit < 0) {
+      // Uncapped: re-run ASAP via a MessageChannel — beats setTimeout's ~4ms
+      // clamp, so it can render well past the display refresh.
+      if (!this.fpsChannel) {
+        this.fpsChannel = new MessageChannel();
+        this.fpsChannel.port1.onmessage = () => {
+          if (!this.disposed) fn(performance.now());
+        };
+      }
+      this.fpsChannel.port2.postMessage(null);
+    } else if (limit > 0) {
+      // Cap: aim for the target interval, discounting time already spent this
+      // frame so the cap holds under load.
+      const target = 1000 / limit;
+      const spent = performance.now() - this.lastTime;
+      this.frameTimeout = setTimeout(() => fn(performance.now()), Math.max(0, target - spent));
+    } else {
+      // VSync (default): one render per display refresh.
+      this.rafHandle = requestAnimationFrame(fn);
+    }
   }
 
   private tickFps(dt: number) {
@@ -848,7 +1009,34 @@ export class Game {
   }
 
   private addShake(amount: number) {
+    if (this.reducedEffects) return; // accessibility: no camera shake
     this.shake = Math.min(SHAKE_MAX, this.shake + amount);
+  }
+
+  // Spawn the kill burst at `at`, honoring the reduced-effects setting: the full
+  // 3D explosion is replaced by a small, non-flashing spark.
+  private spawnKillEffect(at: THREE.Vector3, headshot: boolean, style: KillEffectStyle) {
+    if (this.reducedEffects) {
+      this.effects.spawnHitFlash(this.scene, at, headshot ? 0xffd27a : 0x9be8ff);
+      return;
+    }
+    this.effects.spawnKillBurst(this.scene, at, headshot, style);
+  }
+
+  // Punchy feedback when YOU land a kill: a crisp shake, a full-screen edge
+  // flash, and a glow pop on the viewmodel — on top of the hit marker, kill
+  // confirm text, SFX, and 3D burst handled at the call sites.
+  private fireKillFeedback(headshot: boolean) {
+    this.addShake(SHAKE_KILL);
+    if (!this.reducedEffects) {
+      this.killFlash = {
+        id: this.nextEventId++,
+        headshot,
+        remaining: KILL_FLASH_DURATION_SEC,
+        total: KILL_FLASH_DURATION_SEC,
+      };
+    }
+    if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 5.5;
   }
 
   private simStep(dt: number) {
@@ -971,7 +1159,7 @@ export class Game {
     // Weapon feedback: recoil the gun, punch the view up, flash the muzzle, and
     // spike the gun's energy glow (all decay back over the next few frames).
     this.recoil = 1;
-    this.viewKick = 0.03;
+    this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
     this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
 
@@ -1005,9 +1193,10 @@ export class Game {
       if (!bot) continue;
       const midAir = this.fireWasAirborne;
       const special = hit.headshot ? 'headshot' : midAir ? 'mid-air' : null;
-      this.effects.spawnKillBurst(
-        this.scene,
+      this.spawnKillEffect(
         new THREE.Vector3(bot.state.pos.x, bot.centerY(), bot.state.pos.z),
+        hit.headshot,
+        this.killEffectStyle,
       );
       bot.kill();
       this.botDeathCounts.set(
@@ -1040,6 +1229,16 @@ export class Game {
         remaining: HIT_MARKER_KILL_DURATION_SEC,
         total: HIT_MARKER_KILL_DURATION_SEC,
       };
+      // Prominent kill confirmation on EVERY frag (offline path — the online
+      // path sets this in handleNetKill). result.hits[0] is the nearest victim.
+      this.killConfirm = {
+        id: this.nextEventId++,
+        victimName: result.hits[0].target.name,
+        headshot: firstHitHeadshot,
+        remaining: KILL_CONFIRM_DURATION_SEC,
+        total: KILL_CONFIRM_DURATION_SEC,
+      };
+      this.fireKillFeedback(firstHitHeadshot);
       this.checkMatchEnd();
     }
   }
@@ -1104,9 +1303,10 @@ export class Game {
     } else {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (victim) {
-        this.effects.spawnKillBurst(
-          this.scene,
+        this.spawnKillEffect(
           new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
+          false,
+          DEFAULT_KILL_EFFECT,
         );
         victim.kill();
         this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
@@ -1242,13 +1442,17 @@ export class Game {
       ev.victimPos.y + 0.9,
       ev.victimPos.z,
     );
-    this.effects.spawnKillBurst(this.scene, burstAt);
+    // Your equipped kill effect plays on YOUR frags; everyone else's frags use
+    // the default until the server broadcasts each player's equipped cosmetics
+    // (progression Phase 1 — remote cosmetics in the snapshot payload).
+    this.spawnKillEffect(burstAt, ev.headshot, iAmKiller ? this.killEffectStyle : DEFAULT_KILL_EFFECT);
 
     if (iAmKiller) {
       // Killer: trust the server-authoritative score (next snapshot will
       // confirm); play kill SFX + medal locally for immediate feedback.
       this.audio.play('kill', 0.7);
       this.audio.hitConfirm(ev.headshot, 0.5);
+      this.fireKillFeedback(ev.headshot);
       // Credit the confirmed hit so online accuracy/headshots aren't ~0 (#5).
       // (MP has no bots, so this is the only place these increment online — no
       // double-count with the local bot path.)
@@ -1292,6 +1496,7 @@ export class Game {
         deathPos,
         remaining: KILLCAM_DURATION_SEC,
         total: KILLCAM_DURATION_SEC,
+        killerCard: ev.killerCard,
       };
       // Initialize the killcam's smoothed look-at near the killer's
       // current position so we don't whip from origin on the first
@@ -1391,6 +1596,10 @@ export class Game {
       this.killConfirm.remaining -= dt;
       if (this.killConfirm.remaining <= 0) this.killConfirm = null;
     }
+    if (this.killFlash) {
+      this.killFlash.remaining -= dt;
+      if (this.killFlash.remaining <= 0) this.killFlash = null;
+    }
     if (this.killcam) {
       this.killcam.remaining -= dt;
       if (this.killcam.remaining <= 0) this.killcam = null;
@@ -1412,6 +1621,8 @@ export class Game {
         currentStreak: this.medals.currentStreak,
         accuracy: pct(this.playerShotsHit, this.playerShotsFired),
         team: this.localTeam,
+        hat: this.localHat,
+        emote: this.localEmote,
       },
     ];
     if (this.bots) {
@@ -1454,6 +1665,8 @@ export class Game {
           currentStreak: 0,
           accuracy: null, // server doesn't report remote shot counts
           team: snap.team,
+          hat: snap.hat,
+          emote: snap.emote,
         });
       }
     }
@@ -1475,6 +1688,8 @@ export class Game {
       teamScores = totals;
     }
 
+    this.updateMatchDrama(scores, teamScores);
+
     this.onHud({
       frags: this.playerFrags,
       railCooldown: this.weapon.cooldown,
@@ -1492,12 +1707,14 @@ export class Game {
       banner: this.banner ? { ...this.banner } : null,
       hitMarker: this.hitMarker ? { ...this.hitMarker } : null,
       killConfirm: this.killConfirm ? { ...this.killConfirm } : null,
+      killFlash: this.killFlash ? { ...this.killFlash } : null,
       killcam: this.killcam ? { ...this.killcam } : null,
       showScoreboard: this.input.scoreboardHeld,
       matchOver: this.matchOver ? { won: this.matchWon } : null,
       netStatus: this.net?.status ?? 'off',
       netPeers: this.net ? this.net.remotes.size : 0,
       netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
+      warmupMsLeft: this.net ? this.net.warmupMsLeft : 0,
       localInvulnMs: this.net?.localInvulnMs ?? 0,
       vote: this.vote ? { ...this.vote, counts: { ...this.vote.counts } } : null,
       mode: this.netMode,
@@ -1505,6 +1722,71 @@ export class Game {
       teamScores,
       duel: this.duel ? { ...this.duel } : null,
     });
+  }
+
+  private resetMatchDrama() {
+    this.worstDeficit = 0;
+    this.comebackAwarded = false;
+    this.matchPointAnnounced = false;
+  }
+
+  // Match "drama" cues derived from the live scoreboard (so they work the same
+  // offline vs. online): a one-shot "MATCH POINT" call when the leader is a
+  // single frag from winning, and the Comeback medal when you retake the lead
+  // after trailing badly. Both fire at most once per match (reset on vote/round).
+  private updateMatchDrama(scores: PlayerScore[], teamScores: [number, number] | null) {
+    if (this.matchOver || this.vote || this.training) return;
+
+    // My score, the best opponent's score, and the frags needed to win — all
+    // mode-aware. TDM compares team totals; FFA/Duel compare individuals.
+    let mine: number;
+    let oppBest: number;
+    let limit: number;
+    if (this.netMode === 'tdm') {
+      if (!teamScores || this.localTeam == null) return;
+      const other = this.localTeam === 0 ? 1 : 0;
+      mine = teamScores[this.localTeam];
+      oppBest = teamScores[other];
+      limit = TDM_FRAG_LIMIT;
+    } else {
+      mine = 0;
+      oppBest = 0;
+      for (const s of scores) {
+        if (s.isLocal) mine = s.frags;
+        else oppBest = Math.max(oppBest, s.frags);
+      }
+      limit = this.netMode === 'duel' ? DUEL_ROUND_FRAG_LIMIT : MATCH_FRAG_LIMIT;
+    }
+
+    // "MATCH POINT": the leader (either side) needs exactly one more frag.
+    if (!this.matchPointAnnounced && Math.max(mine, oppBest) === limit - 1) {
+      this.matchPointAnnounced = true;
+      const leadingMe = mine > oppBest;
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'multi',
+        title: 'MATCH POINT',
+        subtitle: leadingMe ? 'one frag to win' : 'hold the line',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.audio.play('match-point', 1);
+    }
+
+    // Comeback: track the worst hole you've been in, and award the medal the
+    // moment you climb back into a clear lead from a meaningful deficit. The
+    // threshold scales with the mode's frag limit (FFA 25→5, Duel 7→2, TDM 40→8).
+    this.worstDeficit = Math.max(this.worstDeficit, oppBest - mine);
+    const threshold = Math.max(2, Math.round(limit * 0.2));
+    if (
+      !this.comebackAwarded &&
+      this.worstDeficit >= threshold &&
+      mine > oppBest &&
+      mine > 0
+    ) {
+      this.comebackAwarded = true;
+      this.awardMedal('comeback');
+    }
   }
 
   private render() {
@@ -1568,8 +1850,15 @@ export class Game {
       this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 / 60));
       this.camera.updateProjectionMatrix();
     }
-    // Scale look sensitivity with the current (lerping) FOV so zoomed aim stays steady.
-    this.input.lookScale = this.baseFov > 0 ? this.camera.fov / this.baseFov : 1;
+    // Scale look sensitivity with the current (lerping) FOV so zoomed aim stays
+    // steady, then fold in the ADS multiplier — which eases in as you zoom (1×
+    // at hipfire → zoomSensMul at full zoom) so hipfire feel is untouched.
+    const fovRatio = this.baseFov > 0 ? this.camera.fov / this.baseFov : 1;
+    const zoomT =
+      this.baseFov > this.zoomFov
+        ? Math.max(0, Math.min(1, (this.baseFov - this.camera.fov) / (this.baseFov - this.zoomFov)))
+        : 0;
+    this.input.lookScale = fovRatio * (1 + (this.zoomSensMul - 1) * zoomT);
     // Decay weapon feedback (frame-approximate easing — pure juice).
     this.recoil *= 0.84;
     this.viewKick *= 0.82;
@@ -1594,9 +1883,10 @@ export class Game {
   private handleResize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    // Re-apply pixelRatio so moving the window to a different-DPI monitor (or a
-    // browser-zoom change) re-sharpens instead of staying at the mount-time DPR (#26j).
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // Re-apply pixelRatio (honoring the quality settings) so moving the window to
+    // a different-DPI monitor (or a browser-zoom change) re-sharpens instead of
+    // staying at the mount-time DPR (#26j).
+    this.applyPixelRatio();
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();

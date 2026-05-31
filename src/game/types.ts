@@ -64,6 +64,10 @@ export type PlayerScore = {
   accuracy: number | null;
   // Team index (0 = red, 1 = blue) in TDM; null in FFA/Duel.
   team?: number | null;
+  // Equipped cosmetics, used to render this player on the end-of-match podium.
+  // Known for the local player + (online) remotes; absent for offline bots.
+  hat?: string;
+  emote?: string;
 };
 
 // Duel HUD: round number + each side's round wins.
@@ -120,15 +124,34 @@ export type KillConfirm = {
   total: number;
 };
 
+// Brief full-screen confirmation pulse when YOU score a kill (edge vignette, so
+// it never covers the crosshair). Tinted amber for headshots, cyan otherwise.
+export type KillFlash = {
+  id: number;
+  headshot: boolean;
+  remaining: number;
+  total: number;
+};
+
 // Killcam state when YOU are dead. While non-null, the camera is locked
 // onto the killer and the player's input is ignored — clears when the
 // timer runs out and gameplay resumes from the new spawn.
+// A player's "card" shown on kill (Valorant-style kill banner): card graphic +
+// level + the player's chosen career stats. Built client-side from the profile.
+export type CardPayload = {
+  name: string;
+  level: number;
+  style: string; // card cosmetic id
+  stats: { label: string; value: string }[]; // up to 3
+};
+
 export type KillcamState = {
   killerId: string;
   killerName: string;
   deathPos: Vec3;
   remaining: number;
   total: number;
+  killerCard?: CardPayload; // the killer's playercard (shown on the death screen)
 };
 
 export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -161,12 +184,14 @@ export type HudState = {
   banner: BannerState | null;
   hitMarker: HitMarker | null;
   killConfirm: KillConfirm | null;
+  killFlash: KillFlash | null;
   killcam: KillcamState | null;
   showScoreboard: boolean;
   matchOver: { won: boolean } | null; // non-null freezes the match → results screen
   netStatus: NetStatus;
   netPeers: number;
   netRttMs: number; // round-trip time to the game server (0 when offline)
+  warmupMsLeft: number; // ms left in the match-start "get ready" warmup; 0 when live
   localInvulnMs: number; // remaining server-tracked invuln; 0 when killable
   vote: MapVoteState | null; // non-null → end-of-match map vote in progress
   // Active game mode (offline defaults to 'ffa').

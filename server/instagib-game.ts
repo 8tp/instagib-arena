@@ -41,7 +41,9 @@ import {
   POST_MATCH_RESET_SEC,
   ROOM_CODE_LEN,
 } from '../src/game/arena-data';
-import type { Vec3 } from '../src/game/types';
+import type { CardPayload, Vec3 } from '../src/game/types';
+import { isCard, isEmote, isHat, isUnusual } from '../src/game/cosmetics';
+import { unlockedSetFor } from './db';
 
 const SNAPSHOT_HZ = 32;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
@@ -49,6 +51,10 @@ const EMPTY_ROOM_GRACE_MS = 30_000; // post-match grace for a room that HAS been
 const FRESH_ROOM_GRACE_MS = 5 * 60_000; // never-occupied (invite) rooms live longer for slow joins
 const KILL_MAX_RANGE = 220;
 const SPAWN_INVULN_MS = 2_000;
+// Warmup: a short "get ready" countdown at the start of a match. Reuses the
+// existing `resumeAt` shot-freeze, so nobody can be fragged before it ends. Set
+// on room creation and when a room fills from 1→2 players (a match begins).
+const WARMUP_MS = 3_000;
 const HISTORY_MS = 1_000; // how far back we keep position history for rewind
 const MAX_REWIND_MS = 350; // clamp how far a shot may rewind targets
 const DEFAULT_CAPACITY = 8;
@@ -89,6 +95,11 @@ type ClientRecord = {
   msgCount: number; // messages seen in the current window
   history: HistorySample[]; // ascending by t
   team: number | null; // team index (0/1) in TDM; null otherwise
+  hat: string; // equipped hat cosmetic id (echoed to other players in snapshots)
+  unusual: string; // equipped unusual-effect cosmetic id
+  emote: string; // equipped podium-emote cosmetic id
+  card: CardPayload | null; // playercard shown on the victim's killcam
+  playerId: string; // anonymous igpid (from the WS upgrade cookie), '' if none
 };
 
 type Room = {
@@ -125,6 +136,10 @@ type ClientMessage =
   | { type: 'join'; roomId?: string; name?: string }
   | { type: 'leave' }
   | { type: 'vote'; mapId?: string }
+  | { type: 'hat'; id?: string }
+  | { type: 'unusual'; id?: string }
+  | { type: 'emote'; id?: string }
+  | { type: 'card'; card?: unknown }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
   | { type: 'ping'; ts: number }
   | {
@@ -138,6 +153,53 @@ type ClientMessage =
       maxDist?: number;
       renderTime?: number;
     };
+
+// Does this connection's progression identity own the given cosmetic id? Read
+// fresh each time so an item just bought in the Locker is immediately equippable
+// (defaults + anonymous players always pass for default-unlocked ids).
+function owns(record: { playerId: string }, id: string): boolean {
+  return unlockedSetFor(record.playerId).has(id);
+}
+
+// Read a single cookie value out of a raw `Cookie:` header (no dependency).
+function parseCookie(header: string | undefined, name: string): string {
+  if (!header) return '';
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return '';
+}
+
+// Sanitize a client-sent playercard into a bounded, trusted shape before we
+// relay it to other players (cosmetic-only). The NAME is forced to the
+// server-known name (clients can't impersonate on the killcam), the STYLE is
+// ownership-checked, and stat strings are length-clamped.
+function sanitizeCard(raw: unknown, serverName: string, owned: Set<string>): CardPayload | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const name = serverName.slice(0, 24);
+  const level =
+    typeof o.level === 'number' && Number.isFinite(o.level)
+      ? Math.max(1, Math.min(100, Math.floor(o.level)))
+      : 1;
+  const style =
+    typeof o.style === 'string' && isCard(o.style) && owned.has(o.style) ? o.style : 'card.slate';
+  const stats: { label: string; value: string }[] = [];
+  if (Array.isArray(o.stats)) {
+    for (const s of o.stats.slice(0, 3)) {
+      if (s && typeof s === 'object') {
+        const ss = s as Record<string, unknown>;
+        stats.push({
+          label: typeof ss.label === 'string' ? ss.label.slice(0, 16) : '',
+          value: typeof ss.value === 'string' ? ss.value.slice(0, 12) : '',
+        });
+      }
+    }
+  }
+  return { name, level, style, stats };
+}
 
 function genId(len = 8): ClientId {
   return Math.random().toString(36).slice(2, 2 + len);
@@ -242,7 +304,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       members: new Set(),
       state: 'active',
       vote: null,
-      resumeAt: 0,
+      resumeAt: Date.now() + WARMUP_MS, // initial get-ready before the first frag
       roundWins: new Map(),
       roundNum: 1,
       emptySince: Date.now(),
@@ -315,6 +377,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.wasEverOccupied = true;
     if (!room.hostId) room.hostId = record.id;
     if (room.mode === 'duel') room.roundWins.set(record.id, 0);
+    // A match begins the moment a room fills from 1→2: give BOTH players a
+    // get-ready warmup (the existing resumeAt shot-freeze) so neither can be
+    // fragged on the join frame. Guard on a FRESH match (nobody has scored yet)
+    // so a leave→rejoin (2→1→2) can't re-freeze a live game; later joiners drop
+    // into the live match (covered by spawn invuln) without freezing it.
+    const anyScore = [...room.members].some((id) => {
+      const c = clients.get(id);
+      return c != null && (c.frags > 0 || c.deaths > 0);
+    });
+    if (room.state === 'active' && room.members.size === 2 && !anyScore) {
+      room.resumeAt = Date.now() + WARMUP_MS;
+    }
     // Spawn into the room's current map.
     const spawn = pickSpawn(room, null);
     record.pos = { ...spawn };
@@ -334,6 +408,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       state: room.state,
       fragLimit: fragLimitFor(room),
       roundsToWin: room.mode === 'duel' ? DUEL_ROUNDS_TO_WIN : undefined,
+      resumeAt: room.resumeAt, // warmup/breather end (server clock)
     });
     // Late joiner during an end-of-match vote: replay the ballot so they get
     // the overlay + pointer release instead of running around firing dead shots.
@@ -426,9 +501,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
         frags: c.frags,
         deaths: c.deaths,
         invulnMs: Math.max(0, c.invulnUntilMs - now),
+        hat: c.hat,
+        unusual: c.unusual,
+        emote: c.emote,
       });
     }
-    return { type: 'state' as const, t: now, players };
+    return { type: 'state' as const, t: now, players, resumeAt: room.resumeAt };
   };
 
   // Interpolate a player's position at a past server-clock time `t`.
@@ -645,6 +723,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       headshot: bestHeadshot,
       victimPos: { ...victim.pos },
       respawnPos,
+      killerCard: shooter.card, // the killer's playercard → victim's killcam
       t: now,
     });
     victim.pos = { ...respawnPos };
@@ -686,9 +765,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket) => {
+  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
     const id = genId();
     const now = Date.now();
+    // The anonymous progression identity (httpOnly `igpid` cookie) rides the WS
+    // upgrade on the same origin — we use it to ownership-check cosmetic equips.
+    const playerId = parseCookie(req?.headers?.cookie, 'igpid');
     const record: ClientRecord = {
       id,
       socket,
@@ -707,6 +789,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
       lastPosMs: 0,
       msgWindowStart: now,
       msgCount: 0,
+      hat: 'hat.none',
+      unusual: 'unusual.none',
+      emote: 'emote.cheer',
+      card: null,
+      playerId,
       history: [],
       team: null,
     };
@@ -846,6 +933,34 @@ export function attachInstagibWs(wss: WebSocketServer) {
           }
           break;
         }
+
+        case 'hat':
+          // Cosmetic only — validate against the manifest AND the player's owned
+          // set (so locked hats can't be equipped in MP by a modified client),
+          // then echo it in snapshots so other players render it. Else = bare.
+          record.hat =
+            typeof msg.id === 'string' && isHat(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : 'hat.none';
+          break;
+
+        case 'unusual':
+          record.unusual =
+            typeof msg.id === 'string' && isUnusual(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : 'unusual.none';
+          break;
+
+        case 'emote':
+          record.emote =
+            typeof msg.id === 'string' && isEmote(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : 'emote.cheer';
+          break;
+
+        case 'card':
+          record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId));
+          break;
 
         case 'pos':
           if (

@@ -25,8 +25,21 @@ import {
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
 import { LocomotionBlender } from './locomotion';
-import { attachRailgunToSoldier } from './weapon-model';
+import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
+import { WornHat } from './hats';
+import { HATS, UNUSUALS } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
+
+// Bots wear a random (non-bare) hat — and sometimes an unusual effect — so the
+// cosmetics show up in solo play.
+const WEARABLE_HATS = HATS.filter((h) => h.model).map((h) => h.id);
+const WEARABLE_UNUSUALS = UNUSUALS.filter((u) => u.kind !== 'none').map((u) => u.id);
+function randomHatId(): string {
+  return WEARABLE_HATS[Math.floor(Math.random() * WEARABLE_HATS.length)] ?? 'hat.none';
+}
+function randomUnusualId(): string {
+  return WEARABLE_UNUSUALS[Math.floor(Math.random() * WEARABLE_UNUSUALS.length)] ?? 'unusual.none';
+}
 
 const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse', 'Echo'];
 const BOT_FACING_LERP = 12;
@@ -278,9 +291,11 @@ export class Bot {
   state: BotState;
   group: THREE.Group;
   private modelRoot: THREE.Object3D | null = null;
+  private hat: WornHat | null = null;
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Partial<Record<ActionKey, THREE.AnimationAction>> = {};
   private loco: LocomotionBlender | null = null;
+  private hold: WeaponHold | null = null;
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
@@ -358,6 +373,9 @@ export class Bot {
   // itself out by id.
   step(dt: number, map: ArenaMap, enemies: BotTarget[]): BotFireIntent | null {
     if (this.mixer) this.mixer.update(dt);
+    // Pin the gun-carry pose over the animated arms while alive; let the death
+    // clip flail freely when dead.
+    if (this.state.alive) this.hold?.apply();
     if (this.shootCooldown > 0) this.shootCooldown = Math.max(0, this.shootCooldown - dt);
     // Movement timers (run while alive; harmless while dead since velocity is zeroed).
     if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
@@ -923,7 +941,13 @@ export class Bot {
     };
   }
 
+  // Re-seat the hat (+ animate its unusual) after the body's transform is final.
+  updateHat(dt: number) {
+    this.hat?.update(dt);
+  }
+
   dispose(scene: THREE.Scene) {
+    this.hat?.dispose();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -954,7 +978,11 @@ export class Bot {
     });
     this.group.add(cloned);
     this.modelRoot = cloned;
+    this.hat = new WornHat(this.group, cloned);
+    void this.hat.setHat(randomHatId());
+    if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
     attachRailgunToSoldier(cloned, BOT_HEIGHT);
+    this.hold = new WeaponHold(cloned);
     this.mixer = new THREE.AnimationMixer(cloned);
 
     const idleClip = pickClip(model.animations, ['idle'], 0);
@@ -1059,6 +1087,7 @@ export class BotManager {
     for (const b of this.bots) {
       const intent = b.step(dt, map, enemies);
       if (intent) intents.push(intent);
+      b.updateHat(dt);
     }
     return intents;
   }
