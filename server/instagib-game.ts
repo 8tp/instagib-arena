@@ -64,6 +64,12 @@ const DEFAULT_CAPACITY = 8;
 const SHOT_ORIGIN_MAX_DIST = 3; // shot origin must be within this of the shooter's server eye
 const FIRE_RATE_TOLERANCE_MS = 80; // jitter slack under RAIL_COOLDOWN before a shot is dropped
 const MAX_MOVE_SPEED = MAX_HORIZONTAL_SPEED * 1.6; // reject pos deltas faster than this (m/s)
+// Generous vertical cap: legit jumps/boosts/long falls peak ~45 m/s, so 80
+// never flags real play but still catches noclip/fly teleports (100s of m/s).
+const MAX_VERTICAL_SPEED = 80;
+// Kick a player who hasn't moved or fired in this long (frees a slot in 2-cap
+// duel rooms; generous so a brief alt-tab doesn't drop you).
+const AFK_TIMEOUT_MS = 120_000;
 const MSG_RATE_WINDOW_MS = 1_000;
 const MSG_RATE_LIMIT = 150; // inbound messages/sec before a socket is closed (flood guard)
 // Hitbox dims (must match the client's PLAYER_RADIUS / PLAYER_HEIGHT).
@@ -89,12 +95,18 @@ type ClientRecord = {
   invulnUntilMs: number;
   connectedAt: number;
   lastSeen: number;
+  lastActiveMs: number; // last meaningful input (real movement or a shot) — for AFK
   lastRecoverMs: number; // last void-recovery time (debounces stale OOB positions)
   lastShotMs: number; // server-side fire-rate gate
   lastPosMs: number; // for the pos-update speed clamp
   msgWindowStart: number; // inbound message-rate window start
   msgCount: number; // messages seen in the current window
   history: HistorySample[]; // ascending by t
+  // Rolling aim stats for the anti-aimbot heuristic (decayed each window).
+  aimShots: number;
+  aimHits: number;
+  aimHeadshots: number;
+  aimFlagged: boolean; // statistical outlier → frags throttled
   team: number | null; // team index (0/1) in TDM; null otherwise
   hat: string; // equipped hat cosmetic id (echoed to other players in snapshots)
   unusual: string; // equipped unusual-effect cosmetic id
@@ -338,6 +350,32 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (c && c.team === team) total += c.frags;
     }
     return total;
+  };
+
+  // Anti-aimbot heuristic: feed each resolved shot (hit/miss + headshot) into a
+  // rolling, decayed window and flag a shooter whose accuracy is statistically
+  // impossible for a human in one-shot instagib. Thresholds are deliberately
+  // extreme (no real player sustains >95% hit-rate or >90% headshots) so legit
+  // aces are never flagged; a flagged shooter has frags throttled (see below).
+  const recordAim = (s: ClientRecord, hit: boolean, headshot: boolean) => {
+    s.aimShots += 1;
+    if (hit) s.aimHits += 1;
+    if (hit && headshot) s.aimHeadshots += 1;
+    if (s.aimShots >= 40) {
+      const hr = s.aimHits / s.aimShots;
+      const hsr = s.aimHits >= 12 ? s.aimHeadshots / s.aimHits : 0;
+      const outlier = hr > 0.95 || hsr > 0.9;
+      if (outlier && !s.aimFlagged) {
+        console.warn(
+          `[instagib] aim outlier ${s.id} (${s.name}): hitRate=${hr.toFixed(2)} hsRate=${hsr.toFixed(2)} — throttling frags`,
+        );
+      }
+      s.aimFlagged = outlier;
+      // Halve the window so it stays recent-weighted (and a reformed player un-flags).
+      s.aimShots = Math.floor(s.aimShots / 2);
+      s.aimHits = Math.floor(s.aimHits / 2);
+      s.aimHeadshots = Math.floor(s.aimHeadshots / 2);
+    }
   };
 
   // Highest frag count among everyone in the room except `exceptId` — used for
@@ -692,6 +730,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const ez = shooter.pos.z;
     if (Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) > SHOT_ORIGIN_MAX_DIST) return;
     shooter.lastShotMs = now;
+    shooter.lastActiveMs = now; // firing counts as activity (AFK timer)
 
     const wallCap = Number.isFinite(msg.maxDist)
       ? Math.min(KILL_MAX_RANGE, Math.max(0, msg.maxDist as number))
@@ -724,10 +763,24 @@ export function attachInstagibWs(wss: WebSocketServer) {
       bestHeadshot = hitY >= pp.y + PLAYER_HEIGHT * HEADSHOT_FRAC;
     }
 
-    if (!bestId || !bestPos) return;
+    if (!bestId || !bestPos) {
+      recordAim(shooter, false, false); // a miss
+      return;
+    }
     const victim = clients.get(bestId);
     if (!victim) return;
-    if (dist(shooter.pos, victim.pos) > KILL_MAX_RANGE + 5) return;
+    // Final range backstop against the REWOUND hit point (bestPos), not the
+    // victim's live pos — otherwise a fast-moving victim could dodge/eat a hit
+    // that was legitimately in range at the rewound render time.
+    if (dist(shooter.pos, bestPos) > KILL_MAX_RANGE + 5) {
+      recordAim(shooter, false, false);
+      return;
+    }
+    recordAim(shooter, true, bestHeadshot);
+    // Throttle a flagged aimbot: the shot landed but we drop the frag (the stat
+    // window keeps decaying, so a legit player who dips back under the threshold
+    // un-flags within a window or two).
+    if (shooter.aimFlagged) return;
 
     shooter.frags += 1;
     victim.deaths += 1;
@@ -812,6 +865,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       invulnUntilMs: 0,
       connectedAt: now,
       lastSeen: now,
+      lastActiveMs: now,
       lastRecoverMs: 0,
       lastShotMs: 0,
       lastPosMs: 0,
@@ -823,6 +877,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
       card: null,
       playerId,
       history: [],
+      aimShots: 0,
+      aimHits: 0,
+      aimHeadshots: 0,
+      aimFlagged: false,
       team: null,
     };
     clients.set(id, record);
@@ -1008,7 +1066,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (record.history.length > 0 && prevPosMs > 0) {
               const dtSec = (ts - prevPosMs) / 1000;
               const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
-              if (dtSec > 0 && horiz / dtSec > MAX_MOVE_SPEED) break; // drop, keep last good pos
+              const vert = Math.abs(msg.y - record.pos.y);
+              // Clamp BOTH axes — vertical was previously untrusted, letting a
+              // client fly/noclip straight up (moving its hitbox + snapshot).
+              if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
+                break; // drop, keep last good pos
+              }
+            }
+            // Count real movement as activity (resets the AFK timer; pings don't).
+            if (Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z) > 0.1) {
+              record.lastActiveMs = ts;
             }
             record.pos.x = msg.x;
             record.pos.y = msg.y;
@@ -1081,10 +1148,15 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   const sweepTimer = setInterval(() => {
     const now = Date.now();
-    // Drop stale clients.
+    // Drop stale clients (socket dead) and AFK players (alive socket but no real
+    // input in a while — pings alone keep `lastSeen` fresh but not `lastActiveMs`,
+    // so an idle client used to hold a slot, e.g. blocking a 2-cap duel room).
     for (const [id, c] of clients) {
-      if (now - c.lastSeen > STALE_CLIENT_TIMEOUT_MS) {
+      const stale = now - c.lastSeen > STALE_CLIENT_TIMEOUT_MS;
+      const afk = c.roomId != null && now - c.lastActiveMs > AFK_TIMEOUT_MS;
+      if (stale || afk) {
         try {
+          if (afk && !stale) sendRaw(c.socket, { type: 'error', message: 'Kicked for inactivity' });
           c.socket.close();
         } catch {
           // ignore
