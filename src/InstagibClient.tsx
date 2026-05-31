@@ -76,10 +76,10 @@ import {
   DEFAULT_CARD,
   DEFAULT_EMOTE,
   cardById,
+  cosmeticById,
   HAT_CASE_COST,
   caseHats,
   hatById,
-  killEffectById,
   sourceLabel,
   type KillEffectStyle,
   type Rarity,
@@ -590,6 +590,7 @@ const INITIAL_HUD: HudState = {
   hitMarker: null,
   killConfirm: null,
   killFlash: null,
+  damageFlash: 0,
   killcam: null,
   showScoreboard: false,
   matchOver: null,
@@ -1393,41 +1394,110 @@ function HatReelCard({ hat, width }: { hat: HatCosmetic; width: number }) {
 // End-of-match XP moment: animated XP bar, +XP / +credits, a LEVEL UP flourish,
 // and any new cosmetic unlocks. Driven entirely by the server's POST /api/stats
 // response so the numbers are authoritative.
+// Eased 0→value counter for the +XP / +credits roll-ups.
+function useCountUp(value: number, durationMs = 1000, startDelayMs = 250): number {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    if (value <= 0) {
+      setN(value);
+      return;
+    }
+    let raf = 0;
+    let startT = 0;
+    const tick = (now: number) => {
+      if (!startT) startT = now;
+      const t = Math.min(1, (now - startT) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setN(Math.round(value * eased));
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    const to = window.setTimeout(() => {
+      raf = requestAnimationFrame(tick);
+    }, startDelayMs);
+    return () => {
+      window.clearTimeout(to);
+      cancelAnimationFrame(raf);
+    };
+  }, [value, durationMs, startDelayMs]);
+  return n;
+}
+
 function XpReward({ progression }: { progression: ProgressionResp }) {
   const lp = levelProgress(progression.progression.totalXp);
-  const target = lp.xpForNext > 0 ? Math.min(100, (lp.xpIntoLevel / lp.xpForNext) * 100) : 100;
-  const [fill, setFill] = useState(0);
+  const preLp = levelProgress(Math.max(0, progression.progression.totalXp - progression.xpGained));
+  const pct = (l: ReturnType<typeof levelProgress>) =>
+    l.xpForNext > 0 ? Math.min(100, (l.xpIntoLevel / l.xpForNext) * 100) : 100;
+  const startFill = pct(preLp);
+  const target = pct(lp);
+
+  // Animate the bar from where it was BEFORE the match to the new value, wrapping
+  // through 100% with a flash on level-up so the gain is felt, not just shown.
+  const [fill, setFill] = useState(startFill);
+  const [noAnim, setNoAnim] = useState(false);
+  const [flash, setFlash] = useState(false);
   useEffect(() => {
-    const t = window.setTimeout(() => setFill(target), 80);
-    return () => window.clearTimeout(t);
-  }, [target]);
-  const unlocks = progression.newUnlocks.map((id) => killEffectById(id).name);
+    const timers: number[] = [];
+    timers.push(window.setTimeout(() => setFill(progression.leveledUp ? 100 : target), 300));
+    if (progression.leveledUp) {
+      timers.push(
+        window.setTimeout(() => {
+          setFlash(true);
+          setNoAnim(true);
+          setFill(0);
+        }, 300 + 760),
+      );
+      timers.push(
+        window.setTimeout(() => {
+          setNoAnim(false);
+          setFill(target);
+        }, 300 + 820),
+      );
+      timers.push(window.setTimeout(() => setFlash(false), 300 + 1400));
+    }
+    return () => timers.forEach((t) => window.clearTimeout(t));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const xpN = useCountUp(progression.xpGained);
+  const credN = useCountUp(progression.creditsGained);
+  const unlocks = progression.newUnlocks.map((id) => cosmeticById(id)?.name ?? id);
+
   return (
-    <div className='mt-4 rounded-lg border border-cyan-500/20 bg-cyan-300/[0.04] px-4 py-3'>
+    <div
+      className={`mt-4 rounded-lg border px-4 py-3 transition-colors ${
+        flash ? 'border-emerald-400/60 bg-emerald-300/[0.08]' : 'border-cyan-500/20 bg-cyan-300/[0.04]'
+      }`}
+    >
       <div className='flex items-baseline justify-between'>
-        <span className='text-[11px] uppercase tracking-[0.2em] text-cyan-200/80'>
-          Level {lp.level}
-        </span>
+        <span className='text-[10px] uppercase tracking-[0.28em] text-cyan-200/70'>Experience</span>
         <span className='text-sm font-bold tabular-nums text-cyan-200'>
-          +{progression.xpGained} XP
+          +{xpN} XP
           {progression.creditsGained > 0 && (
-            <span className='ml-2 text-amber-300'>+{progression.creditsGained} ⛁</span>
+            <span className='ml-2 text-amber-300'>+{credN} ⛁</span>
           )}
         </span>
       </div>
-      <div className='mt-2 h-2.5 overflow-hidden rounded-full bg-white/10'>
-        <div
-          className='h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300 transition-[width] duration-700 ease-out'
-          style={{ width: `${fill}%` }}
-        />
+      <div className='mt-2 flex items-center gap-2'>
+        <span className='text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-200/80'>
+          Lv {lp.level}
+        </span>
+        <div className='relative h-2.5 flex-1 overflow-hidden rounded-full bg-white/10'>
+          <div
+            className={`h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300 ${
+              noAnim ? '' : 'transition-[width] duration-700 ease-out'
+            }`}
+            style={{ width: `${fill}%`, boxShadow: '0 0 10px rgba(56,189,248,0.55)' }}
+          />
+        </div>
       </div>
       <div className='mt-1 flex items-center justify-between text-[10px] tabular-nums text-white/40'>
-        <span>
-          {lp.xpForNext > 0 ? `${lp.xpIntoLevel} / ${lp.xpForNext}` : 'MAX LEVEL'}
-        </span>
+        <span>{lp.xpForNext > 0 ? `${lp.xpIntoLevel} / ${lp.xpForNext}` : 'MAX LEVEL'}</span>
         {progression.leveledUp && (
-          <span className='font-bold uppercase tracking-[0.18em] text-emerald-300'>
-            ★ Level up!
+          <span
+            className='font-bold uppercase tracking-[0.18em] text-emerald-300'
+            style={{ filter: 'drop-shadow(0 0 8px rgba(52,211,153,0.6))' }}
+          >
+            ★ Level up! → Lv {lp.level}
           </span>
         )}
       </div>
@@ -1863,6 +1933,16 @@ function HudOverlay({
       >
         {!dead && <BoostRing active={hud.boostReady} />}
       <KillFlashLayer flash={hud.killFlash} />
+      {hud.damageFlash > 0 && (
+        <div
+          className='pointer-events-none absolute inset-0'
+          style={{
+            opacity: Math.min(1, hud.damageFlash),
+            background:
+              'radial-gradient(circle at center, transparent 35%, rgba(220,38,38,0.55) 100%)',
+          }}
+        />
+      )}
       {!dead && <Crosshair cfg={settings.crosshair} />}
       {!dead && <ReloadBar railCooldown={hud.railCooldown} />}
       {!dead && <HitMarkerLayer marker={hud.hitMarker} />}

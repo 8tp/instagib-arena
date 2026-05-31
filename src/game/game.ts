@@ -224,6 +224,7 @@ export class Game {
   private hitMarker: HitMarker | null = null;
   private killConfirm: KillConfirm | null = null;
   private killFlash: KillFlash | null = null;
+  private damageFlash = 0; // 0..1, set on death, decays — red "you were hit" vignette
   private killcam: KillcamState | null = null;
   private killcamLookAt = new THREE.Vector3();
   private nextEventId = 1;
@@ -1374,6 +1375,7 @@ export class Game {
     this.weaponWasReady = true;
     this.audio.play('hit', 0.6);
     this.addShake(SHAKE_DEATH);
+    if (!this.reducedEffects) this.damageFlash = 1;
     this.medals.onDeath();
     this.playerDeaths += 1;
     // Invuln spans the killcam plus a short grace once you respawn.
@@ -1523,6 +1525,7 @@ export class Game {
       this.weaponWasReady = true;
       this.audio.play('hit', 0.6);
       this.addShake(SHAKE_DEATH);
+      if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
       this.playerDeaths += 1;
       this.killcam = {
@@ -1635,6 +1638,7 @@ export class Game {
       this.killFlash.remaining -= dt;
       if (this.killFlash.remaining <= 0) this.killFlash = null;
     }
+    if (this.damageFlash > 0) this.damageFlash = Math.max(0, this.damageFlash - dt / 0.5);
     if (this.killcam) {
       this.killcam.remaining -= dt;
       if (this.killcam.remaining <= 0) this.killcam = null;
@@ -1743,6 +1747,7 @@ export class Game {
       hitMarker: this.hitMarker ? { ...this.hitMarker } : null,
       killConfirm: this.killConfirm ? { ...this.killConfirm } : null,
       killFlash: this.killFlash ? { ...this.killFlash } : null,
+      damageFlash: this.damageFlash,
       killcam: this.killcam ? { ...this.killcam } : null,
       showScoreboard: this.input.scoreboardHeld,
       matchOver: this.matchOver ? { won: this.matchWon } : null,

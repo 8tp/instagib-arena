@@ -185,6 +185,7 @@ export type HudState = {
   hitMarker: HitMarker | null;
   killConfirm: KillConfirm | null;
   killFlash: KillFlash | null;
+  damageFlash: number; // 0..1 red "you were hit" vignette intensity (decays)
   killcam: KillcamState | null;
   showScoreboard: boolean;
   matchOver: { won: boolean } | null; // non-null freezes the match → results screen
