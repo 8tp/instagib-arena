@@ -205,7 +205,7 @@ export class WornHat {
     mesh.position.set(-center.x, -box.min.y, -center.z);
     const holder = new THREE.Group();
     holder.add(mesh);
-    holder.scale.setScalar(TARGET_WIDTH / Math.max(size.x, size.z, 1e-6));
+    holder.scale.setScalar(((hat.fit ?? 1) * TARGET_WIDTH) / Math.max(size.x, size.z, 1e-6));
     // Tag shared so Game.disposeScene() never disposes the cached geometry.
     holder.traverse((o) => {
       o.userData.shared = true;
