@@ -17,16 +17,20 @@ on the hot path, no per-frame React reconciliation.
 ## Features
 
 - **One-shot railgun.** No health, no armor, no other weapons. Pure duel of aim + movement.
-- **Quake-style movement.** Strafe-jump acceleration, air control, directional dash, double-jump, wall-jump.
-- **Three game modes** — Free-for-all, **Duel** (1v1, best-of rounds), and **Team Deathmatch** (Red vs Blue, friendly-fire off).
+- **Quake-style movement.** Strafe-jump acceleration, air control, directional dash, double-jump, wall-jump, and a damage-free boost-jump off surfaces.
+- **Three game modes** — Free-for-all, **Duel** (1v1, best-of rounds with deuce/advantage), and **Team Deathmatch** (Red vs Blue, friendly-fire off). Pre-match 3-2-1 countdown, mercy-rule blowout ends.
 - **Server-authoritative multiplayer** over WebSocket:
   - Lag compensation — the server rewinds every target to the shooter's render time before raycasting hitboxes.
   - Clock sync, 32 Hz snapshots, client-side interpolation of remote players.
-  - Distance/rate-based anti-cheat (fire-rate gate, shot-origin sanity, speed clamp, message-rate flood guard).
-- **Rooms & lobby.** Quick-match (per mode), public custom lobbies, and private invite-code matches. End-of-match **map voting**.
-- **Offline play.** Bots with adjustable difficulty + a training range — no server needed.
-- **Juice.** Killcams, multi-kill medals, an announcer, hit markers, and a configurable crosshair.
-- **Anonymous stats + global leaderboard.** Per-browser K/D, accuracy, streaks, headshots (no login) and a server-wide leaderboard (top fraggers / wins / accuracy).
+  - Anti-cheat: fire-rate gate, shot-origin sanity, horizontal **and vertical** speed clamps, message-rate flood guard, and a statistical **aimbot heuristic** (rolling hit/headshot-rate throttle).
+  - **Reconnect / session resume** — a mid-match drop holds your slot + score for a grace window so a network blip doesn't wipe your game.
+- **Rooms & lobby.** Quick-match (per mode), public custom lobbies, and private invite-code matches. End-of-match **map voting** + a **3D podium** of the top 3 (wearing their hats, playing their emotes).
+- **Progression (account-less).** Server-derived XP / levels / credits off the `igpid` cookie, end-of-match XP + credits roll-up, daily/weekly **challenges**, and a first-win-of-the-day bonus.
+- **Cosmetics Locker.** Hats (glTF), kill-effect explosions, rail-beam colours, "unusual" hat particles, end-of-match emotes, and Valorant-style killcam playercards. Level- or credit-gated, with a Krunker-style **unboxing** spinner and a live 3D preview. Purely visual — never an advantage. Ownership-checked server-side in MP.
+- **Offline play.** Bots with adjustable difficulty (human-like aim/movement, wearing cosmetics) + a training range — no server needed.
+- **Juice + feedback.** Killcams (showing the killer's playercard), multi-kill medals, an announcer (with optional captions), shockwave hit-markers, a red damage vignette, and a fully configurable crosshair.
+- **Anonymous stats + leaderboard.** Per-browser K/D, accuracy, streaks, headshots (no login) and a server-wide leaderboard with **All-time / Weekly / Daily** windows, sortable by kills / wins / accuracy, with your own rank pinned.
+- **Onboarding & accessibility.** First-run name prompt + controls primer; reduced-effects toggle, announcer captions + a screen-reader live region, bright-enemy colourblind aid, UI scale, and a scoreboard ping readout.
 
 ---
 

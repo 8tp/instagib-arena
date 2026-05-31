@@ -4,8 +4,10 @@ A concrete, implementable design for an account-less progression system that fit
 the existing backend (anonymous `igpid` cookie, single `instagib_stats` SQLite
 table, server-clamped match deltas). **Cosmetic-only — never pay/grind-to-win.**
 
-> Status: design proposal. Nothing here is built yet. File:line references point
-> at the integration seams in today's code.
+> Status: **shipped.** This began as the design proposal and now describes the
+> system as built — XP/levels/credits, the cosmetic manifest, daily/weekly
+> challenges, the Locker, and the end-of-match podium are all live. The file:line
+> references may have drifted as the code evolved; treat them as a guide.
 
 ---
 

@@ -66,6 +66,13 @@ Module map:
 | `textures.ts`     | Procedural texture generation. |
 | `medals.ts`       | Streak/medal state machine (first blood, multi-kills, sprees, headshots). |
 | `input.ts`        | Pointer lock, mouse-to-yaw/pitch with raw-input + cm/360 sensitivity, keybind resolution. |
+| `cosmetics.ts`    | **THREE-free.** The single cosmetic manifest — every kill-effect / rail-colour / hat / unusual / card / emote, its rarity + unlock source, and the cross-slot helpers (`slotOf`, `defaultUnlockedIds`, `levelGrantsAt`) the progression backend reads. |
+| `progression.ts`  | **THREE-free.** XP curve + level math shared by client (XP bar) and server (level grants). |
+| `challenges.ts`   | **THREE-free.** Daily/weekly challenge definitions + period keys. |
+| `hats.ts`         | `WornHat`: a glTF hat seated on the model's `mixamorigHead` each frame (auto-fit, world-follower) + the "unusual" additive particle effects. |
+| `emotes.ts`       | Procedural emote poses (`buildEmoteRig` + `applyEmote`): whole-body transforms + arm-bone overrides layered on the idle clip. Shared by the podium + the Locker preview. |
+| `podium.ts`       | `PodiumScene`: the self-contained end-of-match top-3 pedestal (soldiers + hats + emotes + label sprites). |
+| `character-preview.ts` | `CharacterPreview`: the Locker's live 3D loadout viewer (soldier + hat/unusual + emote + showcase rail beam → kill burst), one focused view per tab. |
 
 The three **THREE-free** modules are the contract between client and server: the
 server imports `constants`, `arena-data`, and `types` directly and never pulls in
@@ -239,13 +246,27 @@ rate — see the plan doc for the binary-protocol notes if you want to revisit i
   SQL upsert** (`column + delta`, with `max()` for bests) in `server/db.ts`, so
   concurrent submits can't clobber each other.
 
-The store is a single SQLite table created on first import — no ORM, no
-migrations. It lives under `DATA_DIR` (default `./data`).
+The store is a few SQLite tables created on first import — no ORM, no migrations
+(additive columns are added via guarded `ALTER TABLE`). It lives under `DATA_DIR`
+(default `./data`).
 
-`GET /api/leaderboard?sort=kills|wins|accuracy&limit=N` (`server/leaderboard.ts`)
-reads the same table — one prepared statement per sort column (no user input
-reaches SQL), `kills` riding the `idx_instagib_stats_kills` index, only surfacing
-players with `total_games > 0`. To keep the board from being trivially inflated,
-`POST /api/stats` is rate-limited (a dependency-free in-memory sliding window:
-~30 submits per identity per minute, keyed by the player cookie or IP).
+**Progression** rides the same cookie + table. `POST /api/stats` derives XP from
+the clamped delta (curve `floor(100·n^1.5)`), grants level-gated unlocks + credits,
+and returns `xpGained` / `level` / `leveledUp` / `newUnlocks` / `creditsGained`.
+`GET /api/profile` returns level / XP / credits / unlocked + equipped cosmetics;
+`POST /api/equip`, `/api/shop/buy`, `/api/shop/open-case`, and `/api/challenges*`
+manage the Locker + daily/weekly challenges. Definitions live in the THREE-free
+`src/game/cosmetics.ts` manifest (no DB rows for cosmetic definitions). In MP the
+`igpid` cookie also rides the WS upgrade so the game server can **ownership-check**
+cosmetic equips.
+
+`GET /api/leaderboard?sort=kills|wins|accuracy&window=all|weekly|daily&limit=N`
+(`server/leaderboard.ts`) — one prepared statement per (sort × window), no user
+input reaching SQL. `all` reads `instagib_stats`; `weekly`/`daily` read
+`instagib_period_stats` (buckets keyed `d:YYYYMMDD` / `w:<Monday>`, upserted on
+online matches only). It pins the caller's own rank, floors the accuracy board at
+≥5 games, and only surfaces players with `total_games > 0`. To keep the board from
+being trivially inflated, `POST /api/stats` is rate-limited (a dependency-free
+in-memory sliding window: ~30 submits per identity per minute, keyed by the player
+cookie or IP).
 ```
