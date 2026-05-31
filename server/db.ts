@@ -67,6 +67,25 @@ CREATE TABLE IF NOT EXISTS instagib_stats (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_instagib_stats_kills ON instagib_stats(total_kills);
+
+-- Per-window (daily/weekly) leaderboard buckets. Same shape as instagib_stats but
+-- keyed by a period string ("d:YYYYMMDD" / "w:YYYYMMDD" of the week's Monday, UTC),
+-- upserted alongside the all-time row on every recorded match.
+CREATE TABLE IF NOT EXISTS instagib_period_stats (
+  player_id        TEXT NOT NULL,
+  period_key       TEXT NOT NULL,
+  user_name        TEXT NOT NULL,
+  total_kills      INTEGER NOT NULL DEFAULT 0,
+  total_deaths     INTEGER NOT NULL DEFAULT 0,
+  total_games      INTEGER NOT NULL DEFAULT 0,
+  total_wins       INTEGER NOT NULL DEFAULT 0,
+  best_kill_streak INTEGER NOT NULL DEFAULT 0,
+  headshots        INTEGER NOT NULL DEFAULT 0,
+  best_accuracy    REAL NOT NULL DEFAULT 0,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY (player_id, period_key)
+);
+CREATE INDEX IF NOT EXISTS idx_period_kills ON instagib_period_stats(period_key, total_kills);
 `);
 
 // Additive progression columns. SQLite has no `ADD COLUMN IF NOT EXISTS`, and we
@@ -182,6 +201,40 @@ ON CONFLICT(player_id) DO UPDATE SET
 RETURNING total_kills, total_deaths, total_games, total_wins,
           best_kill_streak, headshots, best_accuracy
 `);
+
+// Per-period bucket upsert — same accumulation as the all-time row, keyed by period.
+const periodUpsertStmt = sqlite.prepare(`
+INSERT INTO instagib_period_stats (
+  player_id, period_key, user_name, total_kills, total_deaths, total_games,
+  total_wins, best_kill_streak, headshots, best_accuracy, updated_at
+) VALUES (
+  @playerId, @periodKey, @userName, @kills, @deaths, 1,
+  @wins, @bestStreak, @headshots, @accuracy, @now
+)
+ON CONFLICT(player_id, period_key) DO UPDATE SET
+  user_name        = excluded.user_name,
+  total_kills      = total_kills + excluded.total_kills,
+  total_deaths     = total_deaths + excluded.total_deaths,
+  total_games      = total_games + 1,
+  total_wins       = total_wins + excluded.total_wins,
+  best_kill_streak = max(best_kill_streak, excluded.best_kill_streak),
+  headshots        = headshots + excluded.headshots,
+  best_accuracy    = max(best_accuracy, excluded.best_accuracy),
+  updated_at       = excluded.updated_at
+`);
+
+// Period keys for a timestamp (UTC): "d:YYYYMMDD" (today) and "w:YYYYMMDD" of the
+// current week's Monday. Both are the buckets a match contributes to.
+function dayKey(now: number): string {
+  return `d:${ymd(now)}`;
+}
+function weekKey(now: number): string {
+  const d = new Date(now);
+  // UTC Monday-of-week: getUTCDay() is 0=Sun..6=Sat; shift to Monday-based.
+  const dow = (d.getUTCDay() + 6) % 7;
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow));
+  return `w:${ymd(monday.getTime())}`;
+}
 
 export type MatchDelta = {
   playerId: string;
@@ -306,6 +359,13 @@ export type MatchRecordResult = {
 // reports its own XP; everything here is server-derived.
 export function recordMatch(delta: MatchDelta): MatchRecordResult {
   const stats = toPublic(upsertStmt.get(delta) as Row | undefined); // also creates the row
+
+  // Daily/weekly leaderboard buckets — online matches only (these are the
+  // competitive ladders; offline bot grinding shouldn't seed them).
+  if (!delta.offline) {
+    periodUpsertStmt.run({ ...delta, periodKey: dayKey(delta.now) });
+    periodUpsertStmt.run({ ...delta, periodKey: weekKey(delta.now) });
+  }
 
   const prog = progSelectStmt.get(delta.playerId) as ProgRow | undefined;
   const curXp = prog?.total_xp ?? 0;
@@ -698,6 +758,39 @@ const playerStatsRowStmt = sqlite.prepare(
   `SELECT ${LEADERBOARD_COLS} FROM instagib_stats WHERE player_id = ?`,
 );
 
+// Same queries against the period table, parameterised by period_key (bound, not
+// interpolated). Window 'daily'/'weekly' use these; 'all' uses the statements above.
+const periodLeaderboardStmts = {
+  kills: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats
+     WHERE period_key = ? AND total_games > 0
+     ORDER BY total_kills DESC LIMIT ?`),
+  wins: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats
+     WHERE period_key = ? AND total_games > 0
+     ORDER BY total_wins DESC, total_kills DESC LIMIT ?`),
+  accuracy: sqlite.prepare(`
+    SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats
+     WHERE period_key = ? AND total_games >= ${MIN_ACC_GAMES}
+     ORDER BY best_accuracy DESC, total_kills DESC LIMIT ?`),
+} as const;
+
+const periodRankStmts = {
+  kills: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_period_stats WHERE period_key = ? AND total_games > 0 AND total_kills > ?`),
+  wins: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_period_stats WHERE period_key = ? AND total_games > 0 AND total_wins > ?`),
+  accuracy: sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_period_stats WHERE period_key = ? AND total_games >= ${MIN_ACC_GAMES} AND best_accuracy > ?`),
+} as const;
+
+const periodRowStmt = sqlite.prepare(
+  `SELECT ${LEADERBOARD_COLS} FROM instagib_period_stats WHERE player_id = ? AND period_key = ?`,
+);
+
+export type LeaderWindow = 'all' | 'daily' | 'weekly';
+// The period_key a window resolves to right now (null for all-time).
+function windowKey(win: LeaderWindow, now: number): string | null {
+  return win === 'daily' ? dayKey(now) : win === 'weekly' ? weekKey(now) : null;
+}
+
 type LeaderboardRow = Row & { user_name: string; player_id: string };
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -720,26 +813,41 @@ const toLeaderboardEntry = (row: LeaderboardRow): LeaderboardEntry => ({
 export function getLeaderboard(opts: {
   sort: 'kills' | 'wins' | 'accuracy';
   limit: number;
+  window?: LeaderWindow;
 }): LeaderboardEntry[] {
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit)));
+  const win = opts.window ?? 'all';
+  const key = windowKey(win, Date.now());
+  if (key) {
+    const stmt = periodLeaderboardStmts[opts.sort] ?? periodLeaderboardStmts.kills;
+    return (stmt.all(key, limit) as LeaderboardRow[]).map(toLeaderboardEntry);
+  }
   const stmt = leaderboardStmts[opts.sort] ?? leaderboardStmts.kills;
-  const rows = stmt.all(limit) as LeaderboardRow[];
-  return rows.map(toLeaderboardEntry);
+  return (stmt.all(limit) as LeaderboardRow[]).map(toLeaderboardEntry);
 }
 
-// The requesting player's global rank + their own entry, for the "you are #N"
-// pin. `rank: 0` means unranked (no games, or below the accuracy-board floor).
+// The requesting player's rank + their own entry within the window, for the "you
+// are #N" pin. `rank: 0` = unranked (no games this window, or below the accuracy
+// floor). Returns null if the player has no row in the window at all.
 export function getPlayerRank(
   playerId: string,
   sort: 'kills' | 'wins' | 'accuracy',
+  window: LeaderWindow = 'all',
 ): { rank: number; entry: LeaderboardEntry } | null {
   if (!playerId) return null;
-  const row = playerStatsRowStmt.get(playerId) as LeaderboardRow | undefined;
+  const key = windowKey(window, Date.now());
+  const row = (
+    key ? periodRowStmt.get(playerId, key) : playerStatsRowStmt.get(playerId)
+  ) as LeaderboardRow | undefined;
   if (!row || row.total_games <= 0) return null;
   const entry = toLeaderboardEntry(row);
   if (sort === 'accuracy' && row.total_games < MIN_ACC_GAMES) return { rank: 0, entry };
   const metric =
     sort === 'kills' ? row.total_kills : sort === 'wins' ? row.total_wins : row.best_accuracy;
-  const above = (rankStmts[sort].get(metric) as { n: number }).n;
+  const above = (
+    key
+      ? (periodRankStmts[sort].get(key, metric) as { n: number })
+      : (rankStmts[sort].get(metric) as { n: number })
+  ).n;
   return { rank: above + 1, entry };
 }

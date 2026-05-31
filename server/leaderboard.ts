@@ -8,15 +8,20 @@
 // /api, exposing GET /api/leaderboard.
 
 import { Router } from 'express';
-import { getLeaderboard, getPlayerRank } from './db';
+import { getLeaderboard, getPlayerRank, type LeaderWindow } from './db';
 
 type Sort = 'kills' | 'wins' | 'accuracy';
 const SORTS: readonly Sort[] = ['kills', 'wins', 'accuracy'];
 const DEFAULT_SORT: Sort = 'kills';
 const DEFAULT_LIMIT = 25;
+const WINDOWS: readonly LeaderWindow[] = ['all', 'daily', 'weekly'];
 
 function parseSort(raw: unknown): Sort {
   return SORTS.includes(raw as Sort) ? (raw as Sort) : DEFAULT_SORT;
+}
+
+function parseWindow(raw: unknown): LeaderWindow {
+  return WINDOWS.includes(raw as LeaderWindow) ? (raw as LeaderWindow) : 'all';
 }
 
 function parseLimit(raw: unknown): number {
@@ -29,11 +34,12 @@ export const leaderboardRouter = Router();
 
 leaderboardRouter.get('/leaderboard', (req, res) => {
   const sort = parseSort(req.query.sort);
+  const window = parseWindow(req.query.window);
   const limit = parseLimit(req.query.limit);
-  const leaderboard = getLeaderboard({ sort, limit });
+  const leaderboard = getLeaderboard({ sort, limit, window });
   // If the caller carries the anonymous progression cookie, also return their
   // own rank + entry so the client can pin "you are #N" even when outside top-N.
   const igpid = (req.cookies?.igpid as string | undefined) ?? '';
-  const you = igpid ? getPlayerRank(igpid, sort) : null;
-  res.json({ leaderboard, sort, count: leaderboard.length, you });
+  const you = igpid ? getPlayerRank(igpid, sort, window) : null;
+  res.json({ leaderboard, sort, window, count: leaderboard.length, you });
 });

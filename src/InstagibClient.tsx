@@ -4170,8 +4170,16 @@ const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> =
   { id: 'accuracy', label: 'Accuracy' },
 ];
 
+type LeaderboardWindow = 'all' | 'weekly' | 'daily';
+const LEADERBOARD_WINDOWS: ReadonlyArray<{ id: LeaderboardWindow; label: string }> = [
+  { id: 'all', label: 'All-time' },
+  { id: 'weekly', label: 'This week' },
+  { id: 'daily', label: 'Today' },
+];
+
 function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const [sort, setSort] = useState<LeaderboardSort>('kills');
+  const [window, setWindow] = useState<LeaderboardWindow>('all');
   const [rows, setRows] = useState<LeaderboardEntry[]>([]);
   const [you, setYou] = useState<LeaderboardYou>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -4179,7 +4187,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     let active = true;
     setState('loading');
-    fetch(`/api/leaderboard?sort=${sort}&limit=25`, { credentials: 'same-origin' })
+    fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25`, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
         if (!active) return;
@@ -4193,7 +4201,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
     return () => {
       active = false;
     };
-  }, [sort]);
+  }, [sort, window]);
 
   const youId = you?.entry.id;
   // Is the local player already visible in the top-N? If not, we pin them below.
@@ -4201,6 +4209,7 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
 
   return (
     <ModalShell title='Leaderboard' onClose={onClose}>
+      <ButtonGroup label='Window' value={window} options={LEADERBOARD_WINDOWS} onChange={setWindow} />
       <ButtonGroup
         label='Sort by'
         value={sort}
