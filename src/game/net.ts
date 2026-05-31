@@ -48,7 +48,7 @@ type StatePlayer = {
   emote?: string;
 };
 
-type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number };
+type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
 type StateMessage = { type: 'state'; t: number; players: StatePlayer[]; resumeAt?: number };
 type KillBroadcast = {
   type: 'kill';
@@ -189,6 +189,9 @@ export class NetClient {
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  // Resume token from the last welcome — kept across reconnects so we can reclaim
+  // our in-match slot + score instead of re-joining fresh (zeroed).
+  private resumeToken: string | null = null;
 
   constructor(opts: { url: string; name: string; roomId: string; listener?: NetListener; events: NetEvents }) {
     this.url = opts.url;
@@ -212,7 +215,13 @@ export class NetClient {
     }
     this.ws.onopen = () => {
       this.setStatus('open');
-      this.send({ type: 'join', name: this.name, roomId: this.roomId });
+      // A held resume token means this is a RECONNECT — try to reclaim our slot;
+      // the server falls back to a fresh join if the grace window has lapsed.
+      if (this.resumeToken) {
+        this.send({ type: 'resume', token: this.resumeToken, roomId: this.roomId, name: this.name });
+      } else {
+        this.send({ type: 'join', name: this.name, roomId: this.roomId });
+      }
       this.startPing();
     };
     this.ws.onmessage = (e) => {
@@ -396,6 +405,7 @@ export class NetClient {
   private handle(msg: ServerMessage) {
     if (msg.type === 'welcome') {
       this.clientId = msg.clientId;
+      if (msg.resumeToken) this.resumeToken = msg.resumeToken; // for the next reconnect
       // Tell the server our equipped cosmetics so it echoes them to other players.
       this.send({ type: 'hat', id: this.localHat });
       this.send({ type: 'unusual', id: this.localUnusual });

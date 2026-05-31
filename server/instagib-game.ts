@@ -48,6 +48,9 @@ import { unlockedSetFor } from './db';
 
 const SNAPSHOT_HZ = 32;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
+// A dropped in-match player's slot + score are held this long for a reconnect to
+// reclaim (via the resume token) before the record is reaped.
+const RESUME_GRACE_MS = 20_000;
 const EMPTY_ROOM_GRACE_MS = 30_000; // post-match grace for a room that HAS been occupied
 const FRESH_ROOM_GRACE_MS = 5 * 60_000; // never-occupied (invite) rooms live longer for slow joins
 const KILL_MAX_RANGE = 220;
@@ -96,6 +99,8 @@ type ClientRecord = {
   connectedAt: number;
   lastSeen: number;
   lastActiveMs: number; // last meaningful input (real movement or a shot) — for AFK
+  resumeToken: string; // opaque token a reconnecting client presents to reclaim this slot
+  disconnectedAt: number; // ms timestamp the socket dropped (0 = connected); resume grace
   lastRecoverMs: number; // last void-recovery time (debounces stale OOB positions)
   lastShotMs: number; // server-side fire-rate gate
   lastPosMs: number; // for the pos-update speed clamp
@@ -147,6 +152,7 @@ type ClientMessage =
   | { type: 'create'; name?: string; mapId?: string; isPublic?: boolean; capacity?: number; mode?: string }
   | { type: 'quickmatch'; name?: string; mode?: string }
   | { type: 'join'; roomId?: string; name?: string }
+  | { type: 'resume'; token?: string; roomId?: string; name?: string }
   | { type: 'leave' }
   | { type: 'vote'; mapId?: string }
   | { type: 'hat'; id?: string }
@@ -480,6 +486,65 @@ export function attachInstagibWs(wss: WebSocketServer) {
     broadcastRoomList();
   };
 
+  // Reclaim a dropped player's slot: migrate the OLD record's match state onto
+  // the new connection `record`, swap the room bookkeeping over, and resume the
+  // client right where it was (score intact). Returns false if not resumable.
+  const resumeMatch = (record: ClientRecord, old: ClientRecord): boolean => {
+    const room = old.roomId ? rooms.get(old.roomId) : null;
+    if (!room || !room.members.has(old.id)) return false;
+    leaveRoom(record); // the fresh conn isn't in a room, but keep the invariant
+    listers.delete(record.id);
+    record.roomId = room.id;
+    record.team = old.team;
+    record.pos = { ...old.pos };
+    record.yaw = old.yaw;
+    record.pitch = old.pitch;
+    record.frags = old.frags;
+    record.deaths = old.deaths;
+    record.hat = old.hat;
+    record.unusual = old.unusual;
+    record.emote = old.emote;
+    record.card = old.card;
+    record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
+    record.history.length = 0;
+    // Hand the old slot's room bookkeeping to the new id.
+    room.members.delete(old.id);
+    room.members.add(record.id);
+    if (room.hostId === old.id) room.hostId = record.id;
+    if (room.roundWins.has(old.id)) {
+      room.roundWins.set(record.id, room.roundWins.get(old.id) ?? 0);
+      room.roundWins.delete(old.id);
+    }
+    if (room.vote?.votes.has(old.id)) {
+      room.vote.votes.set(record.id, room.vote.votes.get(old.id)!);
+      room.vote.votes.delete(old.id);
+    }
+    clients.delete(old.id);
+    sendRaw(record.socket, {
+      type: 'joined',
+      roomId: room.id,
+      mode: room.mode,
+      team: record.team,
+      mapId: room.mapId,
+      spawn: record.pos,
+      state: room.state,
+      fragLimit: fragLimitFor(room),
+      roundsToWin: room.mode === 'duel' ? DUEL_ROUNDS_TO_WIN : undefined,
+      resumeAt: room.resumeAt,
+    });
+    if (room.state === 'voting' && room.vote) {
+      sendRaw(record.socket, {
+        type: 'vote-start',
+        options: room.vote.options,
+        endsAt: room.vote.endsAt,
+        durationMs: MAP_VOTE_DURATION_SEC * 1000,
+      });
+    }
+    broadcastRoom(room, { type: 'peer-joined', clientId: record.id, name: record.name }, record.id);
+    broadcastRoomList();
+    return true;
+  };
+
   const leaveRoom = (record: ClientRecord) => {
     if (!record.roomId) return;
     const room = rooms.get(record.roomId);
@@ -511,6 +576,21 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (remaining) startVote(room, remaining);
     }
     broadcastRoomList();
+  };
+
+  // Socket dropped: if mid-match, HOLD the slot + score for a reconnect (the
+  // client presents its resume token within RESUME_GRACE_MS). Otherwise — lobby,
+  // post-match vote, or already-disconnected — reap immediately.
+  const handleDisconnect = (rec: ClientRecord) => {
+    if (rec.disconnectedAt > 0) return; // already handled (error then close)
+    const room = rec.roomId ? rooms.get(rec.roomId) : null;
+    if (room && room.state === 'active' && room.members.has(rec.id)) {
+      rec.disconnectedAt = Date.now();
+      return;
+    }
+    leaveRoom(rec);
+    listers.delete(rec.id);
+    clients.delete(rec.id);
   };
 
   // ── Lobby listing ─────────────────────────────────────────────────────
@@ -545,6 +625,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     for (const id of room.members) {
       const c = clients.get(id);
       if (!c) continue;
+      if (c.disconnectedAt > 0) continue; // dropped (awaiting resume) → hidden, untargetable
       players.push({
         id: c.id,
         name: c.name,
@@ -751,6 +832,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // TDM: no friendly fire — teammates can't be hit.
       if (room.mode === 'tdm' && victim.team != null && victim.team === shooter.team) continue;
       if (victim.invulnUntilMs > now) continue;
+      if (victim.disconnectedAt > 0) continue; // dropped player can't be fragged mid-grace
       const pp = rewind(victim, rt);
       const min: Vec = { x: pp.x - PLAYER_RADIUS, y: pp.y, z: pp.z - PLAYER_RADIUS };
       const max: Vec = { x: pp.x + PLAYER_RADIUS, y: pp.y + PLAYER_HEIGHT, z: pp.z + PLAYER_RADIUS };
@@ -866,6 +948,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       connectedAt: now,
       lastSeen: now,
       lastActiveMs: now,
+      resumeToken: genId(18),
+      disconnectedAt: 0,
       lastRecoverMs: 0,
       lastShotMs: 0,
       lastPosMs: 0,
@@ -884,7 +968,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       team: null,
     };
     clients.set(id, record);
-    sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now });
+    sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
 
     socket.on('message', (raw) => {
       const ts = Date.now();
@@ -1003,6 +1087,39 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
         }
 
+        case 'resume': {
+          // A reconnecting client presents its previous resume token to reclaim
+          // its in-match slot + score. On miss/expiry, fall back to a fresh join.
+          if (typeof msg.name === 'string' && msg.name.trim()) {
+            record.name = msg.name.slice(0, 24);
+          }
+          const token = typeof msg.token === 'string' ? msg.token : '';
+          let old: ClientRecord | null = null;
+          if (token) {
+            for (const c of clients.values()) {
+              if (c !== record && c.disconnectedAt > 0 && c.resumeToken === token) {
+                old = c;
+                break;
+              }
+            }
+          }
+          if (old && Date.now() - old.disconnectedAt <= RESUME_GRACE_MS && resumeMatch(record, old)) {
+            break;
+          }
+          // No resumable slot → behave like a normal join (or fail).
+          const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
+          if (!room) {
+            sendRaw(socket, { type: 'join-failed', reason: 'gone' });
+            break;
+          }
+          if (room.members.size >= room.capacity && !room.members.has(record.id)) {
+            sendRaw(socket, { type: 'join-failed', reason: 'full' });
+            break;
+          }
+          joinRoom(record, room);
+          break;
+        }
+
         case 'leave':
           leaveRoom(record);
           break;
@@ -1107,16 +1224,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       }
     });
 
-    socket.on('close', () => {
-      leaveRoom(record);
-      listers.delete(id);
-      clients.delete(id);
-    });
-    socket.on('error', () => {
-      leaveRoom(record);
-      listers.delete(id);
-      clients.delete(id);
-    });
+    socket.on('close', () => handleDisconnect(record));
+    socket.on('error', () => handleDisconnect(record));
   });
 
   const tallyVotes = (room: Room): Record<string, number> => {
@@ -1152,6 +1261,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // input in a while — pings alone keep `lastSeen` fresh but not `lastActiveMs`,
     // so an idle client used to hold a slot, e.g. blocking a 2-cap duel room).
     for (const [id, c] of clients) {
+      // Dropped-but-held for a possible resume: reap once the grace expires
+      // (skip the stale/AFK paths — its socket is already gone).
+      if (c.disconnectedAt > 0) {
+        if (now - c.disconnectedAt > RESUME_GRACE_MS) {
+          leaveRoom(c);
+          listers.delete(id);
+          clients.delete(id);
+        }
+        continue;
+      }
       const stale = now - c.lastSeen > STALE_CLIENT_TIMEOUT_MS;
       const afk = c.roomId != null && now - c.lastActiveMs > AFK_TIMEOUT_MS;
       if (stale || afk) {
