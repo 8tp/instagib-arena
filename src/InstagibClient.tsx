@@ -614,6 +614,8 @@ export default function InstagibClient() {
   // Bumped on every match start so GameView remounts a fresh Game (also for
   // "Play Again" with the same config).
   const [playId, setPlayId] = useState(0);
+  // First-run onboarding (pick a name + a controls primer), shown once.
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Load persisted settings once on mount + backfill window-dependent defaults.
   useEffect(() => {
@@ -624,6 +626,10 @@ export default function InstagibClient() {
       loaded.playerName = `Player-${stamp}`;
     }
     setSettings(loaded);
+    // First visit (no onboarded flag) → show the welcome / name / controls primer.
+    if (typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded')) {
+      setShowOnboarding(true);
+    }
 
     // Invite link: ?join=ROOMID drops straight into that room. The map is
     // unknown until the server confirms the join (Game adopts it then), so we
@@ -679,12 +685,101 @@ export default function InstagibClient() {
     );
   }
   return (
-    <Lobby
-      settings={settings}
-      onChangeSettings={setSettings}
-      onStart={startMatch}
-      lastResult={lastResult}
-    />
+    <>
+      <Lobby
+        settings={settings}
+        onChangeSettings={setSettings}
+        onStart={startMatch}
+        lastResult={lastResult}
+      />
+      {showOnboarding && (
+        <OnboardingModal
+          initialName={AUTO_NAME_RE.test(settings.playerName) ? '' : settings.playerName}
+          onDone={(name) => {
+            if (name.trim()) setSettings((s) => ({ ...s, playerName: name.trim().slice(0, 20) }));
+            if (typeof window !== 'undefined') window.localStorage.setItem('instagib-onboarded', '1');
+            setShowOnboarding(false);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+// First-run welcome: pick a display name + a quick controls primer. Shown once
+// (guarded by the `instagib-onboarded` localStorage flag).
+const ONBOARD_CONTROLS: Array<[string, string]> = [
+  ['Mouse', 'Aim'],
+  ['Left click', 'Fire railgun — one shot, one kill'],
+  ['WASD', 'Move'],
+  ['Space', 'Jump (double-jump in the air)'],
+  ['Shift', 'Dash (directional, on a cooldown)'],
+  ['Jump at a wall', 'Wall-jump for height + speed'],
+  ['Right click', 'Boost-jump off a nearby surface'],
+];
+
+function OnboardingModal({
+  initialName,
+  onDone,
+}: {
+  initialName: string;
+  onDone: (name: string) => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  const submit = () => onDone(name);
+  return (
+    <div className='fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'>
+      <div className='deck-bg w-[540px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl'>
+        <div className='border-b border-white/10 px-7 py-5'>
+          <h2
+            className='font-display text-2xl font-bold uppercase tracking-[0.18em] text-cyan-300'
+            style={{ filter: 'drop-shadow(0 0 16px rgba(34,211,238,0.4))' }}
+          >
+            Welcome to the Arena
+          </h2>
+          <p className='mt-1 text-[12px] text-white/50'>One railgun. One shot. Pure movement.</p>
+        </div>
+        <div className='px-7 py-5'>
+          <label className='block text-[10px] uppercase tracking-[0.24em] text-white/45'>
+            Your name
+          </label>
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit();
+            }}
+            maxLength={20}
+            placeholder='Pick a display name'
+            className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-cyan-400/60'
+          />
+          <div className='mt-5 text-[10px] uppercase tracking-[0.24em] text-white/45'>Controls</div>
+          <div className='mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2'>
+            {ONBOARD_CONTROLS.map(([key, action]) => (
+              <div key={key} className='flex items-baseline gap-2 text-[12px]'>
+                <span className='shrink-0 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wide text-cyan-200'>
+                  {key}
+                </span>
+                <span className='text-white/60'>{action}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className='flex justify-end border-t border-white/10 px-7 py-4'>
+          <button
+            onClick={submit}
+            className='rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
+          >
+            Enter the Arena →
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
