@@ -61,7 +61,7 @@ import type {
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
 import { PodiumScene, type PodiumWinner } from './game/podium';
-import { CharacterPreview } from './game/character-preview';
+import { CharacterPreview, type PreviewCosmetics } from './game/character-preview';
 import {
   KILL_EFFECTS,
   RAIL_COLORS,
@@ -1066,22 +1066,34 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
 // owned items can be equipped, credit-priced ones bought, level-gated ones show
 // their unlock. Degrades to local-only selection if the profile can't be
 // fetched (offline / no backend), so the picker always works.
-// Live 3D preview of the equipped loadout: your soldier wearing the equipped hat
-// + unusual, playing the equipped emote, firing the equipped rail colour into the
-// equipped kill effect. Mounts once; pushes cosmetic changes in without remount.
-function LockerPreview({ settings }: { settings: Settings }) {
+// Per-tab focus → the preview shows ONE thing (the combined view was buggy):
+//  character = hat + unusual, idle, no effects
+//  emote     = the equipped emote, no effects
+//  weapon    = the rail beam (colour) + kill burst (effect), idle soldier
+type LockerView = 'character' | 'emote' | 'weapon';
+function viewOptions(view: LockerView): { effects: boolean; forceIdle: boolean } {
+  if (view === 'emote') return { effects: false, forceIdle: false };
+  if (view === 'weapon') return { effects: true, forceIdle: true };
+  return { effects: false, forceIdle: true };
+}
+
+// Live 3D preview of the equipped loadout for a single Locker tab. A fresh
+// instance mounts per tab (so only one WebGL context runs at a time).
+function LockerPreview({ settings, view }: { settings: Settings; view: LockerView }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const previewRef = useRef<CharacterPreview | null>(null);
+  const cosmetics = (): PreviewCosmetics => ({
+    hatId: settings.hat,
+    unusualId: settings.unusual,
+    emoteId: settings.emote,
+    railColor: settings.railColor,
+    killEffect: settings.killEffect,
+    ...viewOptions(view),
+  });
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
-    const preview = new CharacterPreview(canvas, {
-      hatId: settings.hat,
-      unusualId: settings.unusual,
-      emoteId: settings.emote,
-      railColor: settings.railColor,
-      killEffect: settings.killEffect,
-    });
+    const preview = new CharacterPreview(canvas, cosmetics());
     previewRef.current = preview;
     preview.start();
     const onResize = () => preview.resize();
@@ -1092,18 +1104,13 @@ function LockerPreview({ settings }: { settings: Settings }) {
       previewRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [view]);
   useEffect(() => {
-    previewRef.current?.setCosmetics({
-      hatId: settings.hat,
-      unusualId: settings.unusual,
-      emoteId: settings.emote,
-      railColor: settings.railColor,
-      killEffect: settings.killEffect,
-    });
-  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.killEffect]);
+    previewRef.current?.setCosmetics(cosmetics());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.killEffect, view]);
   return (
-    <div className='relative h-60 w-full overflow-hidden rounded-lg border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
+    <div className='relative h-60 w-full shrink-0 overflow-hidden rounded-lg border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
       <canvas ref={ref} className='block h-full w-full' />
       <div className='pointer-events-none absolute bottom-1.5 right-2 text-[9px] uppercase tracking-[0.18em] text-white/35'>
         Live preview
@@ -1112,16 +1119,27 @@ function LockerPreview({ settings }: { settings: Settings }) {
   );
 }
 
+const LOCKER_TABS = [
+  { id: 'character', label: 'Character', slots: ['hat', 'unusual'], view: 'character' as const },
+  { id: 'emote', label: 'Emotes', slots: ['emote'], view: 'emote' as const },
+  { id: 'weapon', label: 'Weapon', slots: ['railColor', 'killEffect'], view: 'weapon' as const },
+  { id: 'card', label: 'Card', slots: ['card'], view: null },
+] as const;
+type LockerTab = (typeof LOCKER_TABS)[number]['id'];
+
 function Locker({
   settings,
   onChange,
+  onClose,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
+  onClose: () => void;
 }) {
   const [profile, setProfile] = useState<LockerProfile | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [tab, setTab] = useState<LockerTab>('character');
   const [caseSpin, setCaseSpin] = useState<{ won: string; dupe: boolean; refund: number } | null>(
     null,
   );
@@ -1242,22 +1260,18 @@ function Locker({
     setBusy(null);
   };
 
+  const active = LOCKER_TABS.find((t) => t.id === tab) ?? LOCKER_TABS[0];
+  const slots = LOCKER_SLOTS.filter((sl) => (active.slots as readonly string[]).includes(sl.slot));
   return (
     <>
-    <Section label='Locker'>
-      <div className='flex items-center justify-between'>
-        <p className='text-[11px] leading-relaxed text-white/45'>
-          Cosmetics — purely visual, never affect aim, movement, or hits.
-        </p>
-        {profile && (
-          <span className='ml-3 shrink-0 text-[11px] font-semibold text-amber-300'>
-            {profile.credits} ⛁
-          </span>
-        )}
-      </div>
+    <LockerShell tab={tab} setTab={setTab} credits={profile?.credits ?? null} onClose={onClose}>
+      <p className='text-[10px] leading-relaxed text-white/35'>
+        Cosmetics — purely visual, never affect aim, movement, or hits.
+      </p>
       {note && <div className='text-[11px] text-rose-300'>{note}</div>}
-      <LockerPreview settings={settings} />
-      {LOCKER_SLOTS.map((sl) => (
+      {active.view && <LockerPreview key={active.view} settings={settings} view={active.view} />}
+      {tab === 'card' && <CardStatsEditor settings={settings} onChange={onChange} />}
+      {slots.map((sl) => (
         <div key={sl.slot} className='flex flex-col gap-2'>
           <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{sl.label}</div>
           {sl.slot === 'hat' && (
@@ -1351,7 +1365,7 @@ function Locker({
           </div>
         </div>
       ))}
-    </Section>
+    </LockerShell>
     {caseSpin && (
       <CaseSpinner
         won={caseSpin.won}
@@ -1361,6 +1375,74 @@ function Locker({
       />
     )}
     </>
+  );
+}
+
+// The Locker's own modal frame: a wider panel with a STICKY header (title + tab
+// bar + credits) so the tabs never scroll away, over a scrolling body.
+function LockerShell({
+  tab,
+  setTab,
+  credits,
+  onClose,
+  children,
+}: {
+  tab: LockerTab;
+  setTab: (t: LockerTab) => void;
+  credits: number | null;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEscapeToClose(onClose);
+  return (
+    <div
+      className='absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-3 backdrop-blur-md pointer-events-auto'
+      onClick={onClose}
+    >
+      <div
+        role='dialog'
+        aria-modal='true'
+        aria-label='Locker'
+        onClick={(e) => e.stopPropagation()}
+        className='clip-deck deck-rise flex max-h-[92vh] w-[560px] max-w-[94vw] flex-col border border-cyan-500/30 bg-zinc-950/95 shadow-[0_0_60px_-12px_rgba(34,211,238,0.4)]'
+      >
+        <div className='shrink-0 border-b border-white/10 px-6 pb-3 pt-5'>
+          <div className='flex items-center justify-between'>
+            <div className='font-display text-base font-bold uppercase tracking-[0.18em] text-cyan-100'>
+              Locker
+            </div>
+            <button
+              onClick={onClose}
+              className='font-mono text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-cyan-200'
+            >
+              ✕ Esc
+            </button>
+          </div>
+          <div className='mt-3 flex items-center justify-between gap-3'>
+            <div className='flex flex-wrap gap-1.5'>
+              {LOCKER_TABS.map((t) => (
+                <button
+                  key={t.id}
+                  type='button'
+                  onClick={() => setTab(t.id)}
+                  className={`rounded-md px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] transition ${
+                    tab === t.id
+                      ? 'bg-cyan-300/15 text-cyan-200 ring-1 ring-cyan-300/40'
+                      : 'text-white/50 hover:text-white/80'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {credits != null && (
+              <span className='shrink-0 text-[11px] font-semibold text-amber-300'>{credits} ⛁</span>
+            )}
+          </div>
+        </div>
+        <div className='flex flex-col gap-4 overflow-y-auto px-6 py-4 font-mono'>{children}</div>
+      </div>
+    </div>
   );
 }
 
@@ -3146,6 +3228,7 @@ function Lobby({
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
+  const [lockerOpen, setLockerOpen] = useState(false);
   const [lobbyProfile, setLobbyProfile] = useState<InstagibProfile | null>(null);
   const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
@@ -3259,7 +3342,7 @@ function Lobby({
             {lobbyProfile && (
               <button
                 type='button'
-                onClick={() => openSettingsAt('locker')}
+                onClick={() => setLockerOpen(true)}
                 title='Open the Locker — spend credits on cosmetics'
                 className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
               >
@@ -3355,7 +3438,7 @@ function Lobby({
                   </span>
                 </DeckButton>
                 <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
-                <DeckButton onClick={() => openSettingsAt('locker')} accent='fuchsia'>
+                <DeckButton onClick={() => setLockerOpen(true)} accent='fuchsia'>
                   🎽 Locker
                 </DeckButton>
                 <DeckButton onClick={() => openSettingsAt('controls')} accent='cyan' full>
@@ -3435,9 +3518,16 @@ function Lobby({
           settings={settings}
           onChange={onChangeSettings}
           initialTab={settingsTab}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {lockerOpen && (
+        <Locker
+          settings={settings}
+          onChange={onChangeSettings}
           onClose={() => {
-            setSettingsOpen(false);
-            setRefreshTick((t) => t + 1); // Locker buys/cases changed credits
+            setLockerOpen(false);
+            setRefreshTick((t) => t + 1); // buys/cases changed credits
           }}
         />
       )}
@@ -4322,17 +4412,16 @@ type SettingsTab =
   | 'video'
   | 'audio'
   | 'accessibility'
-  | 'locker'
   | 'profile';
 
-// `keywords` powers the settings search (matched alongside the label).
+// `keywords` powers the settings search (matched alongside the label). The
+// Locker is now its own modal (a lobby button), no longer a settings tab.
 const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: string; keywords: string }> = [
   { id: 'controls', label: 'Controls', keywords: 'sensitivity sens mouse dpi raw input fov zoom ads aim keybind bind move jump dash strafe vertical' },
   { id: 'crosshair', label: 'Crosshair', keywords: 'crosshair reticle dot cross circle color outline gap size thickness preset share' },
-  { id: 'video', label: 'Video', keywords: 'fps framerate frame rate vsync unlimited resolution quality low spec performance ui scale hud viewmodel weapon offset map brightness tint shadows particles' },
-  { id: 'audio', label: 'Audio', keywords: 'audio volume sound sfx announcer master mute' },
+  { id: 'video', label: 'Video', keywords: 'fps framerate frame rate vsync unlimited resolution quality low spec performance ui scale hud viewmodel weapon offset map brightness tint shadows particles ping' },
+  { id: 'audio', label: 'Audio', keywords: 'audio volume sound sfx announcer master mute captions' },
   { id: 'accessibility', label: 'Access.', keywords: 'accessibility reduced effects shake flash motion bright enemies colorblind visibility' },
-  { id: 'locker', label: 'Locker', keywords: 'locker cosmetic kill effect explosion rail beam color skin equip buy credits unlock' },
   { id: 'profile', label: 'Profile', keywords: 'profile name player server url lan import export share code backup' },
 ];
 
@@ -4731,13 +4820,6 @@ function SettingsModal({
                 you pick, for visibility / colorblindness.
               </div>
             </Section>
-          )}
-
-          {tab === 'locker' && (
-            <>
-              <Locker settings={settings} onChange={onChange} />
-              <CardStatsEditor settings={settings} onChange={onChange} />
-            </>
           )}
 
           {tab === 'profile' && (

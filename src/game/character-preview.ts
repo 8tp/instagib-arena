@@ -16,6 +16,11 @@ export type PreviewCosmetics = {
   emoteId: string;
   railColor: string; // rail cosmetic id
   killEffect: KillEffectStyle;
+  // Per-tab focus so the preview shows ONE thing at a time (the combined view was
+  // busy/buggy). `effects` fires the rail beam + kill burst; `forceIdle` ignores
+  // the equipped emote and plays idle (for the hats/weapon tabs).
+  effects?: boolean;
+  forceIdle?: boolean;
 };
 
 const FACE_CAMERA = Math.PI; // soldier faces -Z; turn it to face the +Z camera
@@ -153,15 +158,20 @@ export class CharacterPreview {
       this.last = now;
 
       this.mixer?.update(dt);
-      if (this.rig) applyEmote(this.rig, this.group, FACE_CAMERA, 0, now, emoteById(this.cos.emoteId).kind);
+      if (this.rig) {
+        const kind = this.cos.forceIdle ? 'idle' : emoteById(this.cos.emoteId).kind;
+        applyEmote(this.rig, this.group, FACE_CAMERA, 0, now, kind);
+      }
       this.hat?.update(dt);
       this.effects.step(dt, this.scene);
 
-      // Showcase a rail shot + kill burst on a loop.
-      this.fireTimer -= dt;
-      if (this.fireTimer <= 0) {
-        this.fireTimer = FIRE_PERIOD;
-        this.fireBeam();
+      // Showcase a rail shot + kill burst on a loop (weapon tab only).
+      if (this.cos.effects !== false) {
+        this.fireTimer -= dt;
+        if (this.fireTimer <= 0) {
+          this.fireTimer = FIRE_PERIOD;
+          this.fireBeam();
+        }
       }
       for (let i = this.beams.length - 1; i >= 0; i--) {
         const beam = this.beams[i];
