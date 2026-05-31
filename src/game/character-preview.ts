@@ -35,6 +35,7 @@ export class CharacterPreview {
   private fireTimer = 1.0;
   private disposed = false;
   private cos: PreviewCosmetics;
+  private floor: THREE.Mesh | null = null;
   private beams: { mesh: THREE.Object3D; life: number; max: number }[] = [];
 
   constructor(
@@ -57,13 +58,13 @@ export class CharacterPreview {
     rim.position.set(-3, 4, -4);
     this.scene.add(rim);
 
-    // Disc the character stands on.
-    const floor = new THREE.Mesh(
+    // Disc the character stands on (per-instance geometry/material → disposed below).
+    this.floor = new THREE.Mesh(
       new THREE.CircleGeometry(1.4, 40),
       new THREE.MeshStandardMaterial({ color: 0x161c26, roughness: 0.85 }),
     );
-    floor.rotation.x = -Math.PI / 2;
-    this.scene.add(floor);
+    this.floor.rotation.x = -Math.PI / 2;
+    this.scene.add(this.floor);
     this.scene.add(this.group);
 
     void this.build();
@@ -108,8 +109,10 @@ export class CharacterPreview {
   // A glowing twin-tone rail beam (core + helix sleeve) from a to b that fades.
   private fireBeam() {
     const rc = railColorById(this.cos.railColor).data;
-    const a = new THREE.Vector3(-0.35, 1.25, 0.35);
-    const b = new THREE.Vector3(1.7, 1.05, -0.6);
+    // A horizontal showcase beam across the front, both ends + the kill burst in
+    // frame so the rail colour AND kill effect are both visible in the preview.
+    const a = new THREE.Vector3(-0.95, 1.2, 0.55);
+    const b = new THREE.Vector3(0.95, 1.15, 0.55);
     const dir = b.clone().sub(a);
     const len = dir.length();
     const mid = a.clone().addScaledVector(dir, 0.5);
@@ -195,6 +198,14 @@ export class CharacterPreview {
     this.effects.dispose(this.scene);
     for (const b of this.beams) this.scene.remove(b.mesh);
     this.beams = [];
+    // Per-instance floor (the soldier + hat clones share CACHED geometry, so we
+    // must NOT dispose those — only our own scenery).
+    this.floor?.geometry.dispose();
+    (this.floor?.material as THREE.Material | undefined)?.dispose();
+    // Release the WebGL context itself — the Locker preview remounts on every
+    // tab open, and browsers cap live contexts (~16), after which it renders
+    // blank. forceContextLoss frees this context + all its GPU uploads.
+    this.renderer.forceContextLoss();
     this.renderer.dispose();
   }
 }

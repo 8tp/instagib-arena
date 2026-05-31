@@ -234,7 +234,10 @@ export class WornHat {
     if (!this.head) return;
     this.head.updateWorldMatrix(true, false); // refresh head + ancestors' world matrices
     this.head.getWorldPosition(this.tmp);
-    this.parent.worldToLocal(this.tmp); // group has no rotation/scale → just an offset
+    // worldToLocal inverts the parent's full matrixWorld, so this stays correct
+    // even when the parent group is rotated/animated (e.g. the podium + Locker
+    // preview spin/sway the group) — do NOT replace it with a raw subtraction.
+    this.parent.worldToLocal(this.tmp);
     // The unusual effect rides above the head even when bare (no hat mesh).
     if (this.container.children.length === 0) return;
     this.container.position.set(this.tmp.x, this.tmp.y + CROWN_OFFSET, this.tmp.z);

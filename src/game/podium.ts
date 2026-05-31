@@ -267,6 +267,9 @@ export class PodiumScene {
     if (this.raf !== null) cancelAnimationFrame(this.raf);
     this.raf = null;
     this.clearChars();
+    // Free the WebGL context (the podium remounts every match-end; browsers cap
+    // live contexts ~16, after which it renders blank).
+    this.renderer.forceContextLoss();
     this.renderer.dispose();
   }
 }

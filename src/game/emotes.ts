@@ -73,6 +73,13 @@ function foreArm(rig: EmoteRig, side: 'left' | 'right', bend: number) {
 
 // Drive one emote frame. `group` is the outer follower (yaw/position); `baseYaw`
 // is its resting facing; `baseY` its resting height; `t` seconds.
+//
+// INVARIANT: call this AFTER mixer.update() each frame. We only override the
+// bones an emote explicitly poses; every other bone is reset to the idle clip by
+// mixer.update, so switching emotes never strands a bone — PROVIDED the idle clip
+// keys any bone an emote touches. The current set only poses arms/forearms +
+// spine1, all keyed by idle. A future emote that poses an un-keyed bone (e.g. a
+// finger) would need an explicit reset here.
 export function applyEmote(
   rig: EmoteRig,
   group: THREE.Object3D,
