@@ -204,6 +204,7 @@ type Settings = {
   announcerEnabled: boolean;
   captions: boolean; // a11y: show announcer/medal/match callouts as on-screen text
   showFps: boolean;
+  showPing: boolean; // show each player's ping in the Tab scoreboard (online)
   fpsLimit: number; // 0 = VSync (display), >0 = cap to N fps, -1 = uncapped
   resolutionScale: number; // render resolution multiplier (perf ↔ sharpness)
   lowSpec: boolean; // cap high-DPI at 1× + thin particle effects
@@ -288,6 +289,7 @@ const DEFAULT_SETTINGS: Settings = {
   announcerEnabled: true,
   captions: false,
   showFps: false,
+  showPing: true,
   fpsLimit: 0,
   resolutionScale: 1,
   lowSpec: false,
@@ -2074,7 +2076,12 @@ function HudOverlay({
         !hud.matchOver &&
         !hud.killcam && <WarmupOverlay remainingMs={hud.warmupMsLeft} />}
       {hud.showScoreboard && (
-        <FullScoreboard scores={hud.scores} netStatus={hud.netStatus} mode={hud.mode} />
+        <FullScoreboard
+          scores={hud.scores}
+          netStatus={hud.netStatus}
+          mode={hud.mode}
+          showPing={settings.showPing && hud.netStatus !== 'off'}
+        />
       )}
       </div>
     </div>
@@ -2802,10 +2809,12 @@ function FullScoreboard({
   scores,
   netStatus,
   mode,
+  showPing = false,
 }: {
   scores: PlayerScore[];
   netStatus: HudState['netStatus'];
   mode: GameMode;
+  showPing?: boolean;
 }) {
   const title = netStatus !== 'off' ? 'Instagib Arena — Online' : 'Instagib Arena';
   const tag = mode === 'tdm' ? 'TDM' : mode === 'duel' ? 'Duel' : 'FFA';
@@ -2827,14 +2836,15 @@ function FullScoreboard({
                 key={team}
                 team={team}
                 players={scores.filter((s) => s.team === team)}
+                showPing={showPing}
               />
             ))}
             {scores.some((s) => s.team == null) && (
-              <ScoreTable players={scores.filter((s) => s.team == null)} />
+              <ScoreTable players={scores.filter((s) => s.team == null)} showPing={showPing} />
             )}
           </div>
         ) : (
-          <ScoreTable players={scores} />
+          <ScoreTable players={scores} showPing={showPing} />
         )}
       </div>
     </div>
@@ -2846,20 +2856,26 @@ function FullScoreboard({
 function ScoreTable({
   players,
   teamColor,
+  showPing = false,
 }: {
   players: PlayerScore[];
   teamColor?: string;
+  showPing?: boolean;
 }) {
+  const cols = showPing
+    ? 'grid-cols-[1fr_auto_auto_auto_auto_auto_auto]'
+    : 'grid-cols-[1fr_auto_auto_auto_auto_auto]';
   return (
-    <div className='grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-6 gap-y-1 text-[12px]'>
+    <div className={`grid ${cols} gap-x-6 gap-y-1 text-[12px]`}>
       <Th>Player</Th>
       <Th align='right'>Frags</Th>
       <Th align='right'>Deaths</Th>
       <Th align='right'>K/D</Th>
       <Th align='right'>Acc</Th>
       <Th align='right'>Best Streak</Th>
+      {showPing && <Th align='right'>Ping</Th>}
       {players.map((s) => (
-        <ScoreboardRow key={s.id} score={s} nameColor={teamColor} />
+        <ScoreboardRow key={s.id} score={s} nameColor={teamColor} showPing={showPing} />
       ))}
     </div>
   );
@@ -2870,9 +2886,11 @@ function ScoreTable({
 function TeamScoreSection({
   team,
   players,
+  showPing = false,
 }: {
   team: number;
   players: PlayerScore[];
+  showPing?: boolean;
 }) {
   const color = TEAM_COLORS[team] ?? '#ffffff';
   const total = players.reduce((sum, s) => sum + s.frags, 0);
@@ -2892,7 +2910,7 @@ function TeamScoreSection({
           {total}
         </span>
       </div>
-      <ScoreTable players={players} teamColor={color} />
+      <ScoreTable players={players} teamColor={color} showPing={showPing} />
     </div>
   );
 }
@@ -2915,7 +2933,20 @@ function Th({
   );
 }
 
-function ScoreboardRow({ score, nameColor }: { score: PlayerScore; nameColor?: string }) {
+// Ping → connection-quality colour (green good / amber ok / rose poor).
+function pingColor(ping: number): string {
+  return ping <= 60 ? 'text-emerald-300' : ping <= 120 ? 'text-amber-300' : 'text-rose-300';
+}
+
+function ScoreboardRow({
+  score,
+  nameColor,
+  showPing = false,
+}: {
+  score: PlayerScore;
+  nameColor?: string;
+  showPing?: boolean;
+}) {
   const kd =
     score.deaths === 0
       ? score.frags.toFixed(1)
@@ -2945,6 +2976,11 @@ function ScoreboardRow({ score, nameColor }: { score: PlayerScore; nameColor?: s
       <div className='py-1.5 text-right tabular-nums text-white/65'>{kd}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{formatAccuracy(score.accuracy)}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{score.bestStreak}</div>
+      {showPing && (
+        <div className={`py-1.5 text-right tabular-nums ${score.ping == null ? 'text-white/30' : pingColor(score.ping)}`}>
+          {score.ping == null ? '—' : `${score.ping}ms`}
+        </div>
+      )}
     </>
   );
 }
@@ -4438,6 +4474,12 @@ function SettingsModal({
                 label='Show FPS'
                 value={settings.showFps}
                 onChange={(v) => onChange({ ...settings, showFps: v })}
+              />
+              <ToggleField
+                label='Show ping on scoreboard'
+                hint='Each player’s connection to the server, shown on the Tab scoreboard (online matches).'
+                value={settings.showPing}
+                onChange={(v) => onChange({ ...settings, showPing: v })}
               />
               <SelectField
                 label='Frame rate limit'

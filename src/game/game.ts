@@ -1693,6 +1693,7 @@ export class Game {
       scores[0].deaths = this.playerDeaths;
       // Local player's accuracy is tracked client-side from confirmed kills.
       scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
+      scores[0].ping = Math.round(this.net.rttMs);
       for (const [id, snap] of this.net.remotes) {
         scores.push({
           id,
@@ -1706,6 +1707,7 @@ export class Game {
           team: snap.team,
           hat: snap.hat,
           emote: snap.emote,
+          ping: snap.ping,
         });
       }
     }

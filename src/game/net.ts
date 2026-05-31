@@ -16,6 +16,7 @@ export type RemotePlayerSnapshot = {
   hat: string; // equipped hat cosmetic id
   unusual: string; // equipped unusual-effect cosmetic id
   emote: string; // equipped podium-emote cosmetic id
+  ping: number; // this player's reported round-trip ping (ms)
   receivedAt: number;
 };
 
@@ -46,6 +47,7 @@ type StatePlayer = {
   hat?: string;
   unusual?: string;
   emote?: string;
+  ping?: number;
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
@@ -378,6 +380,7 @@ export class NetClient {
         hat: b.hat ?? 'hat.none',
         unusual: b.unusual ?? 'unusual.none',
         emote: b.emote ?? 'emote.cheer',
+        ping: b.ping ?? 0,
         receivedAt: now,
       });
     }
@@ -386,7 +389,9 @@ export class NetClient {
 
   private startPing() {
     this.stopPing();
-    const ping = () => this.send({ type: 'ping', ts: Date.now() });
+    // Report our latest measured RTT with each ping so the server can echo every
+    // player's ping in the scoreboard (the server can't measure it itself).
+    const ping = () => this.send({ type: 'ping', ts: Date.now(), rtt: Math.round(this.rttMs) });
     ping();
     this.pingTimer = setInterval(ping, PING_INTERVAL_MS);
   }

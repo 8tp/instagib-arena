@@ -99,6 +99,7 @@ type ClientRecord = {
   connectedAt: number;
   lastSeen: number;
   lastActiveMs: number; // last meaningful input (real movement or a shot) — for AFK
+  rttMs: number; // client-reported round-trip ping, echoed to the scoreboard
   resumeToken: string; // opaque token a reconnecting client presents to reclaim this slot
   disconnectedAt: number; // ms timestamp the socket dropped (0 = connected); resume grace
   lastRecoverMs: number; // last void-recovery time (debounces stale OOB positions)
@@ -160,7 +161,7 @@ type ClientMessage =
   | { type: 'emote'; id?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
-  | { type: 'ping'; ts: number }
+  | { type: 'ping'; ts: number; rtt?: number }
   | {
       type: 'shoot';
       ox: number;
@@ -641,6 +642,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         hat: c.hat,
         unusual: c.unusual,
         emote: c.emote,
+        ping: Math.round(c.rttMs),
       });
     }
     return { type: 'state' as const, t: now, players, resumeAt: room.resumeAt };
@@ -948,6 +950,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       connectedAt: now,
       lastSeen: now,
       lastActiveMs: now,
+      rttMs: 0,
       resumeToken: genId(18),
       disconnectedAt: 0,
       lastRecoverMs: 0,
@@ -1212,6 +1215,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
 
         case 'ping':
+          if (typeof msg.rtt === 'number' && msg.rtt >= 0 && msg.rtt < 2000) {
+            record.rttMs = msg.rtt; // client-measured ping, echoed in snapshots
+          }
           sendRaw(socket, { type: 'pong', ts: msg.ts, serverTime: Date.now() });
           break;
 

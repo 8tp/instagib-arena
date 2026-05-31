@@ -68,6 +68,8 @@ export type PlayerScore = {
   // Known for the local player + (online) remotes; absent for offline bots.
   hat?: string;
   emote?: string;
+  // Round-trip ping (ms) for online players; undefined for bots / offline.
+  ping?: number;
 };
 
 // Duel HUD: round number + each side's round wins.
