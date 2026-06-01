@@ -995,13 +995,25 @@ function GameView({
     }
   }, [disconnected]);
 
+  // Match's over (results / online results screen): always free the cursor so
+  // the buttons are clickable without the player having to hit Esc first.
+  useEffect(() => {
+    if (
+      (hud.matchOver || onlineResults) &&
+      typeof document !== 'undefined' &&
+      document.pointerLockElement
+    ) {
+      document.exitPointerLock();
+    }
+  }, [hud.matchOver, onlineResults]);
+
   return (
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
       {hud.pom && (
-        <PlayOfTheMatchOverlay pom={hud.pom} onSkip={skipPom} reduced={settings.reducedEffects} />
+        <PlayOfTheMatchOverlay pom={hud.pom} onSkip={skipPom} settings={settings} />
       )}
       {hud.vote && !onlineResults && !hud.pom && (
         <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />
@@ -2041,19 +2053,50 @@ function mapLabel(id: string): string {
 // replay (the engine owns the camera + actors). Letterbox bars, a "PLAY OF THE
 // MATCH" title that fades, a lower-third nameplate, a Skip button, and an
 // auto-advance progress bar driven by the clip clock.
+// A hit-marker X that flashes over the crosshair each time the spectated star
+// scores a kill during the replay. Keyed by `hitId` so the animation restarts
+// on every kill; colour reflects body vs. headshot.
+function ReplayKillMarker({ hitId, headshot }: { hitId: number; headshot: boolean }) {
+  if (hitId <= 0) return null;
+  const stroke = headshot ? '#facc15' : '#fb7185';
+  return (
+    <div
+      key={hitId}
+      className='absolute inset-0 flex items-center justify-center'
+      style={{ animation: 'pomHit 460ms ease-out forwards' }}
+    >
+      <svg width='48' height='48' viewBox='0 0 42 42' aria-hidden>
+        {[
+          [8, 8, 15, 15],
+          [34, 8, 27, 15],
+          [8, 34, 15, 27],
+          [34, 34, 27, 27],
+        ].map((l, i) => (
+          <line
+            key={i}
+            x1={l[0]} y1={l[1]} x2={l[2]} y2={l[3]}
+            stroke={stroke} strokeWidth='2.5' strokeLinecap='round'
+            style={{ filter: `drop-shadow(0 0 4px ${stroke}cc)` }}
+          />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 function PlayOfTheMatchOverlay({
   pom,
   onSkip,
-  reduced,
+  settings,
 }: {
   pom: PomState;
   onSkip: () => void;
-  reduced: boolean;
+  settings: Settings;
 }) {
-  const isFinale = pom.phase === 'finale';
-  // Fade the big title out after the opening beat so it doesn't sit on the clip.
-  // Re-arm whenever the phase flips (finale → Play of the Match) so the PotG
-  // title gets its own entrance.
+  const reduced = settings.reducedEffects;
+  const isPotg = pom.phase === 'potg';
+  const isVerdict = pom.phase === 'verdict';
+  // Fade the PotG title in on its beat (re-armed when the phase flips to potg).
   const [titleVisible, setTitleVisible] = useState(true);
   useEffect(() => {
     setTitleVisible(true);
@@ -2077,50 +2120,71 @@ function PlayOfTheMatchOverlay({
 
   return (
     <div className='pointer-events-none absolute inset-0 z-40 font-mono'>
+      <style>{'@keyframes pomHit{0%{opacity:0;transform:scale(1.5)}25%{opacity:1}100%{opacity:0;transform:scale(1)}}@keyframes pomVerdict{0%{opacity:0;transform:scale(0.82)}55%{opacity:1;transform:scale(1.04)}100%{opacity:1;transform:scale(1)}}'}</style>
+
       {/* Cinematic letterbox bars */}
       <div className='absolute inset-x-0 top-0 bg-black' style={{ height: barH }} />
       <div className='absolute inset-x-0 bottom-0 bg-black' style={{ height: barH }} />
 
-      {/* Title card — only on the Play of the Match beat; the slow-mo finale
-          plays clean (no header) so it reads as the kill itself. Fades out. */}
-      {!isFinale && (
-        <div
-          className='absolute inset-x-0 top-[16%] flex flex-col items-center transition-opacity duration-700'
-          style={{ opacity: titleVisible ? 1 : 0 }}
-        >
-          <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
-            Play of the Match
+      {/* First-person framing: the crosshair + a kill flash so it's clear we're
+          watching someone frag. Hidden on the VICTORY/DEFEAT card. */}
+      {!isVerdict && (
+        <>
+          <Crosshair cfg={settings.crosshair} />
+          <ReplayKillMarker hitId={pom.hitId} headshot={pom.hitHeadshot} />
+        </>
+      )}
+
+      {/* VICTORY / DEFEAT card — the slow-mo freeze beat between the final blow
+          and the Play of the Match. */}
+      {isVerdict && (
+        <div className='absolute inset-0 flex flex-col items-center justify-center'>
+          <div
+            className={`text-7xl font-black uppercase tracking-[0.12em] drop-shadow-[0_4px_16px_rgba(0,0,0,0.95)] ${
+              pom.won ? 'text-emerald-300' : 'text-rose-400'
+            }`}
+            style={{ animation: 'pomVerdict 520ms cubic-bezier(0.2,0.8,0.2,1) forwards' }}
+          >
+            {pom.won ? 'Victory' : 'Defeat'}
           </div>
         </div>
       )}
 
-      {/* Lower-third: star name + the feat (finale shows "FINAL BLOW" in amber). */}
-      <div className='absolute left-[4vw] bottom-[14vh]'>
-        <div className='text-3xl font-extrabold uppercase tracking-[0.04em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
-          {pom.star}
-        </div>
-        <div
-          className={`mt-1 text-lg font-bold uppercase tracking-[0.25em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)] ${
-            isFinale ? 'text-amber-300' : 'text-cyan-300'
-          }`}
-        >
-          {pom.label}
-          {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
-        </div>
-      </div>
+      {/* Play of the Match: title + lower-third + skip. */}
+      {isPotg && (
+        <>
+          <div
+            className='absolute inset-x-0 top-[16%] flex flex-col items-center transition-opacity duration-700'
+            style={{ opacity: titleVisible ? 1 : 0 }}
+          >
+            <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
+              Play of the Match
+            </div>
+          </div>
 
-      {/* Skip button (re-enable pointer events just for it) */}
-      <button
-        onClick={onSkip}
-        className='pointer-events-auto absolute right-[4vw] bottom-[14vh] rounded-lg border border-white/25 bg-black/50 px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.2em] text-white/85 backdrop-blur-sm transition hover:bg-white/10'
-      >
-        Skip ▸
-      </button>
+          <div className='absolute left-[4vw] bottom-[14vh]'>
+            <div className='text-3xl font-extrabold uppercase tracking-[0.04em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
+              {pom.star}
+            </div>
+            <div className='mt-1 text-lg font-bold uppercase tracking-[0.25em] text-cyan-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
+              {pom.label}
+              {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
+            </div>
+          </div>
 
-      {/* Auto-advance progress bar pinned to the bottom letterbox edge */}
+          <button
+            onClick={onSkip}
+            className='pointer-events-auto absolute right-[4vw] bottom-[14vh] rounded-lg border border-white/25 bg-black/50 px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.2em] text-white/85 backdrop-blur-sm transition hover:bg-white/10'
+          >
+            Skip ▸
+          </button>
+        </>
+      )}
+
+      {/* Auto-advance progress bar pinned to the bottom letterbox edge. */}
       <div className='absolute inset-x-0' style={{ bottom: barH, height: '2px' }}>
         <div
-          className={`h-full ${isFinale ? 'bg-amber-400/80' : 'bg-cyan-400/80'}`}
+          className={`h-full ${isPotg ? 'bg-cyan-400/80' : 'bg-amber-400/80'}`}
           style={{ width: `${pct}%`, transition: 'width 80ms linear' }}
         />
       </div>

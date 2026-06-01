@@ -262,6 +262,9 @@ export type ReplayDeps = {
   spawnMuzzleFlash: (at: Vec3) => void;
   spawnKillEffect: (at: THREE.Vector3, headshot: boolean) => void;
   reducedEffects: () => boolean;
+  // Fired when the POV star (whose eyes we're in) scores a kill in the clip, so
+  // the HUD can flash a hit-marker over the crosshair.
+  onStarKill?: (headshot: boolean) => void;
 };
 
 // First-person replay camera: the clip is shown through the star's own eyes
@@ -313,6 +316,11 @@ export class ReplayPlayer {
   }
   get wallRemaining(): number {
     return Math.max(0, this.totalWallSec - this.wallElapsed);
+  }
+  // True once the clip has reached its end and is holding on the frozen frame
+  // (the cinematic pause — used as the VICTORY/DEFEAT beat for the finale).
+  get isFrozen(): boolean {
+    return this.frozen;
   }
 
   start(clip: HighlightClip, rec: MatchRecorder, opts: ReplayOptions = {}) {
@@ -413,6 +421,8 @@ export class ReplayPlayer {
       if (vp) {
         this.deps.spawnKillEffect(new THREE.Vector3(vp.x, vp.y + 0.9, vp.z), k.headshot);
       }
+      // A kill BY the star we're spectating → flash a hit-marker on the crosshair.
+      if (k.killerId === this.clip.starId) this.deps.onStarKill?.(k.headshot);
     }
 
     // First-person camera riding the star's eyes.

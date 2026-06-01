@@ -9,7 +9,10 @@ import { hatById, unusualById, type UnusualKind } from './cosmetics';
 // source scales ranged from 3 to 300 units, so no per-hat tuning is needed.
 
 const TARGET_WIDTH = 0.34; // metres — sits a bit wider than the head so it reads
-const CROWN_OFFSET = 0.11; // metres above the head bone where a hat's base seats
+// Metres above the head BONE where a hat's base seats. The Soldier's head bone
+// sits ~0.25 m below the crown of the head mesh (measured), so the base lands
+// just under the crown; per-hat `sink` then drops brimmed/skull-cap styles down.
+const CROWN_OFFSET = 0.19;
 
 const loader = new GLTFLoader();
 const sourceCache = new Map<string, Promise<THREE.Object3D>>();

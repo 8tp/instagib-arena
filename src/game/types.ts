@@ -177,12 +177,18 @@ export type MapVoteState = {
 // is playing in the live 3D scene (camera taken over by the ReplayPlayer) and
 // the results/podium/vote overlays are suppressed in React until it clears.
 export type PomState = {
-  phase: 'finale' | 'potg'; // slow-mo final-blow beat, then the Play of the Match
+  // Sequence: slow-mo of the final blow → VICTORY/DEFEAT card → Play of the Match.
+  phase: 'finale' | 'verdict' | 'potg';
+  won: boolean; // drives the VICTORY/DEFEAT card
   star: string; // star player's name
   label: string; // headline, e.g. "TRIPLE KILL"
   subLabel?: string; // e.g. "3 KILLS"
   remaining: number; // seconds left in the clip (drives the auto-advance bar)
   total: number; // clip duration in seconds
+  // Bumps each time the POV star scores a kill during the replay, so the overlay
+  // can flash a hit-marker (clarifies what's happening). `hitHeadshot` colours it.
+  hitId: number;
+  hitHeadshot: boolean;
 };
 
 export type HudState = {

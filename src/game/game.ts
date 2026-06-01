@@ -93,7 +93,7 @@ import {
 
 // End-of-match cinematic: how the final-blow slow-mo is paced before the PotG.
 const FINALE_TIME_SCALE = 0.5; // play the final blow at half speed
-const FINALE_FREEZE_SEC = 0.5; // then hold on the frozen frame (the "pause")
+const FINALE_FREEZE_SEC = 1.9; // then hold on the frozen frame: the VICTORY/DEFEAT beat
 
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
@@ -263,6 +263,8 @@ export class Game {
   private replaySegIdx = 0;
   private pom: PomState | null = null;
   private pomOnDone: (() => void) | null = null;
+  private endWon = false; // win/loss latched for the end-of-match cinematic
+  private verdictSpoken = false; // guards the one-shot VICTORY/DEFEAT callout
   private nextEventId = 1;
   private fireWasAirborne = false;
   private weaponWasReady = true; // tracks cooldown-to-ready transition
@@ -382,6 +384,10 @@ export class Game {
   }
 
   requestLock() {
+    // Refuse to re-capture the cursor once the match is over / a cinematic or
+    // vote is up — otherwise a stray click on the canvas during the Play of the
+    // Match re-locks the pointer and the results screen opens with no cursor.
+    if (this.matchOver || this.vote || this.replay || this.replaySegments.length) return;
     this.input.requestLock();
     this.audio.resume();
   }
@@ -910,11 +916,12 @@ export class Game {
     if (typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();
     }
-    // Play of the Match plays over the (now-running) vote countdown; the
-    // results + vote UI are gated behind hud.pom in React until the clip ends.
-    // The reveal is a no-op here — those overlays are React-state driven and
-    // simply un-gate when finishPlayOfMatch clears hud.pom.
-    this.startPlayOfMatch(() => {});
+    // The end cinematic (slow-mo → VICTORY/DEFEAT → Play of the Match) plays over
+    // the now-running vote countdown; the results + vote UI are gated behind
+    // hud.pom in React until it ends. The reveal is a no-op here — those overlays
+    // are React-state driven and simply un-gate when finishPlayOfMatch clears
+    // hud.pom (which also speaks the verdict via the freeze beat).
+    this.startPlayOfMatch(() => {}, this.wonLastMatch);
     this.emitHud();
   }
 
@@ -1742,14 +1749,13 @@ export class Game {
     if (typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();
     }
-    // Reveal the results — deferred until the Play-of-the-Match clip finishes.
-    const reveal = () => {
-      this.audio.speak(won ? 'Victory' : 'Defeat', 1);
-      this.onMatchEnd(this.collectStats(won));
-    };
-    if (this.startPlayOfMatch(reveal)) {
-      this.emitHud(); // surface the PoM overlay now; reveal() fires when it ends
+    // Reveal the results — deferred until the whole cinematic finishes. The
+    // VICTORY/DEFEAT callout fires earlier, on the slow-mo freeze (see tick).
+    const reveal = () => this.onMatchEnd(this.collectStats(won));
+    if (this.startPlayOfMatch(reveal, won)) {
+      this.emitHud(); // surface the cinematic now; reveal() fires when it ends
     } else {
+      this.audio.speak(won ? 'Victory' : 'Defeat', 1); // no clip → call it now
       reveal();
       this.emitHud();
     }
@@ -1760,12 +1766,14 @@ export class Game {
   // Pick the best moment of the just-ended match and start its cinematic replay
   // in the live scene. Returns false when there's nothing worth showing (the
   // caller then jumps straight to results). `onDone` runs once the clip ends.
-  private startPlayOfMatch(onDone: () => void): boolean {
+  private startPlayOfMatch(onDone: () => void, won: boolean): boolean {
     if (this.replay || this.replaySegments.length) return true; // already playing
+    this.endWon = won;
+    this.verdictSpoken = false;
 
     // The cinematic is up to two first-person segments: a slow-motion replay of
-    // the match-ending blow, then the Play of the Match. Either may be absent
-    // (e.g. a 0-kill match has neither → jump straight to results).
+    // the match-ending blow (whose freeze frame is the VICTORY/DEFEAT beat), then
+    // the Play of the Match. Either may be absent (a 0-kill match has neither).
     const segments: ReplaySegment[] = [];
     const finale = this.recorder.selectFinale();
     if (finale) {
@@ -1799,11 +1807,14 @@ export class Game {
     this.replay = replay;
     this.pom = {
       phase: seg.kind,
+      won: this.endWon,
       star: seg.clip.starName,
       label: seg.clip.label,
       subLabel: seg.clip.subLabel,
       remaining: replay.totalWall,
       total: replay.totalWall,
+      hitId: 0,
+      hitHeadshot: false,
     };
   }
 
@@ -1837,6 +1848,16 @@ export class Game {
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
       spawnKillEffect: (at, headshot) => this.spawnKillEffect(at, headshot, this.killEffectStyle),
       reducedEffects: () => this.reducedEffects,
+      // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
+      // it reads as "they just fragged someone" during the cinematic.
+      onStarKill: (headshot) => {
+        if (this.pom) {
+          this.pom.hitId += 1;
+          this.pom.hitHeadshot = headshot;
+        }
+        this.audio.play(headshot ? 'headshot' : 'hit', 0.6);
+        this.emitHud();
+      },
     });
   }
 
@@ -2089,6 +2110,20 @@ export class Game {
     // truth, so Skip / completion stay consistent with the progress bar).
     if (this.pom && this.replay) {
       this.pom.remaining = this.replay.wallRemaining;
+      // The finale freezes on the final-kill frame — that hold IS the VICTORY/
+      // DEFEAT beat. Flip the overlay to the verdict card and call it out once.
+      if (
+        this.replaySegments[this.replaySegIdx]?.kind === 'finale' &&
+        this.replay.isFrozen &&
+        this.pom.phase !== 'verdict'
+      ) {
+        this.pom.phase = 'verdict';
+        if (!this.verdictSpoken) {
+          this.verdictSpoken = true;
+          this.audio.speak(this.endWon ? 'Victory' : 'Defeat', 1);
+        }
+        this.emitHud();
+      }
     }
   }
 
