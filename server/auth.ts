@@ -13,6 +13,7 @@ import {
   findUserByName,
   userIdFromSession,
 } from './db';
+import { containsProfanity, isReservedName } from './profanity';
 
 const SESSION_COOKIE = 'igsession';
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
@@ -96,6 +97,16 @@ authRouter.post('/auth/register', (req, res) => {
     typeof body.email === 'string' && body.email.trim() ? body.email.trim().slice(0, 200) : null;
   if (!USERNAME_RE.test(username)) {
     res.status(400).json({ error: 'bad_username' });
+    return;
+  }
+  // Block slurs/profanity (this is the only place a name is human-chosen — see
+  // server/profanity.ts) and names reserved for staff / the guest slot.
+  if (isReservedName(username)) {
+    res.status(400).json({ error: 'reserved' });
+    return;
+  }
+  if (containsProfanity(username)) {
+    res.status(400).json({ error: 'profane' });
     return;
   }
   if (password.length < 6 || password.length > 200) {

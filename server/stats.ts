@@ -9,6 +9,7 @@ import { Router, type Request } from 'express';
 import {
   buyCosmetic,
   claimChallenge,
+  findUserById,
   getChallenges,
   getProfile,
   getStats,
@@ -115,9 +116,13 @@ statsRouter.post('/stats', (req, res) => {
   const offline = body.offline === true;
   const accuracy = shotsFired > 0 ? (shotsHit / shotsFired) * 100 : 0;
 
+  // Leaderboard name is the account username (moderated at registration), never
+  // the client-supplied display name — so the standings can't show a forged
+  // slur. Guests (id === '') don't record a row at all; the fallback is defensive.
+  const account = id ? findUserById(id) : undefined;
   const result = recordMatch({
     playerId: id,
-    userName: cleanName(body.name),
+    userName: account?.username ?? cleanName(body.name),
     kills,
     deaths,
     wins,

@@ -4809,6 +4809,10 @@ function SettingsModal({
   const ch = settings.crosshair;
   const setCh = (patch: Partial<CrosshairConfig>) =>
     onChange({ ...settings, crosshair: { ...ch, ...patch } });
+  // Your name is your identity (account username, or "Guest" — set by the auth
+  // effect in the parent), and is server-authoritative, so the field is shown
+  // read-only. Guests can't pick a name; in matches they appear as "Guest N".
+  const isGuestName = !settings.playerName || settings.playerName === 'Guest';
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [search, setSearch] = useState('');
   const visibleTabs = filterTabs(search);
@@ -5190,10 +5194,14 @@ function SettingsModal({
             <Section label='Profile &amp; LAN'>
               <TextField
                 label='Player name'
-                value={settings.playerName}
-                placeholder='Player'
-                maxLength={24}
-                onChange={(v) => onChange({ ...settings, playerName: v })}
+                value={isGuestName ? 'Guest' : settings.playerName}
+                readOnly
+                hint={
+                  isGuestName
+                    ? 'Guests appear as Guest 1, 2, 3… in matches. Log in or create an account to set a name.'
+                    : 'Your account username, shown to other players. Set when you register.'
+                }
+                onChange={() => {}}
               />
               <TextField
                 label='Server URL (blank = this server)'
@@ -5297,12 +5305,16 @@ function TextField({
   placeholder,
   maxLength,
   onChange,
+  readOnly,
+  hint,
 }: {
   label: string;
   value: string;
   placeholder?: string;
   maxLength?: number;
   onChange: (v: string) => void;
+  readOnly?: boolean;
+  hint?: string;
 }) {
   return (
     <label className='flex flex-col gap-1.5'>
@@ -5312,9 +5324,18 @@ function TextField({
         value={value}
         placeholder={placeholder}
         maxLength={maxLength}
-        onChange={(e) => onChange(e.target.value)}
-        className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white outline-none transition focus:border-emerald-400/70'
+        readOnly={readOnly}
+        aria-readonly={readOnly}
+        onChange={(e) => {
+          if (!readOnly) onChange(e.target.value);
+        }}
+        className={`rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white outline-none transition focus:border-emerald-400/70 ${
+          readOnly ? 'cursor-not-allowed text-white/55 focus:border-white/15' : ''
+        }`}
       />
+      {hint && (
+        <span className='text-[10px] normal-case tracking-normal text-white/40'>{hint}</span>
+      )}
     </label>
   );
 }

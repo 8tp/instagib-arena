@@ -185,6 +185,7 @@ export class NetClient {
   localFrags = 0;
   localDeaths = 0;
   localInvulnMs = 0;
+  localName = ''; // your SERVER-ASSIGNED name (account username, or "Guest N"); from snapshots
   localTeam: number | null = null; // your team index in TDM; null otherwise
   mode: GameMode = 'ffa';
   rttMs = 0;
@@ -464,6 +465,7 @@ export class NetClient {
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
           this.localInvulnMs = p.invulnMs ?? 0;
+          if (p.name) this.localName = p.name; // server's authoritative name for us
           if (p.team !== undefined) this.localTeam = p.team;
         }
       }

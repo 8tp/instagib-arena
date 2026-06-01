@@ -44,7 +44,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import type { CardPayload, Vec3 } from '../src/game/types';
 import { isCard, isEmote, isHat, isNameColor, isSpawnEffect, isUnusual } from '../src/game/cosmetics';
-import { unlockedSetFor } from './db';
+import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
 
 const SNAPSHOT_HZ = 32;
@@ -352,6 +352,24 @@ export function attachInstagibWs(wss: WebSocketServer) {
     return room;
   };
 
+  // Give a guest a per-room display name "Guest N". N is the smallest positive
+  // integer not already taken by another guest in the room (held/disconnected
+  // members still count, so a reconnecting peer can't collide), so a lobby reads
+  // Guest 1 / Guest 2 / Guest 3 …. Logged-in players keep their account username.
+  const assignGuestName = (room: Room, record: ClientRecord) => {
+    const used = new Set<number>();
+    for (const memberId of room.members) {
+      if (memberId === record.id) continue;
+      const c = clients.get(memberId);
+      if (!c || c.playerId) continue; // only other guests claim a number
+      const m = /^Guest (\d+)$/.exec(c.name);
+      if (m) used.add(Number(m[1]));
+    }
+    let n = 1;
+    while (used.has(n)) n += 1;
+    record.name = `Guest ${n}`;
+  };
+
   // ── Teams (TDM) ───────────────────────────────────────────────────────
   // Assign the joining player to the smaller team (ties → team 0) so sides
   // stay balanced. Returns null outside TDM.
@@ -453,6 +471,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.roomId = room.id;
     record.team = assignTeam(room); // null outside TDM
     room.members.add(record.id);
+    // Guests get a per-room "Guest N" label; logged-in players keep their
+    // account username (set on connect). Assigned before the joined/peer-joined
+    // broadcasts below so everyone sees the final name immediately.
+    if (!record.playerId) assignGuestName(room, record);
     room.emptySince = 0;
     room.wasEverOccupied = true;
     if (!room.hostId) room.hostId = record.id;
@@ -514,6 +536,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     listers.delete(record.id);
     record.roomId = room.id;
     record.team = old.team;
+    record.name = old.name; // keep the held slot's name (account username / "Guest N")
     record.pos = { ...old.pos };
     record.yaw = old.yaw;
     record.pitch = old.pitch;
@@ -954,10 +977,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // `igsession` cookie) rides the WS upgrade on the same origin — we use it to
     // ownership-check cosmetic equips. Guests resolve to '' (defaults only).
     const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
+    // The display name is SERVER-AUTHORITATIVE — never taken from the client.
+    // A logged-in player gets their account username (moderated at registration,
+    // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
+    // per-room "Guest N" on join (assignGuestName). This is the only name other
+    // players ever see, so a modified client can't inject a slur via `name`.
+    const accountName = playerId ? findUserById(playerId)?.username : undefined;
     const record: ClientRecord = {
       id,
       socket,
-      name: `Player-${id.slice(0, 4)}`,
+      name: accountName ?? 'Guest',
       roomId: null,
       pos: { x: 0, y: 0, z: 0 },
       yaw: 0,
@@ -1021,9 +1050,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       record.lastSeen = ts;
       switch (msg.type) {
         case 'hello':
-          if (typeof msg.name === 'string' && msg.name.trim()) {
-            record.name = msg.name.slice(0, 24);
-          }
+          // Names are server-authoritative (set on connect from the account, or
+          // assigned as "Guest N" on join), so the client's name is ignored.
           break;
 
         case 'list':
@@ -1032,9 +1060,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
 
         case 'create': {
-          if (typeof msg.name === 'string' && msg.name.trim()) {
-            record.name = msg.name.slice(0, 24);
-          }
           if (!chargeRoomCreate(record, ts)) {
             sendRaw(socket, { type: 'join-failed', reason: 'rate' });
             break;
@@ -1062,9 +1087,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
         }
 
         case 'quickmatch': {
-          if (typeof msg.name === 'string' && msg.name.trim()) {
-            record.name = msg.name.slice(0, 24);
-          }
           // Find the fullest joinable public room. `mode: 'any'` (the "Play Now"
           // super-queue) matches ANY mode so a small population concentrates
           // instead of fragmenting three ways; otherwise the SAME mode only. A
@@ -1106,9 +1128,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
         }
 
         case 'join': {
-          if (typeof msg.name === 'string' && msg.name.trim()) {
-            record.name = msg.name.slice(0, 24);
-          }
           const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
           if (!room) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
@@ -1125,9 +1144,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
         case 'resume': {
           // A reconnecting client presents its previous resume token to reclaim
           // its in-match slot + score. On miss/expiry, fall back to a fresh join.
-          if (typeof msg.name === 'string' && msg.name.trim()) {
-            record.name = msg.name.slice(0, 24);
-          }
           const token = typeof msg.token === 'string' ? msg.token : '';
           let old: ClientRecord | null = null;
           if (token) {

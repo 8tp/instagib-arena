@@ -2185,6 +2185,10 @@ export class Game {
       if (serverDeaths > this.playerDeaths) this.playerDeaths = serverDeaths;
       scores[0].frags = this.playerFrags;
       scores[0].deaths = this.playerDeaths;
+      // Online, the name is server-authoritative (your account username, or the
+      // "Guest N" the server assigned in this room) — show that, not the local
+      // label, so your scoreboard row matches what everyone else sees.
+      if (this.net.localName) scores[0].name = this.net.localName;
       // Local player's accuracy is tracked client-side from confirmed kills.
       scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
       scores[0].ping = Math.round(this.net.rttMs);

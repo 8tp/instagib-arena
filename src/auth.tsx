@@ -80,6 +80,8 @@ const ERRORS: Record<string, string> = {
   bad_username: 'Username must be 3–20 letters, numbers, or _',
   bad_password: 'Password must be at least 6 characters',
   taken: 'That username is taken',
+  reserved: 'That username is reserved — pick another',
+  profane: 'That username isn’t allowed — pick another',
   invalid: 'Wrong username or password',
   rate_limited: 'Too many attempts — wait a minute',
   network: 'Network error — try again',
