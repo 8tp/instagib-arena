@@ -22,9 +22,9 @@ docker build -t instagib-arena .
 docker run -p 8787:8787 -v "$PWD/data:/app/data" instagib-arena
 ```
 
-The SQLite stats DB lives at `/app/data` (declared as a `VOLUME` in the image),
-so **mount a persistent volume there** or you'll lose all per-browser stats when
-the container is replaced. Open <http://localhost:8787>.
+The SQLite stats DB lives at `/app/data`, so **mount a persistent volume there**
+or you'll lose all stats/accounts when the container is replaced. Open
+<http://localhost:8787>.
 
 To configure, pass env vars with `-e`, e.g.:
 

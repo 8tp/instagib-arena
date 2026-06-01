@@ -31,6 +31,8 @@ COPY server ./server
 COPY src/game ./src/game
 COPY tsconfig*.json ./
 EXPOSE 8787
-# The SQLite stats DB lives here; mount a volume so it survives container churn.
-VOLUME ["/app/data"]
+# The SQLite stats DB lives at /app/data — mount a persistent volume there so it
+# survives container churn. On Railway, attach a Railway Volume at /app/data
+# (the platform rejects a Dockerfile `VOLUME`); for plain Docker, bind-mount it:
+# `docker run -v "$PWD/data:/app/data" …`.
 CMD ["npm", "start"]
