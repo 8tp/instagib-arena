@@ -80,6 +80,42 @@ app.disable('x-powered-by');
 // `req.ip` is the real client IP (used as the rate-limit fallback for
 // cookie-less callers), not the proxy's socket address.
 app.set('trust proxy', 1);
+
+// Security headers on every response. The app is a single same-origin bundle —
+// Vite-built JS/CSS under /assets, game assets (.glb/.ogg) and the /ws/instagib
+// socket are all same-origin — so a tight CSP costs nothing: scripts and
+// connections (incl. the same-origin WebSocket) are 'self'; styles allow inline
+// (React style props + the Play-of-the-Match <style> tag) and Google Fonts;
+// images allow data:/blob: for three.js canvas textures. frame-ancestors 'none'
+// + X-Frame-Options block clickjacking. HSTS is prod-only (TLS lives at the
+// platform edge); sending it in local http dev would poison the browser.
+const CSP = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "img-src 'self' data: blob:",
+  "media-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com data:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "form-action 'self'",
+].join('; ');
+app.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader(
+    'Permissions-Policy',
+    'geolocation=(), camera=(), microphone=(), payment=(), usb=()',
+  );
+  if (!dev) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
 app.use(cookieParser());
 app.use(express.json({ limit: '16kb' }));
 

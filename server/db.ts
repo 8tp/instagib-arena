@@ -340,9 +340,9 @@ function ownedSet(prog: ProgRow | undefined): Set<string> {
   return new Set([...defaultUnlockedIds(), ...parseIdList(prog?.unlocked)]);
 }
 
-// The unlocked-cosmetic set for an anonymous player id (the `igpid` cookie),
+// The unlocked-cosmetic set for an account id (from the igsession cookie),
 // used to ownership-check WS cosmetic equips. An empty/unknown id → defaults
-// only (so anonymous players still get the free cosmetics, nothing locked).
+// only (so guests still get the free cosmetics, nothing locked).
 export function unlockedSetFor(playerId: string): Set<string> {
   if (!playerId) return new Set(defaultUnlockedIds());
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;

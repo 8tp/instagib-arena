@@ -123,7 +123,7 @@ type ClientRecord = {
   nameColor: string; // equipped nameplate-color cosmetic id (echoed in snapshots)
   spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
   card: CardPayload | null; // playercard shown on the victim's killcam
-  playerId: string; // anonymous igpid (from the WS upgrade cookie), '' if none
+  playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
 };
 
 type Room = {
@@ -950,8 +950,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
   wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
     const id = genId();
     const now = Date.now();
-    // The anonymous progression identity (httpOnly `igpid` cookie) rides the WS
-    // upgrade on the same origin — we use it to ownership-check cosmetic equips.
+    // The progression identity (the logged-in account behind the httpOnly
+    // `igsession` cookie) rides the WS upgrade on the same origin — we use it to
+    // ownership-check cosmetic equips. Guests resolve to '' (defaults only).
     const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
     const record: ClientRecord = {
       id,

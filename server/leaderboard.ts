@@ -9,6 +9,7 @@
 
 import { Router } from 'express';
 import { getLeaderboard, getPlayerRank, type LeaderWindow } from './db';
+import { accountId } from './auth';
 
 type Sort = 'kills' | 'wins' | 'accuracy';
 const SORTS: readonly Sort[] = ['kills', 'wins', 'accuracy'];
@@ -37,9 +38,11 @@ leaderboardRouter.get('/leaderboard', (req, res) => {
   const window = parseWindow(req.query.window);
   const limit = parseLimit(req.query.limit);
   const leaderboard = getLeaderboard({ sort, limit, window });
-  // If the caller carries the anonymous progression cookie, also return their
-  // own rank + entry so the client can pin "you are #N" even when outside top-N.
-  const igpid = (req.cookies?.igpid as string | undefined) ?? '';
-  const you = igpid ? getPlayerRank(igpid, sort, window) : null;
+  // If the caller is a logged-in account, also return their own rank + entry so
+  // the client can pin "you are #N" even when they're outside the top-N. This is
+  // the same identity (the igsession account) progression is keyed off, so the
+  // pinned row matches the player's recorded stats. Guests resolve to '' → null.
+  const id = accountId(req);
+  const you = id ? getPlayerRank(id, sort, window) : null;
   res.json({ leaderboard, sort, window, count: leaderboard.length, you });
 });
