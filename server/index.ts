@@ -101,7 +101,10 @@ const CSP = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
-  "connect-src 'self'",
+  // blob:/data: are needed by three.js: GLTFLoader decodes GLB-embedded textures
+  // (e.g. the character model) by creating a blob: URL and fetch()-ing it, which
+  // connect-src governs — without blob: those textures silently fail to load.
+  "connect-src 'self' blob: data:",
   "worker-src 'self' blob:",
   "form-action 'self'",
 ].join('; ');
