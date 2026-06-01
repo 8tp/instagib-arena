@@ -17,7 +17,8 @@ export type Rarity = 'common' | 'rare' | 'epic';
 export type CosmeticSource =
   | { type: 'default' }
   | { type: 'level'; level: number }
-  | { type: 'credits'; price: number };
+  | { type: 'credits'; price: number }
+  | { type: 'admin' }; // staff-exclusive: auto-granted to admins, never earnable/buyable
 
 // ── Kill-effect slot ────────────────────────────────────────────────────────
 // The visual that plays at the victim when you frag them. Each style is a
@@ -81,6 +82,7 @@ export const RAIL_COLORS: readonly RailColorCosmetic[] = [
   { id: 'rail.toxic',  name: 'Toxic',  blurb: 'Acid-green tracer.',             rarity: 'rare',   source: { type: 'level', level: 8 },      data: { core: 0xe8ffd6, helix: 0x6fff3b } },
   { id: 'rail.ember',  name: 'Ember',  blurb: 'Molten orange-red beam.',        rarity: 'rare',   source: { type: 'credits', price: 600 },  data: { core: 0xffe0b0, helix: 0xff6a1a } },
   { id: 'rail.gold',   name: 'Gold',   blurb: 'A regal gold beam.',             rarity: 'epic',   source: { type: 'credits', price: 1800 }, data: { core: 0xfff4c0, helix: 0xffb000 } },
+  { id: 'rail.admin',  name: 'Sovereign', blurb: 'Staff-gold rail — admin only.', rarity: 'epic', source: { type: 'admin' },              data: { core: 0xfff6d0, helix: 0xffd700 } },
 ];
 
 export function railColorById(id: string): RailColorCosmetic {
@@ -121,6 +123,7 @@ export const RAILGUN_FINISHES: readonly RailgunFinishCosmetic[] = [
   { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1200 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff } },
   { id: 'gun.gold',    name: 'Midas',          blurb: 'A gilded receiver fit for a champ.',  rarity: 'epic',   source: { type: 'credits', price: 2200 },  data: { body: 0x241a08, metal: 0x6e5520, metalLt: 0xb0902f, accent: 0xffd24a, accentHot: 0xfff4c0 } },
   { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 2800 },  data: { body: 0x12081a, metal: 0x271333, metalLt: 0x4c2d75, accent: 0xa855f7, accentHot: 0xe9d5ff } },
+  { id: 'gun.admin',   name: 'Regalia',        blurb: 'Gilded staff rail — admin only.',     rarity: 'epic',   source: { type: 'admin' },                 data: { body: 0x2a2208, metal: 0x7a5f15, metalLt: 0xd4af37, accent: 0xffe9a0, accentHot: 0xffffff } },
 ];
 
 export function railgunFinishById(id: string): RailgunFinishCosmetic {
@@ -152,6 +155,7 @@ export const NAME_COLORS: readonly NameColorCosmetic[] = [
   { id: 'name.toxic',   name: 'Toxic',   blurb: 'Radioactive handle.',      rarity: 'rare',   source: { type: 'credits', price: 700 },  color: '#86ff5a' },
   { id: 'name.violet',  name: 'Violet',  blurb: 'Royalty in the arena.',    rarity: 'epic',   source: { type: 'credits', price: 1400 }, color: '#c08aff' },
   { id: 'name.white',   name: 'Pristine',blurb: 'Pure, clean, unmissable.', rarity: 'epic',   source: { type: 'level', level: 22 },     color: '#ffffff' },
+  { id: 'name.admin',   name: 'Sovereign',blurb: 'Staff gold — admin only.', rarity: 'epic',  source: { type: 'admin' },                color: '#ffd700' },
 ];
 
 export function nameColorById(id: string): NameColorCosmetic {
@@ -231,6 +235,7 @@ export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'credits', price: 1000 }, model: `${HAT_DIR}/top-hat.glb`, fit: 0.95, sink: -0.02, stretch: 1.7 },
   { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 14 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 1.15, sink: -0.02 },
   { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'credits', price: 1800 }, model: `${HAT_DIR}/wizard-hat.glb`, fit: 0.95, sink: -0.02, stretch: 1.15 },
+  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: `${HAT_DIR}/crown.glb`, fit: 1.05, sink: 0.06 },
 ];
 
 export function hatById(id: string): HatCosmetic {
@@ -246,7 +251,7 @@ export function isHat(id: string): boolean {
 // tier: high level, big credits, or the case jackpot.
 export const DEFAULT_UNUSUAL = 'unusual.none';
 
-export type UnusualKind = 'none' | 'embers' | 'orbit' | 'halo' | 'storm';
+export type UnusualKind = 'none' | 'embers' | 'orbit' | 'halo' | 'storm' | 'aura';
 
 export type UnusualCosmetic = {
   id: string;
@@ -263,6 +268,7 @@ export const UNUSUALS: readonly UnusualCosmetic[] = [
   { id: 'unusual.orbit',  name: 'Orbiting Energy',blurb: 'Motes of energy circle overhead.',    rarity: 'epic',   source: { type: 'credits', price: 3000 }, kind: 'orbit' },
   { id: 'unusual.halo',   name: 'Radiant Halo',  blurb: 'A glowing ring hovers above you.',      rarity: 'epic',   source: { type: 'level', level: 25 },     kind: 'halo' },
   { id: 'unusual.storm',  name: 'Storm Cloud',   blurb: 'A tiny thundercloud follows your head.',rarity: 'epic',   source: { type: 'credits', price: 5000 }, kind: 'storm' },
+  { id: 'unusual.aura',   name: 'Sovereign Aura',blurb: 'A regal ring of golden motes — staff only.', rarity: 'epic', source: { type: 'admin' },         kind: 'aura' },
 ];
 
 export function unusualById(id: string): UnusualCosmetic {
@@ -279,9 +285,10 @@ export const HAT_CASE_COST = 500;
 export const DUPE_REFUND_FRAC = 0.4; // duplicate roll refunds this much of the cost
 export const RARITY_WEIGHT: Record<Rarity, number> = { common: 100, rare: 40, epic: 12 };
 
-// Droppable hats (everything but bare-head), the case's pool.
+// Droppable hats (everything but bare-head and staff-exclusive items), the
+// case's pool — admin cosmetics never drop from a credits-funded case.
 export function caseHats(): HatCosmetic[] {
-  return HATS.filter((h) => h.model);
+  return HATS.filter((h) => h.model && h.source.type !== 'admin');
 }
 
 // ── Player-card slot ─────────────────────────────────────────────────────────
@@ -307,6 +314,7 @@ export const CARD_STYLES: readonly CardCosmetic[] = [
   { id: 'card.cyber',  name: 'Cyber',     blurb: 'Neon grid.',               rarity: 'rare',   source: { type: 'level', level: 10 },     bg: 'linear-gradient(135deg,#0e7490,#3b0764)',                          accent: '#22d3ee' },
   { id: 'card.void',   name: 'Void',      blurb: 'Deep violet.',             rarity: 'epic',   source: { type: 'credits', price: 1500 }, bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa' },
   { id: 'card.gold',   name: 'Gilded',    blurb: 'For the elite.',           rarity: 'epic',   source: { type: 'level', level: 20 },     bg: 'linear-gradient(135deg,#854d0e,#1c1206)',                          accent: '#fbbf24' },
+  { id: 'card.admin',  name: 'Sovereign', blurb: 'Staff only.',              rarity: 'epic',   source: { type: 'admin' },                bg: 'linear-gradient(135deg,#3a2c05,#0c0a04)',                          accent: '#ffd700' },
 ];
 
 export function cardById(id: string): CardCosmetic {
@@ -415,5 +423,7 @@ export function sourceLabel(source: CosmeticSource): string {
       return `Level ${source.level}`;
     case 'credits':
       return `${source.price} credits`;
+    case 'admin':
+      return 'Admin';
   }
 }

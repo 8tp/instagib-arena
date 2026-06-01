@@ -13,6 +13,7 @@ import {
   getChallenges,
   getProfile,
   getStats,
+  logEvent,
   openCase,
   recordMatch,
   setEquipped,
@@ -133,6 +134,15 @@ statsRouter.post('/stats', (req, res) => {
     accuracy,
     offline,
     now: Date.now(),
+  });
+
+  // Audit every recorded match (account + guest) for moderation + future metrics.
+  logEvent({
+    event: 'match',
+    actorId: id,
+    actorName: account?.username ?? cleanName(body.name),
+    detail: { kills, deaths, won: wins === 1, headshots, accuracy: Math.round(accuracy), offline, xp: result.xpGained },
+    ip: req.ip,
   });
 
   // Stats (legacy shape) plus the progression delta so the client can show the

@@ -11,9 +11,21 @@ import {
   deleteSession,
   findUserById,
   findUserByName,
+  logEvent,
+  setAdmin,
   userIdFromSession,
 } from './db';
 import { containsProfanity, isReservedName } from './profanity';
+
+// Usernames designated as admins via the ADMIN_USERNAMES env var (comma- or
+// space-separated, case-insensitive). Used to auto-promote on registration and,
+// on boot, to sync existing accounts (see syncAdminsFromEnv in server/index.ts).
+export function adminUsernamesFromEnv(): string[] {
+  return (process.env.ADMIN_USERNAMES ?? '')
+    .split(/[,\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 const SESSION_COOKIE = 'igsession';
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
@@ -82,7 +94,11 @@ export const authRouter = Router();
 authRouter.get('/auth/me', (req, res) => {
   const id = accountId(req);
   const user = id ? findUserById(id) : undefined;
-  res.json({ user: user ? { username: user.username } : null });
+  res.json({
+    user: user
+      ? { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified }
+      : null,
+  });
 });
 
 authRouter.post('/auth/register', (req, res) => {
@@ -129,10 +145,15 @@ authRouter.post('/auth/register', (req, res) => {
     email,
     createdAt: Date.now(),
   });
+  // Auto-promote if this username is configured as an admin (lets you claim your
+  // account right after deploy: register the name in ADMIN_USERNAMES → admin).
+  const isAdmin = adminUsernamesFromEnv().includes(lower);
+  if (isAdmin) setAdmin(id, true);
   const token = genToken();
   createSession(token, id, Date.now());
   res.cookie(SESSION_COOKIE, token, cookieOpts);
-  res.json({ user: { username } });
+  logEvent({ event: 'register', actorId: id, actorName: username, ip: req.ip, detail: isAdmin ? { admin: true } : undefined });
+  res.json({ user: { username, isAdmin, isVerified: false } });
 });
 
 authRouter.post('/auth/login', (req, res) => {
@@ -156,7 +177,11 @@ authRouter.post('/auth/login', (req, res) => {
   const token = genToken();
   createSession(token, user!.id, Date.now());
   res.cookie(SESSION_COOKIE, token, cookieOpts);
-  res.json({ user: { username: user!.username } });
+  const acct = findUserById(user!.id);
+  logEvent({ event: 'login', actorId: user!.id, actorName: user!.username, ip: req.ip });
+  res.json({
+    user: { username: user!.username, isAdmin: !!acct?.isAdmin, isVerified: !!acct?.isVerified },
+  });
 });
 
 authRouter.post('/auth/logout', (req, res) => {

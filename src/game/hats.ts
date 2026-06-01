@@ -110,6 +110,19 @@ class UnusualEffect {
         this.motes.push(this.mote(moteGeom, 0xa8d8ff));
         this.phases.push(Math.random());
       }
+    } else if (this.kind === 'aura') {
+      // Admin "Sovereign Aura": a slow golden halo + two interleaved rings of
+      // gold motes circling the crown. Regal and premium, never gaudy.
+      const torus = new THREE.TorusGeometry(0.17, 0.012, 8, 32);
+      this.geoms.push(torus);
+      this.extra = new THREE.Mesh(torus, additiveMat(0xffe9a0, 0.55));
+      this.mats.push(this.extra.material as THREE.Material);
+      this.extra.rotation.x = Math.PI / 2;
+      this.group.add(this.extra);
+      for (let i = 0; i < 10; i++) {
+        this.motes.push(this.mote(moteGeom, i % 2 === 0 ? 0xffd700 : 0xfff3b0));
+        this.phases.push((i / 10) * Math.PI * 2);
+      }
     }
   }
 
@@ -145,6 +158,18 @@ class UnusualEffect {
         const m = this.motes[i];
         m.position.set((this.phases[i] - 0.5) * 0.14, 0.06 - f * 0.16, 0);
         (m.material as THREE.MeshBasicMaterial).opacity = f < 0.15 || f > 0.85 ? 1 : 0.15;
+      }
+    } else if (this.kind === 'aura') {
+      if (this.extra) {
+        this.extra.rotation.z = t * 0.5;
+        (this.extra.material as THREE.MeshBasicMaterial).opacity = 0.45 + 0.2 * Math.sin(t * 2);
+      }
+      for (let i = 0; i < this.motes.length; i++) {
+        const a = this.phases[i] + t * 1.1;
+        const inner = i % 2 !== 0;
+        const r = inner ? 0.13 : 0.18;
+        const y = 0.02 + (inner ? 0.06 : 0) + 0.02 * Math.sin(a * 2);
+        this.motes[i].position.set(Math.cos(a) * r, y, Math.sin(a) * r);
       }
     }
   }

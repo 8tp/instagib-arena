@@ -124,6 +124,8 @@ type ClientRecord = {
   spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
+  admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
+  verified: boolean; // account is_verified — drives the blue check (echoed in snapshots)
 };
 
 type Room = {
@@ -207,7 +209,12 @@ function chargeRoomCreate(record: ClientRecord, ts: number): boolean {
 // relay it to other players (cosmetic-only). The NAME is forced to the
 // server-known name (clients can't impersonate on the killcam), the STYLE is
 // ownership-checked, and stat strings are length-clamped.
-function sanitizeCard(raw: unknown, serverName: string, owned: Set<string>): CardPayload | null {
+function sanitizeCard(
+  raw: unknown,
+  serverName: string,
+  owned: Set<string>,
+  flags: { admin: boolean; verified: boolean },
+): CardPayload | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const name = serverName.slice(0, 24);
@@ -229,7 +236,9 @@ function sanitizeCard(raw: unknown, serverName: string, owned: Set<string>): Car
       }
     }
   }
-  return { name, level, style, stats };
+  // verified/admin are SERVER-set from the account, never the client payload, so
+  // a modified client can't fake a blue check or staff badge on its killcard.
+  return { name, level, style, stats, verified: flags.verified, admin: flags.admin };
 }
 
 function genId(len = 8): ClientId {
@@ -687,6 +696,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
         nameColor: c.nameColor,
         spawnEffect: c.spawnEffect,
         ping: Math.round(c.rttMs),
+        admin: c.admin,
+        verified: c.verified,
       });
     }
     return { type: 'state' as const, t: now, players, resumeAt: room.resumeAt };
@@ -982,7 +993,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
     // per-room "Guest N" on join (assignGuestName). This is the only name other
     // players ever see, so a modified client can't inject a slur via `name`.
-    const accountName = playerId ? findUserById(playerId)?.username : undefined;
+    const account = playerId ? findUserById(playerId) : undefined;
+    const accountName = account?.username;
     const record: ClientRecord = {
       id,
       socket,
@@ -1014,6 +1026,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       spawnEffect: 'spawn.beam',
       card: null,
       playerId,
+      admin: !!account?.isAdmin,
+      verified: !!account?.isVerified,
       history: [],
       aimShots: 0,
       aimHits: 0,
@@ -1227,7 +1241,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
 
         case 'card':
-          record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId));
+          record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId), {
+            admin: record.admin,
+            verified: record.verified,
+          });
           break;
 
         case 'pos':

@@ -2189,6 +2189,8 @@ export class Game {
       // "Guest N" the server assigned in this room) — show that, not the local
       // label, so your scoreboard row matches what everyone else sees.
       if (this.net.localName) scores[0].name = this.net.localName;
+      scores[0].admin = this.net.localAdmin;
+      scores[0].verified = this.net.localVerified;
       // Local player's accuracy is tracked client-side from confirmed kills.
       scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
       scores[0].ping = Math.round(this.net.rttMs);
@@ -2206,6 +2208,8 @@ export class Game {
           hat: snap.hat,
           emote: snap.emote,
           ping: snap.ping,
+          admin: snap.admin,
+          verified: snap.verified,
         });
       }
     }

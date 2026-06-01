@@ -19,6 +19,8 @@ export type RemotePlayerSnapshot = {
   nameColor: string; // equipped nameplate-color cosmetic id
   spawnEffect: string; // equipped spawn-in-effect cosmetic id
   ping: number; // this player's reported round-trip ping (ms)
+  admin: boolean; // staff badge
+  verified: boolean; // verified blue check
   receivedAt: number;
 };
 
@@ -52,6 +54,8 @@ type StatePlayer = {
   nameColor?: string;
   spawnEffect?: string;
   ping?: number;
+  admin?: boolean; // staff badge
+  verified?: boolean; // verified blue check
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
@@ -186,6 +190,8 @@ export class NetClient {
   localDeaths = 0;
   localInvulnMs = 0;
   localName = ''; // your SERVER-ASSIGNED name (account username, or "Guest N"); from snapshots
+  localAdmin = false; // your staff badge (server-authoritative; from snapshots)
+  localVerified = false; // your verified blue check (server-authoritative; from snapshots)
   localTeam: number | null = null; // your team index in TDM; null otherwise
   mode: GameMode = 'ffa';
   rttMs = 0;
@@ -400,6 +406,8 @@ export class NetClient {
         nameColor: b.nameColor ?? 'name.default',
         spawnEffect: b.spawnEffect ?? 'spawn.beam',
         ping: b.ping ?? 0,
+        admin: b.admin ?? false,
+        verified: b.verified ?? false,
         receivedAt: now,
       });
     }
@@ -466,6 +474,8 @@ export class NetClient {
           this.localDeaths = p.deaths ?? 0;
           this.localInvulnMs = p.invulnMs ?? 0;
           if (p.name) this.localName = p.name; // server's authoritative name for us
+          this.localAdmin = !!p.admin;
+          this.localVerified = !!p.verified;
           if (p.team !== undefined) this.localTeam = p.team;
         }
       }

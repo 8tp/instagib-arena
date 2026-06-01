@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 // httpOnly cookie set by the server, so the client only holds the username (or
 // null = guest). Progression is bound to the account server-side.
 
-export type Account = { username: string } | null;
+export type Account = { username: string; isAdmin: boolean; isVerified: boolean } | null;
 
 export type AuthApi = {
   account: Account;
@@ -14,7 +14,12 @@ export type AuthApi = {
   logout: () => Promise<void>;
 };
 
-async function post(path: string, body: object): Promise<{ ok: boolean; error?: string }> {
+type AuthResponse = { user?: { username: string; isAdmin?: boolean; isVerified?: boolean } };
+
+async function post(
+  path: string,
+  body: object,
+): Promise<{ ok: boolean; error?: string; data?: AuthResponse }> {
   try {
     const r = await fetch(path, {
       method: 'POST',
@@ -22,8 +27,8 @@ async function post(path: string, body: object): Promise<{ ok: boolean; error?: 
       credentials: 'same-origin',
       body: JSON.stringify(body),
     });
-    if (r.ok) return { ok: true };
     const d = await r.json().catch(() => ({}));
+    if (r.ok) return { ok: true, data: d as AuthResponse };
     return { ok: false, error: (d as { error?: string }).error ?? `http_${r.status}` };
   } catch {
     return { ok: false, error: 'network' };
@@ -53,7 +58,8 @@ export function useAuth(): AuthApi {
   const login = useCallback(async (username: string, password: string) => {
     const r = await post('/api/auth/login', { username, password });
     if (r.ok) {
-      setAccount({ username });
+      const u = r.data?.user;
+      setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified });
       return null;
     }
     return r.error ?? 'invalid';
@@ -62,7 +68,8 @@ export function useAuth(): AuthApi {
   const register = useCallback(async (username: string, password: string, email: string) => {
     const r = await post('/api/auth/register', { username, password, email: email || undefined });
     if (r.ok) {
-      setAccount({ username });
+      const u = r.data?.user;
+      setAccount({ username: u?.username ?? username, isAdmin: !!u?.isAdmin, isVerified: !!u?.isVerified });
       return null;
     }
     return r.error ?? 'failed';

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
-import { useAuth, LoginModal } from './auth';
+import { useAuth, LoginModal, type Account } from './auth';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { LobbyClient, type LobbyRoom, type LobbyStatus } from './game/net';
@@ -362,17 +362,25 @@ const CARD_STAT_DEFS: ReadonlyArray<{
 
 const MAX_CARD_STATS = 3;
 
-function buildCardPayload(profile: InstagibProfile, settings: Settings): CardPayload {
+function buildCardPayload(
+  profile: InstagibProfile,
+  settings: Settings,
+  account?: Account,
+): CardPayload {
   const stats = settings.cardStats
     .map((k) => CARD_STAT_DEFS.find((d) => d.key === k))
     .filter((d): d is (typeof CARD_STAT_DEFS)[number] => !!d)
     .slice(0, MAX_CARD_STATS)
     .map((d) => ({ label: d.label, value: d.from(profile.stats) }));
+  // Badges mirror the account (server overrides them on the killcard others see,
+  // so this only drives the local Locker preview). Guests carry neither.
   return {
     name: settings.playerName || 'Player',
     level: profile.level,
     style: settings.card,
     stats,
+    verified: !!account?.isVerified,
+    admin: !!account?.isAdmin,
   };
 }
 
@@ -380,9 +388,11 @@ function buildCardPayload(profile: InstagibProfile, settings: Settings): CardPay
 function CardStatsEditor({
   settings,
   onChange,
+  account,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
+  account?: Account;
 }) {
   const [profile, setProfile] = useState<InstagibProfile | null>(null);
   useEffect(() => {
@@ -408,7 +418,7 @@ function CardStatsEditor({
   };
 
   const preview: CardPayload = profile
-    ? buildCardPayload(profile, settings)
+    ? buildCardPayload(profile, settings, account)
     : {
         name: settings.playerName || 'Player',
         level: 1,
@@ -417,6 +427,8 @@ function CardStatsEditor({
           label: CARD_STAT_DEFS.find((d) => d.key === k)?.label ?? k.toUpperCase(),
           value: '—',
         })),
+        verified: !!account?.isVerified,
+        admin: !!account?.isAdmin,
       };
 
   return (
@@ -453,6 +465,61 @@ function CardStatsEditor({
 
 // The kill banner: an unlockable card graphic + the player's level + their chosen
 // stats. Shown on the killcam (the killer's card) and as your own kill-confirm flex.
+/* ── Player badges: staff crown + verified blue check. Server-authoritative —
+   these components are purely presentational. Shown beside player names on the
+   scoreboard, the leaderboard, and the playercard. (Extensible: future badges
+   slot in here.) ── */
+function VerifiedBadge({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size} height={size} viewBox='0 0 24 24' role='img' aria-label='Verified'
+      className='inline-block shrink-0 align-[-0.15em]'
+    >
+      <title>Verified</title>
+      <circle cx='12' cy='12' r='11' fill='#3b9eff' />
+      <path
+        d='M6.5 12.5l3.4 3.4L17.6 8.4' fill='none' stroke='#fff' strokeWidth='2.5'
+        strokeLinecap='round' strokeLinejoin='round'
+      />
+    </svg>
+  );
+}
+function AdminBadge({ size = 13 }: { size?: number }) {
+  return (
+    <svg
+      width={size} height={size} viewBox='0 0 24 24' role='img' aria-label='Staff'
+      className='inline-block shrink-0 align-[-0.15em]'
+    >
+      <title>Staff</title>
+      <path
+        d='M2.6 8.4l4 3.3L12 4.6l5.4 7.1 4-3.3-1.7 10H4.3z'
+        fill='#ffcf3f' stroke='#7a5a10' strokeWidth='1.1' strokeLinejoin='round'
+      />
+      <circle cx='2.6' cy='8.4' r='1.4' fill='#ffe79a' stroke='#7a5a10' strokeWidth='0.7' />
+      <circle cx='21.4' cy='8.4' r='1.4' fill='#ffe79a' stroke='#7a5a10' strokeWidth='0.7' />
+      <circle cx='12' cy='4.6' r='1.5' fill='#ffe79a' stroke='#7a5a10' strokeWidth='0.7' />
+    </svg>
+  );
+}
+// Crown (admin) then check (verified), placed to the right of a player name.
+function NameBadges({
+  admin,
+  verified,
+  size,
+}: {
+  admin?: boolean;
+  verified?: boolean;
+  size?: number;
+}) {
+  if (!admin && !verified) return null;
+  return (
+    <span className='inline-flex shrink-0 items-center gap-0.5'>
+      {admin && <AdminBadge size={size} />}
+      {verified && <VerifiedBadge size={size} />}
+    </span>
+  );
+}
+
 function PlayerCard({ card, size = 'normal' }: { card: CardPayload; size?: 'normal' | 'small' }) {
   const style = cardById(card.style);
   const small = size === 'small';
@@ -473,8 +540,9 @@ function PlayerCard({ card, size = 'normal' }: { card: CardPayload; size?: 'norm
           <span className='text-lg font-extrabold leading-none'>{card.level}</span>
         </div>
         <div className='min-w-0 flex-1'>
-          <div className={`truncate font-bold text-white ${small ? 'text-sm' : 'text-lg'}`}>
-            {card.name}
+          <div className={`flex items-center gap-1 font-bold text-white ${small ? 'text-sm' : 'text-lg'}`}>
+            <span className='truncate'>{card.name}</span>
+            <NameBadges admin={card.admin} verified={card.verified} size={small ? 13 : 16} />
           </div>
           <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Instagib Arena</div>
         </div>
@@ -1255,10 +1323,12 @@ function Locker({
   settings,
   onChange,
   onClose,
+  account,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   onClose: () => void;
+  account?: Account;
 }) {
   const [profile, setProfile] = useState<LockerProfile | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -1394,7 +1464,7 @@ function Locker({
       </p>
       {note && <div className='text-[11px] text-rose-300'>{note}</div>}
       {active.view && <LockerPreview key={active.view} settings={settings} view={active.view} />}
-      {tab === 'card' && <CardStatsEditor settings={settings} onChange={onChange} />}
+      {tab === 'card' && <CardStatsEditor settings={settings} onChange={onChange} account={account} />}
       {slots.map((sl) => (
         <div key={sl.slot} className='flex flex-col gap-2'>
           <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{sl.label}</div>
@@ -3002,6 +3072,7 @@ function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
               >
                 {s.name}
               </span>
+              <NameBadges admin={s.admin} verified={s.verified} size={11} />
               {s.currentStreak >= 3 && (
                 <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
                   {s.currentStreak}
@@ -3022,6 +3093,7 @@ function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
             <div className='flex min-w-0 items-center gap-2'>
               <span className='w-4 text-right text-emerald-300/70'>{localIndex + 1}.</span>
               <span className='truncate font-bold text-emerald-300'>{you.name}</span>
+              <NameBadges admin={you.admin} verified={you.verified} size={11} />
               {you.currentStreak >= 3 && (
                 <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
                   {you.currentStreak}
@@ -3391,6 +3463,7 @@ function ScoreboardRow({
         >
           {score.name}
         </span>
+        <NameBadges admin={score.admin} verified={score.verified} size={13} />
         {score.currentStreak >= 3 && (
           <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
             ON FIRE
@@ -3567,7 +3640,7 @@ function Lobby({
   onChangeSettings: (s: Settings) => void;
   onStart: (config: MatchConfig) => void;
   lastResult: MatchResult | null;
-  account: { username: string } | null;
+  account: Account;
   onOpenLogin: () => void;
   onLogout: () => void;
 }) {
@@ -3576,6 +3649,7 @@ function Lobby({
   const [statsOpen, setStatsOpen] = useState(false);
   const [challengesOpen, setChallengesOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
   const [lockerOpen, setLockerOpen] = useState(false);
@@ -3688,7 +3762,18 @@ function Lobby({
           <div className='ml-auto flex items-center gap-3'>
             {account ? (
               <span className='hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
-                <span className='text-cyan-200'>{account.username}</span>
+                <span className='inline-flex items-center gap-1 text-cyan-200'>
+                  {account.username}
+                  <NameBadges admin={account.isAdmin} verified={account.isVerified} size={12} />
+                </span>
+                {account.isAdmin && (
+                  <button
+                    onClick={() => setAdminOpen(true)}
+                    className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
+                  >
+                    Admin
+                  </button>
+                )}
                 <button onClick={onLogout} className='text-white/35 transition hover:text-white/70'>
                   Log&nbsp;out
                 </button>
@@ -3877,6 +3962,7 @@ function Lobby({
         />
       )}
       {leaderboardOpen && <LeaderboardModal onClose={() => setLeaderboardOpen(false)} />}
+      {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} />}
       {settingsOpen && (
         <SettingsModal
           settings={settings}
@@ -3889,6 +3975,7 @@ function Lobby({
         <Locker
           settings={settings}
           onChange={onChangeSettings}
+          account={account}
           onClose={() => {
             setLockerOpen(false);
             setRefreshTick((t) => t + 1); // buys/cases changed credits
@@ -4650,6 +4737,8 @@ type LeaderboardEntry = {
   headshots: number;
   bestAccuracy: number;
   kd: number;
+  admin?: boolean;
+  verified?: boolean;
 };
 
 type LeaderboardYou = { rank: number; entry: LeaderboardEntry } | null;
@@ -4756,9 +4845,10 @@ function LeaderboardRow({ rank, row, you = false }: { rank: number; row: Leaderb
   return (
     <>
       <div className={`py-1.5 text-right tabular-nums font-bold ${you ? 'text-cyan-200' : medal}`}>{rank}</div>
-      <div className={`truncate py-1.5 ${tint}`}>
-        {row.userName}
-        {you && <span className='ml-1.5 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
+      <div className={`flex min-w-0 items-center gap-1 py-1.5 ${tint}`}>
+        <span className='truncate'>{row.userName}</span>
+        <NameBadges admin={row.admin} verified={row.verified} size={12} />
+        {you && <span className='ml-1 shrink-0 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
       </div>
       <div className={`py-1.5 text-right tabular-nums ${you ? 'text-cyan-100' : ''}`}>{row.totalKills}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.kd.toFixed(2)}</div>
@@ -4766,6 +4856,178 @@ function LeaderboardRow({ rank, row, you = false }: { rank: number; row: Leaderb
       <div className='py-1.5 text-right tabular-nums text-cyan-200/80'>{row.bestAccuracy.toFixed(1)}%</div>
     </>
   );
+}
+
+/* ───────────────────────── Admin / moderation modal ───────────────────────── */
+
+type AdminLookup = { username: string; admin: boolean; verified: boolean };
+type AuditEntry = {
+  id: number;
+  ts: number;
+  event: string;
+  actor_name: string;
+  detail: string;
+};
+
+async function adminPost(path: string, body: object): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const r = await fetch(`/api/admin/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    });
+    if (r.ok) return { ok: true };
+    const d = await r.json().catch(() => ({}));
+    return { ok: false, error: (d as { error?: string }).error ?? `http_${r.status}` };
+  } catch {
+    return { ok: false, error: 'network' };
+  }
+}
+
+// Admins-only panel: look a player up by name, toggle their verified check or
+// admin role, and scan the recent audit feed. Server enforces admin on every
+// call (403 otherwise) — this UI only ever shows for is_admin accounts.
+function AdminModal({ onClose }: { onClose: () => void }) {
+  const [username, setUsername] = useState('');
+  const [target, setTarget] = useState<AdminLookup | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
+
+  const refreshAudit = useCallback(() => {
+    fetch('/api/admin/audit?limit=25', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('audit'))))
+      .then((d: { events?: AuditEntry[] }) => setAudit(Array.isArray(d.events) ? d.events : []))
+      .catch(() => setAudit([]));
+  }, []);
+  useEffect(() => {
+    refreshAudit();
+  }, [refreshAudit]);
+
+  const lookup = useCallback(async (name: string) => {
+    const q = name.trim();
+    if (!q) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await fetch(`/api/admin/lookup?username=${encodeURIComponent(q)}`, {
+        credentials: 'same-origin',
+      });
+      if (r.ok) {
+        setTarget((await r.json()) as AdminLookup);
+      } else {
+        setTarget(null);
+        setNote(r.status === 404 ? `No player named “${q}”.` : 'Lookup failed.');
+      }
+    } catch {
+      setNote('Network error.');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const act = useCallback(
+    async (path: 'verify' | 'grant', body: object, label: string) => {
+      if (!target) return;
+      setBusy(true);
+      setNote(null);
+      const r = await adminPost(path, { username: target.username, ...body });
+      setBusy(false);
+      if (r.ok) {
+        setNote(label);
+        await lookup(target.username);
+        refreshAudit();
+      } else {
+        setNote(r.error === 'forbidden' ? 'Not authorized.' : `Failed (${r.error}).`);
+      }
+    },
+    [target, lookup, refreshAudit],
+  );
+
+  return (
+    <ModalShell title='Admin' onClose={onClose}>
+      <div className='flex flex-col gap-3 font-mono'>
+        <div className='flex gap-2'>
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && lookup(username)}
+            placeholder='Player username'
+            maxLength={20}
+            className='min-w-0 flex-1 rounded-md border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400/60'
+          />
+          <button
+            onClick={() => lookup(username)}
+            disabled={busy || !username.trim()}
+            className='shrink-0 rounded-md border border-cyan-400/40 px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 disabled:opacity-40'
+          >
+            Look up
+          </button>
+        </div>
+
+        {target && (
+          <div className='rounded-md border border-white/12 bg-black/30 p-3'>
+            <div className='flex items-center gap-2 text-sm font-bold text-white'>
+              {target.username}
+              <NameBadges admin={target.admin} verified={target.verified} size={13} />
+            </div>
+            <div className='mt-1 text-[11px] uppercase tracking-[0.14em] text-white/45'>
+              {target.admin ? 'Admin' : 'Player'} · {target.verified ? 'Verified' : 'Not verified'}
+            </div>
+            <div className='mt-3 grid grid-cols-2 gap-2'>
+              <button
+                onClick={() => act('verify', { verified: !target.verified }, target.verified ? 'Unverified.' : 'Verified ✓')}
+                disabled={busy}
+                className='rounded-md border border-sky-400/40 px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] text-sky-200 transition hover:border-sky-300/70 disabled:opacity-40'
+              >
+                {target.verified ? 'Remove verify' : 'Verify ✓'}
+              </button>
+              <button
+                onClick={() => act('grant', { admin: !target.admin }, target.admin ? 'Admin revoked.' : 'Admin granted.')}
+                disabled={busy}
+                className='rounded-md border border-amber-400/40 px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] text-amber-200 transition hover:border-amber-300/70 disabled:opacity-40'
+              >
+                {target.admin ? 'Revoke admin' : 'Make admin'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {note && <div className='text-[12px] text-cyan-200/80'>{note}</div>}
+
+        <div className='mt-1'>
+          <div className='mb-1.5 text-[10px] uppercase tracking-[0.18em] text-white/45'>Recent activity</div>
+          <div className='max-h-[34vh] space-y-1 overflow-y-auto text-[11px]'>
+            {audit.length === 0 && <div className='text-white/40'>No events yet.</div>}
+            {audit.map((e) => (
+              <div key={e.id} className='flex items-baseline gap-2 border-b border-white/5 pb-1'>
+                <span className='shrink-0 text-white/35'>{formatAuditTime(e.ts)}</span>
+                <span className='shrink-0 font-semibold text-cyan-200/80'>{e.event}</span>
+                <span className='truncate text-white/55'>
+                  {e.actor_name}
+                  {e.detail ? ` · ${e.detail}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function formatAuditTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
 }
 
 /* ───────────────────────── Settings modal ───────────────────────── */

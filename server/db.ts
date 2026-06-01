@@ -15,6 +15,7 @@ import {
   XP_FIRST_WIN_BONUS,
 } from '../src/game/progression';
 import {
+  ALL_COSMETICS,
   caseHats,
   cosmeticById,
   defaultUnlockedIds,
@@ -128,6 +129,98 @@ function ensureColumns() {
   add('first_win_day', 'first_win_day INTEGER NOT NULL DEFAULT 0'); // YYYYMMDD (UTC)
 }
 ensureColumns();
+
+// Additive account-moderation columns on instagib_users (same no-migration
+// pattern): is_admin gates the /api/admin actions + grants all cosmetics;
+// is_verified drives the blue "verified player" check. Both default off.
+function ensureUserColumns() {
+  const cols = new Set(
+    (sqlite.prepare(`PRAGMA table_info(instagib_users)`).all() as { name: string }[]).map(
+      (r) => r.name,
+    ),
+  );
+  if (!cols.has('is_admin'))
+    sqlite.exec(`ALTER TABLE instagib_users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`);
+  if (!cols.has('is_verified'))
+    sqlite.exec(`ALTER TABLE instagib_users ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0`);
+}
+ensureUserColumns();
+
+// Append-only audit log: account registrations, logins, recorded matches, and
+// admin actions. Powers auditing now and a metrics dashboard later. `detail` is
+// a small JSON blob; `ip` is best-effort (proxy-forwarded) for abuse triage.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_audit (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         INTEGER NOT NULL,
+  event      TEXT NOT NULL,
+  actor_id   TEXT NOT NULL DEFAULT '',
+  actor_name TEXT NOT NULL DEFAULT '',
+  target_id  TEXT NOT NULL DEFAULT '',
+  detail     TEXT NOT NULL DEFAULT '',
+  ip         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON instagib_audit(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_event ON instagib_audit(event, ts);
+`);
+
+const insertAuditStmt = sqlite.prepare(`
+  INSERT INTO instagib_audit (ts, event, actor_id, actor_name, target_id, detail, ip)
+  VALUES (@ts, @event, @actorId, @actorName, @targetId, @detail, @ip)`);
+
+export type AuditInput = {
+  event: string;
+  actorId?: string;
+  actorName?: string;
+  targetId?: string;
+  detail?: unknown;
+  ip?: string;
+  now?: number;
+};
+
+// Record an audit event. Never throws into the request path — a logging failure
+// must not break a match submission or a login.
+export function logEvent(e: AuditInput): void {
+  try {
+    insertAuditStmt.run({
+      ts: e.now ?? Date.now(),
+      event: e.event,
+      actorId: e.actorId ?? '',
+      actorName: e.actorName ?? '',
+      targetId: e.targetId ?? '',
+      detail:
+        e.detail == null
+          ? ''
+          : typeof e.detail === 'string'
+            ? e.detail.slice(0, 2000)
+            : JSON.stringify(e.detail).slice(0, 2000),
+      ip: (e.ip ?? '').slice(0, 64),
+    });
+  } catch (err) {
+    console.error('[audit] log failed', err);
+  }
+}
+
+export type AuditRow = {
+  id: number;
+  ts: number;
+  event: string;
+  actor_id: string;
+  actor_name: string;
+  target_id: string;
+  detail: string;
+  ip: string;
+};
+const auditAllStmt = sqlite.prepare(
+  `SELECT * FROM instagib_audit ORDER BY ts DESC, id DESC LIMIT ?`,
+);
+const auditByEventStmt = sqlite.prepare(
+  `SELECT * FROM instagib_audit WHERE event = ? ORDER BY ts DESC, id DESC LIMIT ?`,
+);
+export function getAuditLog(limit: number, event?: string): AuditRow[] {
+  const n = Math.max(1, Math.min(500, Math.floor(limit)));
+  return (event ? auditByEventStmt.all(event, n) : auditAllStmt.all(n)) as AuditRow[];
+}
 
 // Per-player challenge progress (Phase 2). Definitions live in code
 // (src/game/challenges.ts); this only stores progress + claim state, keyed by
@@ -335,18 +428,33 @@ function parseEquipped(json: string | undefined): Record<string, string> {
   }
 }
 
-// Owned set = the default freebies ∪ whatever the row has stored.
-function ownedSet(prog: ProgRow | undefined): Set<string> {
+// Every cosmetic id in the manifest — admins own all of them (incl. the
+// admin-exclusive crown/aura), so this is their entitlement set.
+const ALL_COSMETIC_IDS: readonly string[] = ALL_COSMETICS.map((c) => c.id);
+
+// Is this account id an admin? Cheap point lookup; cached statement.
+const adminCheckStmt = sqlite.prepare(`SELECT is_admin FROM instagib_users WHERE id = ?`);
+export function isAdminId(playerId: string): boolean {
+  if (!playerId) return false;
+  const r = adminCheckStmt.get(playerId) as { is_admin: number } | undefined;
+  return !!r?.is_admin;
+}
+
+// Owned set = the default freebies ∪ whatever the row has stored. Admins own
+// EVERYTHING (every manifest id), which is also the only way the admin-exclusive
+// cosmetics become equippable — non-admins can never have them in their set.
+function ownedSet(prog: ProgRow | undefined, playerId: string): Set<string> {
+  if (isAdminId(playerId)) return new Set(ALL_COSMETIC_IDS);
   return new Set([...defaultUnlockedIds(), ...parseIdList(prog?.unlocked)]);
 }
 
 // The unlocked-cosmetic set for an account id (from the igsession cookie),
 // used to ownership-check WS cosmetic equips. An empty/unknown id → defaults
-// only (so guests still get the free cosmetics, nothing locked).
+// only (so guests still get the free cosmetics, nothing locked); admins → all.
 export function unlockedSetFor(playerId: string): Set<string> {
   if (!playerId) return new Set(defaultUnlockedIds());
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
-  return ownedSet(prog);
+  return ownedSet(prog, playerId);
 }
 
 // YYYYMMDD in UTC — a stable, timezone-independent "today" for the first-win bonus.
@@ -401,7 +509,7 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
   const prog = progSelectStmt.get(delta.playerId) as ProgRow | undefined;
   const curXp = prog?.total_xp ?? 0;
   const curCredits = prog?.credits ?? 0;
-  const owned = ownedSet(prog);
+  const owned = ownedSet(prog, delta.playerId);
   const equipped = parseEquipped(prog?.equipped);
   const firstWinDay = prog?.first_win_day ?? 0;
 
@@ -478,7 +586,7 @@ export function getProfile(playerId: string): Profile {
     xpIntoLevel: lp.xpIntoLevel,
     xpForNext: lp.xpForNext,
     credits: prog?.credits ?? 0,
-    unlocked: [...ownedSet(prog)],
+    unlocked: [...ownedSet(prog, playerId)],
     equipped: parseEquipped(prog?.equipped),
     stats: getStats(playerId),
   };
@@ -496,7 +604,7 @@ export function setEquipped(playerId: string, slot: string, id: string): EquipRe
   const equipped = parseEquipped(prog?.equipped);
   if (!cosmeticById(id)) return { ok: false, reason: 'unknown', equipped };
   if (slotOf(id) !== slot) return { ok: false, reason: 'slot_mismatch', equipped };
-  if (!ownedSet(prog).has(id)) return { ok: false, reason: 'locked', equipped };
+  if (!ownedSet(prog, playerId).has(id)) return { ok: false, reason: 'locked', equipped };
   equipped[slot] = id;
   const now = Date.now();
   ensureRowStmt.run(playerId, now, now);
@@ -519,7 +627,7 @@ export function buyCosmetic(playerId: string, id: string): BuyResult {
   const c = cosmeticById(id);
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
   const credits = prog?.credits ?? 0;
-  const owned = ownedSet(prog);
+  const owned = ownedSet(prog, playerId);
   if (!c) return { ok: false, reason: 'unknown', credits, unlocked: [...owned] };
   if (c.source.type !== 'credits')
     return { ok: false, reason: 'not_for_sale', credits, unlocked: [...owned] };
@@ -560,7 +668,7 @@ export function openCase(playerId: string): CaseResult {
     }
   }
 
-  const owned = ownedSet(prog);
+  const owned = ownedSet(prog, playerId);
   const dupe = owned.has(won.id);
   let newCredits = credits - HAT_CASE_COST;
   let refund = 0;
@@ -648,7 +756,7 @@ function grantXpCredits(
   const now = Date.now();
   ensureRowStmt.run(playerId, now, now);
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
-  const owned = ownedSet(prog);
+  const owned = ownedSet(prog, playerId);
   const equipped = parseEquipped(prog?.equipped);
   const newXp = (prog?.total_xp ?? 0) + Math.max(0, Math.floor(xp));
   const newLevel = levelForXp(newXp);
@@ -747,6 +855,8 @@ export type LeaderboardEntry = {
   headshots: number;
   bestAccuracy: number;
   kd: number; // totalDeaths > 0 ? kills/deaths : kills, rounded to 2dp
+  admin: boolean; // staff badge on the standings
+  verified: boolean; // blue verified check on the standings
 };
 
 // One prepared statement per sort column so we never interpolate user input
@@ -843,7 +953,29 @@ const toLeaderboardEntry = (row: LeaderboardRow): LeaderboardEntry => ({
   kd: round2(
     row.total_deaths > 0 ? row.total_kills / row.total_deaths : row.total_kills,
   ),
+  admin: false,
+  verified: false,
 });
+
+// Fill in admin/verified for a batch of entries with one parameterized query
+// (player ids are the account ids, which is the users table PK). Mutates + returns.
+function attachUserFlags(entries: LeaderboardEntry[]): LeaderboardEntry[] {
+  if (entries.length === 0) return entries;
+  const ids = entries.map((e) => e.id);
+  const ph = ids.map(() => '?').join(',');
+  const rows = sqlite
+    .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+    .all(...ids) as { id: string; is_admin: number; is_verified: number }[];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  for (const e of entries) {
+    const f = byId.get(e.id);
+    if (f) {
+      e.admin = !!f.is_admin;
+      e.verified = !!f.is_verified;
+    }
+  }
+  return entries;
+}
 
 export function getLeaderboard(opts: {
   sort: 'kills' | 'wins' | 'accuracy';
@@ -853,12 +985,11 @@ export function getLeaderboard(opts: {
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit)));
   const win = opts.window ?? 'all';
   const key = windowKey(win, Date.now());
-  if (key) {
-    const stmt = periodLeaderboardStmts[opts.sort] ?? periodLeaderboardStmts.kills;
-    return (stmt.all(key, limit) as LeaderboardRow[]).map(toLeaderboardEntry);
-  }
-  const stmt = leaderboardStmts[opts.sort] ?? leaderboardStmts.kills;
-  return (stmt.all(limit) as LeaderboardRow[]).map(toLeaderboardEntry);
+  const stmt = key
+    ? (periodLeaderboardStmts[opts.sort] ?? periodLeaderboardStmts.kills)
+    : (leaderboardStmts[opts.sort] ?? leaderboardStmts.kills);
+  const rows = (key ? stmt.all(key, limit) : stmt.all(limit)) as LeaderboardRow[];
+  return attachUserFlags(rows.map(toLeaderboardEntry));
 }
 
 // The requesting player's rank + their own entry within the window, for the "you
@@ -875,7 +1006,7 @@ export function getPlayerRank(
     key ? periodRowStmt.get(playerId, key) : playerStatsRowStmt.get(playerId)
   ) as LeaderboardRow | undefined;
   if (!row || row.total_games <= 0) return null;
-  const entry = toLeaderboardEntry(row);
+  const [entry] = attachUserFlags([toLeaderboardEntry(row)]);
   if (sort === 'accuracy' && row.total_games < MIN_ACC_GAMES) return { rank: 0, entry };
   const metric =
     sort === 'kills' ? row.total_kills : sort === 'wins' ? row.total_wins : row.best_accuracy;
@@ -898,14 +1029,26 @@ const insertUserStmt = sqlite.prepare(
 const userByLowerStmt = sqlite.prepare(
   `SELECT id, username, pw_hash, pw_salt FROM instagib_users WHERE username_lower = ?`,
 );
-const userByIdStmt = sqlite.prepare(`SELECT id, username FROM instagib_users WHERE id = ?`);
+const userByIdStmt = sqlite.prepare(
+  `SELECT id, username, is_admin, is_verified FROM instagib_users WHERE id = ?`,
+);
+const accountByLowerStmt = sqlite.prepare(
+  `SELECT id, username, is_admin, is_verified FROM instagib_users WHERE username_lower = ?`,
+);
 const insertSessionStmt = sqlite.prepare(
   `INSERT INTO instagib_sessions (token, user_id, created_at) VALUES (?, ?, ?)`,
 );
 const sessionStmt = sqlite.prepare(`SELECT user_id FROM instagib_sessions WHERE token = ?`);
 const deleteSessionStmt = sqlite.prepare(`DELETE FROM instagib_sessions WHERE token = ?`);
+const setVerifiedStmt = sqlite.prepare(`UPDATE instagib_users SET is_verified = @v WHERE id = @id`);
+const setAdminStmt = sqlite.prepare(`UPDATE instagib_users SET is_admin = @v WHERE id = @id`);
 
 export type UserRow = { id: string; username: string; pw_hash: string; pw_salt: string };
+// Public account info (no secrets) — id, name, and moderation flags.
+export type AccountInfo = { id: string; username: string; isAdmin: boolean; isVerified: boolean };
+type FlagsRow = { id: string; username: string; is_admin: number; is_verified: number };
+const toAccountInfo = (r: FlagsRow | undefined): AccountInfo | undefined =>
+  r ? { id: r.id, username: r.username, isAdmin: !!r.is_admin, isVerified: !!r.is_verified } : undefined;
 
 export function createUser(u: {
   id: string;
@@ -921,8 +1064,29 @@ export function createUser(u: {
 export function findUserByName(usernameLower: string): UserRow | undefined {
   return userByLowerStmt.get(usernameLower) as UserRow | undefined;
 }
-export function findUserById(id: string): { id: string; username: string } | undefined {
-  return userByIdStmt.get(id) as { id: string; username: string } | undefined;
+export function findUserById(id: string): AccountInfo | undefined {
+  return toAccountInfo(userByIdStmt.get(id) as FlagsRow | undefined);
+}
+// Resolve a username (lowercased) to its public account info — used by the admin
+// API to verify/promote a player by name without touching password fields.
+export function findAccountByName(usernameLower: string): AccountInfo | undefined {
+  return toAccountInfo(accountByLowerStmt.get(usernameLower) as FlagsRow | undefined);
+}
+export function setVerified(id: string, value: boolean): boolean {
+  return setVerifiedStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
+}
+export function setAdmin(id: string, value: boolean): boolean {
+  return setAdminStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
+}
+// Promote the configured ADMIN_USERNAMES to admin on boot (idempotent). Lets you
+// designate your account on Railway via an env var — register first, set the var,
+// redeploy. Returns the number of rows flipped.
+export function syncAdminsFromEnv(usernamesLower: string[]): number {
+  if (usernamesLower.length === 0) return 0;
+  const ph = usernamesLower.map(() => '?').join(',');
+  return sqlite
+    .prepare(`UPDATE instagib_users SET is_admin = 1 WHERE username_lower IN (${ph})`)
+    .run(...usernamesLower).changes;
 }
 export function createSession(token: string, userId: string, now: number): void {
   insertSessionStmt.run(token, userId, now);

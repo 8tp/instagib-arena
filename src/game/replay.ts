@@ -540,6 +540,8 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     nameColor: profile.nameColor,
     spawnEffect: 'spawn.beam',
     ping: 0,
+    admin: false,
+    verified: false,
     receivedAt: 0,
   };
 }

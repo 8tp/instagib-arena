@@ -84,6 +84,10 @@ health-checks `/api/health`.
 4. **Generate a domain** (_Settings → Networking → Generate Domain_) and set
    `APP_BASE_URL` to that `https://…up.railway.app` origin (_Variables_) — it's
    the WebSocket origin allow-list.
+5. **Claim your admin account** — set `ADMIN_USERNAMES` (_Variables_) to your
+   handle(s), then register that username in-game. It's auto-promoted on
+   registration (and any matching existing account is promoted on the next
+   boot), unlocking the staff badge, all cosmetics, and the verify-players panel.
 
 > **Critical: run exactly ONE instance.** The game server holds all room/match
 > state in memory and stats in local SQLite, so it must not be horizontally
@@ -124,6 +128,7 @@ file.
 | `DATA_DIR`      | `./data`                   | Directory for runtime data (the SQLite DB). Point this at your mounted volume if not `/app/data`.|
 | `DATABASE_PATH` | `./data/instagib.sqlite`   | Explicit DB file path (overrides `DATA_DIR`).                                                     |
 | `APP_BASE_URL`  | _(unset)_                  | Production WebSocket origin allow-list — your public HTTPS origin. Unset = same-origin only.     |
+| `ADMIN_USERNAMES` | _(unset)_                | Comma/space-separated admin usernames (case-insensitive). Promoted on boot + at registration.   |
 
 > `DATA_DIR` / `DATABASE_PATH` must resolve to your persistent volume. With the
 > Docker image's default `/app/data` volume, the defaults already do.

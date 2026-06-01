@@ -17,7 +17,9 @@ import cookieParser from 'cookie-parser';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { statsRouter } from './stats';
 import { leaderboardRouter } from './leaderboard';
-import { authRouter } from './auth';
+import { authRouter, adminUsernamesFromEnv } from './auth';
+import { adminRouter } from './admin';
+import { syncAdminsFromEnv } from './db';
 import { attachInstagibWs } from './instagib-game';
 
 const INSTAGIB_WS_PATH = '/ws/instagib';
@@ -133,6 +135,16 @@ app.get('/api/live', (_req, res) => res.json(liveCounts()));
 app.use('/api', authRouter);
 app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
+app.use('/api/admin', adminRouter);
+
+// Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
+// new accounts are promoted at registration). Set ADMIN_USERNAMES on Railway and
+// redeploy to claim your account.
+{
+  const admins = adminUsernamesFromEnv();
+  const n = syncAdminsFromEnv(admins);
+  if (admins.length) console.log(`[admin] ADMIN_USERNAMES=[${admins.join(', ')}] — ${n} synced`);
+}
 
 if (hasBuild) {
   // Long-cache fingerprinted assets; never cache the HTML shell.
