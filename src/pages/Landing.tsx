@@ -1,14 +1,26 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { CONTROLS } from '../controls';
+import { useLiveCount } from '../live';
 
-const CONTROLS: Array<[string, string]> = [
-  ['Mouse', 'Aim'],
-  ['Left click', 'Fire railgun — one shot, one kill'],
-  ['WASD', 'Move'],
-  ['Space', 'Jump (double-jump in the air)'],
-  ['Shift', 'Dash (directional, on a cooldown)'],
-  ['Jump at a wall', 'Wall-jump'],
-  ['Esc', 'Release mouse / open menu'],
-];
+// Set this to your server invite once you have one. Empty → the Discord button
+// is hidden (so it never points at a dead link in the alpha).
+const DISCORD_URL = '';
+
+// Coarse pointer (phone/tablet) → this is a keyboard+mouse FPS; warn before the
+// player taps into the lobby, downloads the 3D chunk, and hits disabled buttons.
+function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(pointer: coarse)');
+    const update = () => setCoarse(mq.matches);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
+  return coarse;
+}
 
 const MODES: Array<[string, string]> = [
   ['Practice', 'Offline range + bots. Warm up your aim and movement.'],
@@ -17,6 +29,8 @@ const MODES: Array<[string, string]> = [
 ];
 
 export default function Landing() {
+  const coarse = useCoarsePointer();
+  const live = useLiveCount();
   return (
     <div className="h-full overflow-y-auto bg-[#0a0a0b] text-neutral-100">
       {/* glow backdrop */}
@@ -42,15 +56,49 @@ export default function Landing() {
           </p>
         </header>
 
-        <Link
-          to="/play"
-          className="group inline-flex h-14 w-fit items-center gap-3 rounded-lg bg-cyan-400 px-8 text-sm font-semibold uppercase tracking-[0.18em] text-neutral-950 transition hover:bg-cyan-300"
-        >
-          Enter the arena
-          <span className="transition-transform group-hover:translate-x-1">
-            →
-          </span>
-        </Link>
+        {coarse ? (
+          <div className="w-fit max-w-xl rounded-lg border border-amber-400/30 bg-amber-400/10 px-5 py-4">
+            <p className="text-sm font-semibold text-amber-200">Best played on a computer</p>
+            <p className="mt-1 text-sm text-neutral-300">
+              Instagib Arena needs a <span className="text-neutral-100">mouse and keyboard</span> —
+              open this link on a desktop to play. You can still look around the menus below.
+            </p>
+            <Link
+              to="/play"
+              className="mt-3 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-200/80 underline-offset-4 hover:underline"
+            >
+              Continue anyway →
+            </Link>
+          </div>
+        ) : (
+          <Link
+            to="/play"
+            className="group inline-flex h-14 w-fit items-center gap-3 rounded-lg bg-cyan-400 px-8 text-sm font-semibold uppercase tracking-[0.18em] text-neutral-950 transition hover:bg-cyan-300"
+          >
+            Enter the arena
+            <span className="transition-transform group-hover:translate-x-1">→</span>
+          </Link>
+        )}
+
+        <div className="flex flex-wrap items-center gap-4 font-mono text-xs">
+          {live && live.online > 0 && (
+            <span className="inline-flex items-center gap-2 text-neutral-400">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,.9)]" />
+              <span className="text-neutral-200">{live.online}</span> playing now
+              {live.inMatch > 0 && <span className="text-neutral-500"> · {live.inMatch} in match</span>}
+            </span>
+          )}
+          {DISCORD_URL && (
+            <a
+              href={DISCORD_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-[#8c9eff] transition hover:text-[#aab6ff]"
+            >
+              Join the Discord →
+            </a>
+          )}
+        </div>
 
         <section className="grid gap-6 sm:grid-cols-2">
           <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5">

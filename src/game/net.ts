@@ -16,6 +16,8 @@ export type RemotePlayerSnapshot = {
   hat: string; // equipped hat cosmetic id
   unusual: string; // equipped unusual-effect cosmetic id
   emote: string; // equipped podium-emote cosmetic id
+  nameColor: string; // equipped nameplate-color cosmetic id
+  spawnEffect: string; // equipped spawn-in-effect cosmetic id
   ping: number; // this player's reported round-trip ping (ms)
   receivedAt: number;
 };
@@ -47,6 +49,8 @@ type StatePlayer = {
   hat?: string;
   unusual?: string;
   emote?: string;
+  nameColor?: string;
+  spawnEffect?: string;
   ping?: number;
 };
 
@@ -175,6 +179,8 @@ export class NetClient {
   localHat = 'hat.none'; // equipped hat id, sent to the server so remotes render it
   localUnusual = 'unusual.none'; // equipped unusual-effect id
   localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
+  localNameColor = 'name.default'; // equipped nameplate-color id (seen by others)
+  localSpawnEffect = 'spawn.beam'; // equipped spawn-in-effect id (seen by others)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
@@ -313,6 +319,16 @@ export class NetClient {
     this.send({ type: 'emote', id });
   }
 
+  setLocalNameColor(id: string): void {
+    this.localNameColor = id;
+    this.send({ type: 'nameColor', id });
+  }
+
+  setLocalSpawnEffect(id: string): void {
+    this.localSpawnEffect = id;
+    this.send({ type: 'spawnEffect', id });
+  }
+
   setLocalCard(card: CardPayload): void {
     this.localCard = card;
     this.send({ type: 'card', card });
@@ -380,6 +396,8 @@ export class NetClient {
         hat: b.hat ?? 'hat.none',
         unusual: b.unusual ?? 'unusual.none',
         emote: b.emote ?? 'emote.cheer',
+        nameColor: b.nameColor ?? 'name.default',
+        spawnEffect: b.spawnEffect ?? 'spawn.beam',
         ping: b.ping ?? 0,
         receivedAt: now,
       });
@@ -415,6 +433,8 @@ export class NetClient {
       this.send({ type: 'hat', id: this.localHat });
       this.send({ type: 'unusual', id: this.localUnusual });
       this.send({ type: 'emote', id: this.localEmote });
+      this.send({ type: 'nameColor', id: this.localNameColor });
+      this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       if (!this.clockSeeded) {
@@ -644,7 +664,9 @@ export class LobbyClient {
     this.send({ type: 'list' });
   }
 
-  quickMatch(mode: GameMode = 'ffa') {
+  // `mode: 'any'` is the mode-agnostic "Play Now" super-queue (joins the fullest
+  // live public room of any mode; concentrates a small population).
+  quickMatch(mode: GameMode | 'any' = 'ffa') {
     this.send({ type: 'quickmatch', name: this.name, mode });
   }
 

@@ -8,9 +8,14 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "predev": "node scripts/ensure-native.mjs",
     "dev": "concurrently -k -n web,server -c cyan,magenta \"vite\" \"tsx watch server/index.ts\"",
+    "predev:lan": "node scripts/ensure-native.mjs && node scripts/lan-url.mjs",
+    "dev:lan": "concurrently -k -n web,server -c cyan,magenta \"vite --host\" \"tsx watch server/index.ts\"",
+    "predev:server": "node scripts/ensure-native.mjs",
     "dev:web": "vite",
     "dev:server": "tsx watch server/index.ts",
+    "lan": "node scripts/lan-url.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "start": "NODE_ENV=production tsx server/index.ts",

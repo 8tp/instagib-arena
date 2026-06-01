@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
+import { useAuth, LoginModal } from './auth';
+import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { LobbyClient, type LobbyRoom, type LobbyStatus } from './game/net';
 import { ONLINE_MAP_POOL } from './game/arena-data';
@@ -57,7 +59,9 @@ import type {
   MapVoteState,
   MedalTier,
   PlayerScore,
+  PomState,
   ToastEntry,
+  TrainingHud,
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
 import { PodiumScene, type PodiumWinner } from './game/podium';
@@ -65,16 +69,22 @@ import { CharacterPreview, type PreviewCosmetics } from './game/character-previe
 import {
   KILL_EFFECTS,
   RAIL_COLORS,
+  RAILGUN_FINISHES,
   HATS,
   UNUSUALS,
   CARD_STYLES,
   EMOTES,
+  NAME_COLORS,
+  SPAWN_EFFECTS,
   DEFAULT_KILL_EFFECT,
   DEFAULT_RAIL_COLOR,
+  DEFAULT_RAILGUN_FINISH,
   DEFAULT_HAT,
   DEFAULT_UNUSUAL,
   DEFAULT_CARD,
   DEFAULT_EMOTE,
+  DEFAULT_NAME_COLOR,
+  DEFAULT_SPAWN_EFFECT,
   cardById,
   cosmeticById,
   HAT_CASE_COST,
@@ -222,11 +232,14 @@ type Settings = {
   enemyBright: boolean; // make enemies glow bright for visibility (Ratz-style)
   killEffect: KillEffectStyle; // equipped kill-effect cosmetic (the frag explosion)
   railColor: string; // equipped rail-beam color cosmetic
+  railgunFinish: string; // equipped railgun finish (first-person gun skin)
   hat: string; // equipped hat cosmetic (worn on the player model)
   unusual: string; // equipped unusual particle effect (on the hat)
   card: string; // equipped playercard style (kill banner)
   cardStats: string[]; // up to 3 career-stat keys shown on the card
   emote: string; // equipped emote (played on the end-of-match podium)
+  nameColor: string; // equipped nameplate color (seen by others)
+  spawnEffect: string; // equipped spawn-in effect
   reducedEffects: boolean; // accessibility: suppress camera shake + kill flash + heavy bursts
 };
 
@@ -307,11 +320,14 @@ const DEFAULT_SETTINGS: Settings = {
   enemyBright: false,
   killEffect: DEFAULT_KILL_EFFECT,
   railColor: DEFAULT_RAIL_COLOR,
+  railgunFinish: DEFAULT_RAILGUN_FINISH,
   hat: DEFAULT_HAT,
   unusual: DEFAULT_UNUSUAL,
   card: DEFAULT_CARD,
   cardStats: ['kills', 'wins', 'kd'],
   emote: DEFAULT_EMOTE,
+  nameColor: DEFAULT_NAME_COLOR,
+  spawnEffect: DEFAULT_SPAWN_EFFECT,
   reducedEffects: prefersReducedMotion(),
 };
 
@@ -552,9 +568,12 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setEnemyStyle?.(s.enemyBright ? s.enemyColor : null);
   game.setKillEffect?.(s.killEffect);
   game.setRailColor?.(s.railColor);
+  game.setRailgunFinish?.(s.railgunFinish);
   game.setHat?.(s.hat);
   game.setUnusual?.(s.unusual);
   game.setEmote?.(s.emote);
+  game.setNameColor?.(s.nameColor);
+  game.setSpawnEffect?.(s.spawnEffect);
   game.setReducedEffects?.(s.reducedEffects);
   game.setFpsLimit?.(s.fpsLimit);
 }
@@ -606,9 +625,13 @@ const INITIAL_HUD: HudState = {
   localTeam: null,
   teamScores: null,
   duel: null,
+  training: null,
+  pom: null,
 };
 
 export default function InstagibClient() {
+  const auth = useAuth();
+  const [loginOpen, setLoginOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
@@ -618,6 +641,9 @@ export default function InstagibClient() {
   const [playId, setPlayId] = useState(0);
   // First-run onboarding (pick a name + a controls primer), shown once.
   const [showOnboarding, setShowOnboarding] = useState(false);
+  // A ?join= invite arriving on the FIRST run is held here until onboarding is
+  // done, so a first-time invitee still sees the controls primer before locking.
+  const pendingJoinRef = useRef<MatchConfig | null>(null);
 
   // Load persisted settings once on mount + backfill window-dependent defaults.
   useEffect(() => {
@@ -629,9 +655,9 @@ export default function InstagibClient() {
     }
     setSettings(loaded);
     // First visit (no onboarded flag) → show the welcome / name / controls primer.
-    if (typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded')) {
-      setShowOnboarding(true);
-    }
+    const firstRun =
+      typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded');
+    if (firstRun) setShowOnboarding(true);
 
     // Invite link: ?join=ROOMID drops straight into that room. The map is
     // unknown until the server confirms the join (Game adopts it then), so we
@@ -642,12 +668,16 @@ export default function InstagibClient() {
         const url = new URL(window.location.href);
         url.searchParams.delete('join');
         window.history.replaceState({}, '', url.toString());
-        startMatch({
+        const joinCfg: MatchConfig = {
           mode: 'multiplayer',
           mapId: randomMapId(),
           serverUrl: loaded.serverUrl || defaultServerUrl(),
           roomId: code.toUpperCase(),
-        });
+        };
+        // On a first-run invite, hold the join until onboarding finishes so the
+        // newcomer isn't dropped straight into pointer-lock with no primer.
+        if (firstRun) pendingJoinRef.current = joinCfg;
+        else startMatch(joinCfg);
       }
     }
   }, []);
@@ -655,6 +685,15 @@ export default function InstagibClient() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  // Your in-game name is your identity: the account username when logged in,
+  // or "Guest" otherwise. This is the source of truth (overrides any old local
+  // name) so guests always read "Guest" and accounts always read their handle.
+  useEffect(() => {
+    if (!auth.ready) return;
+    const name = auth.account?.username ?? 'Guest';
+    setSettings((s) => (s.playerName === name ? s : { ...s, playerName: name }));
+  }, [auth.ready, auth.account]);
 
   const startMatch = useCallback((cfg: MatchConfig) => {
     setLastResult(null);
@@ -674,6 +713,17 @@ export default function InstagibClient() {
     if (config) startMatch(config);
   }, [config, startMatch]);
 
+  const finishOnboarding = useCallback(() => {
+    if (typeof window !== 'undefined') window.localStorage.setItem('instagib-onboarded', '1');
+    setShowOnboarding(false);
+    // A held invite-join now proceeds (the player saw the primer first).
+    if (pendingJoinRef.current) {
+      const cfg = pendingJoinRef.current;
+      pendingJoinRef.current = null;
+      startMatch(cfg);
+    }
+  }, [startMatch]);
+
   if (view === 'playing' && config) {
     return (
       <GameView
@@ -686,6 +736,7 @@ export default function InstagibClient() {
       />
     );
   }
+
   return (
     <>
       <Lobby
@@ -693,48 +744,48 @@ export default function InstagibClient() {
         onChangeSettings={setSettings}
         onStart={startMatch}
         lastResult={lastResult}
+        account={auth.account}
+        onOpenLogin={() => setLoginOpen(true)}
+        onLogout={auth.logout}
       />
       {showOnboarding && (
         <OnboardingModal
-          initialName={AUTO_NAME_RE.test(settings.playerName) ? '' : settings.playerName}
-          onDone={(name) => {
-            if (name.trim()) setSettings((s) => ({ ...s, playerName: name.trim().slice(0, 20) }));
-            if (typeof window !== 'undefined') window.localStorage.setItem('instagib-onboarded', '1');
-            setShowOnboarding(false);
+          onPlayGuest={finishOnboarding}
+          onCreateAccount={() => {
+            finishOnboarding();
+            setLoginOpen(true);
           }}
         />
       )}
+      {loginOpen && <LoginModal auth={auth} onClose={() => setLoginOpen(false)} />}
     </>
   );
 }
 
 // First-run welcome: pick a display name + a quick controls primer. Shown once
 // (guarded by the `instagib-onboarded` localStorage flag).
-const ONBOARD_CONTROLS: Array<[string, string]> = [
-  ['Mouse', 'Aim'],
-  ['Left click', 'Fire railgun — one shot, one kill'],
-  ['WASD', 'Move'],
-  ['Space', 'Jump (double-jump in the air)'],
-  ['Shift', 'Dash (directional, on a cooldown)'],
-  ['Jump at a wall', 'Wall-jump for height + speed'],
-  ['Right click', 'Boost-jump off a nearby surface'],
-];
-
 function OnboardingModal({
-  initialName,
-  onDone,
+  onPlayGuest,
+  onCreateAccount,
 }: {
-  initialName: string;
-  onDone: (name: string) => void;
+  onPlayGuest: () => void;
+  onCreateAccount: () => void;
 }) {
-  const [name, setName] = useState(initialName);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Escape = play as guest (every other modal is escapable).
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-  const submit = () => onDone(name);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onPlayGuest();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onPlayGuest]);
   return (
-    <div className='fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'>
+    <div
+      role='dialog'
+      aria-modal='true'
+      aria-label='Welcome'
+      className='fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'
+    >
       <div className='deck-bg w-[540px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl'>
         <div className='border-b border-white/10 px-7 py-5'>
           <h2
@@ -746,23 +797,9 @@ function OnboardingModal({
           <p className='mt-1 text-[12px] text-white/50'>One railgun. One shot. Pure movement.</p>
         </div>
         <div className='px-7 py-5'>
-          <label className='block text-[10px] uppercase tracking-[0.24em] text-white/45'>
-            Your name
-          </label>
-          <input
-            ref={inputRef}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submit();
-            }}
-            maxLength={20}
-            placeholder='Pick a display name'
-            className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-cyan-400/60'
-          />
-          <div className='mt-5 text-[10px] uppercase tracking-[0.24em] text-white/45'>Controls</div>
+          <div className='text-[10px] uppercase tracking-[0.24em] text-white/45'>Controls</div>
           <div className='mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2'>
-            {ONBOARD_CONTROLS.map(([key, action]) => (
+            {CONTROLS.map(([key, action]) => (
               <div key={key} className='flex items-baseline gap-2 text-[12px]'>
                 <span className='shrink-0 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wide text-cyan-200'>
                   {key}
@@ -771,13 +808,23 @@ function OnboardingModal({
               </div>
             ))}
           </div>
+          <p className='mt-5 text-[12px] leading-relaxed text-white/50'>
+            Jump in as a <span className='text-white/80'>guest</span> right now — or create a free
+            account to save your XP, levels, credits, and cosmetics and climb the leaderboards.
+          </p>
         </div>
-        <div className='flex justify-end border-t border-white/10 px-7 py-4'>
+        <div className='flex items-center justify-between gap-3 border-t border-white/10 px-7 py-4'>
           <button
-            onClick={submit}
+            onClick={onPlayGuest}
+            className='rounded-lg border border-white/15 bg-white/5 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.14em] text-white/80 transition hover:bg-white/10'
+          >
+            Play as Guest
+          </button>
+          <button
+            onClick={onCreateAccount}
             className='rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
           >
-            Enter the Arena →
+            Create account →
           </button>
         </div>
       </div>
@@ -858,6 +905,10 @@ function GameView({
     gameRef.current?.voteForMap(mapId);
   }, []);
 
+  const skipPom = useCallback(() => {
+    gameRef.current?.skipPlayOfMatch?.();
+  }, []);
+
   // Apply live preference changes to the running game.
   useEffect(() => {
     const game = gameRef.current;
@@ -929,12 +980,33 @@ function GameView({
     }
   }, [waiting]);
 
+  // Online + the socket dropped mid-match: the net layer auto-retries, but the
+  // local sim keeps running against an empty arena. Surface it + release the
+  // cursor so the player knows the game stalled and isn't a "ghost match" (#H2).
+  const disconnected =
+    config.mode === 'multiplayer' &&
+    (hud.netStatus === 'closed' || hud.netStatus === 'error') &&
+    !hud.matchOver &&
+    !onlineResults &&
+    !joinError;
+  useEffect(() => {
+    if (disconnected && typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  }, [disconnected]);
+
   return (
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
-      <HudOverlay hud={hud} settings={settings} />
-      {hud.vote && !onlineResults && <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />}
-      {onlineResults && (
+      {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
+      {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
+      {hud.pom && (
+        <PlayOfTheMatchOverlay pom={hud.pom} onSkip={skipPom} reduced={settings.reducedEffects} />
+      )}
+      {hud.vote && !onlineResults && !hud.pom && (
+        <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />
+      )}
+      {onlineResults && !hud.pom && (
         <OnlineMatchResults
           won={endResult?.won ?? false}
           scores={podiumScores}
@@ -959,7 +1031,10 @@ function GameView({
           onLeave={leave}
         />
       )}
-      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && (
+      {disconnected && !waiting && (
+        <DisconnectedOverlay error={hud.netStatus === 'error'} onLeave={leave} />
+      )}
+      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && !hud.pom && (
         <ClickToPlay
           onPlay={requestPlay}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -968,7 +1043,7 @@ function GameView({
           settings={settings}
         />
       )}
-      {hud.matchOver && (
+      {hud.matchOver && !hud.pom && (
         <MatchOverOverlay
           won={hud.matchOver.won}
           scores={hud.scores}
@@ -1011,7 +1086,16 @@ type LockerItem = {
   source: CosmeticSource;
 };
 type LockerSlotDef = {
-  slot: 'killEffect' | 'railColor' | 'hat' | 'unusual' | 'card' | 'emote';
+  slot:
+    | 'killEffect'
+    | 'railColor'
+    | 'railgunFinish'
+    | 'hat'
+    | 'unusual'
+    | 'card'
+    | 'emote'
+    | 'nameColor'
+    | 'spawnEffect';
   label: string;
   items: readonly LockerItem[];
   current: (s: Settings) => string;
@@ -1033,6 +1117,20 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
     apply: (s, id) => ({ ...s, railColor: id }),
   },
   {
+    slot: 'railgunFinish',
+    label: 'Railgun Finish',
+    items: RAILGUN_FINISHES,
+    current: (s) => s.railgunFinish,
+    apply: (s, id) => ({ ...s, railgunFinish: id }),
+  },
+  {
+    slot: 'spawnEffect',
+    label: 'Spawn Effect',
+    items: SPAWN_EFFECTS,
+    current: (s) => s.spawnEffect,
+    apply: (s, id) => ({ ...s, spawnEffect: id }),
+  },
+  {
     slot: 'hat',
     label: 'Hat',
     items: HATS,
@@ -1045,6 +1143,13 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
     items: UNUSUALS,
     current: (s) => s.unusual,
     apply: (s, id) => ({ ...s, unusual: id }),
+  },
+  {
+    slot: 'nameColor',
+    label: 'Name Color',
+    items: NAME_COLORS,
+    current: (s) => s.nameColor,
+    apply: (s, id) => ({ ...s, nameColor: id }),
   },
   {
     slot: 'card',
@@ -1066,16 +1171,11 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
 // owned items can be equipped, credit-priced ones bought, level-gated ones show
 // their unlock. Degrades to local-only selection if the profile can't be
 // fetched (offline / no backend), so the picker always works.
-// Per-tab focus → the preview shows ONE thing (the combined view was buggy):
-//  character = hat + unusual, idle, no effects
-//  emote     = the equipped emote, no effects
-//  weapon    = the rail beam (colour) + kill burst (effect), idle soldier
+// Per-tab focus → the preview shows ONE thing, framed for that slot:
+//  character = hat + unusual, head-zoomed, slowly turning
+//  emote     = the equipped emote on the whole player model
+//  weapon    = just the railgun firing the rail beam (colour) into a kill burst
 type LockerView = 'character' | 'emote' | 'weapon';
-function viewOptions(view: LockerView): { effects: boolean; forceIdle: boolean } {
-  if (view === 'emote') return { effects: false, forceIdle: false };
-  if (view === 'weapon') return { effects: true, forceIdle: true };
-  return { effects: false, forceIdle: true };
-}
 
 // Live 3D preview of the equipped loadout for a single Locker tab. A fresh
 // instance mounts per tab (so only one WebGL context runs at a time).
@@ -1087,8 +1187,9 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
     unusualId: settings.unusual,
     emoteId: settings.emote,
     railColor: settings.railColor,
+    railgunFinish: settings.railgunFinish,
     killEffect: settings.killEffect,
-    ...viewOptions(view),
+    view,
   });
   useEffect(() => {
     const canvas = ref.current;
@@ -1098,8 +1199,19 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
     preview.start();
     const onResize = () => preview.resize();
     window.addEventListener('resize', onResize);
+    // Track the canvas box itself so the preview stays crisp when the panel
+    // reflows (open/close, tab switch, responsive width) — not just on window
+    // resize. rAF-debounced to coalesce layout bursts.
+    let pending = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(pending);
+      pending = requestAnimationFrame(() => preview.resize());
+    });
+    ro.observe(canvas);
     return () => {
       window.removeEventListener('resize', onResize);
+      cancelAnimationFrame(pending);
+      ro.disconnect();
       preview.dispose();
       previewRef.current = null;
     };
@@ -1108,7 +1220,7 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
   useEffect(() => {
     previewRef.current?.setCosmetics(cosmetics());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.killEffect, view]);
+  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.railgunFinish, settings.killEffect, view]);
   return (
     <div className='relative h-60 w-full shrink-0 overflow-hidden rounded-lg border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
       <canvas ref={ref} className='block h-full w-full' />
@@ -1120,9 +1232,9 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
 }
 
 const LOCKER_TABS = [
-  { id: 'character', label: 'Character', slots: ['hat', 'unusual'], view: 'character' as const },
+  { id: 'character', label: 'Character', slots: ['hat', 'unusual', 'nameColor'], view: 'character' as const },
   { id: 'emote', label: 'Emotes', slots: ['emote'], view: 'emote' as const },
-  { id: 'weapon', label: 'Weapon', slots: ['railColor', 'killEffect'], view: 'weapon' as const },
+  { id: 'weapon', label: 'Weapon', slots: ['railColor', 'railgunFinish', 'killEffect', 'spawnEffect'], view: 'weapon' as const },
   { id: 'card', label: 'Card', slots: ['card'], view: null },
 ] as const;
 type LockerTab = (typeof LOCKER_TABS)[number]['id'];
@@ -1925,6 +2037,97 @@ function mapLabel(id: string): string {
 
 /* ───────────────────────── Map vote (end of match) ───────────────────────── */
 
+// Play of the Match: a mostly-transparent cinematic frame over the live 3D
+// replay (the engine owns the camera + actors). Letterbox bars, a "PLAY OF THE
+// MATCH" title that fades, a lower-third nameplate, a Skip button, and an
+// auto-advance progress bar driven by the clip clock.
+function PlayOfTheMatchOverlay({
+  pom,
+  onSkip,
+  reduced,
+}: {
+  pom: PomState;
+  onSkip: () => void;
+  reduced: boolean;
+}) {
+  const isFinale = pom.phase === 'finale';
+  // Fade the big title out after the opening beat so it doesn't sit on the clip.
+  // Re-arm whenever the phase flips (finale → Play of the Match) so the PotG
+  // title gets its own entrance.
+  const [titleVisible, setTitleVisible] = useState(true);
+  useEffect(() => {
+    setTitleVisible(true);
+    const t = setTimeout(() => setTitleVisible(false), 1900);
+    return () => clearTimeout(t);
+  }, [pom.phase]);
+  // Skip on Esc / Enter / Space, matching the on-screen button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onSkip();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onSkip]);
+
+  const pct = pom.total > 0 ? Math.max(0, Math.min(100, (1 - pom.remaining / pom.total) * 100)) : 0;
+  const barH = reduced ? '8vh' : '11vh';
+
+  return (
+    <div className='pointer-events-none absolute inset-0 z-40 font-mono'>
+      {/* Cinematic letterbox bars */}
+      <div className='absolute inset-x-0 top-0 bg-black' style={{ height: barH }} />
+      <div className='absolute inset-x-0 bottom-0 bg-black' style={{ height: barH }} />
+
+      {/* Title card — only on the Play of the Match beat; the slow-mo finale
+          plays clean (no header) so it reads as the kill itself. Fades out. */}
+      {!isFinale && (
+        <div
+          className='absolute inset-x-0 top-[16%] flex flex-col items-center transition-opacity duration-700'
+          style={{ opacity: titleVisible ? 1 : 0 }}
+        >
+          <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
+            Play of the Match
+          </div>
+        </div>
+      )}
+
+      {/* Lower-third: star name + the feat (finale shows "FINAL BLOW" in amber). */}
+      <div className='absolute left-[4vw] bottom-[14vh]'>
+        <div className='text-3xl font-extrabold uppercase tracking-[0.04em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
+          {pom.star}
+        </div>
+        <div
+          className={`mt-1 text-lg font-bold uppercase tracking-[0.25em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)] ${
+            isFinale ? 'text-amber-300' : 'text-cyan-300'
+          }`}
+        >
+          {pom.label}
+          {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
+        </div>
+      </div>
+
+      {/* Skip button (re-enable pointer events just for it) */}
+      <button
+        onClick={onSkip}
+        className='pointer-events-auto absolute right-[4vw] bottom-[14vh] rounded-lg border border-white/25 bg-black/50 px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.2em] text-white/85 backdrop-blur-sm transition hover:bg-white/10'
+      >
+        Skip ▸
+      </button>
+
+      {/* Auto-advance progress bar pinned to the bottom letterbox edge */}
+      <div className='absolute inset-x-0' style={{ bottom: barH, height: '2px' }}>
+        <div
+          className={`h-full ${isFinale ? 'bg-amber-400/80' : 'bg-cyan-400/80'}`}
+          style={{ width: `${pct}%`, transition: 'width 80ms linear' }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function MapVoteOverlay({
   vote,
   onVote,
@@ -1993,6 +2196,32 @@ function MapVoteOverlay({
 function inviteLink(roomId: string): string {
   if (typeof window === 'undefined') return `?join=${roomId}`;
   return `${window.location.origin}${window.location.pathname}?join=${roomId}`;
+}
+
+// Online + the connection dropped mid-match: tell the player the game stalled
+// and is auto-retrying, instead of leaving them in a silent "ghost match".
+function DisconnectedOverlay({ error, onLeave }: { error: boolean; onLeave: () => void }) {
+  return (
+    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
+      <div className='w-[440px] max-w-[94vw] rounded-2xl border border-rose-500/30 bg-zinc-950/95 p-7 text-center font-mono shadow-2xl'>
+        <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-rose-200'>
+          <span className='inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300 shadow-[0_0_6px_rgba(251,113,133,0.85)]' />
+          {error ? 'Connection error' : 'Connection lost'}
+        </div>
+        <div className='mt-3 text-xl font-bold text-white'>Reconnecting…</div>
+        <p className='mt-2 text-sm text-white/55'>
+          Lost contact with the server. Trying to get you back into the match — this usually
+          takes a few seconds.
+        </p>
+        <button
+          onClick={onLeave}
+          className='mt-5 rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-white/80 transition hover:bg-white/10'
+        >
+          Leave to menu
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // Online + alone: instead of a silent empty arena, show what's happening and a
@@ -2132,6 +2361,7 @@ function HudOverlay({
         <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
       )}
       {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
+      {hud.training && <TrainingPanel t={hud.training} />}
       <BannerOverlay banner={hud.banner} />
       <CaptionLayer hud={hud} captions={settings.captions} />
       <FragPopup confirm={hud.killConfirm} />
@@ -2229,6 +2459,22 @@ function KillcamOverlay({ killcam }: { killcam: KillcamState | null }) {
           opacity,
         }}
       />
+      {killcam.dirAngle !== undefined && (
+        // Directional "the shot came from here" arrow, rotated around screen
+        // center toward the killer (0 = dead ahead, clockwise). Teaches new
+        // players where they're being picked off from.
+        <div
+          className='pointer-events-none absolute left-1/2 top-1/2'
+          style={{ opacity, transform: `translate(-50%,-50%) rotate(${killcam.dirAngle}rad)` }}
+        >
+          <div
+            className='text-3xl leading-none text-rose-400'
+            style={{ transform: 'translateY(-128px)', filter: 'drop-shadow(0 0 8px rgba(244,63,94,0.85))' }}
+          >
+            ▲
+          </div>
+        </div>
+      )}
       <div className='absolute inset-x-0 top-[18%] flex flex-col items-center text-center font-mono' style={{ opacity }}>
         <div className='text-[10px] uppercase tracking-[0.4em] text-white/55'>
           You were killed by
@@ -2633,6 +2879,38 @@ function ToastChip({ toast }: { toast: ToastEntry }) {
   );
 }
 
+/* ───────────────────────── Training range panel ───────────────────────── */
+
+function TrainingPanel({ t }: { t: TrainingHud }) {
+  const acc = Math.round(t.accuracy * 100);
+  const mins = Math.floor(t.elapsed / 60);
+  const secs = Math.floor(t.elapsed % 60);
+  const Stat = ({ label, value, accent }: { label: string; value: string; accent?: string }) => (
+    <div className='flex flex-col items-center px-3'>
+      <span className={`text-xl font-extrabold tabular-nums ${accent ?? 'text-white'}`}>{value}</span>
+      <span className='text-[9px] uppercase tracking-[0.18em] text-white/45'>{label}</span>
+    </div>
+  );
+  return (
+    <div className='pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 font-mono'>
+      <div className='flex items-center gap-1 rounded-lg border border-amber-400/25 bg-black/55 px-2 py-2 backdrop-blur-sm'>
+        <div className='px-3 text-[10px] uppercase leading-tight tracking-[0.18em] text-amber-300/90'>
+          Training<br />Range
+        </div>
+        <div className='h-8 w-px bg-white/10' />
+        <Stat label='Accuracy' value={`${acc}%`} accent='text-cyan-200' />
+        <Stat label='Streak' value={`${t.streak}`} accent={t.streak >= 5 ? 'text-amber-300' : 'text-white'} />
+        <Stat label='Best' value={`${t.bestStreak}`} />
+        <Stat label='Targets' value={`${t.destroyed}`} />
+        <Stat label='Time' value={`${mins}:${secs.toString().padStart(2, '0')}`} />
+      </div>
+      <div className='mt-1 text-center text-[9px] uppercase tracking-[0.2em] text-white/35'>
+        Free practice · no respawns · drill aim &amp; movement
+      </div>
+    </div>
+  );
+}
+
 /* ───────────────────────── Mini leaderboard (top-left) ───────────────────────── */
 
 function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
@@ -2650,7 +2928,9 @@ function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
         {top.map((s, i) => (
           <div key={s.id} className='flex items-center justify-between gap-2'>
             <div className='flex min-w-0 items-center gap-2'>
-              <span className='w-4 text-right text-white/40'>{i + 1}.</span>
+              {/* '▸' marks your row without relying on color (colorblind + the
+                  bright-enemy recolor both wash out the emerald tint). */}
+              <span className='w-4 text-right text-white/40'>{s.isLocal ? '▸' : `${i + 1}.`}</span>
               <span
                 className={`truncate ${
                   s.isLocal ? 'font-bold text-emerald-300' : 'text-white/85'
@@ -3215,11 +3495,17 @@ function Lobby({
   onChangeSettings,
   onStart,
   lastResult,
+  account,
+  onOpenLogin,
+  onLogout,
 }: {
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
   onStart: (config: MatchConfig) => void;
   lastResult: MatchResult | null;
+  account: { username: string } | null;
+  onOpenLogin: () => void;
+  onLogout: () => void;
 }) {
   const [soloOpen, setSoloOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
@@ -3336,10 +3622,23 @@ function Lobby({
             Arena
           </span>
           <div className='ml-auto flex items-center gap-3'>
-            <span className='hidden font-mono text-[10px] uppercase tracking-[0.2em] text-white/40 sm:inline'>
-              {settings.playerName || 'Player'}
-            </span>
-            {lobbyProfile && (
+            {account ? (
+              <span className='hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
+                <span className='text-cyan-200'>{account.username}</span>
+                <button onClick={onLogout} className='text-white/35 transition hover:text-white/70'>
+                  Log&nbsp;out
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={onOpenLogin}
+                title='Save your progress across devices'
+                className='clip-deck-sm inline-flex items-center gap-1.5 border border-cyan-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100'
+              >
+                <span className='text-white/40'>Guest ·</span> Log in / Register
+              </button>
+            )}
+            {lobbyProfile && account && (
               <button
                 type='button'
                 onClick={() => setLockerOpen(true)}
@@ -3379,9 +3678,10 @@ function Lobby({
               onClick={() => {
                 if (searching || !online || playDisabled) return; // double-fire guard
                 setSearching(true);
-                lobbyRef.current?.quickMatch(selectedMode);
-                // Safety reset if the server never resolves (it normally navigates
-                // away via onResolved, unmounting this view).
+                // "Play Now" = mode-agnostic super-queue: join whatever's live so a
+                // small population concentrates instead of splitting 3 ways. The
+                // mode picker drives Create Match for players who want a specific one.
+                lobbyRef.current?.quickMatch('any');
                 window.setTimeout(() => setSearching(false), 6000);
               }}
               disabled={!online || playDisabled || searching}
@@ -3390,9 +3690,9 @@ function Lobby({
             >
               <span className='flex items-center gap-3'>
                 <span className='text-2xl leading-none'>▶</span>
-                {searching ? 'Searching…' : 'Quick Match'}
+                {searching ? 'Searching…' : 'Play Now'}
                 <span className='ml-auto font-mono text-[11px] font-semibold tracking-[0.1em] text-zinc-950/60'>
-                  {modeLabel(selectedMode)}
+                  Any mode · fastest
                 </span>
               </span>
             </button>
@@ -3407,7 +3707,7 @@ function Lobby({
                   onStart({
                     mode: 'local',
                     mapId: 'training',
-                    botCount: 4,
+                    botCount: 0, // targets, not a firefight — practice aim + movement safely
                     difficulty: settings.difficulty,
                     training: true,
                   })
@@ -3415,7 +3715,7 @@ function Lobby({
                 disabled={playDisabled}
                 accent='amber'
               >
-                ⌖ Practice Range
+                ⌖ Training Range
               </DeckButton>
               <div className='col-span-2'>
                 <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled} full>

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { KillEffectStyle } from './cosmetics';
+import type { KillEffectStyle, SpawnEffectStyle } from './cosmetics';
 
 type Burst = {
   group: THREE.Group;
@@ -278,6 +278,95 @@ export class EffectsManager {
     this.emit(scene, [this.flash(center, core, 0.16)], 0.3, { grow: 7, fadePow: 2.2 });
     const [m, v] = this.spray(at, core, { count: 10, y: 0.5, radial: [2.4, 1.6], up: [1.5, 2.5], size: 0.05 });
     this.emit(scene, m, 0.4, { velocities: v, gravity: 6, fadePow: 1.4 });
+  }
+
+  // ── Spawn-in effects ────────────────────────────────────────────────────────
+  // A materialize burst at a (re)spawn point. `at` is the player's FEET (ground).
+  // Cosmetic-only; each style is a self-contained recipe. `beam` is the default.
+  spawnInBurst(scene: THREE.Scene, at: THREE.Vector3, style: SpawnEffectStyle = 'beam') {
+    switch (style) {
+      case 'ring': return this.spawnRing(scene, at);
+      case 'ember': return this.spawnEmberIn(scene, at);
+      case 'rift': return this.spawnRift(scene, at);
+      case 'beam':
+      default: return this.spawnBeamIn(scene, at);
+    }
+  }
+
+  // A vertical light column rising from the feet, additive + tapered.
+  private column(at: THREE.Vector3, color: number, radius: number, height: number): THREE.Mesh {
+    const geom = new THREE.CylinderGeometry(radius * 0.7, radius, height, 12, 1, true);
+    const m = new THREE.Mesh(geom, this.additive(color));
+    m.position.set(at.x, at.y + height / 2, at.z);
+    return m;
+  }
+
+  // Teleport: a tall light column + an expanding ground ring + rising motes.
+  private spawnBeamIn(scene: THREE.Scene, at: THREE.Vector3) {
+    const hot = 0xa8f0ff;
+    const col = 0x37a6ff;
+    this.emit(scene, [this.column(at, hot, 0.16, 2.2)], 0.4, { grow: 1.0, fadePow: 1.6 });
+    this.emit(scene, [this.ring(new THREE.Vector3(at.x, at.y + 0.05, at.z), col, 0.2, 0.045)], 0.42, { grow: 7, fadePow: 1.3 });
+    this.emit(scene, [this.flash(new THREE.Vector3(at.x, at.y + 0.9, at.z), hot, 0.22)], 0.22, { grow: 4, fadePow: 1.8 });
+    const [m, v] = this.spray(at, hot, { count: 12, y: 0.1, radial: [0.5, 0.6], up: [4.5, 2.5], size: 0.05 });
+    this.emit(scene, m, 0.5, { velocities: v, gravity: 5, fadePow: 1.2 });
+  }
+
+  // Shockwave: a hard double ground ring + a bright ground flash. Low + wide.
+  private spawnRing(scene: THREE.Scene, at: THREE.Vector3) {
+    const hot = 0xbfeaff;
+    const base = new THREE.Vector3(at.x, at.y + 0.06, at.z);
+    this.emit(scene, [this.ring(base, hot, 0.18, 0.05)], 0.36, { grow: 13, fadePow: 1.3 });
+    this.emit(scene, [this.ring(base, hot, 0.1, 0.03)], 0.46, { grow: 9, fadePow: 1.5 });
+    this.emit(scene, [this.flash(base, hot, 0.2)], 0.2, { grow: 6, fadePow: 1.8 });
+    const [m, v] = this.spray(at, 0x8ad8ff, { count: 10, y: 0.08, radial: [2.2, 1.4], up: [1.5, 1.5], size: 0.05 });
+    this.emit(scene, m, 0.4, { velocities: v, gravity: 7, fadePow: 1.2 });
+  }
+
+  // Cinder: a warm column + a dense cone of rising embers.
+  private spawnEmberIn(scene: THREE.Scene, at: THREE.Vector3) {
+    const core = 0xffb15a;
+    const spark = 0xff7b3a;
+    this.emit(scene, [this.column(at, core, 0.13, 1.8)], 0.36, { grow: 0.8, fadePow: 1.7 });
+    this.emit(scene, [this.flash(new THREE.Vector3(at.x, at.y + 0.2, at.z), core, 0.2)], 0.2, { grow: 4, fadePow: 1.8 });
+    const embers: THREE.Mesh[] = [];
+    const vels: THREE.Vector3[] = [];
+    const geom = new THREE.IcosahedronGeometry(0.045, 0);
+    for (let i = 0; i < 18; i++) {
+      const mm = new THREE.Mesh(geom, this.additive(spark));
+      mm.position.set(at.x, at.y + 0.1, at.z);
+      embers.push(mm);
+      const theta = Math.random() * Math.PI * 2;
+      const radial = 0.3 + Math.random() * 0.9;
+      vels.push(new THREE.Vector3(Math.cos(theta) * radial, 3.5 + Math.random() * 3.5, Math.sin(theta) * radial));
+    }
+    this.emit(scene, embers, 0.7, { velocities: vels, gravity: 7, fadePow: 1.1 });
+  }
+
+  // Rift: a violet vertical tear that flares, with motes drawn inward then out.
+  private spawnRift(scene: THREE.Scene, at: THREE.Vector3) {
+    const core = 0xe9d5ff;
+    const halo = 0xa855f7;
+    // A thin tall slab (the tear) that widens and fades.
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.1, 0.08), this.additive(core));
+    slab.position.set(at.x, at.y + 1.05, at.z);
+    this.emit(scene, [slab], 0.34, { grow: 2.2, fadePow: 1.7 });
+    this.emit(scene, [this.ring(new THREE.Vector3(at.x, at.y + 0.05, at.z), halo, 0.16, 0.04)], 0.4, { grow: 8, fadePow: 1.3 });
+    // Infalling motes converging on the tear, then released upward by the flare.
+    const motes: THREE.Mesh[] = [];
+    const vels: THREE.Vector3[] = [];
+    const geom = new THREE.IcosahedronGeometry(0.05, 0);
+    const n = 9;
+    for (let i = 0; i < n; i++) {
+      const theta = (i / n) * Math.PI * 2;
+      const dir = new THREE.Vector3(Math.cos(theta), 0, Math.sin(theta));
+      const mm = new THREE.Mesh(geom, this.additive(halo));
+      mm.position.copy(at).addScaledVector(dir, 0.7).setY(at.y + 0.9);
+      motes.push(mm);
+      vels.push(dir.multiplyScalar(-2.0).setY(1.5));
+    }
+    this.emit(scene, motes, 0.4, { velocities: vels, gravity: -2, fadePow: 1.0 });
+    this.emit(scene, [this.flash(new THREE.Vector3(at.x, at.y + 0.95, at.z), core, 0.18)], 0.28, { grow: 6, fadePow: 2.0 });
   }
 
   // Build a radial spark spray: `count` icosahedron motes from a point above the

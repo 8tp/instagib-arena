@@ -28,7 +28,6 @@ import {
   KILLFEED_DURATION_SEC,
   LOCAL_RESPAWN_INVULN_SEC,
   LOCAL_WARMUP_SEC,
-  MERCY_LEAD,
   MATCH_FRAG_LIMIT,
   MAX_KILLFEED_ENTRIES,
   MAX_PLAYERS,
@@ -54,6 +53,7 @@ import {
   type KeybindAction,
 } from './constants';
 import { EffectsManager } from './effects';
+import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
@@ -63,17 +63,40 @@ import {
   DEFAULT_HAT,
   DEFAULT_UNUSUAL,
   DEFAULT_EMOTE,
+  DEFAULT_RAILGUN_FINISH,
+  DEFAULT_NAME_COLOR,
+  DEFAULT_SPAWN_EFFECT,
   isKillEffectStyle,
   isRailColor,
+  isRailgunFinish,
   isHat,
   isUnusual,
   isEmote,
+  isNameColor,
+  isSpawnEffect,
   railColorById,
+  railgunFinishById,
+  spawnEffectById,
+  SPAWN_EFFECTS,
   type KillEffectStyle,
 } from './cosmetics';
 import { NetClient, type KillEvent } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
+import {
+  MatchRecorder,
+  ReplayPlayer,
+  type ReplayPose,
+  type HighlightClip,
+  type ReplayOptions,
+} from './replay';
+
+// End-of-match cinematic: how the final-blow slow-mo is paced before the PotG.
+const FINALE_TIME_SCALE = 0.5; // play the final blow at half speed
+const FINALE_FREEZE_SEC = 0.5; // then hold on the frozen frame (the "pause")
+
+// One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
+type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
 import { createCamera, createRenderer, createScene } from './renderer';
 import { buildRailgun } from './weapon-model';
 import type {
@@ -90,6 +113,7 @@ import type {
   MapVoteState,
   Medal,
   PlayerScore,
+  PomState,
   ToastEntry,
 } from './types';
 import { Railgun, type RailTarget } from './weapon';
@@ -152,6 +176,7 @@ export class Game {
   private accumulator = 0;
   private lastTime = 0;
   private rafHandle: number | null = null;
+  private contextLost = false; // true while the WebGL context is lost (skip render)
   // Frame scheduler: 0 = VSync (rAF, default), >0 = cap to that fps (setTimeout),
   // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
   // input latency, at high CPU cost). See scheduleFrame().
@@ -186,6 +211,7 @@ export class Game {
   private comebackAwarded = false; // Comeback medal fires at most once per match
   private matchPointAnnounced = false; // "Match point" banner fires once per match
   private training = false; // endless practice — never hit the frag limit
+  private trainingRange: TrainingRange | null = null; // target-practice range (training mode)
   private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
   private localWarmupUntil = 0; // perf.now() ms; offline pre-match no-fire window
   private shake = 0; // camera screen-shake amount, decays each render frame
@@ -227,6 +253,16 @@ export class Game {
   private damageFlash = 0; // 0..1, set on death, decays — red "you were hit" vignette
   private killcam: KillcamState | null = null;
   private killcamLookAt = new THREE.Vector3();
+
+  // Play of the Match: record the live match, then on match-end pick the best
+  // moment and replay it cinematically before the results screen. All captured
+  // client-side, so it works offline-vs-bots and online (no server changes).
+  private recorder = new MatchRecorder();
+  private replay: ReplayPlayer | null = null;
+  private replaySegments: ReplaySegment[] = [];
+  private replaySegIdx = 0;
+  private pom: PomState | null = null;
+  private pomOnDone: (() => void) | null = null;
   private nextEventId = 1;
   private fireWasAirborne = false;
   private weaponWasReady = true; // tracks cooldown-to-ready transition
@@ -250,6 +286,10 @@ export class Game {
   private viewmodelOffset = { x: 0, y: 0, z: 0 };
   private hideViewmodel = false;
   private killEffectStyle: KillEffectStyle = DEFAULT_KILL_EFFECT;
+  private localRailgunFinish: string = DEFAULT_RAILGUN_FINISH; // viewmodel skin (local)
+  private localNameColor: string = DEFAULT_NAME_COLOR; // nameplate tint (broadcast)
+  private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
+  private botAlive = new Map<string, boolean>(); // prev alive-state per bot (spawn fx edge)
   private localHat: string = DEFAULT_HAT; // equipped hat (broadcast to remotes)
   private localUnusual: string = DEFAULT_UNUSUAL; // equipped unusual effect
   private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
@@ -285,12 +325,29 @@ export class Game {
     // Parent the viewmodel to the camera so it tracks the view. The camera is
     // added to the scene so its child (the gun) is part of the render.
     this.scene.add(this.camera);
-    const vm = buildRailgun();
-    this.viewmodel = vm.group;
-    this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
-    this.viewmodelGlow = vm.glow;
-    this.applyViewmodelTransform();
-    this.camera.add(this.viewmodel);
+    this.buildViewmodel();
+
+    // WebGL context loss (GPU reset, driver hiccup, backgrounded low-VRAM tab):
+    // preventDefault keeps the context recoverable; we pause GL rendering and
+    // tell the player, then resume automatically when it's restored.
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: 'Graphics paused',
+        subtitle: 'GPU context lost — restoring…',
+        remaining: 999,
+        total: 999,
+      };
+      this.emitHud();
+    });
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.banner = null;
+      this.emitHud();
+    });
     this.mapMesh = buildMapMesh(this.map);
     this.scene.add(this.mapMesh);
     this.player = new Player(this.map.spawn);
@@ -499,6 +556,30 @@ export class Game {
     this.weapon.setBeamColors(c.data.core, c.data.helix);
   }
 
+  // (Re)build the first-person railgun viewmodel with the equipped finish. Called
+  // from the constructor and whenever the finish changes (Locker equip).
+  private buildViewmodel() {
+    if (this.viewmodel) {
+      this.camera.remove(this.viewmodel);
+      disposeGroup(this.viewmodel);
+    }
+    const finish = railgunFinishById(this.localRailgunFinish).data;
+    const vm = buildRailgun(finish);
+    this.viewmodel = vm.group;
+    this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
+    this.viewmodelGlow = vm.glow;
+    this.applyViewmodelTransform();
+    this.camera.add(this.viewmodel);
+  }
+
+  // Equipped railgun finish (gun skin) — recolors the local viewmodel only.
+  setRailgunFinish(id: string) {
+    const next = isRailgunFinish(id) ? id : DEFAULT_RAILGUN_FINISH;
+    if (next === this.localRailgunFinish) return;
+    this.localRailgunFinish = next;
+    this.buildViewmodel();
+  }
+
   // Equipped hat — worn on the local player's model (seen by others online + in
   // the killcam). Stored here; the net layer broadcasts it so remotes render it.
   setHat(id: string) {
@@ -516,6 +597,19 @@ export class Game {
   setEmote(id: string) {
     this.localEmote = isEmote(id) ? id : DEFAULT_EMOTE;
     this.net?.setLocalEmote(this.localEmote);
+  }
+
+  // Equipped nameplate color — broadcast so other players see your tinted name.
+  setNameColor(id: string) {
+    this.localNameColor = isNameColor(id) ? id : DEFAULT_NAME_COLOR;
+    this.net?.setLocalNameColor(this.localNameColor);
+  }
+
+  // Equipped spawn-in effect — broadcast so others see your materialize style,
+  // and used locally for your own + bots' respawns.
+  setSpawnEffect(id: string) {
+    this.localSpawnEffect = isSpawnEffect(id) ? id : DEFAULT_SPAWN_EFFECT;
+    this.net?.setLocalSpawnEffect(this.localSpawnEffect);
   }
 
   // Your playercard (built client-side from your profile + card settings).
@@ -608,6 +702,10 @@ export class Game {
     this.botModel = model;
     this.applyBotsState();
     this.applyMultiplayerState();
+    // Training mode: a target-practice range (no bots, no return fire).
+    if (this.training && !this.net && !this.trainingRange) {
+      this.trainingRange = new TrainingRange(this.scene, this.map);
+    }
     this.emitHud();
   }
 
@@ -626,8 +724,17 @@ export class Game {
     this.tickFn = null;
     this.input.detach();
     window.removeEventListener('resize', this.resizeHandler);
+    this.replay?.dispose();
+    this.replay = null;
+    this.replaySegments = [];
+    this.replaySegIdx = 0;
+    this.pom = null;
+    this.pomOnDone = null;
+    this.recorder.reset();
     this.weapon.disposeAll(this.scene);
     this.effects.dispose(this.scene);
+    this.trainingRange?.dispose(this.scene);
+    this.trainingRange = null;
     if (this.bots) this.bots.dispose(this.scene);
     for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
     this.remotePlayers.clear();
@@ -803,6 +910,11 @@ export class Game {
     if (typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();
     }
+    // Play of the Match plays over the (now-running) vote countdown; the
+    // results + vote UI are gated behind hud.pom in React until the clip ends.
+    // The reveal is a no-op here — those overlays are React-state driven and
+    // simply un-gate when finishPlayOfMatch clears hud.pom.
+    this.startPlayOfMatch(() => {});
     this.emitHud();
   }
 
@@ -815,6 +927,10 @@ export class Game {
 
   private handleVoteResult(r: { mapId: string; resumeAtClient: number }) {
     this.vote = null;
+    // The clip is normally done by the time the vote resolves; finish it
+    // defensively (no-op if not playing) so a fresh match starts clean.
+    this.finishPlayOfMatch();
+    this.recorder.reset();
     // New match on the winning map: reset local medal/streak + per-run stats
     // (server resets the authoritative scoreboard; HUD reads it from snapshots).
     // Done AFTER handleVoteStart already submitted the finished match's stats.
@@ -890,7 +1006,21 @@ export class Game {
       total: BANNER_DURATION_SEC,
     };
     this.input.requestLock();
+    this.playLocalSpawnEffect(); // materialize at the fresh round spawn
     this.emitHud();
+  }
+
+  // On-screen bearing to the killer at death: 0 = dead ahead, +π/2 = your right.
+  // Uses your view yaw + the death position so the killcam can draw a "shot came
+  // from here" arrow. forward = (-sin yaw,-cos yaw), right = (cos yaw,-sin yaw).
+  private killDirAngle(killerPos: { x: number; z: number }, fromPos: { x: number; z: number }): number {
+    const dx = killerPos.x - fromPos.x;
+    const dz = killerPos.z - fromPos.z;
+    if (Math.hypot(dx, dz) < 1e-3) return 0;
+    const yaw = this.player.yaw;
+    const vf = dx * -Math.sin(yaw) + dz * -Math.cos(yaw);
+    const vr = dx * Math.cos(yaw) + dz * -Math.sin(yaw);
+    return Math.atan2(vr, vf);
   }
 
   // TDM team highlight: friendlies green, foes wear their team color. Returns
@@ -908,10 +1038,10 @@ export class Game {
     const hex = this.teamColorHex(rp.team);
     if (hex) {
       rp.setHighlight(new THREE.Color(hex));
-      rp.setNameColor(hex);
+      rp.setTeamColor(hex); // team override > the player's name-color cosmetic
     } else {
       rp.setHighlight(this.enemyColor);
-      rp.setNameColor(null);
+      rp.setTeamColor(null); // fall back to the cosmetic name color
     }
   }
 
@@ -950,9 +1080,26 @@ export class Game {
       if (steps === 5) this.accumulator = 0;
       this.tickHudTimers(dt);
       this.tickFps(dt);
-      this.syncRemotePlayers(dt);
       this.frameDt = dt;
-      this.render();
+      if (this.replay) {
+        // Play-of-the-Match clip is playing: drive the replay and age its
+        // beams + bursts here, since the sim (which normally steps them) is
+        // frozen at match end. The camera is owned by the ReplayPlayer.
+        this.replay.update(dt);
+        this.weapon.step(dt, this.scene);
+        this.effects.step(dt, this.scene);
+        if (this.replay.done) this.advanceReplay();
+      } else {
+        this.syncRemotePlayers(dt);
+        // Record the match for Play of the Match (downsampled; live play only).
+        if (!this.matchOver && !this.vote && !this.training) {
+          this.recorder.tick(dt, () => this.sampleReplayFrame());
+        }
+      }
+      // Skip GL work while the WebGL context is lost (GPU reset / driver hiccup)
+      // — rendering to a dead context spams errors and freezes black. The sim
+      // keeps ticking so we resume cleanly once the context is restored.
+      if (!this.contextLost) this.render();
       // Throttle HUD delivery to ~20Hz so React isn't re-rendering ~14 overlay
       // components every animation frame (the 3D render stays full-rate). Event
       // sites (kills, respawn, vote, lock change) still call emitHud() directly
@@ -1030,9 +1177,96 @@ export class Game {
         rp.team = snap.team;
         this.applyRemoteColor(rp);
       }
-      rp.apply(snap, dt);
+      const respawned = rp.apply(snap, dt);
+      if (respawned && !this.reducedEffects) {
+        // This remote just materialized at its new spawn — play its effect.
+        this.effects.spawnInBurst(this.scene, rp.group.position, spawnEffectById(rp.equippedSpawnEffect).style);
+      }
       rp.setInvuln(snap.invulnMs);
     }
+  }
+
+  // Map a network client id to the replay actor id: the local player is always
+  // recorded as 'you' (so offline + online kill logs line up with the sampler),
+  // every other id passes through unchanged.
+  private replayId(netId: string): string {
+    return this.net && netId === this.net.clientId ? 'you' : netId;
+  }
+
+  // One downsampled frame for the match recorder: the pose of every entity the
+  // client can see (local player, remotes, bots), keyed by replay actor id.
+  // Also lazily captures each entity's static profile (name + cosmetics).
+  private sampleReplayFrame(): Record<string, ReplayPose> {
+    const poses: Record<string, ReplayPose> = {};
+
+    // Local player — first-person, but recorded as a body so the replay can
+    // show "you" in third person.
+    this.recorder.ensureProfile({
+      id: 'you',
+      name: this.playerName,
+      kind: 'local',
+      hat: this.localHat,
+      unusual: this.localUnusual,
+      nameColor: this.localNameColor,
+      team: this.localTeam,
+    });
+    poses['you'] = {
+      x: this.player.pos.x,
+      y: this.player.pos.y,
+      z: this.player.pos.z,
+      yaw: this.player.yaw,
+      pitch: this.player.pitch,
+      visible: this.killcam === null, // hidden while you're dead (killcam)
+    };
+
+    // Remote players (online). Cosmetics/yaw come from the latest net snapshot.
+    for (const [id, rp] of this.remotePlayers) {
+      const snap = this.net?.remotes.get(id);
+      this.recorder.ensureProfile({
+        id,
+        name: rp.name,
+        kind: 'remote',
+        hat: snap?.hat ?? 'hat.none',
+        unusual: snap?.unusual ?? 'unusual.none',
+        nameColor: snap?.nameColor ?? 'name.default',
+        team: rp.team,
+      });
+      poses[id] = {
+        x: rp.group.position.x,
+        y: rp.group.position.y,
+        z: rp.group.position.z,
+        yaw: snap?.yaw ?? 0,
+        pitch: snap?.pitch ?? 0,
+        visible: rp.group.visible,
+      };
+    }
+
+    // Bots (offline). Their facing uses a +π model offset vs. the player/remote
+    // convention, so convert it here for a faithful replay orientation.
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        const id = b.state.id;
+        this.recorder.ensureProfile({
+          id,
+          name: b.state.name,
+          kind: 'bot',
+          hat: 'hat.none',
+          unusual: 'unusual.none',
+          nameColor: 'name.default',
+          team: null,
+        });
+        poses[id] = {
+          x: b.state.pos.x,
+          y: b.state.pos.y,
+          z: b.state.pos.z,
+          yaw: b.getFacing() + Math.PI,
+          pitch: 0, // bots don't track a persistent look pitch
+          visible: b.state.alive,
+        };
+      }
+    }
+
+    return poses;
   }
 
   private addShake(amount: number) {
@@ -1079,6 +1313,25 @@ export class Game {
     // player. The camera is owned by the killcam in render().
     if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
 
+    // Self-heal the local sim: a NaN (degenerate collision) or falling out of
+    // the world (boosted through a seam) would otherwise be unrecoverable
+    // offline — online the server force-respawns us, but offline nothing does.
+    if (!dead) {
+      const p = this.player.pos;
+      const b = this.map.bounds;
+      const finite = Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
+      const voided =
+        p.y < b.min.y - 6 ||
+        p.x < b.min.x - 4 || p.x > b.max.x + 4 ||
+        p.z < b.min.z - 4 || p.z > b.max.z + 4;
+      if (!finite || voided) {
+        this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+        this.player.vel = { x: 0, y: 0, z: 0 };
+        this.player.onGround = false;
+        this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
+      }
+    }
+
     // Boost-jump feedback: a cyan spark at the surface the player kicked off.
     if (this.player.didBoost) {
       this.player.didBoost = false;
@@ -1088,6 +1341,7 @@ export class Game {
 
     this.weapon.step(dt, this.scene);
     this.effects.step(dt, this.scene);
+    this.trainingRange?.update(dt);
     if (this.localRespawnInvuln > 0) {
       this.localRespawnInvuln = Math.max(0, this.localRespawnInvuln - dt);
     }
@@ -1102,6 +1356,22 @@ export class Game {
       const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
+      // Spawn-in effect when a bot materializes (dead→alive), so solo play shows
+      // the effect too. A stable per-bot style gives variety without netcode.
+      if (!this.reducedEffects) {
+        for (const b of this.bots.bots) {
+          const was = this.botAlive.get(b.state.id);
+          if (b.state.alive && was === false) {
+            const style = SPAWN_EFFECTS[hashStr(b.state.id) % SPAWN_EFFECTS.length].style;
+            this.effects.spawnInBurst(
+              this.scene,
+              new THREE.Vector3(b.state.pos.x, b.state.pos.y, b.state.pos.z),
+              style,
+            );
+          }
+          this.botAlive.set(b.state.id, b.state.alive);
+        }
+      }
     }
 
     // Cooldown-to-ready transition → reload-ready ping. Fires once per shot.
@@ -1166,6 +1436,8 @@ export class Game {
         centerY: b.centerY(),
       });
     }
+    // Training-range targets are raycast just like bots (collateral allowed).
+    if (this.trainingRange) targets.push(...this.trainingRange.targets());
 
     const result = this.weapon.fire(
       muzzle,
@@ -1182,6 +1454,12 @@ export class Game {
     this.weaponWasReady = false;
     this.fireWasAirborne = !this.player.onGround;
     this.playerShotsFired += 1;
+    // Record the visible beam so the Play-of-the-Match replay can re-draw it.
+    this.recorder.logShot({
+      origin: { x: this.tmpBeamOrigin.x, y: this.tmpBeamOrigin.y, z: this.tmpBeamOrigin.z },
+      end: { x: result.end.x, y: result.end.y, z: result.end.z },
+      killerId: 'you',
+    });
     this.audio.play('fire', 0.55);
     this.addShake(SHAKE_FIRE);
     // Weapon feedback: recoil the gun, punch the view up, flash the muzzle, and
@@ -1190,6 +1468,24 @@ export class Game {
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
     this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
+
+    // Training range: count the shot, pop any targets the rail passed through,
+    // and break the streak on a clean miss. Live stats refresh to the HUD.
+    if (this.trainingRange) {
+      this.trainingRange.registerShot();
+      let hitTarget = false;
+      for (const hit of result.hits) {
+        if (hit.target.kind !== 'target') continue;
+        const pos = this.trainingRange.onHit(hit.target.id);
+        if (pos) {
+          hitTarget = true;
+          this.spawnKillEffect(pos, hit.headshot, this.killEffectStyle);
+          this.audio.play(hit.headshot ? 'headshot' : 'hit', 0.5);
+        }
+      }
+      if (!hitTarget) this.trainingRange.registerMiss();
+      this.emitHud();
+    }
 
     // Hand the shot to the server for authoritative, lag-compensated hit
     // detection against remote players. maxDist = distance to the nearest wall.
@@ -1227,6 +1523,13 @@ export class Game {
         this.killEffectStyle,
       );
       bot.kill();
+      this.recorder.logKill({
+        killerId: 'you',
+        victimId: bot.state.id,
+        headshot: hit.headshot,
+        killerName: this.playerName,
+        victimName: hit.target.name,
+      });
       this.botDeathCounts.set(
         bot.state.id,
         (this.botDeathCounts.get(bot.state.id) ?? 0) + 1,
@@ -1320,12 +1623,24 @@ export class Game {
     // Visible beam to the impact point (enemy fire reveals positions).
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
     this.weapon.spawnBeam(origin, end, this.scene);
+    this.recorder.logShot({
+      origin: { x: origin.x, y: origin.y, z: origin.z },
+      end: { x: end.x, y: end.y, z: end.z },
+      killerId: intent.botId,
+    });
     this.audio.play('fire', 0.28);
     if (!victimKind || !victimPos) return;
 
     // Landed on someone (instagib = every hit is a kill) → count for accuracy.
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
     this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
+    this.recorder.logKill({
+      killerId: intent.botId,
+      victimId: victimKind === 'player' ? 'you' : victimId,
+      headshot: false,
+      killerName: intent.botName,
+      victimName,
+    });
     if (victimKind === 'player') {
       this.handleLocalDeath(intent.botName, intent.botId);
     } else {
@@ -1380,14 +1695,15 @@ export class Game {
     this.playerDeaths += 1;
     // Invuln spans the killcam plus a short grace once you respawn.
     this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
+    const bot = this.bots?.bots.find((b) => b.state.id === killerId);
     this.killcam = {
       killerId,
       killerName,
       deathPos,
       remaining: KILLCAM_DURATION_SEC,
       total: KILLCAM_DURATION_SEC,
+      dirAngle: bot ? this.killDirAngle(bot.state.pos, deathPos) : undefined,
     };
-    const bot = this.bots?.bots.find((b) => b.state.id === killerId);
     if (bot) {
       this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
     } else {
@@ -1412,12 +1728,8 @@ export class Game {
     }
     counts.sort((a, b) => b - a);
     const top = counts[0];
-    const second = counts[1] ?? 0;
-    // End on the frag limit, OR a mercy blowout: a commanding lead past the
-    // halfway mark, so a lopsided stomp doesn't grind out the full limit.
-    const limitReached = top >= MATCH_FRAG_LIMIT;
-    const mercy = top >= Math.ceil(MATCH_FRAG_LIMIT / 2) && top - second >= MERCY_LEAD;
-    if (limitReached || mercy) {
+    // End only when someone reaches the frag limit — matches play to the limit.
+    if (top >= MATCH_FRAG_LIMIT) {
       this.endMatch(this.playerFrags >= top); // you win iff you (co-)lead
     }
   }
@@ -1430,9 +1742,126 @@ export class Game {
     if (typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();
     }
-    this.audio.speak(won ? 'Victory' : 'Defeat', 1);
-    this.onMatchEnd(this.collectStats(won));
-    this.emitHud();
+    // Reveal the results — deferred until the Play-of-the-Match clip finishes.
+    const reveal = () => {
+      this.audio.speak(won ? 'Victory' : 'Defeat', 1);
+      this.onMatchEnd(this.collectStats(won));
+    };
+    if (this.startPlayOfMatch(reveal)) {
+      this.emitHud(); // surface the PoM overlay now; reveal() fires when it ends
+    } else {
+      reveal();
+      this.emitHud();
+    }
+  }
+
+  // ── Play of the Match ──────────────────────────────────────────────────────
+
+  // Pick the best moment of the just-ended match and start its cinematic replay
+  // in the live scene. Returns false when there's nothing worth showing (the
+  // caller then jumps straight to results). `onDone` runs once the clip ends.
+  private startPlayOfMatch(onDone: () => void): boolean {
+    if (this.replay || this.replaySegments.length) return true; // already playing
+
+    // The cinematic is up to two first-person segments: a slow-motion replay of
+    // the match-ending blow, then the Play of the Match. Either may be absent
+    // (e.g. a 0-kill match has neither → jump straight to results).
+    const segments: ReplaySegment[] = [];
+    const finale = this.recorder.selectFinale();
+    if (finale) {
+      segments.push({
+        kind: 'finale',
+        clip: finale,
+        opts: { timeScale: FINALE_TIME_SCALE, freezeSec: FINALE_FREEZE_SEC },
+      });
+    }
+    const potg = this.recorder.selectHighlight('you');
+    if (potg) segments.push({ kind: 'potg', clip: potg, opts: {} });
+    if (segments.length === 0) return false;
+
+    // Hide the live world — the replay renders its own actors on the real map.
+    for (const rp of this.remotePlayers.values()) rp.group.visible = false;
+    if (this.bots) for (const b of this.bots.bots) b.group.visible = false;
+    if (this.viewmodel) this.viewmodel.visible = false;
+
+    this.replaySegments = segments;
+    this.replaySegIdx = 0;
+    this.pomOnDone = onDone;
+    this.startReplaySegment(0);
+    return true;
+  }
+
+  // Spin up the ReplayPlayer for one cinematic segment and surface its overlay.
+  private startReplaySegment(i: number) {
+    const seg = this.replaySegments[i];
+    const replay = this.makeReplayPlayer();
+    replay.start(seg.clip, this.recorder, seg.opts);
+    this.replay = replay;
+    this.pom = {
+      phase: seg.kind,
+      star: seg.clip.starName,
+      label: seg.clip.label,
+      subLabel: seg.clip.subLabel,
+      remaining: replay.totalWall,
+      total: replay.totalWall,
+    };
+  }
+
+  // Current segment finished: advance to the next, or end the whole cinematic.
+  private advanceReplay() {
+    if (this.replay) {
+      this.replay.dispose();
+      this.replay = null;
+    }
+    this.replaySegIdx += 1;
+    if (this.replaySegIdx < this.replaySegments.length) {
+      this.startReplaySegment(this.replaySegIdx);
+      this.emitHud(); // refresh the overlay for the new phase (e.g. PotG title)
+    } else {
+      this.finishPlayOfMatch();
+    }
+  }
+
+  private makeReplayPlayer(): ReplayPlayer {
+    return new ReplayPlayer({
+      scene: this.scene,
+      camera: this.camera,
+      botModel: this.botModel,
+      spawnBeam: (o, e) =>
+        this.weapon.spawnBeam(
+          new THREE.Vector3(o.x, o.y, o.z),
+          new THREE.Vector3(e.x, e.y, e.z),
+          this.scene,
+        ),
+      spawnMuzzleFlash: (at) =>
+        this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
+      spawnKillEffect: (at, headshot) => this.spawnKillEffect(at, headshot, this.killEffectStyle),
+      reducedEffects: () => this.reducedEffects,
+    });
+  }
+
+  // End the whole cinematic (finished or skipped): tear down the replay, restore
+  // the live world, and run the deferred results reveal exactly once.
+  private finishPlayOfMatch() {
+    if (!this.replay && this.replaySegments.length === 0) return;
+    if (this.replay) {
+      this.replay.dispose();
+      this.replay = null;
+    }
+    this.replaySegments = [];
+    this.replaySegIdx = 0;
+    this.pom = null;
+    for (const rp of this.remotePlayers.values()) rp.group.visible = true;
+    if (this.bots) for (const b of this.bots.bots) b.group.visible = b.state.alive;
+    const done = this.pomOnDone;
+    this.pomOnDone = null;
+    done?.();
+    this.emitHud(); // push pom:null so the overlay clears and results show
+  }
+
+  // Public: skip the cinematic (Skip button / Esc) — jump straight to results.
+  skipPlayOfMatch() {
+    this.finishPlayOfMatch();
   }
 
   private collectStats(won: boolean): MatchResult {
@@ -1528,6 +1957,7 @@ export class Game {
       if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
       this.playerDeaths += 1;
+      const killer = this.remotePlayers.get(ev.killerId);
       this.killcam = {
         killerId: ev.killerId,
         killerName: ev.killerName,
@@ -1535,11 +1965,11 @@ export class Game {
         remaining: KILLCAM_DURATION_SEC,
         total: KILLCAM_DURATION_SEC,
         killerCard: ev.killerCard,
+        dirAngle: killer ? this.killDirAngle(killer.group.position, deathPos) : undefined,
       };
       // Initialize the killcam's smoothed look-at near the killer's
       // current position so we don't whip from origin on the first
       // frame.
-      const killer = this.remotePlayers.get(ev.killerId);
       if (killer) {
         this.killcamLookAt.set(
           killer.group.position.x,
@@ -1568,6 +1998,15 @@ export class Game {
       victim: ev.victimName,
       weapon: 'rail',
       special: ev.headshot ? 'headshot' : null,
+    });
+
+    // Record for Play of the Match (the local player is keyed as 'you').
+    this.recorder.logKill({
+      killerId: this.replayId(ev.killerId),
+      victimId: this.replayId(ev.victimId),
+      headshot: ev.headshot,
+      killerName: ev.killerName,
+      victimName: ev.victimName,
     });
   }
 
@@ -1641,8 +2080,28 @@ export class Game {
     if (this.damageFlash > 0) this.damageFlash = Math.max(0, this.damageFlash - dt / 0.5);
     if (this.killcam) {
       this.killcam.remaining -= dt;
-      if (this.killcam.remaining <= 0) this.killcam = null;
+      if (this.killcam.remaining <= 0) {
+        this.killcam = null;
+        this.playLocalSpawnEffect(); // you materialize at your new spawn
+      }
     }
+    // Play-of-the-Match countdown mirrors the replay clock (single source of
+    // truth, so Skip / completion stay consistent with the progress bar).
+    if (this.pom && this.replay) {
+      this.pom.remaining = this.replay.wallRemaining;
+    }
+  }
+
+  // Play the local player's spawn-in effect at their feet. Suppressed under
+  // reduced-effects (it's a particle burst). Called when you (re)materialize.
+  private playLocalSpawnEffect() {
+    if (this.reducedEffects) return;
+    const p = this.player.pos;
+    this.effects.spawnInBurst(
+      this.scene,
+      new THREE.Vector3(p.x, p.y, p.z),
+      spawnEffectById(this.localSpawnEffect).style,
+    );
   }
 
   private emitHud() {
@@ -1763,6 +2222,8 @@ export class Game {
       localTeam: this.localTeam,
       teamScores,
       duel: this.duel ? { ...this.duel } : null,
+      training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
+      pom: this.pom ? { ...this.pom } : null,
     });
   }
 
@@ -1832,7 +2293,10 @@ export class Game {
   }
 
   private render() {
-    if (this.killcam) {
+    if (this.replay) {
+      // Play of the Match: the ReplayPlayer owns the camera (positioned in its
+      // update() earlier this frame), so leave it untouched here.
+    } else if (this.killcam) {
       // Killcam: camera parks at the deathPos (slightly above eye-line),
       // looking at the killer's center. Look-at point is smoothed so the
       // killer running around doesn't jitter the camera.
@@ -1877,8 +2341,9 @@ export class Game {
       // never alters the authoritative aim (player.pitch).
       this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');
     }
-    // Screen shake: jitter the camera position, decaying each frame.
-    if (this.shake > 1e-4) {
+    // Screen shake: jitter the camera position, decaying each frame. (Skipped
+    // during the PoM replay — the ReplayPlayer owns the camera.)
+    if (!this.replay && this.shake > 1e-4) {
       this.camera.position.x += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
@@ -1886,7 +2351,7 @@ export class Game {
     }
     // Zoom: ease FOV toward the zoom target while the bind is held in-play.
     const zooming =
-      this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote;
+      this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote && !this.replay;
     const targetFov = zooming ? this.zoomFov : this.baseFov;
     if (Math.abs(this.camera.fov - targetFov) > 0.01) {
       this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 * this.frameDt));
@@ -1914,7 +2379,8 @@ export class Game {
     // Viewmodel: show only while actively playing in first person; apply recoil
     // (kicks back toward the camera + muzzle tilts up, easing back to rest).
     if (this.viewmodel) {
-      this.viewmodel.visible = !this.hideViewmodel && this.locked && !this.killcam;
+      this.viewmodel.visible =
+        !this.hideViewmodel && this.locked && !this.killcam && !this.replay;
       const r = this.recoil;
       this.viewmodel.position.set(
         VIEWMODEL_BASE.x + this.viewmodelOffset.x,
@@ -1962,6 +2428,16 @@ export class Game {
 // Dispose every geometry + material under a group (used when swapping the
 // arena mesh on a map change). Map meshes aren't tagged `shared`, so their
 // resources are ours to free.
+// Small stable string hash (for picking a per-bot spawn-effect style).
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 function disposeGroup(group: THREE.Object3D) {
   const geoms = new Set<THREE.BufferGeometry>();
   const mats = new Set<THREE.Material>();

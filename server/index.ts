@@ -17,9 +17,16 @@ import cookieParser from 'cookie-parser';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { statsRouter } from './stats';
 import { leaderboardRouter } from './leaderboard';
+import { authRouter } from './auth';
 import { attachInstagibWs } from './instagib-game';
 
 const INSTAGIB_WS_PATH = '/ws/instagib';
+
+// Process-level safety net: a single uncaught throw (a `ws` internal error, a
+// timer callback, an unexpected exception) must NOT take the whole server — and
+// every connected player — down. Log and keep serving; the alpha favors uptime.
+process.on('uncaughtException', (err) => console.error('[fatal] uncaughtException', err));
+process.on('unhandledRejection', (reason) => console.error('[fatal] unhandledRejection', reason));
 
 const dev = process.env.NODE_ENV !== 'production';
 const host = process.env.HOST || (dev ? 'localhost' : '0.0.0.0');
@@ -28,6 +35,24 @@ const port = parseInt(process.env.PORT || '8787', 10);
 const distDir = path.join(process.cwd(), 'dist');
 const indexHtml = path.join(distDir, 'index.html');
 const hasBuild = fs.existsSync(indexHtml);
+
+// A private / loopback / mDNS hostname — i.e. something only reachable from the
+// same machine or LAN. In dev we trust these so `npm run dev:lan` works when a
+// phone or second laptop loads the app from this machine's WiFi IP (the origin
+// is then http://192.168.x.x:5173, which the localhost-only check would reject).
+const isPrivateHost = (hostname: string): boolean => {
+  if (hostname === 'localhost' || hostname.endsWith('.local')) return true;
+  if (hostname === '::1' || hostname.startsWith('127.')) return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/.exec(hostname);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return (
+    a === 10 || // 10.0.0.0/8
+    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
+    (a === 192 && b === 168) || // 192.168.0.0/16
+    (a === 169 && b === 254) // 169.254.0.0/16 link-local
+  );
+};
 
 // Only browsers that loaded the app from an allowed origin may open the socket.
 const isAllowedWsOrigin = (
@@ -39,9 +64,9 @@ const isAllowedWsOrigin = (
     const originUrl = new URL(origin);
     const base = process.env.APP_BASE_URL;
     if (base && originUrl.origin === new URL(base).origin) return true;
-    if (dev && ['localhost', '127.0.0.1'].includes(originUrl.hostname)) {
-      return true;
-    }
+    // In dev, trust loopback AND private-LAN origins so LAN testing works
+    // regardless of how the dev proxy rewrites the Host header.
+    if (dev && isPrivateHost(originUrl.hostname)) return true;
     // Fallback: same-origin (handles dynamic domains / no APP_BASE_URL set).
     return originUrl.host === hostHeader;
   } catch {
@@ -61,6 +86,15 @@ app.use(express.json({ limit: '16kb' }));
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, build: hasBuild });
 });
+// Live concurrency for the lobby/landing "N playing now" readout (set after the
+// game WS is attached below).
+let liveCounts: () => { online: number; inMatch: number; rooms: number } = () => ({
+  online: 0,
+  inMatch: 0,
+  rooms: 0,
+});
+app.get('/api/live', (_req, res) => res.json(liveCounts()));
+app.use('/api', authRouter);
 app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
 
@@ -91,12 +125,47 @@ if (hasBuild) {
   );
 }
 
+// Terminal error handler — a malformed/oversized JSON body (express.json throws)
+// returns a clean 4xx instead of Express's default 500 + stack-trace leak.
+app.use((err: Error & { type?: string; status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.type === 'entity.too.large') {
+    res.status(413).json({ error: 'payload_too_large' });
+    return;
+  }
+  if (err?.type === 'entity.parse.failed' || err?.status === 400) {
+    res.status(400).json({ error: 'bad_request' });
+    return;
+  }
+  console.error('[http] unhandled route error', err);
+  res.status(500).json({ error: 'server_error' });
+});
+
 const server = http.createServer(app);
+server.on('error', (err) => console.error('[server] error', err));
 
 // Game socket runs on the same HTTP server so it shares the port (and any TLS
-// terminator / tunnel in front of it).
-const instagibWss = new WebSocketServer({ noServer: true });
-attachInstagibWs(instagibWss);
+// terminator / tunnel in front of it). `maxPayload` caps a single inbound frame
+// (legit game messages are a few hundred bytes) so a modified client can't OOM
+// the process with one giant frame; perMessageDeflate off avoids decompression
+// amplification.
+const instagibWss = new WebSocketServer({
+  noServer: true,
+  maxPayload: 16 * 1024,
+  perMessageDeflate: false,
+});
+({ liveCounts } = attachInstagibWs(instagibWss));
+instagibWss.on('error', (err) => console.error('[ws] server error', err));
+
+// Connection caps so a flood can't exhaust slots/memory on a public alpha.
+const MAX_WS_TOTAL = 600;
+const MAX_WS_PER_IP = 12;
+let wsTotal = 0;
+const wsPerIp = new Map<string, number>();
+function clientIp(req: http.IncomingMessage): string {
+  const xff = req.headers['x-forwarded-for'];
+  const fwd = Array.isArray(xff) ? xff[0] : xff;
+  return (fwd ? fwd.split(',')[0] : req.socket.remoteAddress || '').trim() || 'unknown';
+}
 
 server.on('upgrade', (req, socket, head) => {
   const { url } = req;
@@ -109,10 +178,47 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
+  const ip = clientIp(req);
+  if (wsTotal >= MAX_WS_TOTAL || (wsPerIp.get(ip) ?? 0) >= MAX_WS_PER_IP) {
+    socket.destroy(); // over capacity — drop before allocating a game slot
+    return;
+  }
   instagibWss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+    wsTotal++;
+    wsPerIp.set(ip, (wsPerIp.get(ip) ?? 0) + 1);
+    (ws as WebSocket & { isAlive?: boolean }).isAlive = true;
+    ws.on('pong', () => {
+      (ws as WebSocket & { isAlive?: boolean }).isAlive = true;
+    });
+    ws.on('error', (err) => console.error('[ws] socket error', err));
+    ws.on('close', () => {
+      wsTotal = Math.max(0, wsTotal - 1);
+      const n = (wsPerIp.get(ip) ?? 1) - 1;
+      if (n <= 0) wsPerIp.delete(ip);
+      else wsPerIp.set(ip, n);
+    });
     instagibWss.emit('connection', ws, req);
   });
 });
+
+// Heartbeat: terminate sockets that stop answering pings (half-open TCP, yanked
+// network) so dead peers don't hold game slots until the app-level stale sweep.
+const wsHeartbeat = setInterval(() => {
+  for (const ws of instagibWss.clients) {
+    const w = ws as WebSocket & { isAlive?: boolean };
+    if (w.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    w.isAlive = false;
+    try {
+      ws.ping();
+    } catch {
+      /* socket already closing */
+    }
+  }
+}, 15_000);
+wsHeartbeat.unref();
 
 server.listen(port, host, () => {
   console.log(`> Instagib Arena server ready on http://${host}:${port}`);

@@ -86,6 +86,26 @@ CREATE TABLE IF NOT EXISTS instagib_period_stats (
   PRIMARY KEY (player_id, period_key)
 );
 CREATE INDEX IF NOT EXISTS idx_period_kills ON instagib_period_stats(period_key, total_kills);
+
+-- Registered accounts. Progression keys off the account id (= instagib_stats
+-- player_id), so guests (no account) accrue nothing. Passwords are scrypt-hashed
+-- with a per-user salt (see server/auth.ts). Email is optional, recovery-only.
+CREATE TABLE IF NOT EXISTS instagib_users (
+  id             TEXT PRIMARY KEY,
+  username       TEXT NOT NULL,
+  username_lower TEXT NOT NULL UNIQUE,
+  pw_hash        TEXT NOT NULL,
+  pw_salt        TEXT NOT NULL,
+  email          TEXT,
+  created_at     INTEGER NOT NULL
+);
+-- Opaque session tokens (httpOnly cookie) → account id. Revocable; reaped on logout.
+CREATE TABLE IF NOT EXISTS instagib_sessions (
+  token      TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON instagib_sessions(user_id);
 `);
 
 // Additive progression columns. SQLite has no `ADD COLUMN IF NOT EXISTS`, and we
@@ -358,6 +378,17 @@ export type MatchRecordResult = {
 // interleave with another request — no XP-clobbering race. The client never
 // reports its own XP; everything here is server-derived.
 export function recordMatch(delta: MatchDelta): MatchRecordResult {
+  // Guests (no account) accrue nothing — no row, no XP, no leaderboard seeding.
+  if (!delta.playerId) {
+    return {
+      stats: toPublic(undefined),
+      xpGained: 0,
+      creditsGained: 0,
+      leveledUp: false,
+      newUnlocks: [],
+      progression: { totalXp: 0, level: 1, credits: 0, unlocked: [...defaultUnlockedIds()], equipped: {} },
+    };
+  }
   const stats = toPublic(upsertStmt.get(delta) as Row | undefined); // also creates the row
 
   // Daily/weekly leaderboard buckets — online matches only (these are the
@@ -460,6 +491,7 @@ export type EquipResult =
 // Equip a cosmetic the player owns. Server-validated against the manifest and
 // the owned set, so a forged equip can't grant or apply a locked item.
 export function setEquipped(playerId: string, slot: string, id: string): EquipResult {
+  if (!playerId) return { ok: false, reason: 'locked', equipped: {} }; // guest: no persistence
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
   const equipped = parseEquipped(prog?.equipped);
   if (!cosmeticById(id)) return { ok: false, reason: 'unknown', equipped };
@@ -483,6 +515,7 @@ export type BuyResult =
 
 // Spend credits to unlock a buyable cosmetic. Validated server-side.
 export function buyCosmetic(playerId: string, id: string): BuyResult {
+  if (!playerId) return { ok: false, reason: 'insufficient', credits: 0, unlocked: [...defaultUnlockedIds()] };
   const c = cosmeticById(id);
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
   const credits = prog?.credits ?? 0;
@@ -508,6 +541,7 @@ export type CaseResult =
 // Open a hat case: spend credits, roll a hat weighted by rarity (server-
 // authoritative), unlock it — or, if already owned, refund part of the cost.
 export function openCase(playerId: string): CaseResult {
+  if (!playerId) return { ok: false, reason: 'insufficient', credits: 0 };
   const now = Date.now();
   ensureRowStmt.run(playerId, now, now);
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
@@ -681,6 +715,7 @@ export type ClaimResult =
   | { ok: false; reason: 'unknown' | 'not_active' | 'incomplete' | 'claimed' };
 
 export function claimChallenge(playerId: string, id: string, now: number): ClaimResult {
+  if (!playerId) return { ok: false, reason: 'not_active' }; // guest: no challenges
   const def = challengeById(id);
   if (!def) return { ok: false, reason: 'unknown' };
   if (!activeFor(playerId, def, now)) return { ok: false, reason: 'not_active' };
@@ -850,4 +885,55 @@ export function getPlayerRank(
       : (rankStmts[sort].get(metric) as { n: number })
   ).n;
   return { rank: above + 1, entry };
+}
+
+// ── Accounts (auth) ──────────────────────────────────────────────────────────
+// Registered users + opaque session tokens. Passwords are hashed in
+// server/auth.ts (scrypt); this layer only stores/reads. The account id is the
+// progression player_id, so logging in carries your XP/cosmetics across devices.
+const insertUserStmt = sqlite.prepare(
+  `INSERT INTO instagib_users (id, username, username_lower, pw_hash, pw_salt, email, created_at)
+   VALUES (@id, @username, @usernameLower, @pwHash, @pwSalt, @email, @createdAt)`,
+);
+const userByLowerStmt = sqlite.prepare(
+  `SELECT id, username, pw_hash, pw_salt FROM instagib_users WHERE username_lower = ?`,
+);
+const userByIdStmt = sqlite.prepare(`SELECT id, username FROM instagib_users WHERE id = ?`);
+const insertSessionStmt = sqlite.prepare(
+  `INSERT INTO instagib_sessions (token, user_id, created_at) VALUES (?, ?, ?)`,
+);
+const sessionStmt = sqlite.prepare(`SELECT user_id FROM instagib_sessions WHERE token = ?`);
+const deleteSessionStmt = sqlite.prepare(`DELETE FROM instagib_sessions WHERE token = ?`);
+
+export type UserRow = { id: string; username: string; pw_hash: string; pw_salt: string };
+
+export function createUser(u: {
+  id: string;
+  username: string;
+  usernameLower: string;
+  pwHash: string;
+  pwSalt: string;
+  email: string | null;
+  createdAt: number;
+}): void {
+  insertUserStmt.run(u);
+}
+export function findUserByName(usernameLower: string): UserRow | undefined {
+  return userByLowerStmt.get(usernameLower) as UserRow | undefined;
+}
+export function findUserById(id: string): { id: string; username: string } | undefined {
+  return userByIdStmt.get(id) as { id: string; username: string } | undefined;
+}
+export function createSession(token: string, userId: string, now: number): void {
+  insertSessionStmt.run(token, userId, now);
+}
+// Resolve a session token to its account id ('' if missing/unknown). This is the
+// progression identity used by the stats API and the game WS.
+export function userIdFromSession(token: string): string {
+  if (!token) return '';
+  const row = sessionStmt.get(token) as { user_id: string } | undefined;
+  return row?.user_id ?? '';
+}
+export function deleteSession(token: string): void {
+  deleteSessionStmt.run(token);
 }

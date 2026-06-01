@@ -149,9 +149,6 @@ export const MAX_PLAYERS = 8; // total slots (you + bots) in a match
 export const MATCH_FRAG_LIMIT = 25; // FFA: first to this many frags ends the match
 export const LOCAL_RESPAWN_INVULN_SEC = 1.5; // grace after you respawn vs bots
 export const LOCAL_WARMUP_SEC = 3; // offline pre-match countdown (no fragging yet)
-// FFA blowout: end early once the leader is this far ahead at/after the halfway
-// mark, so a lopsided stomp doesn't grind to the full frag limit.
-export const MERCY_LEAD = 15;
 
 // ── Game modes ─────────────────────────────────────────────────────────────
 // Shared client+server. FFA is the original mode; duel + tdm build on the same

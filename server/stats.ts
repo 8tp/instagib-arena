@@ -1,12 +1,11 @@
-// Anonymous, cookie-based player stats API.
+// Account-bound player stats API.
 //
-// There is no login. On the first request we mint a random player id and store
-// it in an httpOnly cookie; every subsequent request from that browser carries
-// it back, so stats persist per-browser without any auth provider. The display
-// name is cosmetic (sent by the client from local settings).
+// Progression is tied to a registered account (see server/auth.ts). A guest (no
+// session) resolves to an empty id, so the DB layer saves nothing for them. The
+// display name is still cosmetic (sent by the client), but the *identity* — what
+// the leaderboard and progression key off — is the authenticated account.
 
-import { randomUUID } from 'node:crypto';
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request } from 'express';
 import {
   buyCosmetic,
   claimChallenge,
@@ -17,22 +16,16 @@ import {
   recordMatch,
   setEquipped,
 } from './db';
+import { accountId } from './auth';
 
-const COOKIE_NAME = 'igpid';
-const COOKIE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
-const PID_RE = /^[a-f0-9-]{16,64}$/i;
+// The progression identity for a request: the logged-in account, or '' (guest).
+function playerId(req: Request): string {
+  return accountId(req);
+}
 
-function playerId(req: Request, res: Response): string {
-  const existing = req.cookies?.[COOKIE_NAME];
-  if (typeof existing === 'string' && PID_RE.test(existing)) return existing;
-  const id = randomUUID();
-  res.cookie(COOKIE_NAME, id, {
-    httpOnly: true,
-    sameSite: 'lax',
-    maxAge: COOKIE_MAX_AGE_MS,
-    path: '/',
-  });
-  return id;
+// Rate-limit key: the account when logged in, else the client IP.
+function rateKeyFor(req: Request): string {
+  return accountId(req) || req.ip || 'unknown';
 }
 
 // Clamp client-reported integers into a sane range — these are unranked,
@@ -75,10 +68,21 @@ function allowPost(identity: string, now: number): boolean {
   return true;
 }
 
+// allowPost only prunes a key when that key is hit again, so identities that
+// stop posting (rotated cookies / transient IPs) would linger forever. Sweep
+// the whole map periodically and drop fully-expired entries so it can't leak.
+const rateSweep = setInterval(() => {
+  const cutoff = Date.now() - RATE_WINDOW_MS;
+  for (const [id, hits] of postHits) {
+    if (hits.length === 0 || hits[hits.length - 1] <= cutoff) postHits.delete(id);
+  }
+}, RATE_WINDOW_MS);
+rateSweep.unref?.();
+
 export const statsRouter = Router();
 
 statsRouter.get('/stats', (req, res) => {
-  const id = playerId(req, res);
+  const id = playerId(req);
   res.json({ stats: getStats(id) });
 });
 
@@ -86,17 +90,13 @@ statsRouter.post('/stats', (req, res) => {
   // Rate-limit before doing any work. Prefer the existing cookie id (read
   // directly, before playerId() may mint a fresh one) and fall back to the
   // request IP for cookie-less callers. On exceed, reject without recording.
-  const existingPid = req.cookies?.[COOKIE_NAME];
-  const rateKey =
-    typeof existingPid === 'string' && PID_RE.test(existingPid)
-      ? existingPid
-      : req.ip ?? 'unknown';
+  const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
 
-  const id = playerId(req, res);
+  const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
 
   // Clamp to PLAUSIBLE per-match values, then cross-validate so a forged body
@@ -144,20 +144,18 @@ statsRouter.post('/stats', (req, res) => {
 
 // Full profile for the lobby (level/XP/credits/unlocked/equipped + career stats).
 statsRouter.get('/profile', (req, res) => {
-  const id = playerId(req, res);
+  const id = playerId(req);
   res.json({ profile: getProfile(id) });
 });
 
 // Equip an owned cosmetic. Rate-limited + server-validated.
 statsRouter.post('/equip', (req, res) => {
-  const existingPid = req.cookies?.[COOKIE_NAME];
-  const rateKey =
-    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
-  const id = playerId(req, res);
+  const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const slot = typeof body.slot === 'string' ? body.slot : '';
   const cosmeticId = typeof body.id === 'string' ? body.id : '';
@@ -167,14 +165,12 @@ statsRouter.post('/equip', (req, res) => {
 
 // Buy a credits-priced cosmetic. Rate-limited + server-validated.
 statsRouter.post('/shop/buy', (req, res) => {
-  const existingPid = req.cookies?.[COOKIE_NAME];
-  const rateKey =
-    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
-  const id = playerId(req, res);
+  const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const cosmeticId = typeof body.id === 'string' ? body.id : '';
   const result = buyCosmetic(id, cosmeticId);
@@ -183,33 +179,29 @@ statsRouter.post('/shop/buy', (req, res) => {
 
 // Open a hat case (credits-funded, server-authoritative roll). Rate-limited.
 statsRouter.post('/shop/open-case', (req, res) => {
-  const existingPid = req.cookies?.[COOKIE_NAME];
-  const rateKey =
-    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
-  const id = playerId(req, res);
+  const id = playerId(req);
   res.status(200).json(openCase(id));
 });
 
 // Current daily/weekly challenges with progress + claim state.
 statsRouter.get('/challenges', (req, res) => {
-  const id = playerId(req, res);
+  const id = playerId(req);
   res.json({ challenges: getChallenges(id, Date.now()) });
 });
 
 // Claim a completed challenge's reward. Rate-limited + server-validated.
 statsRouter.post('/challenges/claim', (req, res) => {
-  const existingPid = req.cookies?.[COOKIE_NAME];
-  const rateKey =
-    typeof existingPid === 'string' && PID_RE.test(existingPid) ? existingPid : req.ip ?? 'unknown';
+  const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
-  const id = playerId(req, res);
+  const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const challengeId = typeof body.id === 'string' ? body.id : '';
   const result = claimChallenge(id, challengeId, Date.now());

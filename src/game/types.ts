@@ -154,6 +154,10 @@ export type KillcamState = {
   remaining: number;
   total: number;
   killerCard?: CardPayload; // the killer's playercard (shown on the death screen)
+  // On-screen bearing (radians) from your view-forward to the killer at the
+  // moment of death: 0 = dead ahead, +π/2 = your right. Drives the directional
+  // "shot came from here" arrow so you learn where you're getting picked from.
+  dirAngle?: number;
 };
 
 export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -167,6 +171,18 @@ export type MapVoteState = {
   durationMs: number;
   counts: Record<string, number>; // mapId → votes
   myVote: string | null;
+};
+
+// "Play of the Match" cinematic state. While non-null the end-of-match replay
+// is playing in the live 3D scene (camera taken over by the ReplayPlayer) and
+// the results/podium/vote overlays are suppressed in React until it clears.
+export type PomState = {
+  phase: 'finale' | 'potg'; // slow-mo final-blow beat, then the Play of the Match
+  star: string; // star player's name
+  label: string; // headline, e.g. "TRIPLE KILL"
+  subLabel?: string; // e.g. "3 KILLS"
+  remaining: number; // seconds left in the clip (drives the auto-advance bar)
+  total: number; // clip duration in seconds
 };
 
 export type HudState = {
@@ -204,4 +220,18 @@ export type HudState = {
   teamScores: [number, number] | null;
   // Duel round state; null outside Duel.
   duel: DuelHud | null;
+  // Training-range live stats; null outside the training range.
+  training: TrainingHud | null;
+  // Play of the Match cinematic; non-null → replay playing, results deferred.
+  pom: PomState | null;
+};
+
+export type TrainingHud = {
+  shots: number;
+  hits: number;
+  destroyed: number;
+  streak: number;
+  bestStreak: number;
+  accuracy: number; // 0..1
+  elapsed: number; // seconds
 };

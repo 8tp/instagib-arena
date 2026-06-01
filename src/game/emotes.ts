@@ -113,10 +113,12 @@ export function applyEmote(
       break;
     }
     case 'flex': {
-      // Double-biceps: arms out to the sides, forearms curled up tight; slow turn.
+      // Double-biceps: upper arms out to the SIDES (small `out` so the forearms
+      // curl up beside the head, not across the face — the old out:0.7 swung them
+      // forward and buried the face), forearms curled up tight; slow turn.
       group.rotation.y = baseYaw + Math.sin(t * 0.9) * 0.5;
-      armPose(rig, 'right', 0.95, 0.7);
-      armPose(rig, 'left', 0.95, 0.7);
+      armPose(rig, 'right', 0.7, 0.25);
+      armPose(rig, 'left', 0.7, 0.25);
       foreArm(rig, 'right', 1.8);
       foreArm(rig, 'left', 1.8);
       break;

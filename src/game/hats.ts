@@ -9,7 +9,7 @@ import { hatById, unusualById, type UnusualKind } from './cosmetics';
 // source scales ranged from 3 to 300 units, so no per-hat tuning is needed.
 
 const TARGET_WIDTH = 0.34; // metres — sits a bit wider than the head so it reads
-const CROWN_OFFSET = 0.16; // metres above the head bone where the hat's brim sits
+const CROWN_OFFSET = 0.11; // metres above the head bone where a hat's base seats
 
 const loader = new GLTFLoader();
 const sourceCache = new Map<string, Promise<THREE.Object3D>>();
@@ -47,7 +47,9 @@ class UnusualEffect {
   private t = 0;
 
   constructor(private kind: UnusualKind) {
-    this.group.position.y = 0.27; // sit just above the hat crown
+    // Small lift within the unusualAnchor, which WornHat already seats just above
+    // the equipped hat's crown (so the effect tracks hat height, not the head).
+    this.group.position.y = 0.06;
     this.build();
     this.group.traverse((o) => {
       o.userData.shared = true;
@@ -134,7 +136,7 @@ class UnusualEffect {
         this.motes[i].position.set(Math.cos(a) * 0.16, 0.0, Math.sin(a) * 0.16);
       }
     } else if (this.kind === 'storm') {
-      this.group.position.y = 0.3 + 0.02 * Math.sin(t * 2);
+      this.group.position.y = 0.06 + 0.02 * Math.sin(t * 2);
       for (let i = 0; i < this.motes.length; i++) {
         const f = (t * 1.6 + this.phases[i]) % 1;
         const m = this.motes[i];
@@ -157,13 +159,19 @@ class UnusualEffect {
 // distorted bone frame entirely.
 export class WornHat {
   private container = new THREE.Group();
+  // Anchor the unusual effect rides in — its local Y tracks the top of the
+  // equipped hat so the effect crowns the hat (not the head) regardless of height.
+  private unusualAnchor = new THREE.Group();
   private head: THREE.Object3D | null;
   private current = ''; // equipped hat id
   private token = 0; // guards against a slow load finishing after a later setHat
   private unusual: UnusualEffect | null = null;
   private unusualKind: UnusualKind = 'none';
+  private sink = 0; // per-hat downward seat offset (metres), set on setHat
+  private hatTop = 0.12; // top of the equipped hat in container-local metres
   private readonly tmp = new THREE.Vector3();
   private readonly q = new THREE.Quaternion();
+  private readonly qp = new THREE.Quaternion();
   private readonly euler = new THREE.Euler(0, 0, 0, 'YXZ');
 
   constructor(
@@ -175,6 +183,7 @@ export class WornHat {
       modelRoot.getObjectByName('mixamorig:Head') ??
       modelRoot.getObjectByName('Head') ??
       null;
+    this.container.add(this.unusualAnchor);
     parent.add(this.container);
   }
 
@@ -185,7 +194,12 @@ export class WornHat {
     const my = ++this.token;
     this.clearMesh();
     const hat = hatById(id);
-    if (!hat.model) return; // bare-headed
+    this.sink = 0;
+    this.hatTop = 0.12; // bare-head baseline for the unusual anchor
+    if (!hat.model) {
+      this.layoutUnusual();
+      return; // bare-headed
+    }
     let src: THREE.Object3D;
     try {
       src = await loadHatSource(hat.model);
@@ -205,12 +219,29 @@ export class WornHat {
     mesh.position.set(-center.x, -box.min.y, -center.z);
     const holder = new THREE.Group();
     holder.add(mesh);
-    holder.scale.setScalar(((hat.fit ?? 1) * TARGET_WIDTH) / Math.max(size.x, size.z, 1e-6));
+    // Uniform fit by the widest horizontal extent (brim/blade span), then an
+    // optional vertical `stretch` so silhouette-by-height hats (top hat) aren't
+    // crushed flat by a wide brim, and a `sink` that drops brim/skull-cap style
+    // hats down around the head instead of perching on its bounding-box floor.
+    const s = ((hat.fit ?? 1) * TARGET_WIDTH) / Math.max(size.x, size.z, 1e-6);
+    holder.scale.set(s, s * (hat.stretch ?? 1), s);
+    // Per-hat yaw so the brim faces the wearer's front — the catalog's models
+    // don't agree on a forward axis (the ballcap's brim runs down −Z, the plain
+    // cap's down its own X), so each hat declares the spin that points it forward.
+    holder.rotation.y = hat.yaw ?? 0;
+    this.sink = hat.sink ?? 0;
+    this.hatTop = size.y * s * (hat.stretch ?? 1) - this.sink;
     // Tag shared so Game.disposeScene() never disposes the cached geometry.
     holder.traverse((o) => {
       o.userData.shared = true;
     });
     this.container.add(holder);
+    this.layoutUnusual();
+  }
+
+  // Seat the unusual anchor just above the equipped hat's crown.
+  private layoutUnusual() {
+    this.unusualAnchor.position.y = Math.max(this.hatTop, 0.04) + 0.05;
   }
 
   // Equip an unusual particle effect (worn above the hat). 'unusual.none' = off.
@@ -222,7 +253,7 @@ export class WornHat {
     this.unusual = null;
     if (kind !== 'none') {
       this.unusual = new UnusualEffect(kind);
-      this.container.add(this.unusual.group);
+      this.unusualAnchor.add(this.unusual.group);
     }
   }
 
@@ -238,21 +269,30 @@ export class WornHat {
     // even when the parent group is rotated/animated (e.g. the podium + Locker
     // preview spin/sway the group) — do NOT replace it with a raw subtraction.
     this.parent.worldToLocal(this.tmp);
-    // The unusual effect rides above the head even when bare (no hat mesh).
-    if (this.container.children.length === 0) return;
-    this.container.position.set(this.tmp.x, this.tmp.y + CROWN_OFFSET, this.tmp.z);
+    this.container.position.set(this.tmp.x, this.tmp.y + CROWN_OFFSET - this.sink, this.tmp.z);
+    // Face the hat along the BODY's yaw. The container is a child of `parent`, so
+    // its local yaw must be the model's world yaw expressed in the parent's frame
+    // (model − parent). Using the model's world yaw directly double-counts any
+    // rotation on the parent group (the podium + Locker preview spin/sway it),
+    // which used to point cap brims backwards and spin hats at 2× on the podium.
     this.modelRoot.getWorldQuaternion(this.q);
     this.euler.setFromQuaternion(this.q, 'YXZ');
-    this.container.rotation.y = this.euler.y;
+    const modelYaw = this.euler.y;
+    this.parent.getWorldQuaternion(this.qp);
+    this.euler.setFromQuaternion(this.qp, 'YXZ');
+    this.container.rotation.y = modelYaw - this.euler.y;
   }
 
   setVisible(v: boolean): void {
     this.container.visible = v;
   }
 
+  // Remove the hat holder(s) but KEEP the unusualAnchor (it carries the effect
+  // and is re-seated by layoutUnusual on the next setHat).
   private clearMesh(): void {
     for (let i = this.container.children.length - 1; i >= 0; i--) {
-      this.container.remove(this.container.children[i]);
+      const c = this.container.children[i];
+      if (c !== this.unusualAnchor) this.container.remove(c);
     }
   }
 

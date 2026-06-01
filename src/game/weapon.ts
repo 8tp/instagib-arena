@@ -100,7 +100,7 @@ function buildRailBeam(
 // Generic shootable target. Bot and RemotePlayer both build one of these at
 // fire time so the weapon code stays oblivious to the entity type.
 export type RailTarget = {
-  kind: 'bot' | 'remote';
+  kind: 'bot' | 'remote' | 'target';
   id: string;
   name: string;
   bounds: AABB;

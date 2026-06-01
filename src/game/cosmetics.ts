@@ -90,6 +90,107 @@ export function isRailColor(id: string): boolean {
   return RAIL_COLORS.some((c) => c.id === id);
 }
 
+// ── Railgun-finish slot ──────────────────────────────────────────────────────
+// Recolors the local player's first-person railgun viewmodel (the procedural
+// gun in weapon-model.ts). Local-only, exactly like the rail-beam color — you
+// see your own gun skin; it's never a gameplay advantage. `gun.stock` is the
+// default look (the original constants in weapon-model.ts).
+export const DEFAULT_RAILGUN_FINISH = 'gun.stock';
+
+export type RailgunFinish = {
+  body: number; // dark receiver
+  metal: number; // gunmetal
+  metalLt: number; // lighter frame edges
+  accent: number; // energy rail base color
+  accentHot: number; // bright energy color
+};
+
+export type RailgunFinishCosmetic = {
+  id: string;
+  name: string;
+  blurb: string;
+  rarity: Rarity;
+  source: CosmeticSource;
+  data: RailgunFinish;
+};
+
+export const RAILGUN_FINISHES: readonly RailgunFinishCosmetic[] = [
+  { id: 'gun.stock',   name: 'Standard Issue', blurb: 'The factory gunmetal-and-cyan rail.', rarity: 'common', source: { type: 'default' },              data: { body: 0x171b22, metal: 0x2c333f, metalLt: 0x515d6e, accent: 0x37a6ff, accentHot: 0x8af2ff } },
+  { id: 'gun.crimson', name: 'Crimson',        blurb: 'Blackened frame, hot red rails.',     rarity: 'rare',   source: { type: 'level', level: 6 },       data: { body: 0x1a1012, metal: 0x33252a, metalLt: 0x6e515a, accent: 0xff3b4e, accentHot: 0xff9aa6 } },
+  { id: 'gun.toxic',   name: 'Biohazard',      blurb: 'Acid-green accelerator rails.',       rarity: 'rare',   source: { type: 'level', level: 11 },      data: { body: 0x121a14, metal: 0x29332b, metalLt: 0x51604f, accent: 0x6fff3b, accentHot: 0xc6ffaa } },
+  { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1200 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff } },
+  { id: 'gun.gold',    name: 'Midas',          blurb: 'A gilded receiver fit for a champ.',  rarity: 'epic',   source: { type: 'credits', price: 2200 },  data: { body: 0x241a08, metal: 0x6e5520, metalLt: 0xb0902f, accent: 0xffd24a, accentHot: 0xfff4c0 } },
+  { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 2800 },  data: { body: 0x12081a, metal: 0x271333, metalLt: 0x4c2d75, accent: 0xa855f7, accentHot: 0xe9d5ff } },
+];
+
+export function railgunFinishById(id: string): RailgunFinishCosmetic {
+  return RAILGUN_FINISHES.find((c) => c.id === id) ?? RAILGUN_FINISHES[0];
+}
+export function isRailgunFinish(id: string): boolean {
+  return RAILGUN_FINISHES.some((c) => c.id === id);
+}
+
+// ── Name-color slot ──────────────────────────────────────────────────────────
+// Tints the floating nameplate other players see above your head (and your row
+// on the scoreboard). Broadcast in snapshots like the hat. TDM team colors take
+// precedence over this so teams stay readable. `name.default` is the stock blue.
+export const DEFAULT_NAME_COLOR = 'name.default';
+
+export type NameColorCosmetic = {
+  id: string;
+  name: string;
+  blurb: string;
+  rarity: Rarity;
+  source: CosmeticSource;
+  color: string; // hex string for canvas/CSS
+};
+
+export const NAME_COLORS: readonly NameColorCosmetic[] = [
+  { id: 'name.default', name: 'Frost',   blurb: 'The stock icy blue.',     rarity: 'common', source: { type: 'default' },             color: '#c7e0ff' },
+  { id: 'name.gold',    name: 'Gold',    blurb: 'A name worth its weight.', rarity: 'rare',   source: { type: 'level', level: 7 },      color: '#ffd24a' },
+  { id: 'name.crimson', name: 'Crimson', blurb: 'See red.',                 rarity: 'rare',   source: { type: 'level', level: 13 },     color: '#ff5566' },
+  { id: 'name.toxic',   name: 'Toxic',   blurb: 'Radioactive handle.',      rarity: 'rare',   source: { type: 'credits', price: 700 },  color: '#86ff5a' },
+  { id: 'name.violet',  name: 'Violet',  blurb: 'Royalty in the arena.',    rarity: 'epic',   source: { type: 'credits', price: 1400 }, color: '#c08aff' },
+  { id: 'name.white',   name: 'Pristine',blurb: 'Pure, clean, unmissable.', rarity: 'epic',   source: { type: 'level', level: 22 },     color: '#ffffff' },
+];
+
+export function nameColorById(id: string): NameColorCosmetic {
+  return NAME_COLORS.find((c) => c.id === id) ?? NAME_COLORS[0];
+}
+export function isNameColor(id: string): boolean {
+  return NAME_COLORS.some((c) => c.id === id);
+}
+
+// ── Spawn-effect slot ────────────────────────────────────────────────────────
+// A materialize burst that plays where a player (re)spawns. Broadcast like the
+// hat so others see you warp in (and you see them). Each style is a recipe in
+// EffectsManager.spawnInBurst(). `spawn.beam` is the free default.
+export type SpawnEffectStyle = 'beam' | 'ring' | 'ember' | 'rift';
+export const DEFAULT_SPAWN_EFFECT = 'spawn.beam';
+
+export type SpawnEffectCosmetic = {
+  id: string;
+  name: string;
+  blurb: string;
+  rarity: Rarity;
+  source: CosmeticSource;
+  style: SpawnEffectStyle;
+};
+
+export const SPAWN_EFFECTS: readonly SpawnEffectCosmetic[] = [
+  { id: 'spawn.beam',  name: 'Teleport',   blurb: 'A column of light and a ground ring.',   rarity: 'common', source: { type: 'default' },             style: 'beam' },
+  { id: 'spawn.ring',  name: 'Shockwave',  blurb: 'A hard expanding ground ring + flash.',  rarity: 'rare',   source: { type: 'level', level: 9 },      style: 'ring' },
+  { id: 'spawn.ember', name: 'Cinder',     blurb: 'Materialize from a swirl of embers.',    rarity: 'rare',   source: { type: 'credits', price: 900 },  style: 'ember' },
+  { id: 'spawn.rift',  name: 'Rift',       blurb: 'Tear in from a violet singularity.',     rarity: 'epic',   source: { type: 'credits', price: 1600 }, style: 'rift' },
+];
+
+export function spawnEffectById(id: string): SpawnEffectCosmetic {
+  return SPAWN_EFFECTS.find((c) => c.id === id) ?? SPAWN_EFFECTS[0];
+}
+export function isSpawnEffect(id: string): boolean {
+  return SPAWN_EFFECTS.some((c) => c.id === id);
+}
+
 // ── Hat slot ─────────────────────────────────────────────────────────────────
 // A glTF model worn on the player model's head bone (mixamorigHead). `model` is
 // a path under public/; null = bare-headed (the free default). Models are
@@ -108,17 +209,28 @@ export type HatCosmetic = {
   // brim dominates the auto-fit width (cap, propeller) shrink their on-head crown
   // to a faint skullcap — bumping this makes them read at a glance.
   fit?: number;
+  // Metres to drop the hat down onto the head (default 0). Brim/skull-cap hats
+  // anchor their bounding-box floor (a low brim) at the crown, so they perch too
+  // high; `sink` settles them down around the head. Tuned in /hatgrid.
+  sink?: number;
+  // Vertical (Y) scale multiplier (default 1). Hats whose silhouette is defined
+  // by HEIGHT (top hat) get squashed flat by the width-based auto-fit — a stretch
+  // restores their proportions without touching width. Tuned in /hatgrid.
+  stretch?: number;
+  // Yaw (radians) to spin the model so its brim faces the wearer's front. The
+  // CC0 models don't share a forward axis, so this is per-hat. Default 0.
+  yaw?: number;
 };
 
 export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.none',       name: 'Bare Head',      blurb: 'No hat — classic.',                      rarity: 'common', source: { type: 'default' },             model: null },
-  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: `${HAT_DIR}/cap.glb`, fit: 1.35 },
-  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb`, fit: 1.3 },
-  { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'credits', price: 400 }, model: `${HAT_DIR}/hard-hat.glb` },
-  { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 5 },     model: `${HAT_DIR}/graduation-cap.glb` },
-  { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'credits', price: 1000 }, model: `${HAT_DIR}/top-hat.glb` },
-  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 14 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 1.4 },
-  { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'credits', price: 1800 }, model: `${HAT_DIR}/wizard-hat.glb` },
+  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: `${HAT_DIR}/cap.glb`, fit: 1.15, sink: -0.02, yaw: Math.PI / 2 },
+  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb`, fit: 1.15, sink: -0.03 },
+  { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'credits', price: 400 }, model: `${HAT_DIR}/hard-hat.glb`, fit: 1.0, sink: 0.0 },
+  { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 5 },     model: `${HAT_DIR}/graduation-cap.glb`, fit: 1.0, sink: 0.08 },
+  { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'credits', price: 1000 }, model: `${HAT_DIR}/top-hat.glb`, fit: 0.95, sink: -0.02, stretch: 1.7 },
+  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 14 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 1.15, sink: -0.02 },
+  { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'credits', price: 1800 }, model: `${HAT_DIR}/wizard-hat.glb`, fit: 0.95, sink: -0.02, stretch: 1.15 },
 ];
 
 export function hatById(id: string): HatCosmetic {
@@ -236,25 +348,40 @@ export function isEmote(id: string): boolean {
 }
 
 // ── Cross-slot helpers (the seam the progression backend reads) ──────────────
-export type CosmeticSlot = 'killEffect' | 'railColor' | 'hat' | 'unusual' | 'card' | 'emote';
+export type CosmeticSlot =
+  | 'killEffect'
+  | 'railColor'
+  | 'railgunFinish'
+  | 'hat'
+  | 'unusual'
+  | 'card'
+  | 'emote'
+  | 'nameColor'
+  | 'spawnEffect';
 
 // Each catalog entry tagged with its slot, so a single id-keyed lookup works
 // across all slots. Future slots (name color…) concat here.
 export type CatalogEntry =
   | (KillEffectCosmetic & { slot: 'killEffect' })
   | (RailColorCosmetic & { slot: 'railColor' })
+  | (RailgunFinishCosmetic & { slot: 'railgunFinish' })
   | (HatCosmetic & { slot: 'hat' })
   | (UnusualCosmetic & { slot: 'unusual' })
   | (CardCosmetic & { slot: 'card' })
-  | (EmoteCosmetic & { slot: 'emote' });
+  | (EmoteCosmetic & { slot: 'emote' })
+  | (NameColorCosmetic & { slot: 'nameColor' })
+  | (SpawnEffectCosmetic & { slot: 'spawnEffect' });
 
 export const ALL_COSMETICS: readonly CatalogEntry[] = [
   ...KILL_EFFECTS.map((c) => ({ ...c, slot: 'killEffect' as const })),
   ...RAIL_COLORS.map((c) => ({ ...c, slot: 'railColor' as const })),
+  ...RAILGUN_FINISHES.map((c) => ({ ...c, slot: 'railgunFinish' as const })),
   ...HATS.map((c) => ({ ...c, slot: 'hat' as const })),
   ...UNUSUALS.map((c) => ({ ...c, slot: 'unusual' as const })),
   ...CARD_STYLES.map((c) => ({ ...c, slot: 'card' as const })),
   ...EMOTES.map((c) => ({ ...c, slot: 'emote' as const })),
+  ...NAME_COLORS.map((c) => ({ ...c, slot: 'nameColor' as const })),
+  ...SPAWN_EFFECTS.map((c) => ({ ...c, slot: 'spawnEffect' as const })),
 ];
 
 export function cosmeticById(id: string): CatalogEntry | undefined {

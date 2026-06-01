@@ -19,7 +19,6 @@
 import type { WebSocketServer, WebSocket } from 'ws';
 import {
   MATCH_FRAG_LIMIT,
-  MERCY_LEAD,
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
@@ -42,9 +41,11 @@ import {
   POST_MATCH_RESET_SEC,
   ROOM_CODE_LEN,
 } from '../src/game/arena-data';
+import { randomBytes } from 'node:crypto';
 import type { CardPayload, Vec3 } from '../src/game/types';
-import { isCard, isEmote, isHat, isUnusual } from '../src/game/cosmetics';
+import { isCard, isEmote, isHat, isNameColor, isSpawnEffect, isUnusual } from '../src/game/cosmetics';
 import { unlockedSetFor } from './db';
+import { accountIdFromCookieHeader } from './auth';
 
 const SNAPSHOT_HZ = 32;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
@@ -107,6 +108,8 @@ type ClientRecord = {
   lastPosMs: number; // for the pos-update speed clamp
   msgWindowStart: number; // inbound message-rate window start
   msgCount: number; // messages seen in the current window
+  roomWindowStart: number; // room-creation rate window start
+  roomCount: number; // rooms created in the current window
   history: HistorySample[]; // ascending by t
   // Rolling aim stats for the anti-aimbot heuristic (decayed each window).
   aimShots: number;
@@ -117,6 +120,8 @@ type ClientRecord = {
   hat: string; // equipped hat cosmetic id (echoed to other players in snapshots)
   unusual: string; // equipped unusual-effect cosmetic id
   emote: string; // equipped podium-emote cosmetic id
+  nameColor: string; // equipped nameplate-color cosmetic id (echoed in snapshots)
+  spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // anonymous igpid (from the WS upgrade cookie), '' if none
 };
@@ -159,6 +164,8 @@ type ClientMessage =
   | { type: 'hat'; id?: string }
   | { type: 'unusual'; id?: string }
   | { type: 'emote'; id?: string }
+  | { type: 'nameColor'; id?: string }
+  | { type: 'spawnEffect'; id?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
   | { type: 'ping'; ts: number; rtt?: number }
@@ -181,15 +188,19 @@ function owns(record: { playerId: string }, id: string): boolean {
   return unlockedSetFor(record.playerId).has(id);
 }
 
-// Read a single cookie value out of a raw `Cookie:` header (no dependency).
-function parseCookie(header: string | undefined, name: string): string {
-  if (!header) return '';
-  for (const part of header.split(';')) {
-    const i = part.indexOf('=');
-    if (i < 0) continue;
-    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+// Per-connection room-creation budget: a client may mint at most ROOM_BUDGET
+// rooms per ROOM_WINDOW_MS. Stops `create`/`quickmatch` spam from flooding the
+// room map with phantom lobbies (each otherwise lives out a reap grace window).
+const ROOM_WINDOW_MS = 15_000;
+const ROOM_BUDGET = 8;
+function chargeRoomCreate(record: ClientRecord, ts: number): boolean {
+  if (ts - record.roomWindowStart > ROOM_WINDOW_MS) {
+    record.roomWindowStart = ts;
+    record.roomCount = 0;
   }
-  return '';
+  if (record.roomCount >= ROOM_BUDGET) return false;
+  record.roomCount += 1;
+  return true;
 }
 
 // Sanitize a client-sent playercard into a bounded, trusted shape before we
@@ -223,6 +234,12 @@ function sanitizeCard(raw: unknown, serverName: string, owned: Set<string>): Car
 
 function genId(len = 8): ClientId {
   return Math.random().toString(36).slice(2, 2 + len);
+}
+
+// Cryptographically-strong token for slot reclaim — it's the only secret
+// guarding the resume path, so it must not come from predictable Math.random().
+function genToken(): string {
+  return randomBytes(24).toString('base64url');
 }
 
 function dist(a: Vec, b: Vec): number {
@@ -505,6 +522,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.hat = old.hat;
     record.unusual = old.unusual;
     record.emote = old.emote;
+    record.nameColor = old.nameColor;
+    record.spawnEffect = old.spawnEffect;
     record.card = old.card;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
     record.history.length = 0;
@@ -642,6 +661,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
         hat: c.hat,
         unusual: c.unusual,
         emote: c.emote,
+        nameColor: c.nameColor,
+        spawnEffect: c.spawnEffect,
         ping: Math.round(c.rttMs),
       });
     }
@@ -889,10 +910,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (room.mode === 'tdm') {
       if (shooter.team != null) {
         const mine = teamFrags(room, shooter.team);
-        const other = teamFrags(room, shooter.team === 0 ? 1 : 0);
-        // Limit reached, OR a mercy blowout (big team lead past the halfway mark).
-        const mercy = mine >= Math.ceil(TDM_FRAG_LIMIT / 2) && mine - other >= MERCY_LEAD;
-        if (mine >= TDM_FRAG_LIMIT || mercy) startVote(room, null, shooter.team);
+        // First team to the frag limit wins; matches always play to the limit.
+        if (mine >= TDM_FRAG_LIMIT) startVote(room, null, shooter.team);
       }
     } else if (room.mode === 'duel') {
       // Deuce/advantage: a round needs the frag limit AND a 2-frag lead, so a
@@ -905,10 +924,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
         else startNewRound(room, shooter.id);
       }
     } else {
-      // FFA: first to the limit, OR a mercy blowout over the field.
-      const second = topOtherFrags(room, shooter.id);
-      const mercy = shooter.frags >= Math.ceil(MATCH_FRAG_LIMIT / 2) && shooter.frags - second >= MERCY_LEAD;
-      if (shooter.frags >= MATCH_FRAG_LIMIT || mercy) startVote(room, shooter.id);
+      // FFA: first to the frag limit ends the match (no early mercy stop).
+      if (shooter.frags >= MATCH_FRAG_LIMIT) startVote(room, shooter.id);
     }
   };
 
@@ -935,7 +952,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const now = Date.now();
     // The anonymous progression identity (httpOnly `igpid` cookie) rides the WS
     // upgrade on the same origin — we use it to ownership-check cosmetic equips.
-    const playerId = parseCookie(req?.headers?.cookie, 'igpid');
+    const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
     const record: ClientRecord = {
       id,
       socket,
@@ -951,16 +968,20 @@ export function attachInstagibWs(wss: WebSocketServer) {
       lastSeen: now,
       lastActiveMs: now,
       rttMs: 0,
-      resumeToken: genId(18),
+      resumeToken: genToken(),
       disconnectedAt: 0,
       lastRecoverMs: 0,
       lastShotMs: 0,
       lastPosMs: 0,
       msgWindowStart: now,
       msgCount: 0,
+      roomWindowStart: now,
+      roomCount: 0,
       hat: 'hat.none',
       unusual: 'unusual.none',
       emote: 'emote.cheer',
+      nameColor: 'name.default',
+      spawnEffect: 'spawn.beam',
       card: null,
       playerId,
       history: [],
@@ -1013,6 +1034,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
           if (typeof msg.name === 'string' && msg.name.trim()) {
             record.name = msg.name.slice(0, 24);
           }
+          if (!chargeRoomCreate(record, ts)) {
+            sendRaw(socket, { type: 'join-failed', reason: 'rate' });
+            break;
+          }
           const isPublic = msg.isPublic !== false; // default public
           const mode = parseMode(msg.mode);
           const label =
@@ -1039,16 +1064,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
           if (typeof msg.name === 'string' && msg.name.trim()) {
             record.name = msg.name.slice(0, 24);
           }
-          // Find the fullest joinable public room of the SAME mode that isn't
-          // mid-vote. A room that was JUST created (still empty during the
-          // matched→join handoff) counts as a target too (#9), so two players
-          // who quick-match within the same ~second land together instead of in
-          // two separate empties.
-          const mode = parseMode(msg.mode);
+          // Find the fullest joinable public room. `mode: 'any'` (the "Play Now"
+          // super-queue) matches ANY mode so a small population concentrates
+          // instead of fragmenting three ways; otherwise the SAME mode only. A
+          // room JUST created (empty during the matched→join handoff) counts as a
+          // target too (#9), so two players quick-matching within ~1s land
+          // together instead of in two empties.
+          const anyMode = msg.mode === 'any';
+          const mode = anyMode ? 'ffa' : parseMode(msg.mode); // 'any' creates FFA if nothing's live
           let target: Room | null = null;
           for (const r of rooms.values()) {
             if (!r.isPublic) continue;
-            if (r.mode !== mode) continue;
+            if (!anyMode && r.mode !== mode) continue;
             if (r.members.size >= r.capacity) continue;
             if (r.state !== 'active') continue;
             const reserved =
@@ -1059,6 +1086,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (!target || r.members.size > target.members.size) target = r;
           }
           if (!target) {
+            if (!chargeRoomCreate(record, ts)) {
+              sendRaw(socket, { type: 'join-failed', reason: 'rate' });
+              break;
+            }
             const mapId = ONLINE_MAP_POOL[Math.floor(Math.random() * ONLINE_MAP_POOL.length)];
             target = createRoom({
               name: mode === 'duel' ? 'Quick Duel' : mode === 'tdm' ? 'Quick TDM' : 'Quick Match',
@@ -1162,6 +1193,20 @@ export function attachInstagibWs(wss: WebSocketServer) {
             typeof msg.id === 'string' && isEmote(msg.id) && owns(record, msg.id)
               ? msg.id
               : 'emote.cheer';
+          break;
+
+        case 'nameColor':
+          record.nameColor =
+            typeof msg.id === 'string' && isNameColor(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : 'name.default';
+          break;
+
+        case 'spawnEffect':
+          record.spawnEffect =
+            typeof msg.id === 'string' && isSpawnEffect(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : 'spawn.beam';
           break;
 
         case 'card':
@@ -1296,7 +1341,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // much longer grace so sharing a code over chat doesn't race a 30s reap (#16).
     for (const [rid, room] of rooms) {
       if (room.members.size !== 0 || room.emptySince <= 0) continue;
-      const grace = room.wasEverOccupied ? EMPTY_ROOM_GRACE_MS : FRESH_ROOM_GRACE_MS;
+      // Long grace ONLY for never-occupied PRIVATE invite rooms (a shared code
+      // waiting for a slow join). Public/quickmatch rooms that nobody joined are
+      // phantoms — reap them on the short window so spam can't pile them up.
+      const grace =
+        !room.wasEverOccupied && !room.isPublic ? FRESH_ROOM_GRACE_MS : EMPTY_ROOM_GRACE_MS;
       if (now - room.emptySince > grace) rooms.delete(rid);
     }
   }, 5000);
@@ -1304,4 +1353,15 @@ export function attachInstagibWs(wss: WebSocketServer) {
   snapshotTimer.unref?.();
   voteTimer.unref?.();
   sweepTimer.unref?.();
+
+  // Live counts for the lobby/landing "N playing now" social-proof readout.
+  return {
+    liveCounts() {
+      let inMatch = 0;
+      for (const c of clients.values()) if (c.roomId) inMatch++;
+      let activeRooms = 0;
+      for (const r of rooms.values()) if (r.members.size > 0) activeRooms++;
+      return { online: clients.size, inMatch, rooms: activeRooms };
+    },
+  };
 }

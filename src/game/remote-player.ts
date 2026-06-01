@@ -4,6 +4,7 @@ import { applyHighlight, type BotModel } from './bots';
 import { LocomotionBlender } from './locomotion';
 import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
+import { nameColorById } from './cosmetics';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
@@ -18,6 +19,10 @@ const MODEL_YAW_OFFSET = 0;
 // Net positions arrive interpolated (NetClient.interpolate), so we can track
 // them tightly here without re-introducing much lag.
 const POS_LERP_HZ = 18;
+// Replay playback: a frame-to-frame ground speed above this (u/s) is treated as
+// a teleport (respawn / clip seek) and won't spike the run animation. Real
+// players top out well under this.
+const REPLAY_TELEPORT_SPEED = 60;
 
 function lerpAngle(a: number, b: number, t: number): number {
   let diff = b - a;
@@ -80,7 +85,12 @@ export class RemotePlayer {
   name: string;
   team: number | null = null; // TDM team index; null otherwise (set by Game)
   group: THREE.Group;
-  private nameColor = DEFAULT_NAME_COLOR;
+  // Nameplate color is resolved from two sources: a TDM team override (set by
+  // Game, takes precedence so teams stay readable) and the player's equipped
+  // name-color cosmetic (from the snapshot). `appliedNameColor` is what's drawn.
+  private appliedNameColor = DEFAULT_NAME_COLOR;
+  private teamColor: string | null = null;
+  private cosmeticColor = DEFAULT_NAME_COLOR;
   // When > 0, the model is hidden and visually "dead" until it ticks down.
   // Set by Game on receiving a server `kill` broadcast for this player.
   deadTimer = 0;
@@ -88,6 +98,8 @@ export class RemotePlayer {
   private hat: WornHat | null = null;
   private hatId = 'hat.none';
   private unusualId = 'unusual.none';
+  private nameColorId = 'name.default';
+  private spawnEffectId = 'spawn.beam';
   private mixer: THREE.AnimationMixer | null = null;
   private loco: LocomotionBlender | null = null;
   private hold: WeaponHold | null = null;
@@ -106,7 +118,7 @@ export class RemotePlayer {
     this.group = new THREE.Group();
     if (model) this.installModel(model);
     else this.installFallback();
-    this.nameSprite = makeNameSprite(name, this.nameColor);
+    this.nameSprite = makeNameSprite(name, this.appliedNameColor);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
 
@@ -153,7 +165,10 @@ export class RemotePlayer {
     });
   }
 
-  apply(snapshot: RemotePlayerSnapshot, dt: number) {
+  // Returns true on the single frame this player un-hides (respawns), so the
+  // Game can play their spawn-in effect at the new position.
+  apply(snapshot: RemotePlayerSnapshot, dt: number): boolean {
+    let justRespawned = false;
     if (this.deadTimer > 0) {
       this.deadTimer -= dt;
       if (this.deadTimer <= 0) {
@@ -162,15 +177,11 @@ export class RemotePlayer {
         this.group.position.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
         this.lastSeenPos.copy(this.group.position);
         this.group.visible = true;
+        justRespawned = true;
       } else {
-        return; // hidden/dead — skip the mixer + transform work entirely (#26h)
+        return false; // hidden/dead — skip the mixer + transform work entirely (#26h)
       }
     }
-
-    if (this.mixer) this.mixer.update(dt);
-    // Pin the gun-carry pose over the animated arms (dead remotes already
-    // returned above, so this only runs while the model is visible/alive).
-    this.hold?.apply();
 
     this.targetPos.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
 
@@ -184,15 +195,9 @@ export class RemotePlayer {
     const dx = this.group.position.x - this.lastSeenPos.x;
     const dz = this.group.position.z - this.lastSeenPos.z;
     const moveSpeed = dt > 0 ? Math.hypot(dx, dz) / dt : 0;
-    this.lastSeenPos.copy(this.group.position);
-    this.lastMoveSpeed = this.lastMoveSpeed * 0.85 + moveSpeed * 0.15;
-    this.loco?.update(this.lastMoveSpeed, dt);
 
     // Smooth yaw lerp
     this.facing = lerpAngle(this.facing, snapshot.yaw, t);
-    if (this.modelRoot) {
-      this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
-    }
 
     // Equipped hat + unusual (echoed from the server). Swap on change, re-seat.
     if (snapshot.hat !== this.hatId) {
@@ -203,7 +208,61 @@ export class RemotePlayer {
       this.unusualId = snapshot.unusual;
       this.hat?.setUnusual(this.unusualId);
     }
+    // Equipped name color (echoed from the server) — resolve under any team
+    // override. No-ops when unchanged so the sprite isn't rebuilt per frame.
+    if (snapshot.nameColor !== this.nameColorId) {
+      this.nameColorId = snapshot.nameColor;
+      this.cosmeticColor = nameColorById(this.nameColorId).color;
+      this.resolveNameColor();
+    }
+    this.spawnEffectId = snapshot.spawnEffect; // remembered for the spawn-in burst
+
+    this.drive(dt, moveSpeed);
+    return justRespawned;
+  }
+
+  // Exact-pose playback for the Play-of-the-Match replay: place the actor at a
+  // recorded pose directly (no network lerp) and drive its animation from the
+  // measured frame-to-frame movement. Cosmetics are seeded once at replay start
+  // (via a single apply()), so we don't touch them here. dt is the replay frame.
+  snap(pose: { x: number; y: number; z: number; yaw: number; visible: boolean }, dt: number) {
+    this.deadTimer = 0;
+    this.group.visible = pose.visible;
+    if (!pose.visible) {
+      // Keep lastSeenPos current so reappearing doesn't read as a teleport.
+      this.lastSeenPos.set(pose.x, pose.y, pose.z);
+      return;
+    }
+    this.group.position.set(pose.x, pose.y, pose.z);
+    const dx = this.group.position.x - this.lastSeenPos.x;
+    const dz = this.group.position.z - this.lastSeenPos.z;
+    let moveSpeed = dt > 0 ? Math.hypot(dx, dz) / dt : 0;
+    // A respawn / seek jump shouldn't spike the run animation for one frame.
+    if (moveSpeed > REPLAY_TELEPORT_SPEED) moveSpeed = 0;
+    this.facing = pose.yaw;
+    this.drive(dt, moveSpeed);
+  }
+
+  // Per-frame animation update shared by live (apply) and replay (snap):
+  // advance the mixer, pin the gun pose, blend locomotion from the measured
+  // ground speed, orient the model to `facing`, and tick hat physics. The
+  // caller must have already positioned the group + set `this.facing`.
+  private drive(dt: number, moveSpeed: number) {
+    if (this.mixer) this.mixer.update(dt);
+    // Pin the gun-carry pose over the animated arms.
+    this.hold?.apply();
+    this.lastSeenPos.copy(this.group.position);
+    this.lastMoveSpeed = this.lastMoveSpeed * 0.85 + moveSpeed * 0.15;
+    this.loco?.update(this.lastMoveSpeed, dt);
+    if (this.modelRoot) {
+      this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
+    }
     this.hat?.update(dt);
+  }
+
+  // The equipped spawn-effect cosmetic id (for the Game to resolve + play).
+  get equippedSpawnEffect(): string {
+    return this.spawnEffectId;
   }
 
   bounds(): AABB {
@@ -237,22 +296,30 @@ export class RemotePlayer {
     smMat.map?.dispose();
     smMat.dispose();
     this.group.remove(this.nameSprite);
-    this.nameSprite = makeNameSprite(name, this.nameColor);
+    this.nameSprite = makeNameSprite(name, this.appliedNameColor);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
   }
 
-  // Tint the nameplate (TDM team color). Pass null to restore the default.
-  // No-ops when the color is unchanged so we don't rebuild the sprite per frame.
-  setNameColor(hex: string | null) {
-    const next = hex ?? DEFAULT_NAME_COLOR;
-    if (next === this.nameColor) return;
-    this.nameColor = next;
+  // TDM team override (set by Game): a hex that takes precedence over the
+  // cosmetic name color, or null to fall back to the cosmetic/default.
+  setTeamColor(hex: string | null) {
+    if (hex === this.teamColor) return;
+    this.teamColor = hex;
+    this.resolveNameColor();
+  }
+
+  // Pick the effective nameplate color (team override > cosmetic > default) and
+  // rebuild the sprite only when it actually changes.
+  private resolveNameColor() {
+    const next = this.teamColor ?? this.cosmeticColor;
+    if (next === this.appliedNameColor) return;
+    this.appliedNameColor = next;
     const smMat = this.nameSprite.material as THREE.SpriteMaterial;
     smMat.map?.dispose();
     smMat.dispose();
     this.group.remove(this.nameSprite);
-    this.nameSprite = makeNameSprite(this.name, this.nameColor);
+    this.nameSprite = makeNameSprite(this.name, this.appliedNameColor);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35;
     this.group.add(this.nameSprite);
   }

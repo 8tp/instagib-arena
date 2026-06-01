@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { RailgunFinish } from './cosmetics';
 
 // Procedural railgun (no external asset — matches the game's all-procedural art
 // pipeline). Built pointing down -Z (the camera's forward), grip near the
@@ -13,11 +14,13 @@ import * as THREE from 'three';
 // (not a fat centre block), it stays out of the player's line of sight as a
 // viewmodel.
 
-const COL_BODY = 0x171b22; // near-black receiver
-const COL_METAL = 0x2c333f; // gunmetal
-const COL_METAL_LT = 0x515d6e; // lighter frame edges
-const COL_ACCENT = 0x37a6ff; // rail blue (matches the beam)
-const COL_ACCENT_HOT = 0x8af2ff; // bright cyan energy
+// Stock finish (the default railgun look). A `RailgunFinish` cosmetic overrides
+// these per-build; see RAILGUN_FINISHES in cosmetics.ts.
+const STOCK_BODY = 0x171b22; // near-black receiver
+const STOCK_METAL = 0x2c333f; // gunmetal
+const STOCK_METAL_LT = 0x515d6e; // lighter frame edges
+const STOCK_ACCENT = 0x37a6ff; // rail blue (matches the beam)
+const STOCK_ACCENT_HOT = 0x8af2ff; // bright cyan energy
 
 function metal(color: number, rough = 0.4): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, metalness: 0.88, roughness: rough });
@@ -30,8 +33,16 @@ export type RailgunModel = {
 };
 
 // Canonical railgun, ~0.95 units long, grip at the origin, barrel down -Z.
-export function buildRailgun(): RailgunModel {
+// `finish` (a railgun-finish cosmetic's colors) recolors it; omitted = stock.
+export function buildRailgun(finish?: RailgunFinish): RailgunModel {
   const group = new THREE.Group();
+  // Local color set (stock unless a finish overrides). The rest of the builder
+  // references these names, so a finish recolors the whole gun in one place.
+  const COL_BODY = finish?.body ?? STOCK_BODY;
+  const COL_METAL = finish?.metal ?? STOCK_METAL;
+  const COL_METAL_LT = finish?.metalLt ?? STOCK_METAL_LT;
+  const COL_ACCENT = finish?.accent ?? STOCK_ACCENT;
+  const COL_ACCENT_HOT = finish?.accentHot ?? STOCK_ACCENT_HOT;
 
   // One shared emissive material for the energy parts so a caller can pulse the
   // whole gun's glow on fire by animating a single material.

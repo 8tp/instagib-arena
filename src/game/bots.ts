@@ -170,15 +170,18 @@ export function pickFreeSpot(
   const zExt = (map.bounds.max.z - map.bounds.min.z) / 2 - 1.5 - radius;
   const cx = (map.bounds.min.x + map.bounds.max.x) / 2;
   const cz = (map.bounds.min.z + map.bounds.max.z) / 2;
+  // Probe the WHOLE standing capsule, not just two ends — a box whose vertical
+  // span sat between the old 0.5m / 1.7m samples would slip through and spawn the
+  // player clipped inside cover. These heights span foot→head.
+  const PROBE_YS = [0.15, 0.55, 0.95, 1.35, BOT_HEIGHT - 0.1];
+  const clearAt = (x: number, z: number, y: number) =>
+    PROBE_YS.every((dy) => !pointInsideAnyBox({ x, y: y + dy, z }, map, radius));
   let fallback: Vec3 | null = null;
   for (let i = 0; i < 48; i++) {
     const x = cx + (Math.random() - 0.5) * 2 * xExt;
     const z = cz + (Math.random() - 0.5) * 2 * zExt;
     const y = 0.05;
-    if (
-      !pointInsideAnyBox({ x, y: y + 0.5, z }, map, radius) &&
-      !pointInsideAnyBox({ x, y: y + BOT_HEIGHT - 0.1, z }, map, radius)
-    ) {
+    if (clearAt(x, z, y)) {
       // First clear spot is a safe fallback; keep searching for one far from
       // every avoid point so we don't telefrag/stack on a live opponent.
       if (!fallback) fallback = { x, y, z };
@@ -937,6 +940,12 @@ export class Bot {
 
   centerY(): number {
     return this.state.pos.y + BOT_HEIGHT * 0.5;
+  }
+
+  // Current smoothed look/aim yaw (radians) — sampled by the match recorder so
+  // the Play-of-the-Match replay can re-orient a bot actor faithfully.
+  getFacing(): number {
+    return this.facing;
   }
 
   bounds(): { min: Vec3; max: Vec3 } {
