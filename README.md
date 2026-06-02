@@ -141,6 +141,7 @@ optional:
 | `DATA_DIR`      | `./data`           | Directory for runtime data (the SQLite DB).                    |
 | `DATABASE_PATH` | `./data/instagib.sqlite` | Explicit DB file path (overrides `DATA_DIR`).           |
 | `APP_BASE_URL`  | _(unset)_          | Production WebSocket origin allow-list. When set, only browsers loading the app from this origin may open the game socket. Unset = same-origin only. |
+| `AIM_ASSIST_ALLOWLIST` | _(unset)_ | Comma-separated account IDs allowed to activate the aim-assist bridge in multiplayer. Admin accounts are allowed by default. |
 
 ---
 
