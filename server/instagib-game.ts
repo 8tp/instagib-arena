@@ -82,6 +82,7 @@ const AIM_ASSIST_ALLOWLIST = new Set(
     .map((id) => id.trim())
     .filter(Boolean),
 );
+const AIM_ASSIST_USERNAME_ALLOWLIST = new Set(['legendslayer070']);
 // Hitbox dims (must match the client's PLAYER_RADIUS / PLAYER_HEIGHT).
 const PLAYER_RADIUS = 0.4;
 const PLAYER_HEIGHT = 1.8;
@@ -193,7 +194,11 @@ type ClientMessage =
     };
 
 function canUseAimAssist(record: ClientRecord): boolean {
-  return record.admin || (!!record.playerId && AIM_ASSIST_ALLOWLIST.has(record.playerId));
+  return (
+    record.admin ||
+    (!!record.playerId && AIM_ASSIST_ALLOWLIST.has(record.playerId)) ||
+    (!!record.playerId && AIM_ASSIST_USERNAME_ALLOWLIST.has(record.name.toLowerCase()))
+  );
 }
 
 // Does this connection's progression identity own the given cosmetic id? Read
