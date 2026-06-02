@@ -19,6 +19,7 @@ export type RemotePlayerSnapshot = {
   nameColor: string; // equipped nameplate-color cosmetic id
   spawnEffect: string; // equipped spawn-in-effect cosmetic id
   ping: number; // this player's reported round-trip ping (ms)
+  aimAssistActive: boolean; // server-sanctioned aim-assist bridge state
   admin: boolean; // staff badge
   verified: boolean; // verified blue check
   receivedAt: number;
@@ -30,6 +31,7 @@ export type KillEvent = {
   victimId: string;
   victimName: string;
   headshot: boolean;
+  firstBlood: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
@@ -54,11 +56,18 @@ type StatePlayer = {
   nameColor?: string;
   spawnEffect?: string;
   ping?: number;
+  aimAssistActive?: boolean;
   admin?: boolean; // staff badge
   verified?: boolean; // verified blue check
 };
 
-type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
+type WelcomeMessage = {
+  type: 'welcome';
+  clientId: string;
+  serverTime: number;
+  resumeToken?: string;
+  aimAssistEligible?: boolean;
+};
 type StateMessage = { type: 'state'; t: number; players: StatePlayer[]; resumeAt?: number };
 type KillBroadcast = {
   type: 'kill';
@@ -67,6 +76,7 @@ type KillBroadcast = {
   victimId: string;
   victimName: string;
   headshot: boolean;
+  firstBlood?: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
@@ -189,6 +199,8 @@ export class NetClient {
   localFrags = 0;
   localDeaths = 0;
   localInvulnMs = 0;
+  localAimAssistEligible = false;
+  localAimAssistActive = false;
   localName = ''; // your SERVER-ASSIGNED name (account username, or "Guest N"); from snapshots
   localAdmin = false; // your staff badge (server-authoritative; from snapshots)
   localVerified = false; // your verified blue check (server-authoritative; from snapshots)
@@ -286,6 +298,10 @@ export class NetClient {
 
   sendVote(mapId: string) {
     this.send({ type: 'vote', mapId });
+  }
+
+  setAimAssistActive(active: boolean) {
+    this.send({ type: 'aim-assist', active });
   }
 
   // Server-authoritative, lag-compensated shot. We send the ray + the wall
@@ -406,6 +422,7 @@ export class NetClient {
         nameColor: b.nameColor ?? 'name.default',
         spawnEffect: b.spawnEffect ?? 'spawn.beam',
         ping: b.ping ?? 0,
+        aimAssistActive: !!b.aimAssistActive,
         admin: b.admin ?? false,
         verified: b.verified ?? false,
         receivedAt: now,
@@ -437,6 +454,7 @@ export class NetClient {
   private handle(msg: ServerMessage) {
     if (msg.type === 'welcome') {
       this.clientId = msg.clientId;
+      this.localAimAssistEligible = !!msg.aimAssistEligible;
       if (msg.resumeToken) this.resumeToken = msg.resumeToken; // for the next reconnect
       // Tell the server our equipped cosmetics so it echoes them to other players.
       this.send({ type: 'hat', id: this.localHat });
@@ -473,6 +491,7 @@ export class NetClient {
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
           this.localInvulnMs = p.invulnMs ?? 0;
+          this.localAimAssistActive = !!p.aimAssistActive;
           if (p.name) this.localName = p.name; // server's authoritative name for us
           this.localAdmin = !!p.admin;
           this.localVerified = !!p.verified;
@@ -494,6 +513,7 @@ export class NetClient {
         victimId: msg.victimId,
         victimName: msg.victimName,
         headshot: msg.headshot,
+        firstBlood: !!msg.firstBlood,
         victimPos: msg.victimPos,
         respawnPos: msg.respawnPos,
         killerCard: msg.killerCard,

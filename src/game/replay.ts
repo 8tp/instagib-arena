@@ -540,6 +540,7 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     nameColor: profile.nameColor,
     spawnEffect: 'spawn.beam',
     ping: 0,
+    aimAssistActive: false,
     admin: false,
     verified: false,
     receivedAt: 0,
