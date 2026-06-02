@@ -7,19 +7,14 @@ export class MedalTracker {
   private kills: KillRecord[] = [];
   private streak = 0;
   bestStreak = 0;
-  firstBloodAwarded = false;
-
-  onKill(now: number, opts: { midAir: boolean; headshot: boolean }): Medal[] {
+  onKill(now: number, opts: { midAir: boolean; headshot: boolean; firstBlood?: boolean }): Medal[] {
     this.kills.push({ t: now });
     while (this.kills.length > 0 && now - this.kills[0].t > MULTIKILL_WINDOW_SEC + 0.5) {
       this.kills.shift();
     }
     const medals: Medal[] = [];
 
-    if (!this.firstBloodAwarded) {
-      this.firstBloodAwarded = true;
-      medals.push('first-blood');
-    }
+    if (opts.firstBlood) medals.push('first-blood');
     if (opts.headshot) medals.push('headshot');
     if (opts.midAir) medals.push('mid-air');
 

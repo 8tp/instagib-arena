@@ -138,9 +138,68 @@ export type MatchEndListener = (result: MatchResult) => void;
 export type NetMatchEvent = { type: 'join-failed'; reason: string };
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
+export type AimBridgeTarget = {
+  id: string;
+  kind: 'bot' | 'remote' | 'target';
+  name: string;
+  pos: { x: number; y: number; z: number };
+  bounds: AABB;
+  centerY: number;
+  headshotY: number;
+  distance: number;
+  angleDeg: number;
+  visible: boolean;
+  targetable: boolean;
+};
+
+export type AimBridgeSnapshot = {
+  version: 1;
+  online: boolean;
+  mode: GameMode;
+  locked: boolean;
+  live: boolean;
+  eligible: boolean;
+  active: boolean;
+  player: {
+    pos: { x: number; y: number; z: number };
+    yaw: number;
+    pitch: number;
+  };
+  targets: AimBridgeTarget[];
+};
+
+export type AimBridgeTickOptions = {
+  targetId?: string;
+  aimPoint?: 'head' | 'body';
+  maxFovDeg?: number;
+  smoothness?: number;
+  errorMarginDeg?: number;
+  accuracy?: number;
+  cancelUserInput?: boolean;
+};
+
+export type AimBridgeTickResult =
+  | { ok: true; target: AimBridgeTarget; yawError: number; pitchError: number }
+  | { ok: false; reason: string };
+
+export type InstagibAimBridge = {
+  getSnapshot: () => AimBridgeSnapshot;
+  setActive: (active: boolean) => void;
+  tick: (opts?: AimBridgeTickOptions) => AimBridgeTickResult;
+  fire: () => boolean;
+};
+
+declare global {
+  interface Window {
+    __INSTAGIB_AIM_BRIDGE__?: InstagibAimBridge;
+  }
+}
+
 const PLAYER_NAME_DEFAULT = 'You';
 const BOT_MODEL_URL = '/models/instagib/soldier.glb';
 const POS_SEND_HZ = 32;
+const AIM_BRIDGE_DEFAULT_FOV_DEG = 45;
+const AIM_BRIDGE_DEFAULT_SMOOTHNESS = 80;
 
 const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
   'first-blood':   'first-blood',
@@ -210,6 +269,7 @@ export class Game {
   private worstDeficit = 0; // largest frag gap you've trailed the leader by
   private comebackAwarded = false; // Comeback medal fires at most once per match
   private matchPointAnnounced = false; // "Match point" banner fires once per match
+  private matchFirstBloodAwarded = false; // first kill event in the active match/round
   private training = false; // endless practice — never hit the frag limit
   private trainingRange: TrainingRange | null = null; // target-practice range (training mode)
   private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
@@ -268,6 +328,8 @@ export class Game {
   private nextEventId = 1;
   private fireWasAirborne = false;
   private weaponWasReady = true; // tracks cooldown-to-ready transition
+  private aimBridgeLocalActive = false;
+  private aimBridgeApi: InstagibAimBridge | null = null;
 
   private fps = 60;
   private fpsFrames = 0;
@@ -380,6 +442,7 @@ export class Game {
     this.resizeHandler = () => this.handleResize();
     window.addEventListener('resize', this.resizeHandler);
     this.handleResize();
+    this.installAimBridge();
     this.emitHud();
   }
 
@@ -694,6 +757,260 @@ export class Game {
     this.onNetEvent = fn;
   }
 
+  private installAimBridge() {
+    if (typeof window === 'undefined') return;
+    this.aimBridgeApi = {
+      getSnapshot: () => this.getAimBridgeSnapshot(),
+      setActive: (active: boolean) => this.setAimBridgeActive(active),
+      tick: (opts?: AimBridgeTickOptions) => this.tickAimBridge(opts),
+      fire: () => this.fireAimBridge(),
+    };
+    window.__INSTAGIB_AIM_BRIDGE__ = this.aimBridgeApi;
+  }
+
+  private uninstallAimBridge() {
+    if (typeof window === 'undefined') return;
+    if (window.__INSTAGIB_AIM_BRIDGE__ === this.aimBridgeApi) {
+      delete window.__INSTAGIB_AIM_BRIDGE__;
+    }
+    this.aimBridgeApi = null;
+  }
+
+  private aimBridgeEligible(): boolean {
+    return this.net ? this.net.localAimAssistEligible : true;
+  }
+
+  private aimBridgeActive(): boolean {
+    return this.net ? this.net.localAimAssistActive : this.aimBridgeLocalActive;
+  }
+
+  private setAimBridgeActive(active: boolean) {
+    this.aimBridgeLocalActive = active;
+    this.net?.setAimAssistActive(active);
+    this.emitHud();
+  }
+
+  private aimBridgeLiveReason(): string | null {
+    if (!this.locked) return 'pointer not locked';
+    if (this.matchOver) return 'match over';
+    if (this.vote) return 'map vote active';
+    if (this.replay || this.replaySegments.length > 0) return 'replay active';
+    if (this.killcam) return 'respawning';
+    if (this.inCountdown) return 'countdown';
+    if (!this.aimBridgeEligible()) return 'not allowlisted';
+    if (!this.aimBridgeActive()) return 'bridge inactive';
+    return null;
+  }
+
+  private getAimBridgeSnapshot(): AimBridgeSnapshot {
+    return {
+      version: 1,
+      online: !!this.net,
+      mode: this.netMode,
+      locked: this.locked,
+      live: this.aimBridgeLiveReason() === null,
+      eligible: this.aimBridgeEligible(),
+      active: this.aimBridgeActive(),
+      player: {
+        pos: { ...this.player.pos },
+        yaw: this.player.yaw,
+        pitch: this.player.pitch,
+      },
+      targets: this.collectAimBridgeTargets(),
+    };
+  }
+
+  private collectAimBridgeTargets(): AimBridgeTarget[] {
+    const out: AimBridgeTarget[] = [];
+    const eye = this.aimBridgeEye();
+    const add = (
+      kind: AimBridgeTarget['kind'],
+      id: string,
+      name: string,
+      bounds: AABB,
+      centerY: number,
+      headshotY: number,
+      targetable: boolean,
+    ) => {
+      const pos = {
+        x: (bounds.min.x + bounds.max.x) / 2,
+        y: centerY,
+        z: (bounds.min.z + bounds.max.z) / 2,
+      };
+      const angleDeg = this.aimBridgeAngleTo(pos) * 180 / Math.PI;
+      out.push({
+        id,
+        kind,
+        name,
+        pos,
+        bounds: {
+          min: { ...bounds.min },
+          max: { ...bounds.max },
+        },
+        centerY,
+        headshotY,
+        distance: Math.hypot(pos.x - eye.x, pos.y - eye.y, pos.z - eye.z),
+        angleDeg,
+        visible: this.aimBridgeLineOfSight(pos),
+        targetable,
+      });
+    };
+
+    for (const b of this.bots?.bots ?? []) {
+      if (!b.state.alive) continue;
+      add(
+        'bot',
+        b.state.id,
+        b.state.name,
+        b.bounds(),
+        b.centerY(),
+        b.state.pos.y + BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD,
+        true,
+      );
+    }
+
+    if (this.trainingRange) {
+      for (const t of this.trainingRange.targets()) {
+        add('target', t.id, t.name, t.bounds, t.centerY, t.headshotY, true);
+      }
+    }
+
+    if (this.net) {
+      for (const [id, rp] of this.remotePlayers) {
+        if (!rp.group.visible) continue;
+        const snap = this.net.remotes.get(id);
+        const friendly =
+          this.netMode === 'tdm' &&
+          snap?.team != null &&
+          this.localTeam != null &&
+          snap.team === this.localTeam;
+        add(
+          'remote',
+          id,
+          snap?.name ?? id,
+          rp.bounds(),
+          rp.centerY(),
+          rp.headshotY(),
+          !friendly && (snap?.invulnMs ?? 0) <= 0,
+        );
+      }
+    }
+
+    out.sort((a, b) => a.angleDeg - b.angleDeg || a.distance - b.distance);
+    return out;
+  }
+
+  private tickAimBridge(opts: AimBridgeTickOptions = {}): AimBridgeTickResult {
+    const blocked = this.aimBridgeLiveReason();
+    if (blocked) return { ok: false, reason: blocked };
+    const target = this.pickAimBridgeTarget(opts);
+    if (!target) return { ok: false, reason: 'no target' };
+
+    if (opts.cancelUserInput) {
+      const input = this.input as unknown as { accumYaw?: number; accumPitch?: number };
+      input.accumYaw = 0;
+      input.accumPitch = 0;
+    }
+
+    const desired = this.aimBridgeAnglesTo(this.aimBridgeTargetPoint(target, opts));
+    const yawError = angleDiff(desired.yaw, this.player.yaw);
+    const pitchError = desired.pitch - this.player.pitch;
+    const smoothness = Math.max(1, Math.min(200, opts.smoothness ?? AIM_BRIDGE_DEFAULT_SMOOTHNESS));
+    const step = Math.max(0, Math.min(1, 1 - Math.exp(-smoothness * this.frameDt)));
+
+    this.player.yaw = normalizeAngle(this.player.yaw + yawError * step);
+    this.player.pitch = Math.max(
+      -Math.PI / 2 + 0.01,
+      Math.min(Math.PI / 2 - 0.01, this.player.pitch + pitchError * step),
+    );
+
+    return { ok: true, target, yawError, pitchError };
+  }
+
+  private fireAimBridge(): boolean {
+    const blocked = this.aimBridgeLiveReason();
+    if (blocked || this.weapon.cooldown > 0) return false;
+    this.handleFire();
+    return true;
+  }
+
+  private pickAimBridgeTarget(opts: AimBridgeTickOptions): AimBridgeTarget | null {
+    const maxFov = Math.max(0.1, Math.min(180, opts.maxFovDeg ?? AIM_BRIDGE_DEFAULT_FOV_DEG));
+    const targets = this.collectAimBridgeTargets().filter(
+      (t) => t.targetable && t.visible && t.angleDeg <= maxFov,
+    );
+    if (opts.targetId) return targets.find((t) => t.id === opts.targetId) ?? null;
+    return targets[0] ?? null;
+  }
+
+  private aimBridgeEye(): { x: number; y: number; z: number } {
+    return {
+      x: this.player.pos.x,
+      y: this.player.pos.y + EYE_HEIGHT,
+      z: this.player.pos.z,
+    };
+  }
+
+  private aimBridgeTargetPoint(
+    target: AimBridgeTarget,
+    opts: AimBridgeTickOptions,
+  ): { x: number; y: number; z: number } {
+    const x = (target.bounds.min.x + target.bounds.max.x) / 2;
+    const z = (target.bounds.min.z + target.bounds.max.z) / 2;
+    const baseY = opts.aimPoint === 'body'
+      ? target.centerY
+      : Math.max(target.headshotY, target.bounds.max.y - 0.16);
+    const margin = Math.max(0, opts.errorMarginDeg ?? 0) * Math.PI / 180;
+    const miss = 1 - Math.max(0, Math.min(1, (opts.accuracy ?? 100) / 100));
+    if (margin <= 0 || miss <= 0) return { x, y: baseY, z };
+
+    const eye = this.aimBridgeEye();
+    const dist = Math.max(1, Math.hypot(x - eye.x, baseY - eye.y, z - eye.z));
+    const radius = Math.tan(margin) * dist * miss;
+    const theta = Math.random() * Math.PI * 2;
+    return {
+      x: x + Math.cos(theta) * radius,
+      y: baseY + Math.sin(theta) * radius * 0.6,
+      z,
+    };
+  }
+
+  private aimBridgeLineOfSight(point: { x: number; y: number; z: number }): boolean {
+    const eye = this.aimBridgeEye();
+    const dir = {
+      x: point.x - eye.x,
+      y: point.y - eye.y,
+      z: point.z - eye.z,
+    };
+    const len = Math.hypot(dir.x, dir.y, dir.z);
+    if (len < 1e-4) return false;
+    dir.x /= len;
+    dir.y /= len;
+    dir.z /= len;
+    for (const box of this.map.boxes) {
+      const t = rayAabb(eye, dir, box);
+      if (t !== null && t > 0.03 && t < len - 0.03) return false;
+    }
+    return true;
+  }
+
+  private aimBridgeAngleTo(point: { x: number; y: number; z: number }): number {
+    const a = this.aimBridgeAnglesTo(point);
+    return Math.hypot(angleDiff(a.yaw, this.player.yaw), a.pitch - this.player.pitch);
+  }
+
+  private aimBridgeAnglesTo(point: { x: number; y: number; z: number }): { yaw: number; pitch: number } {
+    const eye = this.aimBridgeEye();
+    const dx = point.x - eye.x;
+    const dy = point.y - eye.y;
+    const dz = point.z - eye.z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    return {
+      yaw: Math.atan2(-dx, -dz),
+      pitch: Math.asin(Math.max(-1, Math.min(1, dy / len))),
+    };
+  }
+
   async start() {
     if (this.disposed) return;
     this.lastTime = performance.now();
@@ -729,6 +1046,7 @@ export class Game {
     }
     this.tickFn = null;
     this.input.detach();
+    this.uninstallAimBridge();
     window.removeEventListener('resize', this.resizeHandler);
     this.replay?.dispose();
     this.replay = null;
@@ -950,6 +1268,7 @@ export class Game {
     this.matchSubmitted = false;
     this.wonLastMatch = false;
     this.resetMatchDrama();
+    this.matchFirstBloodAwarded = false;
     const desired = mapById(r.mapId);
     if (desired !== this.map) {
       this.setMap(desired);
@@ -999,6 +1318,7 @@ export class Game {
     this.playerFrags = 0;
     this.playerDeaths = 0;
     this.resetMatchDrama();
+    this.matchFirstBloodAwarded = false;
     this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
@@ -1063,6 +1383,12 @@ export class Game {
     this.vote = { ...this.vote, myVote: mapId };
     this.net.sendVote(mapId);
     this.emitHud();
+  }
+
+  private claimFirstBlood(): boolean {
+    if (this.matchFirstBloodAwarded) return false;
+    this.matchFirstBloodAwarded = true;
+    return true;
   }
 
   // Frame-rate limit. 0 = VSync (display refresh), a positive number caps to
@@ -1446,6 +1772,8 @@ export class Game {
     // Training-range targets are raycast just like bots (collateral allowed).
     if (this.trainingRange) targets.push(...this.trainingRange.targets());
 
+    const trainingShot = this.trainingRange !== null;
+    if (trainingShot) this.weapon.cooldown = 0;
     const result = this.weapon.fire(
       muzzle,
       this.tmpForward,
@@ -1458,7 +1786,8 @@ export class Game {
     if (!result) return;
 
     // Real shot: play fire SFX exactly once. The weapon already set cooldown.
-    this.weaponWasReady = false;
+    this.weaponWasReady = trainingShot;
+    if (trainingShot) this.weapon.cooldown = 0;
     this.fireWasAirborne = !this.player.onGround;
     this.playerShotsFired += 1;
     // Record the visible beam so the Play-of-the-Match replay can re-draw it.
@@ -1555,6 +1884,7 @@ export class Game {
       const medals = this.medals.onKill(this.elapsed, {
         midAir,
         headshot: hit.headshot,
+        firstBlood: this.claimFirstBlood(),
       });
       for (const m of medals) this.awardMedal(m);
     }
@@ -1637,6 +1967,7 @@ export class Game {
     });
     this.audio.play('fire', 0.28);
     if (!victimKind || !victimPos) return;
+    this.claimFirstBlood();
 
     // Landed on someone (instagib = every hit is a kill) → count for accuracy.
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
@@ -1922,6 +2253,7 @@ export class Game {
     const myId = this.net?.clientId ?? null;
     const iAmKiller = ev.killerId === myId;
     const iAmVictim = ev.victimId === myId;
+    const firstBlood = ev.firstBlood;
 
     // Visual effects at the victim's last-known position.
     const burstAt = new THREE.Vector3(
@@ -1958,6 +2290,7 @@ export class Game {
       const medals = this.medals.onKill(this.elapsed, {
         midAir: false,
         headshot: ev.headshot,
+        firstBlood,
       });
       for (const m of medals) this.awardMedal(m);
     } else if (iAmVictim) {
@@ -2466,6 +2799,16 @@ export class Game {
     geometries.forEach((g) => g.dispose());
     materials.forEach((m) => m.dispose());
   }
+}
+
+function normalizeAngle(a: number): number {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function angleDiff(target: number, current: number): number {
+  return normalizeAngle(target - current);
 }
 
 // Dispose every geometry + material under a group (used when swapping the

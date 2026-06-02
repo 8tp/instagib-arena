@@ -76,6 +76,12 @@ const MAX_VERTICAL_SPEED = 80;
 const AFK_TIMEOUT_MS = 120_000;
 const MSG_RATE_WINDOW_MS = 1_000;
 const MSG_RATE_LIMIT = 150; // inbound messages/sec before a socket is closed (flood guard)
+const AIM_ASSIST_ALLOWLIST = new Set(
+  (process.env.AIM_ASSIST_ALLOWLIST ?? process.env.AIM_ASSIST_ALLOWED_PLAYER_IDS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+);
 // Hitbox dims (must match the client's PLAYER_RADIUS / PLAYER_HEIGHT).
 const PLAYER_RADIUS = 0.4;
 const PLAYER_HEIGHT = 1.8;
@@ -116,6 +122,7 @@ type ClientRecord = {
   aimHits: number;
   aimHeadshots: number;
   aimFlagged: boolean; // statistical outlier → frags throttled
+  aimAssistEnabled: boolean;
   team: number | null; // team index (0/1) in TDM; null otherwise
   hat: string; // equipped hat cosmetic id (echoed to other players in snapshots)
   unusual: string; // equipped unusual-effect cosmetic id
@@ -149,6 +156,7 @@ type Room = {
   // Duel: per-player round wins + the current round number (1-based).
   roundWins: Map<ClientId, number>;
   roundNum: number;
+  firstBloodAwarded: boolean;
   emptySince: number; // ms timestamp it became empty, 0 if occupied
   wasEverOccupied: boolean; // distinguishes a never-joined invite room from a post-match empty
   createdAt: number;
@@ -169,6 +177,7 @@ type ClientMessage =
   | { type: 'nameColor'; id?: string }
   | { type: 'spawnEffect'; id?: string }
   | { type: 'card'; card?: unknown }
+  | { type: 'aim-assist'; active?: boolean }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
   | { type: 'ping'; ts: number; rtt?: number }
   | {
@@ -182,6 +191,10 @@ type ClientMessage =
       maxDist?: number;
       renderTime?: number;
     };
+
+function canUseAimAssist(record: ClientRecord): boolean {
+  return record.admin || (!!record.playerId && AIM_ASSIST_ALLOWLIST.has(record.playerId));
+}
 
 // Does this connection's progression identity own the given cosmetic id? Read
 // fresh each time so an item just bought in the Locker is immediately equippable
@@ -353,6 +366,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       resumeAt: Date.now() + WARMUP_MS, // initial get-ready before the first frag
       roundWins: new Map(),
       roundNum: 1,
+      firstBloodAwarded: false,
       emptySince: Date.now(),
       wasEverOccupied: false,
       createdAt: Date.now(),
@@ -409,6 +423,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // extreme (no real player sustains >95% hit-rate or >90% headshots) so legit
   // aces are never flagged; a flagged shooter has frags throttled (see below).
   const recordAim = (s: ClientRecord, hit: boolean, headshot: boolean) => {
+    // Sanctioned aim-assist bridge shots are expected to be statistical
+    // outliers; don't feed them into the cheat throttle.
+    if (s.aimAssistEnabled) return;
     s.aimShots += 1;
     if (hit) s.aimHits += 1;
     if (hit && headshot) s.aimHeadshots += 1;
@@ -546,6 +563,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.roomId = room.id;
     record.team = old.team;
     record.name = old.name; // keep the held slot's name (account username / "Guest N")
+    record.aimAssistEnabled = old.aimAssistEnabled && canUseAimAssist(record);
     record.pos = { ...old.pos };
     record.yaw = old.yaw;
     record.pitch = old.pitch;
@@ -696,6 +714,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         nameColor: c.nameColor,
         spawnEffect: c.spawnEffect,
         ping: Math.round(c.rttMs),
+        aimAssistActive: c.aimAssistEnabled,
         admin: c.admin,
         verified: c.verified,
       });
@@ -786,6 +805,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // Fresh match on the new map: reset duel rounds.
     room.roundNum = 1;
     room.roundWins.clear();
+    room.firstBloodAwarded = false;
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -812,6 +832,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // breather (resumeAt) freezes shots so nobody dies during the reset.
   const startNewRound = (room: Room, lastWinnerId: ClientId) => {
     room.roundNum += 1;
+    room.firstBloodAwarded = false;
     const now = Date.now();
     room.resumeAt = now + DUEL_ROUND_BREAK_SEC * 1000;
     for (const id of room.members) {
@@ -835,6 +856,21 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Shooting ──────────────────────────────────────────────────────────
+  const setAimAssist = (record: ClientRecord, active: boolean) => {
+    if (!canUseAimAssist(record)) {
+      record.aimAssistEnabled = false;
+      return;
+    }
+    if (!record.roomId) return;
+    const room = rooms.get(record.roomId);
+    if (!room || room.state !== 'active') return;
+    const now = Date.now();
+    if (now < room.resumeAt) return;
+    // TODO: when the shop lands, check the player's purchased power-up
+    // entitlement here before honoring the toggle.
+    record.aimAssistEnabled = active;
+  };
+
   const handleShoot = (
     shooter: ClientRecord,
     msg: Extract<ClientMessage, { type: 'shoot' }>,
@@ -919,11 +955,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // Throttle a flagged aimbot: the shot landed but we drop the frag (the stat
     // window keeps decaying, so a legit player who dips back under the threshold
     // un-flags within a window or two).
-    if (shooter.aimFlagged) return;
+    if (shooter.aimFlagged && !shooter.aimAssistEnabled) return;
 
     shooter.frags += 1;
     victim.deaths += 1;
     const respawnPos = pickSpawn(room, shooter.pos);
+    const firstBlood = !room.firstBloodAwarded;
+    room.firstBloodAwarded = true;
     broadcastRoom(room, {
       type: 'kill',
       killerId: shooter.id,
@@ -931,6 +969,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       victimId: victim.id,
       victimName: victim.name,
       headshot: bestHeadshot,
+      firstBlood,
       victimPos: { ...victim.pos },
       respawnPos,
       killerCard: shooter.card, // the killer's playercard → victim's killcam
@@ -1033,10 +1072,17 @@ export function attachInstagibWs(wss: WebSocketServer) {
       aimHits: 0,
       aimHeadshots: 0,
       aimFlagged: false,
+      aimAssistEnabled: false,
       team: null,
     };
     clients.set(id, record);
-    sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
+    sendRaw(socket, {
+      type: 'welcome',
+      clientId: id,
+      serverTime: now,
+      resumeToken: record.resumeToken,
+      aimAssistEligible: canUseAimAssist(record),
+    });
 
     socket.on('message', (raw) => {
       const ts = Date.now();
@@ -1245,6 +1291,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
             admin: record.admin,
             verified: record.verified,
           });
+          break;
+
+        case 'aim-assist':
+          setAimAssist(record, !!msg.active);
           break;
 
         case 'pos':
