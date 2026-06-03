@@ -967,13 +967,9 @@ export class Game {
     const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
     this.weapon.spawnBeam(origin, end, this.scene);
-    // Distance falloff from the local eye → louder when the shooter is close.
-    const dxe = b.ox - this.player.pos.x;
-    const dye = b.oy - (this.player.pos.y + EYE_HEIGHT);
-    const dze = b.oz - this.player.pos.z;
-    const dist = Math.hypot(dxe, dye, dze);
-    const vol = Math.max(0.05, 0.45 * (1 - Math.min(dist, 55) / 55));
-    this.audio.play('fire', vol);
+    // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
+    // the audio listener, so you can hear which direction a shot came from.
+    this.audio.playAt('fire', b.ox, b.oy, b.oz, 0.5);
   }
 
   private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null; winnerTeam: number | null }) {
@@ -1757,7 +1753,8 @@ export class Game {
       end: { x: end.x, y: end.y, z: end.z },
       killerId: intent.botId,
     });
-    this.audio.play('fire', 0.28);
+    // Spatialized so you can hear which direction a bot is firing from.
+    this.audio.playAt('fire', origin.x, origin.y, origin.z, 0.4);
     if (!victimKind || !victimPos) return;
     // A bot scoring the match's first kill consumes First Blood, so the local
     // player can't later claim it for what is really the second kill.
@@ -2592,6 +2589,14 @@ export class Game {
       );
       this.viewmodel.rotation.x = r * 0.22;
     }
+    // Track the HRTF audio listener to the (now finalized) camera so spatial
+    // sounds — other players' rail fire etc. — pan to where they actually are.
+    this.camera.getWorldDirection(this.tmpForward);
+    this.audio.setListenerPose(
+      this.camera.position.x, this.camera.position.y, this.camera.position.z,
+      this.tmpForward.x, this.tmpForward.y, this.tmpForward.z,
+      0, 1, 0,
+    );
     this.renderer.render(this.scene, this.camera);
   }
 
