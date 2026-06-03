@@ -16,20 +16,10 @@ const MODEL_SCALE = 1.0;
 // +π offset, but only because they're fed atan2(dx,dz) of their MOVEMENT
 // vector, a different angle convention — don't copy that offset here.)
 const MODEL_YAW_OFFSET = 0;
-// Net positions arrive interpolated (NetClient.interpolate), so we can track
-// them tightly here without re-introducing much lag.
-const POS_LERP_HZ = 18;
 // Replay playback: a frame-to-frame ground speed above this (u/s) is treated as
 // a teleport (respawn / clip seek) and won't spike the run animation. Real
 // players top out well under this.
 const REPLAY_TELEPORT_SPEED = 60;
-
-function lerpAngle(a: number, b: number, t: number): number {
-  let diff = b - a;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  return a + diff * t;
-}
 
 function makeNameSprite(name: string, color: string): THREE.Sprite {
   const canvas = document.createElement('canvas');
@@ -108,7 +98,6 @@ export class RemotePlayer {
   private shieldMesh: THREE.Mesh;
   private shieldMaterial: THREE.MeshBasicMaterial;
   private facing = 0;
-  private targetPos = new THREE.Vector3();
   private lastSeenPos = new THREE.Vector3();
   private lastMoveSpeed = 0;
 
@@ -183,21 +172,19 @@ export class RemotePlayer {
       }
     }
 
-    this.targetPos.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
+    // NetClient.interpolate() already produced a smooth, render-rate, render-
+    // delayed pose (and dead-reckons short gaps), so render it DIRECTLY. A second
+    // smoothing lerp here only added lag and made motion read as stepped at the
+    // snapshot rate instead of tracking the viewer's framerate. The server clock
+    // is slewed (see net.ts) so renderT advances smoothly frame to frame.
+    this.group.position.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
 
-    // Smooth position lerp toward latest snapshot. POS_LERP_HZ controls how
-    // tightly we hug the network position vs. extrapolate.
-    const t = 1 - Math.exp(-POS_LERP_HZ * dt);
-    this.group.position.lerp(this.targetPos, t);
-
-    // Track horizontal speed from the (already interpolated) net position and
-    // drive the idle/walk/run blend with it.
+    // Ground speed from the per-frame displacement drives the idle/walk/run blend.
     const dx = this.group.position.x - this.lastSeenPos.x;
     const dz = this.group.position.z - this.lastSeenPos.z;
     const moveSpeed = dt > 0 ? Math.hypot(dx, dz) / dt : 0;
 
-    // Smooth yaw lerp
-    this.facing = lerpAngle(this.facing, snapshot.yaw, t);
+    this.facing = snapshot.yaw; // already angle-interpolated in NetClient.interpolate()
 
     // Equipped hat + unusual (echoed from the server). Swap on change, re-seat.
     if (snapshot.hat !== this.hatId) {

@@ -187,6 +187,10 @@ const EXTRAPOLATION_CAP_MS = 120;
 // aim at is what the server tests — that's the lag compensation contract.
 const INTERP_DELAY_MS = 100;
 const SNAP_BUFFER_MS = 1200;
+// How fast the applied clock offset eases toward the ping-refined target (per
+// second). Small ongoing corrections slew imperceptibly; a big gap snaps once.
+const CLOCK_SLEW_HZ = 3;
+const CLOCK_SLEW_SNAP_MS = 250;
 
 type BufferedSnapshot = { t: number; players: Map<string, StatePlayer> };
 
@@ -219,7 +223,12 @@ export class NetClient {
   // Warmup / breather end, converted to the local clock. `warmupMsLeft` drives
   // the client's "GET READY" countdown; 0 once play is live.
   private warmupUntilClient = 0;
-  private clockOffset = 0; // serverClock - clientClock (ms); estimatedServerNow = Date.now() + offset
+  // serverClock - clientClock (ms). `clockOffset` is the APPLIED value (used by
+  // estimatedServerNow); it slews toward `clockOffsetTarget` (the ping-refined
+  // estimate) a little each frame so the interpolation render-time advances
+  // smoothly instead of hitching ~1×/sec when a pong nudges the estimate.
+  private clockOffset = 0;
+  private clockOffsetTarget = 0;
   private clockSeeded = false;
   private snapBuffer: BufferedSnapshot[] = [];
   private disposed = false;
@@ -382,8 +391,17 @@ export class NetClient {
   }
 
   // Rebuild `remotes` as the interpolated view at (serverNow - INTERP_DELAY).
-  // Call once per render frame before reading positions.
-  interpolate() {
+  // Call once per render frame before reading positions; `dt` is the real frame
+  // delta (s), used to slew the clock smoothly.
+  interpolate(dt = 0) {
+    // Ease the applied clock offset toward the ping-refined target so renderT
+    // advances smoothly. A large gap (first good ping after a bad seed, a big
+    // drift) snaps once rather than slewing for seconds.
+    if (Math.abs(this.clockOffsetTarget - this.clockOffset) > CLOCK_SLEW_SNAP_MS) {
+      this.clockOffset = this.clockOffsetTarget;
+    } else if (dt > 0) {
+      this.clockOffset += (this.clockOffsetTarget - this.clockOffset) * (1 - Math.exp(-CLOCK_SLEW_HZ * dt));
+    }
     const renderT = this.estimatedServerNow() - INTERP_DELAY_MS;
     const buf = this.snapBuffer;
     const now = performance.now();
@@ -506,6 +524,7 @@ export class NetClient {
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       if (!this.clockSeeded) {
         this.clockOffset = msg.serverTime - Date.now();
+        this.clockOffsetTarget = this.clockOffset;
         this.clockSeeded = true;
       }
       this.emit();
@@ -515,9 +534,12 @@ export class NetClient {
       const rtt = Date.now() - msg.ts;
       if (rtt >= 0 && rtt < 5000) {
         this.rttMs = this.rttMs === 0 ? rtt : this.rttMs * 0.8 + rtt * 0.2;
-        // serverTime was the server clock when it replied (~ rtt/2 ago).
+        // serverTime was the server clock when it replied (~ rtt/2 ago). Refine
+        // the TARGET; the applied offset slews toward it in interpolate() so the
+        // correction doesn't land as a one-frame jump.
         const sample = msg.serverTime + rtt / 2 - Date.now();
-        this.clockOffset = this.clockSeeded ? this.clockOffset * 0.8 + sample * 0.2 : sample;
+        this.clockOffsetTarget = this.clockSeeded ? this.clockOffsetTarget * 0.8 + sample * 0.2 : sample;
+        if (!this.clockSeeded) this.clockOffset = this.clockOffsetTarget;
         this.clockSeeded = true;
       }
       return;

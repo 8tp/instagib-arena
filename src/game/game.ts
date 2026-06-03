@@ -433,12 +433,13 @@ export class Game {
     if (on && this.chatOpen) this.closeChat();
   }
 
-  // Open the chat composer: only in a live online match, and never over the
-  // killcam/results/vote/replay. Keyboard input is routed to the chat box (the
-  // pointer stays locked; the game ignores keys via input.setChatting).
+  // Open the chat composer: in a live online match, including while dead (you can
+  // chat through your killcam). Not over the results/vote/replay screens (the
+  // pointer is unlocked there). Keyboard input is routed to the chat box; the
+  // pointer stays locked and the game ignores keys via input.setChatting.
   openChat() {
     if (this.hideChat || !this.net || this.chatOpen) return;
-    if (!this.locked || this.matchOver || this.vote || this.killcam || this.replay) return;
+    if (!this.locked || this.matchOver || this.vote || this.replay) return;
     this.chatOpen = true;
     this.input.setChatting(true);
     this.emitHud();
@@ -1240,7 +1241,7 @@ export class Game {
     if (!this.net) return;
     // Refresh the interpolated view of remote players (render-delayed so we
     // always interpolate between two snapshots — see NetClient.interpolate).
-    this.net.interpolate();
+    this.net.interpolate(dt);
     // Remove disconnected
     for (const [id, rp] of this.remotePlayers) {
       if (!this.net.remotes.has(id)) {

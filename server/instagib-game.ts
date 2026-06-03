@@ -58,7 +58,7 @@ const RESUME_GRACE_MS = 20_000;
 const EMPTY_ROOM_GRACE_MS = 30_000; // post-match grace for a room that HAS been occupied
 const FRESH_ROOM_GRACE_MS = 5 * 60_000; // never-occupied (invite) rooms live longer for slow joins
 const KILL_MAX_RANGE = 220;
-const SPAWN_INVULN_MS = 2_000;
+const SPAWN_INVULN_MS = 1_500; // spawn grace once you have control (matches offline LOCAL_RESPAWN_INVULN_SEC)
 // A killed player can't act until their client's killcam finishes, so their
 // post-frag invuln must SPAN the killcam and still leave SPAWN_INVULN_MS once
 // they regain control — otherwise it elapses mid-killcam and they spawn exposed
