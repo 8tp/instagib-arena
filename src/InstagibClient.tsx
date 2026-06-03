@@ -2990,8 +2990,10 @@ function InGameChat({
     onSend(t); // empty just closes — game.sendChat ignores blank text
   };
 
+  // Anchored above the net-status pill (bottom-28) + speed/streak (bottom-6) so
+  // the message log + composer never overlap the live player count/ping.
   return (
-    <div className='pointer-events-none absolute bottom-24 left-6 z-30 flex w-[28rem] max-w-[44vw] flex-col gap-1 font-mono'>
+    <div className='pointer-events-none absolute bottom-40 left-6 z-30 flex w-[28rem] max-w-[44vw] flex-col gap-1 font-mono'>
       {visible.map(({ l, opacity }) => (
         <div
           key={l.id}
