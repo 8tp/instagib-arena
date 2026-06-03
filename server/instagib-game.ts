@@ -149,6 +149,7 @@ type Room = {
   // Duel: per-player round wins + the current round number (1-based).
   roundWins: Map<ClientId, number>;
   roundNum: number;
+  firstBloodAwarded: boolean; // first kill of the current match/round has landed
   emptySince: number; // ms timestamp it became empty, 0 if occupied
   wasEverOccupied: boolean; // distinguishes a never-joined invite room from a post-match empty
   createdAt: number;
@@ -353,6 +354,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       resumeAt: Date.now() + WARMUP_MS, // initial get-ready before the first frag
       roundWins: new Map(),
       roundNum: 1,
+      firstBloodAwarded: false,
       emptySince: Date.now(),
       wasEverOccupied: false,
       createdAt: Date.now(),
@@ -786,6 +788,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // Fresh match on the new map: reset duel rounds.
     room.roundNum = 1;
     room.roundWins.clear();
+    room.firstBloodAwarded = false;
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -812,6 +815,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // breather (resumeAt) freezes shots so nobody dies during the reset.
   const startNewRound = (room: Room, lastWinnerId: ClientId) => {
     room.roundNum += 1;
+    room.firstBloodAwarded = false;
     const now = Date.now();
     room.resumeAt = now + DUEL_ROUND_BREAK_SEC * 1000;
     for (const id of room.members) {
@@ -924,6 +928,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
     shooter.frags += 1;
     victim.deaths += 1;
     const respawnPos = pickSpawn(room, shooter.pos);
+    const firstBlood = !room.firstBloodAwarded;
+    room.firstBloodAwarded = true;
     broadcastRoom(room, {
       type: 'kill',
       killerId: shooter.id,
@@ -931,6 +937,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       victimId: victim.id,
       victimName: victim.name,
       headshot: bestHeadshot,
+      firstBlood,
       victimPos: { ...victim.pos },
       respawnPos,
       killerCard: shooter.card, // the killer's playercard → victim's killcam

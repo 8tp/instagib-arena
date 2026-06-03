@@ -210,6 +210,7 @@ export class Game {
   private worstDeficit = 0; // largest frag gap you've trailed the leader by
   private comebackAwarded = false; // Comeback medal fires at most once per match
   private matchPointAnnounced = false; // "Match point" banner fires once per match
+  private matchFirstBloodAwarded = false; // First Blood fires on the first kill of the match/round
   private training = false; // endless practice — never hit the frag limit
   private trainingRange: TrainingRange | null = null; // target-practice range (training mode)
   private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
@@ -1446,6 +1447,11 @@ export class Game {
     // Training-range targets are raycast just like bots (collateral allowed).
     if (this.trainingRange) targets.push(...this.trainingRange.targets());
 
+    // Training range: drop the rail cooldown so players can drill fast flick
+    // shots. firePressed is edge-triggered, so this is one shot per click — not
+    // full-auto. (See the matching reset after the shot lands.)
+    const trainingShot = this.trainingRange !== null;
+    if (trainingShot) this.weapon.cooldown = 0;
     const result = this.weapon.fire(
       muzzle,
       this.tmpForward,
@@ -1458,7 +1464,10 @@ export class Game {
     if (!result) return;
 
     // Real shot: play fire SFX exactly once. The weapon already set cooldown.
-    this.weaponWasReady = false;
+    // In training, clear the cooldown again and keep weaponWasReady true so the
+    // reload-ready ping doesn't replay after every shot.
+    this.weaponWasReady = trainingShot;
+    if (trainingShot) this.weapon.cooldown = 0;
     this.fireWasAirborne = !this.player.onGround;
     this.playerShotsFired += 1;
     // Record the visible beam so the Play-of-the-Match replay can re-draw it.
@@ -1555,6 +1564,7 @@ export class Game {
       const medals = this.medals.onKill(this.elapsed, {
         midAir,
         headshot: hit.headshot,
+        firstBlood: this.claimFirstBlood(),
       });
       for (const m of medals) this.awardMedal(m);
     }
@@ -1637,6 +1647,9 @@ export class Game {
     });
     this.audio.play('fire', 0.28);
     if (!victimKind || !victimPos) return;
+    // A bot scoring the match's first kill consumes First Blood, so the local
+    // player can't later claim it for what is really the second kill.
+    this.claimFirstBlood();
 
     // Landed on someone (instagib = every hit is a kill) → count for accuracy.
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
@@ -1958,6 +1971,7 @@ export class Game {
       const medals = this.medals.onKill(this.elapsed, {
         midAir: false,
         headshot: ev.headshot,
+        firstBlood: ev.firstBlood,
       });
       for (const m of medals) this.awardMedal(m);
     } else if (iAmVictim) {
@@ -2274,6 +2288,16 @@ export class Game {
     this.worstDeficit = 0;
     this.comebackAwarded = false;
     this.matchPointAnnounced = false;
+    this.matchFirstBloodAwarded = false;
+  }
+
+  // First Blood = the first kill of the match (offline) or round (online, where
+  // the server is authoritative and we mirror its per-room flag). Returns true
+  // exactly once per reset; later kills get false.
+  private claimFirstBlood(): boolean {
+    if (this.matchFirstBloodAwarded) return false;
+    this.matchFirstBloodAwarded = true;
+    return true;
   }
 
   // Match "drama" cues derived from the live scoreboard (so they work the same

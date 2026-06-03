@@ -30,6 +30,7 @@ export type KillEvent = {
   victimId: string;
   victimName: string;
   headshot: boolean;
+  firstBlood: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
@@ -67,6 +68,7 @@ type KillBroadcast = {
   victimId: string;
   victimName: string;
   headshot: boolean;
+  firstBlood?: boolean;
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
@@ -494,6 +496,7 @@ export class NetClient {
         victimId: msg.victimId,
         victimName: msg.victimName,
         headshot: msg.headshot,
+        firstBlood: !!msg.firstBlood,
         victimPos: msg.victimPos,
         respawnPos: msg.respawnPos,
         killerCard: msg.killerCard,
