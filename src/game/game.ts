@@ -1025,6 +1025,12 @@ export class Game {
     this.medals = new MedalTracker();
     this.playerFrags = 0;
     this.playerDeaths = 0;
+    if (this.net) {
+      // Zero the authoritative counters too, so the scoreboard shows 0 the moment
+      // the new match starts rather than the old total from a stale snapshot.
+      this.net.localFrags = 0;
+      this.net.localDeaths = 0;
+    }
     this.playerHeadshots = 0;
     this.playerShotsFired = 0;
     this.playerShotsHit = 0;
@@ -1059,8 +1065,9 @@ export class Game {
   }
 
   // Duel: the server ended a round and reset the scoreboard. Mirror the reset
-  // locally (emitHud only RAISES frags from snapshots, so we must lower them
-  // here), update the round tally, and show a "Round N" banner.
+  // locally — also zero the NetClient's authoritative counters so the very next
+  // emitHud doesn't momentarily re-show the pre-reset total from a stale snapshot
+  // (subsequent snapshots are already 0). Then update the round tally + banner.
   private handleNetRound(r: {
     roundNum: number;
     roundWins: Record<string, number>;
@@ -1082,6 +1089,10 @@ export class Game {
     };
     this.playerFrags = 0;
     this.playerDeaths = 0;
+    if (this.net) {
+      this.net.localFrags = 0;
+      this.net.localDeaths = 0;
+    }
     this.resetMatchDrama();
     // Server-assigned per-duelist spawn (so both don't land on the same spot).
     this.player.pos = r.spawn
@@ -2303,13 +2314,13 @@ export class Game {
       }
     }
     if (this.net) {
-      // Server tracks frag/death authoritatively for the local player; use
-      // it whenever it diverges from our local count (post-kill snapshots
-      // arrive within ~30ms on LAN).
-      const serverFrags = this.net.localFrags;
-      const serverDeaths = this.net.localDeaths;
-      if (serverFrags > this.playerFrags) this.playerFrags = serverFrags;
-      if (serverDeaths > this.playerDeaths) this.playerDeaths = serverDeaths;
+      // The server is authoritative for the local player's frag/death (online
+      // kills aren't predicted locally — they arrive via the kill broadcast +
+      // snapshots). Track it in BOTH directions: a previous "only raise" left the
+      // scoreboard stuck at the old total after a round/match reset (server →0)
+      // because emitHud re-raised it from a stale snapshot value.
+      this.playerFrags = this.net.localFrags;
+      this.playerDeaths = this.net.localDeaths;
       scores[0].frags = this.playerFrags;
       scores[0].deaths = this.playerDeaths;
       // Online, the name is server-authoritative (your account username, or the
