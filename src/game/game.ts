@@ -893,6 +893,7 @@ export class Game {
           onVoteResult: (r) => this.handleVoteResult(r),
           onRound: (r) => this.handleNetRound(r),
           onChat: (m) => this.handleNetChat(m),
+          onBeam: (b) => this.handleNetBeam(b),
         },
       });
       this.net.connect();
@@ -957,6 +958,22 @@ export class Game {
     this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
+  }
+
+  // Another player's rail beam (server-broadcast on every shot): draw the trail
+  // and play the fire SFX, attenuated by distance so you hear who's shooting near
+  // you. Without this, remote shots were silent + invisible unless they killed.
+  private handleNetBeam(b: { ox: number; oy: number; oz: number; ex: number; ey: number; ez: number }) {
+    const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
+    const end = new THREE.Vector3(b.ex, b.ey, b.ez);
+    this.weapon.spawnBeam(origin, end, this.scene);
+    // Distance falloff from the local eye → louder when the shooter is close.
+    const dxe = b.ox - this.player.pos.x;
+    const dye = b.oy - (this.player.pos.y + EYE_HEIGHT);
+    const dze = b.oz - this.player.pos.z;
+    const dist = Math.hypot(dxe, dye, dze);
+    const vol = Math.max(0.05, 0.45 * (1 - Math.min(dist, 55) / 55));
+    this.audio.play('fire', vol);
   }
 
   private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null; winnerTeam: number | null }) {
@@ -1554,6 +1571,10 @@ export class Game {
     // Cooldown blocked the shot → no SFX, no side effects.
     if (!result) return;
 
+    // Firing ends your spawn grace (offline vs bots; the server does the same for
+    // online play) — no shooting from behind protection.
+    if (this.localRespawnInvuln > 0) this.localRespawnInvuln = 0;
+
     // Real shot: play fire SFX exactly once. The weapon already set cooldown.
     // In training, clear the cooldown again and keep weaponWasReady true so the
     // reload-ready ping doesn't replay after every shot.
@@ -2039,6 +2060,15 @@ export class Game {
       this.audio.play('kill', 0.7);
       this.audio.hitConfirm(ev.headshot, 0.5);
       this.fireKillFeedback(ev.headshot);
+      // Crosshair hitmarker — online hits are server-resolved (no local raycast),
+      // so this is the only place it fires in multiplayer (the bot path covers
+      // offline). Without it, you got no hit feedback ring on networked frags.
+      this.hitMarker = {
+        id: this.nextEventId++,
+        kind: ev.headshot ? 'headshot' : 'kill',
+        remaining: HIT_MARKER_KILL_DURATION_SEC,
+        total: HIT_MARKER_KILL_DURATION_SEC,
+      };
       // Credit the confirmed hit so online accuracy/headshots aren't ~0 (#5).
       // (MP has no bots, so this is the only place these increment online — no
       // double-count with the local bot path.)

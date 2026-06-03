@@ -1016,6 +1016,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) > SHOT_ORIGIN_MAX_DIST) return;
     shooter.lastShotMs = now;
     shooter.lastActiveMs = now; // firing counts as activity (AFK timer)
+    // Firing ends your own spawn invuln — you can't shoot from behind protection.
+    if (shooter.invulnUntilMs > now) shooter.invulnUntilMs = 0;
 
     const wallCap = Number.isFinite(msg.maxDist)
       ? Math.min(KILL_MAX_RANGE, Math.max(0, msg.maxDist as number))
@@ -1048,6 +1050,26 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const hitY = msg.oy + dy * t;
       bestHeadshot = hitY >= pp.y + PLAYER_HEIGHT * HEADSHOT_FRAC;
     }
+
+    // Broadcast the rail beam to the rest of the room (the shooter already drew
+    // their own) so other players SEE + HEAR the shot, hit or miss. The beam ends
+    // at the victim if hit, else at the wall (wallCap). Sent before the miss /
+    // aim-throttle returns below so a missed or throttled shot still shows.
+    const beamLen = bestId ? bestT : wallCap;
+    broadcastRoom(
+      room,
+      {
+        type: 'beam',
+        id: shooter.id,
+        ox: msg.ox,
+        oy: msg.oy,
+        oz: msg.oz,
+        ex: msg.ox + dx * beamLen,
+        ey: msg.oy + dy * beamLen,
+        ez: msg.oz + dz * beamLen,
+      },
+      shooter.id,
+    );
 
     if (!bestId || !bestPos) {
       recordAim(shooter, false, false); // a miss
@@ -1488,9 +1510,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
                 break; // drop, keep last good pos
               }
             }
-            // Count real movement as activity (resets the AFK timer; pings don't).
-            if (Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z) > 0.1) {
+            // Count real movement as activity (resets the AFK timer; pings don't),
+            // and break spawn invuln — protection lasts only while you hold still.
+            const moved = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
+            if (moved > 0.1) {
               record.lastActiveMs = ts;
+              if (record.invulnUntilMs > ts) record.invulnUntilMs = 0;
             }
             record.pos.x = msg.x;
             record.pos.y = msg.y;
@@ -1499,11 +1524,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
               record.pitch = msg.pitch;
             }
-            record.history.push({ t: ts, x: msg.x, y: msg.y, z: msg.z });
-            const cutoff = ts - HISTORY_MS;
-            while (record.history.length > 2 && record.history[0].t < cutoff) {
-              record.history.shift();
-            }
+            // (Lag-comp history is sampled on the snapshot tick, not here.)
             const room = rooms.get(record.roomId);
             if (room) recoverIfOob(record, room, ts);
           }
@@ -1541,8 +1562,21 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   // ── Timers ────────────────────────────────────────────────────────────
   const snapshotTimer = setInterval(() => {
+    const now = Date.now();
     for (const room of rooms.values()) {
       if (room.members.size === 0) continue;
+      // Record each member's pose into the lag-comp history AT SNAPSHOT TIME (not
+      // at pos-receive time). Clients interpolate remotes by snapshot timestamp,
+      // so stamping history on the same timeline makes a rewind reconstruct the
+      // exact position the shooter saw — hits land where you aimed regardless of
+      // the target's ping (a high-ping target is no longer harder to hit).
+      for (const id of room.members) {
+        const c = clients.get(id);
+        if (!c || c.disconnectedAt > 0) continue;
+        c.history.push({ t: now, x: c.pos.x, y: c.pos.y, z: c.pos.z });
+        const cutoff = now - HISTORY_MS;
+        while (c.history.length > 2 && c.history[0].t < cutoff) c.history.shift();
+      }
       broadcastRoom(room, roomSnapshot(room));
     }
   }, 1000 / SNAPSHOT_HZ);
