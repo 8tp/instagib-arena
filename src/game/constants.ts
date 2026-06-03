@@ -269,7 +269,8 @@ export type KeybindAction =
   | 'jump'
   | 'dash'
   | 'zoom'
-  | 'scoreboard';
+  | 'scoreboard'
+  | 'chat';
 
 export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }> = [
   { id: 'forward', label: 'Move forward' },
@@ -280,6 +281,7 @@ export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }
   { id: 'dash', label: 'Dash' },
   { id: 'zoom', label: 'Zoom (hold)' },
   { id: 'scoreboard', label: 'Scoreboard' },
+  { id: 'chat', label: 'Chat' },
 ];
 
 export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
@@ -291,4 +293,5 @@ export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   dash: 'ShiftLeft',
   zoom: 'KeyC',
   scoreboard: 'Tab',
+  chat: 'KeyY',
 };

@@ -40,6 +40,7 @@ export class InputManager {
     firePressed: false,
     zoom: false,
     scoreboard: false,
+    chatPressed: false,
     yawDelta: 0,
     pitchDelta: 0,
   };
@@ -53,6 +54,11 @@ export class InputManager {
   private accumYaw = 0;
   private accumPitch = 0;
   private locked = false;
+  // While the chat composer is open, every game input (keys, look, fire) is
+  // ignored so typing doesn't drive the player — keystrokes go to the focused
+  // chat input instead. The chat key edge is latched separately.
+  private chatting = false;
+  private chatQueued = false;
   // Source/CS2 sensitivity number (deg/count = sens · M_YAW_DEG).
   sensitivity = DEFAULT_SENSITIVITY;
   vertScale = DEFAULT_VERT_SCALE;
@@ -162,11 +168,20 @@ export class InputManager {
     s.dashPressed = !this.prevDash && this.state.dash;
     s.boostPressed = !this.prevBoost && this.state.boost;
     s.firePressed = !this.prevFire && this.state.fire;
+    s.chatPressed = this.chatQueued; // one-shot: the chat key was tapped this frame
+    this.chatQueued = false;
     this.prevJump = this.state.jump;
     this.prevDash = this.state.dash;
     this.prevBoost = this.state.boost;
     this.prevFire = this.state.fire;
     return s;
+  }
+
+  // Toggle chat-typing mode: the game ignores all input while on (and held keys
+  // are cleared so movement doesn't stick), so keystrokes land in the chat box.
+  setChatting(on: boolean) {
+    this.chatting = on;
+    if (on) this.clearKeys();
   }
 
   detach() {
@@ -207,6 +222,9 @@ export class InputManager {
   }
 
   private onKeydown = (e: KeyboardEvent) => {
+    // While typing in chat, the game ignores everything — keystrokes belong to
+    // the chat input. (The composer itself handles Enter/Esc.)
+    if (this.chatting) return;
     const action = this.codeToAction.get(e.code);
     if (!action) return;
     // Scoreboard works regardless of lock (and always preventDefault so the
@@ -217,11 +235,19 @@ export class InputManager {
       return;
     }
     if (!this.locked) return;
+    // Chat is an edge, not a held state — latch it for the next consume() and
+    // don't let the key fall through to a movement action.
+    if (action === 'chat') {
+      this.chatQueued = true;
+      e.preventDefault();
+      return;
+    }
     this.applyAction(action, true);
     e.preventDefault();
   };
 
   private onKeyup = (e: KeyboardEvent) => {
+    if (this.chatting) return;
     const action = this.codeToAction.get(e.code);
     if (!action) return;
     if (action === 'scoreboard') {
@@ -229,6 +255,7 @@ export class InputManager {
       this.state.scoreboard = false;
       return;
     }
+    if (action === 'chat') return;
     this.applyAction(action, false);
   };
 
@@ -246,7 +273,7 @@ export class InputManager {
   }
 
   private onMousemove = (e: MouseEvent) => {
-    if (!this.locked) return;
+    if (!this.locked || this.chatting) return;
     // Some browsers emit one large spurious delta on the first event after
     // lock (cursor-warp leftover) — drop it.
     if (this.justLocked) {
@@ -268,12 +295,13 @@ export class InputManager {
   };
 
   private onMousedown = (e: MouseEvent) => {
-    if (!this.locked) return;
+    if (!this.locked || this.chatting) return;
     if (e.button === 0) this.state.fire = true;
     else if (e.button === 2) this.state.boost = true; // RMB → boost jump
   };
 
   private onMouseup = (e: MouseEvent) => {
+    if (this.chatting) return;
     if (e.button === 0) this.state.fire = false;
     else if (e.button === 2) this.state.boost = false;
   };
