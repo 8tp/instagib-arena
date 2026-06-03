@@ -142,12 +142,22 @@ export class InputManager {
     return this.state.scoreboard;
   }
 
-  consume(): InputState {
-    const s = { ...this.state };
-    s.yawDelta = this.accumYaw;
-    s.pitchDelta = this.accumPitch;
+  // Drain the accumulated look delta. Called once per RENDERED frame (not the
+  // fixed sim step) so camera rotation is as smooth as the display refresh —
+  // critical for flick aim on 144Hz+ monitors. See Game.applyLook().
+  consumeLook(): { yawDelta: number; pitchDelta: number } {
+    const look = { yawDelta: this.accumYaw, pitchDelta: this.accumPitch };
     this.accumYaw = 0;
     this.accumPitch = 0;
+    return look;
+  }
+
+  consume(): InputState {
+    const s = { ...this.state };
+    // Look is drained separately per render frame via consumeLook(); the fixed
+    // sim step only consumes movement + button edges, so zero these here.
+    s.yawDelta = 0;
+    s.pitchDelta = 0;
     s.jumpPressed = !this.prevJump && this.state.jump;
     s.dashPressed = !this.prevDash && this.state.dash;
     s.boostPressed = !this.prevBoost && this.state.boost;

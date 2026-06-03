@@ -20,7 +20,6 @@ import {
   GROUND_ACCEL,
   JUMP_SPEED,
   MAX_HORIZONTAL_SPEED,
-  PITCH_LIMIT,
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
   STOP_SPEED,
@@ -56,10 +55,9 @@ export class Player {
   }
 
   step(input: InputState, dt: number, map: ArenaMap, frozen = false) {
-    this.yaw -= input.yawDelta;
-    this.pitch -= input.pitchDelta;
-    if (this.pitch < -PITCH_LIMIT) this.pitch = -PITCH_LIMIT;
-    if (this.pitch > PITCH_LIMIT) this.pitch = PITCH_LIMIT;
+    // NOTE: yaw/pitch are applied per render frame in Game.applyLook(), not here,
+    // so aim stays smooth above the fixed sim rate. step() only reads the current
+    // yaw for movement direction below.
 
     // Countdown freeze: you can look around, but you can't move/jump/boost yet.
     if (frozen) {
