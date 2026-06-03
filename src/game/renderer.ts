@@ -3,7 +3,14 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { FOV_DEG } from './constants';
 
 export function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // powerPreference asks hybrid-graphics laptops for the discrete GPU instead of
+  // the integrated one — a free win for a GPU-bound game on the machines a lot of
+  // players are on.
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    powerPreference: 'high-performance',
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   // Filmic tone mapping + a touch of exposure so the arena reads bright and
   // punchy instead of the old flat, murky look.
