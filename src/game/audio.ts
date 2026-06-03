@@ -165,6 +165,89 @@ export class SoundManager {
     }
   }
 
+  // Position + orient the HRTF listener at the camera each frame so spatialized
+  // sounds (playAt) pan correctly — `forward` is the look direction, `up` the
+  // world up. Call once per render frame from the Game with the live camera pose.
+  setListenerPose(
+    px: number, py: number, pz: number,
+    fx: number, fy: number, fz: number,
+    ux: number, uy: number, uz: number,
+  ) {
+    if (!this.ctx) return;
+    const L = this.ctx.listener;
+    // Modern AudioParam API where available; deprecated setters as a fallback.
+    if ('positionX' in L && L.positionX) {
+      const t = this.ctx.currentTime;
+      L.positionX.setValueAtTime(px, t);
+      L.positionY.setValueAtTime(py, t);
+      L.positionZ.setValueAtTime(pz, t);
+      L.forwardX.setValueAtTime(fx, t);
+      L.forwardY.setValueAtTime(fy, t);
+      L.forwardZ.setValueAtTime(fz, t);
+      L.upX.setValueAtTime(ux, t);
+      L.upY.setValueAtTime(uy, t);
+      L.upZ.setValueAtTime(uz, t);
+    } else {
+      const legacy = L as unknown as {
+        setPosition: (x: number, y: number, z: number) => void;
+        setOrientation: (fx: number, fy: number, fz: number, ux: number, uy: number, uz: number) => void;
+      };
+      legacy.setPosition(px, py, pz);
+      legacy.setOrientation(fx, fy, fz, ux, uy, uz);
+    }
+  }
+
+  // Spatialized one-shot: same clips as play(), but routed through an HRTF panner
+  // at a world position so you can HEAR where another player is (their rail fire,
+  // a nearby frag). `volume` is the at-source level — the panner does the
+  // distance falloff. Announcer lines stay non-positional (centered UI cues).
+  playAt(name: SoundClipName, x: number, y: number, z: number, volume = 1) {
+    if (!this.ctx || !this.master) return;
+    if (ANNOUNCER_CLIPS.has(name)) {
+      this.play(name, volume);
+      return;
+    }
+    this.resume();
+    const bus = this.sfxBus ?? this.master;
+    const panner = this.makePanner(x, y, z);
+    panner.connect(bus);
+    const buf = this.buffers.get(name);
+    if (buf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const g = this.ctx.createGain();
+      g.gain.value = clamp01(volume);
+      src.connect(g).connect(panner);
+      src.start(0);
+      return;
+    }
+    switch (name) {
+      case 'fire': playProcRail(this.ctx, panner, volume); return;
+      case 'hit': playProcHit(this.ctx, panner, volume); return;
+      case 'kill': playProcKill(this.ctx, panner, volume); return;
+      case 'reload-ready': playProcReady(this.ctx, panner, volume); return;
+      default: this.play(name, volume); // non-spatial clips (announcer/TTS)
+    }
+  }
+
+  private makePanner(x: number, y: number, z: number): PannerNode {
+    const p = this.ctx!.createPanner();
+    p.panningModel = 'HRTF'; // binaural cues so direction is discernible on headphones
+    p.distanceModel = 'inverse';
+    p.refDistance = 8; // full level within ~8m
+    p.maxDistance = 100;
+    p.rolloffFactor = 1;
+    if ('positionX' in p && p.positionX) {
+      const t = this.ctx!.currentTime;
+      p.positionX.setValueAtTime(x, t);
+      p.positionY.setValueAtTime(y, t);
+      p.positionZ.setValueAtTime(z, t);
+    } else {
+      (p as unknown as { setPosition: (x: number, y: number, z: number) => void }).setPosition(x, y, z);
+    }
+    return p;
+  }
+
   // Crisp confirm ping for landing a rail — pitched up for headshots. Layered
   // on top of the kill sound so hits feel snappy.
   hitConfirm(headshot: boolean, volume = 1) {
