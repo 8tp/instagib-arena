@@ -3781,6 +3781,29 @@ function Lobby({
 
   const serverUrl = settings.serverUrl || defaultServerUrl();
   const lobbyRef = useRef<LobbyClient | null>(null);
+  // Presence anti-flicker: apply increases immediately, but hold a DECREASE for a
+  // short beat before showing it. A player switching menu↔match briefly drops one
+  // socket before the other connects, which would otherwise blip the count down
+  // and back up; this absorbs those transient dips so the live count stays steady.
+  const presenceRef = useRef<PresenceState | null>(null);
+  const presenceDipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const applyPresence = useCallback((p: PresenceState) => {
+    if (presenceDipTimer.current) {
+      clearTimeout(presenceDipTimer.current);
+      presenceDipTimer.current = null;
+    }
+    const cur = presenceRef.current;
+    if (!cur || p.online >= cur.online) {
+      presenceRef.current = p;
+      setPresence(p);
+    } else {
+      presenceDipTimer.current = setTimeout(() => {
+        presenceDipTimer.current = null;
+        presenceRef.current = p;
+        setPresence(p);
+      }, 1000);
+    }
+  }, []);
 
   const startOnline = useCallback(
     (roomId: string, mapId: string) =>
@@ -3805,7 +3828,7 @@ function Lobby({
         setInvite({ roomId: info.roomId, mapId: info.mapId });
       }
     };
-    lobby.onPresence = setPresence;
+    lobby.onPresence = applyPresence;
     lobby.onChatHistory = (m) => setChatLog(m.slice(-CHAT_LOG_MAX));
     lobby.onChat = (m) =>
       setChatLog((log) => {
@@ -3824,12 +3847,16 @@ function Lobby({
     return () => {
       lobby.dispose();
       lobbyRef.current = null;
+      if (presenceDipTimer.current) {
+        clearTimeout(presenceDipTimer.current);
+        presenceDipTimer.current = null;
+      }
     };
     // Reconnect (and re-bind onResolved → startOnline) when the Server URL
     // setting changes, so a custom URL isn't silently ignored until reload (#18).
     // playerName is handled by the cheap setName effect below — not a dep here,
-    // so typing a name doesn't churn the socket.
-  }, [serverUrl, startOnline]);
+    // so typing a name doesn't churn the socket. applyPresence is stable.
+  }, [serverUrl, startOnline, applyPresence]);
 
   // Keep the server-side display name fresh without reconnecting.
   useEffect(() => {

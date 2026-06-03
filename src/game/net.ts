@@ -107,6 +107,13 @@ type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number;
 type RespawnMessage = { type: 'respawn'; x: number; y: number; z: number; reason?: string };
 // In-game (room) chat broadcast — same shape as the lobby ChatMessage.
 type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
+// A rail beam fired by another player (origin → end), so we can render + sound it.
+type BeamMessage = {
+  type: 'beam';
+  id: string;
+  ox: number; oy: number; oz: number;
+  ex: number; ey: number; ez: number;
+};
 type ServerMessage =
   | WelcomeMessage
   | StateMessage
@@ -117,6 +124,7 @@ type ServerMessage =
   | VoteResultMessage
   | RoundMessage
   | RespawnMessage
+  | BeamMessage
   | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
   | { type: 'peer-joined'; clientId: string; name: string }
@@ -164,6 +172,11 @@ export type NetEvents = {
     spawn?: Vec3;
   }) => void;
   onChat?: (m: ChatMessage) => void; // in-game (room) chat broadcast
+  onBeam?: (b: {
+    id: string;
+    ox: number; oy: number; oz: number;
+    ex: number; ey: number; ez: number;
+  }) => void; // another player's rail beam → render + sound it
 };
 
 const RECONNECT_DELAY_MS = 1500;
@@ -654,6 +667,14 @@ export class NetClient {
         admin: msg.admin,
         verified: msg.verified,
         guest: msg.guest,
+      });
+      return;
+    }
+    if (msg.type === 'beam') {
+      this.events.onBeam?.({
+        id: msg.id,
+        ox: msg.ox, oy: msg.oy, oz: msg.oz,
+        ex: msg.ex, ey: msg.ey, ez: msg.ez,
       });
       return;
     }
