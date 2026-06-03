@@ -21,6 +21,7 @@ export type InputState = {
   firePressed: boolean;
   zoom: boolean; // held → narrow FOV
   scoreboard: boolean;
+  chatPressed: boolean; // edge: the chat key was just pressed (open the composer)
   yawDelta: number;
   pitchDelta: number;
 };
@@ -102,6 +103,18 @@ export type ToastEntry = {
   tier: MedalTier;
   remaining: number;
   total: number;
+};
+
+// One line in the in-game chat log. Identity is server-authoritative; `at` is a
+// Date.now() stamp used purely for the idle fade-out when the composer is closed.
+export type ChatLine = {
+  id: number;
+  name: string;
+  text: string;
+  admin: boolean;
+  verified: boolean;
+  guest: boolean;
+  at: number;
 };
 
 export type BannerState = {
@@ -235,6 +248,8 @@ export type HudState = {
   training: TrainingHud | null;
   // Play of the Match cinematic; non-null → replay playing, results deferred.
   pom: PomState | null;
+  // In-game chat: the composer's open state + the recent message log.
+  chat: { open: boolean; lines: ChatLine[] };
 };
 
 export type TrainingHud = {

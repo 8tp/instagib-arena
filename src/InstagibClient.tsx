@@ -58,6 +58,7 @@ import {
 import type {
   BannerState,
   CardPayload,
+  ChatLine,
   HitMarker,
   HudState,
   KillFlash,
@@ -248,6 +249,7 @@ type Settings = {
   nameColor: string; // equipped nameplate color (seen by others)
   spawnEffect: string; // equipped spawn-in effect
   reducedEffects: boolean; // accessibility: suppress camera shake + kill flash + heavy bursts
+  hideChat: boolean; // hide the in-game chat log + disable opening the composer
 };
 
 // Default the reduced-effects toggle to the OS "reduce motion" preference.
@@ -336,6 +338,7 @@ const DEFAULT_SETTINGS: Settings = {
   nameColor: DEFAULT_NAME_COLOR,
   spawnEffect: DEFAULT_SPAWN_EFFECT,
   reducedEffects: prefersReducedMotion(),
+  hideChat: false,
 };
 
 const SETTINGS_KEY = 'instagib-settings-v2';
@@ -650,6 +653,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setNameColor?.(s.nameColor);
   game.setSpawnEffect?.(s.spawnEffect);
   game.setReducedEffects?.(s.reducedEffects);
+  game.setHideChat?.(s.hideChat);
   game.setFpsLimit?.(s.fpsLimit);
 }
 
@@ -702,6 +706,7 @@ const INITIAL_HUD: HudState = {
   duel: null,
   training: null,
   pom: null,
+  chat: { open: false, lines: [] },
 };
 
 export default function InstagibClient() {
@@ -1083,6 +1088,15 @@ function GameView({
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
+      {/* In-game chat (online matches): message log + composer. Survives the
+          PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
+      {!settings.hideChat && config.mode === 'multiplayer' && (
+        <InGameChat
+          chat={hud.chat}
+          onSend={(t) => gameRef.current?.sendChat(t)}
+          onCancel={() => gameRef.current?.closeChat()}
+        />
+      )}
       {hud.pom && (
         <PlayOfTheMatchOverlay pom={hud.pom} settings={settings} />
       )}
@@ -2916,6 +2930,111 @@ function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
           <line x1='36' y1='36' x2='30' y2='30' />
         </g>
       </svg>
+    </div>
+  );
+}
+
+/* ───────────────────────── In-game chat (bottom-left) ───────────────────────── */
+
+// How long a chat line stays fully shown after it arrives (composer closed),
+// and how long it then fades out. While the composer is open, all lines show.
+const CHAT_LINE_FADE_MS = 9000;
+const CHAT_LINE_FADE_OUT_MS = 1200;
+
+function InGameChat({
+  chat,
+  onSend,
+  onCancel,
+}: {
+  chat: { open: boolean; lines: ChatLine[] };
+  onSend: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const [now, setNow] = useState(() => Date.now());
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Focus the composer the moment it opens; reset the draft on open/close.
+  useEffect(() => {
+    if (!chat.open) return;
+    setDraft('');
+    const id = window.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+  }, [chat.open]);
+
+  // Tick only while closed with visible lines, to drive the idle fade-out.
+  useEffect(() => {
+    if (chat.open || chat.lines.length === 0) return;
+    const t = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(t);
+  }, [chat.open, chat.lines.length]);
+
+  const visible = chat.lines
+    .map((l) => {
+      if (chat.open) return { l, opacity: 1 };
+      const age = now - l.at;
+      if (age >= CHAT_LINE_FADE_MS) return { l, opacity: 0 };
+      const opacity =
+        age > CHAT_LINE_FADE_MS - CHAT_LINE_FADE_OUT_MS
+          ? Math.max(0, (CHAT_LINE_FADE_MS - age) / CHAT_LINE_FADE_OUT_MS)
+          : 1;
+      return { l, opacity };
+    })
+    .filter((v) => v.opacity > 0.01);
+
+  if (!chat.open && visible.length === 0) return null;
+
+  const submit = () => {
+    const t = draft.trim();
+    setDraft('');
+    onSend(t); // empty just closes — game.sendChat ignores blank text
+  };
+
+  return (
+    <div className='pointer-events-none absolute bottom-24 left-6 z-30 flex w-[28rem] max-w-[44vw] flex-col gap-1 font-mono'>
+      {visible.map(({ l, opacity }) => (
+        <div
+          key={l.id}
+          style={{ opacity }}
+          className='w-fit max-w-full rounded bg-black/55 px-2.5 py-1 text-[12px] leading-snug backdrop-blur-sm transition-opacity'
+        >
+          <span
+            className={`mr-1.5 inline-flex items-center gap-0.5 font-semibold ${
+              l.guest ? 'text-white/55' : 'text-cyan-300/90'
+            }`}
+          >
+            {l.name}
+            <NameBadges admin={l.admin} verified={l.verified} size={11} />
+            <span className='text-white/30'>:</span>
+          </span>
+          <span className='break-words text-white/90'>{l.text}</span>
+        </div>
+      ))}
+      {chat.open && (
+        <div className='pointer-events-auto mt-1 flex items-center gap-2 rounded bg-black/70 px-2.5 py-2 backdrop-blur-sm'>
+          <span className='shrink-0 text-[11px] uppercase tracking-[0.2em] text-cyan-300/80'>Say</span>
+          <input
+            ref={inputRef}
+            value={draft}
+            maxLength={CHAT_CLIENT_MAX_LEN}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // Keep keystrokes out of the game's window listeners (belt-and-
+              // suspenders; the InputManager is already in chatting mode).
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onCancel();
+              }
+            }}
+            className='min-w-0 flex-1 bg-transparent text-[13px] text-white outline-none placeholder:text-white/35'
+            placeholder='Message your match — Enter to send, Esc to cancel'
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -5633,6 +5752,11 @@ function SettingsModal({
                 onChange={(v) => onChange({ ...settings, reducedEffects: v })}
               />
               <ToggleField
+                label='Hide chat'
+                value={settings.hideChat}
+                onChange={(v) => onChange({ ...settings, hideChat: v })}
+              />
+              <ToggleField
                 label='Bright enemies'
                 value={settings.enemyBright}
                 onChange={(v) => onChange({ ...settings, enemyBright: v })}
@@ -5647,8 +5771,10 @@ function SettingsModal({
               <div className='text-[10px] normal-case tracking-normal text-white/40'>
                 “Reduced effects” suppresses camera shake, the kill-flash, and heavy
                 explosions (uses small sparks instead) — defaults to your system’s
-                reduce-motion setting. “Bright enemies” makes opponents glow a color
-                you pick, for visibility / colorblindness.
+                reduce-motion setting. “Hide chat” hides the in-game chat log and
+                disables opening it (rebind the Chat key under Controls). “Bright
+                enemies” makes opponents glow a color you pick, for visibility /
+                colorblindness.
               </div>
             </Section>
           )}

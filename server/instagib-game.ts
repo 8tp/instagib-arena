@@ -1225,19 +1225,22 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
 
         case 'chat': {
-          // Global lobby chat. Only menu clients (listers) may send or receive;
-          // identity is server-authoritative; content is sanitized, length-
-          // capped, profanity-filtered, and rate-limited per sender.
-          if (!listers.has(record.id)) break;
-          // Sending requires a registered account — guests can read but not post,
-          // so every message ties to a moderated, profanity-checked identity that
-          // can be acted on later. (Guests still appear in the presence count.)
-          if (!record.playerId) {
+          // Two contexts share this message: a player IN A ROOM → match chat
+          // (everyone in the match, GMod-style); a menu client (lister) → the
+          // global lobby chat. Identity is server-authoritative; content is
+          // sanitized, length-capped, profanity-filtered, and rate-limited for
+          // both. In-room takes priority (joining a room drops you from listers).
+          const inRoom = !!record.roomId;
+          const inLobby = listers.has(record.id);
+          if (!inRoom && !inLobby) break;
+          const text = sanitizeChat(msg.text);
+          if (!text) break;
+          // Global lobby chat is accounts-only — anonymous broadcast is the abuse
+          // vector. Match chat allows everyone (guests show as their room name).
+          if (!inRoom && !record.playerId) {
             sendRaw(socket, { type: 'chat-rejected', reason: 'account' });
             break;
           }
-          const text = sanitizeChat(msg.text);
-          if (!text) break;
           if (ts - record.chatWindowStart >= CHAT_RATE_WINDOW_MS) {
             record.chatWindowStart = ts;
             record.chatCount = 0;
@@ -1254,19 +1257,24 @@ export function attachInstagibWs(wss: WebSocketServer) {
           const out: ChatBroadcast = {
             type: 'chat',
             id: (chatSeq += 1),
-            name: record.name, // server-authoritative account username
+            name: record.name, // server-authoritative (account username or "Guest N")
             text,
             ts,
             admin: record.admin,
             verified: record.verified,
-            guest: false,
+            guest: !record.playerId,
           };
-          chatHistory.push(out);
-          if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
-          const payload = JSON.stringify(out);
-          for (const lid of listers) {
-            const c = clients.get(lid);
-            if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+          if (inRoom) {
+            const room = rooms.get(record.roomId!);
+            if (room) broadcastRoom(room, out); // sender included → sees own line
+          } else {
+            chatHistory.push(out);
+            if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
+            const payload = JSON.stringify(out);
+            for (const lid of listers) {
+              const c = clients.get(lid);
+              if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+            }
           }
           break;
         }

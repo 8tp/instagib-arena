@@ -105,6 +105,8 @@ type RoundMessage = {
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
 type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number; spawn?: Vec3 };
 type RespawnMessage = { type: 'respawn'; x: number; y: number; z: number; reason?: string };
+// In-game (room) chat broadcast — same shape as the lobby ChatMessage.
+type ChatBroadcastMessage = { type: 'chat' } & ChatMessage;
 type ServerMessage =
   | WelcomeMessage
   | StateMessage
@@ -115,6 +117,7 @@ type ServerMessage =
   | VoteResultMessage
   | RoundMessage
   | RespawnMessage
+  | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
   | { type: 'peer-joined'; clientId: string; name: string }
   | { type: 'peer-left'; clientId: string }
@@ -160,6 +163,7 @@ export type NetEvents = {
     resumeAtClient: number;
     spawn?: Vec3;
   }) => void;
+  onChat?: (m: ChatMessage) => void; // in-game (room) chat broadcast
 };
 
 const RECONNECT_DELAY_MS = 1500;
@@ -303,6 +307,13 @@ export class NetClient {
 
   sendVote(mapId: string) {
     this.send({ type: 'vote', mapId });
+  }
+
+  // In-game chat to the match room. Server sanitizes/profanity-filters/rate-limits
+  // and stamps the authoritative sender identity, then broadcasts to the room
+  // (sender included), so we render our own line from the echo.
+  sendChat(text: string) {
+    this.send({ type: 'chat', text });
   }
 
   // Server-authoritative, lag-compensated shot. We send the ray + the wall
@@ -610,6 +621,18 @@ export class NetClient {
       // Interpolation drops them once they fall out of fresh snapshots.
       this.remotes.delete(msg.clientId);
       this.emit();
+      return;
+    }
+    if (msg.type === 'chat') {
+      this.events.onChat?.({
+        id: msg.id,
+        name: msg.name,
+        text: msg.text,
+        ts: msg.ts,
+        admin: msg.admin,
+        verified: msg.verified,
+        guest: msg.guest,
+      });
       return;
     }
   }

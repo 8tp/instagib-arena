@@ -81,7 +81,7 @@ import {
   SPAWN_EFFECTS,
   type KillEffectStyle,
 } from './cosmetics';
-import { NetClient, type KillEvent } from './net';
+import { NetClient, type KillEvent, type ChatMessage } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
 import {
@@ -104,6 +104,7 @@ import type {
   AABB,
   BannerState,
   CardPayload,
+  ChatLine,
   DuelHud,
   HitMarker,
   HudState,
@@ -265,6 +266,12 @@ export class Game {
   private replaySegIdx = 0;
   private pom: PomState | null = null;
   private pomOnDone: (() => void) | null = null;
+  // In-game chat (online matches only). chatOpen = composer showing; chatLines =
+  // recent log (server-authoritative, capped). hideChat mirrors the setting.
+  private chatOpen = false;
+  private chatLines: ChatLine[] = [];
+  private nextChatLineId = 1;
+  private hideChat = false;
   private endWon = false; // win/loss latched for the end-of-match cinematic
   private verdictSpoken = false; // guards the one-shot VICTORY/DEFEAT callout
   private nextEventId = 1;
@@ -360,6 +367,9 @@ export class Game {
       canvas,
       (locked) => {
         this.locked = locked;
+        // Losing the pointer (Esc / alt-tab) closes the chat composer too — Esc
+        // can't be intercepted before the browser exits pointer lock.
+        if (!locked && this.chatOpen) this.closeChat();
         this.emitHud();
         if (locked) this.audio.resume();
       },
@@ -408,6 +418,53 @@ export class Game {
 
   setKeybinds(binds: Record<KeybindAction, string>) {
     this.input.setBindings(binds);
+  }
+
+  // ── In-game chat (online only) ────────────────────────────────────────
+  setHideChat(on: boolean) {
+    this.hideChat = on;
+    if (on && this.chatOpen) this.closeChat();
+  }
+
+  // Open the chat composer: only in a live online match, and never over the
+  // killcam/results/vote/replay. Keyboard input is routed to the chat box (the
+  // pointer stays locked; the game ignores keys via input.setChatting).
+  openChat() {
+    if (this.hideChat || !this.net || this.chatOpen) return;
+    if (!this.locked || this.matchOver || this.vote || this.killcam || this.replay) return;
+    this.chatOpen = true;
+    this.input.setChatting(true);
+    this.emitHud();
+  }
+
+  closeChat() {
+    if (!this.chatOpen) return;
+    this.chatOpen = false;
+    this.input.setChatting(false);
+    this.emitHud();
+  }
+
+  // Send a chat line to the match room (server validates + echoes it back, so we
+  // render our own message from handleNetChat — never optimistically).
+  sendChat(text: string) {
+    const t = text.trim();
+    if (t) this.net?.sendChat(t);
+    this.closeChat();
+  }
+
+  // Server-authoritative incoming chat line → append to the capped log.
+  private handleNetChat(m: ChatMessage) {
+    this.chatLines.push({
+      id: this.nextChatLineId++,
+      name: m.name,
+      text: m.text,
+      admin: m.admin,
+      verified: m.verified,
+      guest: m.guest,
+      at: Date.now(),
+    });
+    if (this.chatLines.length > 8) this.chatLines.shift();
+    this.emitHud();
   }
 
   setFov(fov: number) {
@@ -827,6 +884,7 @@ export class Game {
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
           onRound: (r) => this.handleNetRound(r),
+          onChat: (m) => this.handleNetChat(m),
         },
       });
       this.net.connect();
@@ -1338,6 +1396,7 @@ export class Game {
 
     const input = this.input.consume();
     this.wantZoom = input.zoom;
+    if (input.chatPressed) this.openChat(); // open the composer (guards inside)
     const dead = this.killcam !== null;
 
     // While dead, movement is frozen — the camera is owned by the killcam in
@@ -2300,6 +2359,7 @@ export class Game {
       duel: this.duel ? { ...this.duel } : null,
       training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
       pom: this.pom ? { ...this.pom } : null,
+      chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
     });
   }
 
