@@ -225,7 +225,13 @@ export const DEFAULT_VERT_SCALE = 1.0; // pitch multiplier
 export const MIN_VERT_SCALE = 0.3;
 export const MAX_VERT_SCALE = 2.0;
 export const DEFAULT_RAW_INPUT = true; // pointer-lock unadjustedMovement (no OS accel)
-export const MAX_LOOK_DELTA_PX = 2000; // per-event spurious-delta cap
+// Per-event glitch guard. Expressed as a MAX ROTATION (degrees) rather than raw
+// counts/px so it is sensitivity-independent: a low cm/360 player legitimately
+// produces tens of thousands of counts per flick, while a cursor-warp / driver
+// spike implies an impossible rotation. Generous (3 full turns) so no human
+// flick — even one coalesced into a single event during a frame hitch — is ever
+// dropped; only degenerate (NaN/Infinity/warp) deltas are.
+export const MAX_LOOK_DELTA_DEG = 1080;
 export const DEFAULT_FOV = 90;
 export const DEFAULT_VOLUME = 0.7;
 export const MIN_FOV = 60;

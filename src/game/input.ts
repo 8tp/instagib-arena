@@ -4,15 +4,19 @@ import {
   DEFAULT_SENSITIVITY,
   DEFAULT_VERT_SCALE,
   M_YAW_DEG,
-  MAX_LOOK_DELTA_PX,
+  MAX_LOOK_DELTA_DEG,
   type KeybindAction,
 } from './constants';
 import type { InputState } from './types';
 
-// Chrome/Edge report movementX/Y in PHYSICAL pixels (scale with
+const MAX_LOOK_DELTA_RAD = (MAX_LOOK_DELTA_DEG * Math.PI) / 180;
+
+// OS-adjusted Chrome/Edge report movementX/Y in PHYSICAL pixels (scale with
 // devicePixelRatio / browser zoom); Firefox reports CSS pixels already. We
-// divide by DPR only on Chromium so the same hand motion = same rotation on a
-// 1080p and a 4K/retina display. (W3C pointerlock issue #42.)
+// divide by DPR only on OS-adjusted Chromium so the same hand motion = same
+// rotation on a 1080p and a 4K/retina display. (W3C pointerlock issue #42.)
+// RAW (unadjustedMovement) deltas are device counts, NOT pixels — they are
+// DPR-independent — so they must NOT be divided; see normMovement.
 const IS_CHROMIUM =
   typeof navigator !== 'undefined' &&
   (((navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } })
@@ -125,7 +129,11 @@ export class InputManager {
   }
 
   private normMovement(raw: number): number {
-    if (!IS_CHROMIUM) return raw;
+    // Raw (unadjustedMovement) deltas are already device counts and DPR-
+    // independent — dividing them would shrink sensitivity by the DPR factor on
+    // HiDPI/retina and throw cm/360 off by that same factor. Only DPR-normalize
+    // OS-adjusted Chromium movement, which is reported in physical pixels.
+    if (!IS_CHROMIUM || this.rawInputActive) return raw;
     const dpr = window.devicePixelRatio || 1;
     return raw / dpr;
   }
@@ -237,11 +245,16 @@ export class InputManager {
     }
     const mx = this.normMovement(e.movementX);
     const my = this.normMovement(e.movementY);
-    // Per-event sanity cap so a glitchy spike can't whip the view around.
-    if (Math.abs(mx) > MAX_LOOK_DELTA_PX || Math.abs(my) > MAX_LOOK_DELTA_PX) return;
     const r = this.radPerCount * this.lookScale;
-    this.accumYaw += mx * r;
-    this.accumPitch += my * r * this.vertScale;
+    const dyaw = mx * r;
+    const dpitch = my * r * this.vertScale;
+    // Per-event glitch guard on the resulting ROTATION (sensitivity-independent):
+    // drop NaN/Infinity and impossible cursor-warp/driver spikes, but never a
+    // real flick — even a low-sens one coalesced into a single event.
+    if (!Number.isFinite(dyaw) || !Number.isFinite(dpitch)) return;
+    if (Math.abs(dyaw) > MAX_LOOK_DELTA_RAD || Math.abs(dpitch) > MAX_LOOK_DELTA_RAD) return;
+    this.accumYaw += dyaw;
+    this.accumPitch += dpitch;
   };
 
   private onMousedown = (e: MouseEvent) => {
