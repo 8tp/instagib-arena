@@ -63,14 +63,29 @@ export function arenaNet(id: string): ArenaNetData {
   return ARENA_NET[id] ?? ARENA_NET[DEFAULT_ARENA_ID];
 }
 
-// Maps offered in public Quick-Match auto-rooms and as end-of-match vote
-// options. Mirrors the client's quick pool; excludes the single-player-only
-// training range. Larger maps lead (FFA/TDM); the 1v1 duel maps round it out.
-export const ONLINE_MAP_POOL = ['causeway', 'reactor', 'lounge', 'containeryard', 'derrick'] as const;
+// Maps offered in public Quick-Match auto-rooms and end-of-match votes, split by
+// mode. containeryard (26×22) and derrick (24×24) are tight 1v1 arenas — far too
+// small for free-for-all — so FFA/TDM (the main queue) use only the large maps,
+// and duel gets the small ones. The single-player training range is excluded.
+export const FFA_MAP_POOL = ['causeway', 'reactor', 'lounge'] as const; // large — FFA + TDM
+export const DUEL_MAP_POOL = ['containeryard', 'derrick'] as const; // small — 1v1
+// Every online map (mode-agnostic uses: known-arena checks, etc.).
+export const ONLINE_MAP_POOL = [...FFA_MAP_POOL, ...DUEL_MAP_POOL] as const;
+
+// The map pool for a given mode. Duel → tight arenas; everything else → large.
+export function mapPoolForMode(mode: string): readonly string[] {
+  return mode === 'duel' ? DUEL_MAP_POOL : FFA_MAP_POOL;
+}
 
 // ── Lobby / match networking constants (server + client share these) ───────
 export const MAP_VOTE_DURATION_SEC = 15; // how long the end-of-match vote runs
-export const MAP_VOTE_OPTIONS = 3; // map choices presented in the vote
+export const MAP_VOTE_OPTIONS = 3; // max map choices presented in the vote
+// The map vote is held open this long PAST the match-end moment before its timer
+// can lapse, so the (non-skippable) Play-of-the-Match cinematic always finishes
+// first and players get the full vote window after it. Must exceed the longest
+// possible PotG: finale (≤1.6s clip @0.5x = 3.2s + 1.9s freeze ≈ 5.1s) + highlight
+// (≤8s) ≈ 13.1s, so 14s covers it with margin. (See replay.ts CLIP_MAX_SEC.)
+export const POTG_GUARD_SEC = 14;
 export const POST_MATCH_RESET_SEC = 4; // delay after vote result before resume
 export const ROOM_CODE_LEN = 5; // invite-code / room-id length
 

@@ -100,9 +100,10 @@ type RoundMessage = {
   roundWins: Record<string, number>;
   winnerId: string | null; // who won the round that just ended
   resumeAt: number; // server-clock ms; play resumes after this breather
+  spawn?: Vec3; // this client's server-assigned fresh-round spawn
 };
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
-type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number };
+type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number; spawn?: Vec3 };
 type RespawnMessage = { type: 'respawn'; x: number; y: number; z: number; reason?: string };
 type ServerMessage =
   | WelcomeMessage
@@ -151,17 +152,31 @@ export type NetEvents = {
     winnerTeam: number | null;
   }) => void;
   onVoteUpdate?: (counts: Record<string, number>) => void;
-  onVoteResult?: (r: { mapId: string; resumeAtClient: number }) => void;
+  onVoteResult?: (r: { mapId: string; resumeAtClient: number; spawn?: Vec3 }) => void;
   onRound?: (r: {
     roundNum: number;
     roundWins: Record<string, number>;
     winnerId: string | null;
     resumeAtClient: number;
+    spawn?: Vec3;
   }) => void;
 };
 
 const RECONNECT_DELAY_MS = 1500;
 const PING_INTERVAL_MS = 1000;
+// The lobby socket heartbeats this often so the server's idle-client sweep
+// (STALE_CLIENT_TIMEOUT_MS = 10s) never reaps a player just sitting in the menu —
+// that reap was what made the "online" chip flicker every ~10s as the socket
+// dropped and reconnected. Comfortably under the 10s timeout.
+const LOBBY_PING_MS = 5000;
+// Keep showing the last "online" status through a brief drop+reconnect so a
+// transient blip doesn't flash the chip to "offline". If we're still down after
+// this, surface it.
+const LOBBY_STATUS_GRACE_MS = 4000;
+// Bounded dead-reckoning when the snapshot buffer runs dry (packet loss / a
+// frame hitch): extrapolate a remote from its last known velocity for up to this
+// long instead of freezing in place, then snapping when data resumes.
+const EXTRAPOLATION_CAP_MS = 120;
 // Render remote players this far in the past so we always have two snapshots to
 // interpolate between (covers the 31.25ms snapshot interval + jitter). The
 // server rewinds to the same render time when resolving our shots, so what we
@@ -368,6 +383,29 @@ export class NetClient {
       return;
     }
 
+    // Buffer underrun (packet loss / a render hitch): renderT is past our newest
+    // snapshot. Dead-reckon each remote from the last two snapshots' velocity for
+    // a short, capped window so they keep gliding instead of freezing then
+    // snapping when data resumes. Yaw holds at the latest — extrapolated angle
+    // overshoot reads worse than a still head.
+    const newest = buf[buf.length - 1];
+    if (renderT > newest.t && buf.length >= 2) {
+      const prev = buf[buf.length - 2];
+      const dtPrev = newest.t - prev.t;
+      const ahead = Math.min(renderT - newest.t, EXTRAPOLATION_CAP_MS);
+      const k = dtPrev > 0 ? ahead / dtPrev : 0;
+      for (const [id, b] of newest.players) {
+        if (id === this.clientId) continue;
+        const a = prev.players.get(id);
+        const pos: Vec3 = a
+          ? { x: b.x + (b.x - a.x) * k, y: b.y + (b.y - a.y) * k, z: b.z + (b.z - a.z) * k }
+          : { x: b.x, y: b.y, z: b.z };
+        next.set(id, this.snapFor(b, pos, b.yaw, now));
+      }
+      this.remotes = next;
+      return;
+    }
+
     // Find the two snapshots straddling renderT.
     let older: BufferedSnapshot | null = null;
     let newer: BufferedSnapshot | null = null;
@@ -392,28 +430,35 @@ export class NetClient {
       const pos: Vec3 = a
         ? { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f }
         : { x: b.x, y: b.y, z: b.z };
-      next.set(id, {
-        id,
-        name: b.name ?? id,
-        pos,
-        yaw: a ? lerpAngle(a.yaw, b.yaw, f) : b.yaw,
-        pitch: b.pitch ?? 0,
-        frags: b.frags ?? 0,
-        deaths: b.deaths ?? 0,
-        invulnMs: b.invulnMs ?? 0,
-        team: b.team ?? null,
-        hat: b.hat ?? 'hat.none',
-        unusual: b.unusual ?? 'unusual.none',
-        emote: b.emote ?? 'emote.cheer',
-        nameColor: b.nameColor ?? 'name.default',
-        spawnEffect: b.spawnEffect ?? 'spawn.beam',
-        ping: b.ping ?? 0,
-        admin: b.admin ?? false,
-        verified: b.verified ?? false,
-        receivedAt: now,
-      });
+      next.set(id, this.snapFor(b, pos, a ? lerpAngle(a.yaw, b.yaw, f) : b.yaw, now));
     }
     this.remotes = next;
+  }
+
+  // Build the public remote snapshot from a server StatePlayer plus a resolved
+  // position/yaw (interpolated or extrapolated). Centralized so the interp and
+  // dead-reckoning paths stay in sync.
+  private snapFor(b: StatePlayer, pos: Vec3, yaw: number, now: number): RemotePlayerSnapshot {
+    return {
+      id: b.id,
+      name: b.name ?? b.id,
+      pos,
+      yaw,
+      pitch: b.pitch ?? 0,
+      frags: b.frags ?? 0,
+      deaths: b.deaths ?? 0,
+      invulnMs: b.invulnMs ?? 0,
+      team: b.team ?? null,
+      hat: b.hat ?? 'hat.none',
+      unusual: b.unusual ?? 'unusual.none',
+      emote: b.emote ?? 'emote.cheer',
+      nameColor: b.nameColor ?? 'name.default',
+      spawnEffect: b.spawnEffect ?? 'spawn.beam',
+      ping: b.ping ?? 0,
+      admin: b.admin ?? false,
+      verified: b.verified ?? false,
+      receivedAt: now,
+    };
   }
 
   private startPing() {
@@ -547,6 +592,7 @@ export class NetClient {
         roundWins: msg.roundWins,
         winnerId: msg.winnerId ?? null,
         resumeAtClient,
+        spawn: msg.spawn,
       });
       return;
     }
@@ -557,7 +603,7 @@ export class NetClient {
     if (msg.type === 'vote-result') {
       this.setResume(msg.resumeAt);
       const resumeAtClient = Date.now() + (msg.resumeAt - this.estimatedServerNow());
-      this.events.onVoteResult?.({ mapId: msg.mapId, resumeAtClient });
+      this.events.onVoteResult?.({ mapId: msg.mapId, resumeAtClient, spawn: msg.spawn });
       return;
     }
     if (msg.type === 'peer-left') {
@@ -636,6 +682,9 @@ export class LobbyClient {
   private name: string;
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private graceTimer: ReturnType<typeof setTimeout> | null = null;
+  private uiStatus: LobbyStatus = 'connecting'; // last status surfaced to onStatus
   onRooms: (rooms: LobbyRoom[]) => void = () => {};
   onStatus: (s: LobbyStatus) => void = () => {};
   onResolved: (info: { roomId: string; mapId: string; kind: 'created' | 'matched'; isPublic?: boolean }) => void =
@@ -654,19 +703,33 @@ export class LobbyClient {
     this.name = name;
   }
 
+  // Surface a status to the UI at most once per change.
+  private setStatus(s: LobbyStatus) {
+    if (this.uiStatus === s) return;
+    this.uiStatus = s;
+    this.onStatus(s);
+  }
+
   connect() {
     if (this.disposed) return;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    // Only show "connecting" on a cold start — during a brief reconnect we keep
+    // the last "open" status (covered by the grace timer) so the chip doesn't
+    // flicker to "linking"/"offline" and back.
+    if (this.uiStatus !== 'open') this.setStatus('connecting');
     try {
-      this.onStatus('connecting');
       this.ws = new WebSocket(this.url);
     } catch {
-      this.onStatus('error');
-      this.scheduleReconnect();
+      this.handleDrop();
       return;
     }
     this.ws.onopen = () => {
-      this.onStatus('open');
+      if (this.graceTimer) {
+        clearTimeout(this.graceTimer);
+        this.graceTimer = null;
+      }
+      this.setStatus('open');
+      this.startHeartbeat();
       this.send({ type: 'hello', name: this.name });
       this.send({ type: 'list' });
     };
@@ -728,10 +791,43 @@ export class LobbyClient {
     };
     this.ws.onclose = () => {
       this.ws = null;
-      this.onStatus('closed');
-      this.scheduleReconnect();
+      this.handleDrop();
     };
-    this.ws.onerror = () => this.onStatus('error');
+    this.ws.onerror = () => {
+      // onclose follows onerror; let handleDrop there do the work (with grace).
+    };
+  }
+
+  // Socket dropped: keep the heartbeat off, hold "online" for a grace window so a
+  // quick reconnect doesn't flicker the chip, and schedule the reconnect.
+  private handleDrop() {
+    this.stopHeartbeat();
+    if (this.disposed) return;
+    if (this.uiStatus === 'open') {
+      if (!this.graceTimer) {
+        this.graceTimer = setTimeout(() => {
+          this.graceTimer = null;
+          this.setStatus('closed');
+        }, LOBBY_STATUS_GRACE_MS);
+      }
+    } else {
+      this.setStatus('closed');
+    }
+    this.scheduleReconnect();
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.pingTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) this.send({ type: 'ping', ts: Date.now() });
+    }, LOBBY_PING_MS);
+  }
+
+  private stopHeartbeat() {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
   }
 
   refresh() {
@@ -772,6 +868,9 @@ export class LobbyClient {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.graceTimer) clearTimeout(this.graceTimer);
+    this.graceTimer = null;
+    this.stopHeartbeat();
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;

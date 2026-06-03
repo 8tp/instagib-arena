@@ -34,10 +34,11 @@ import {
   ARENA_NET,
   arenaNet,
   isOutOfBounds,
-  ONLINE_MAP_POOL,
+  mapPoolForMode,
   DEFAULT_ARENA_ID,
   MAP_VOTE_DURATION_SEC,
   MAP_VOTE_OPTIONS,
+  POTG_GUARD_SEC,
   POST_MATCH_RESET_SEC,
   ROOM_CODE_LEN,
 } from '../src/game/arena-data';
@@ -447,7 +448,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
       id: genRoomCode(),
       name: opts.name,
       mode: opts.mode,
-      mapId: isKnownArena(opts.mapId) ? opts.mapId : DEFAULT_ARENA_ID,
+      // Enforce the mode's map pool server-side: a duel can't be created on a
+      // huge FFA map and FFA can't be created on a tight 1v1 arena, regardless
+      // of what the client requested.
+      mapId:
+        isKnownArena(opts.mapId) && mapPoolForMode(opts.mode).includes(opts.mapId)
+          ? opts.mapId
+          : mapPoolForMode(opts.mode)[0] ?? DEFAULT_ARENA_ID,
       isPublic: opts.isPublic,
       capacity,
       hostId: opts.hostId,
@@ -843,22 +850,32 @@ export function attachInstagibWs(wss: WebSocketServer) {
     winnerTeam: number | null = null,
   ) => {
     room.state = 'voting';
-    const pool: string[] = ONLINE_MAP_POOL.filter((m) => m !== room.mapId);
-    // Shuffle and take the first N as the ballot.
-    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    // Ballot from THIS mode's pool (duel = small arenas, FFA/TDM = large), with
+    // the current map dropped for variety. If that leaves fewer than two choices
+    // (the 2-map duel pool), fall back to the full pool so there's still a real
+    // vote (re-running the current map is then a valid option).
+    const pool = mapPoolForMode(room.mode);
+    let candidates = pool.filter((m) => m !== room.mapId);
+    if (candidates.length < 2 && pool.length >= 2) candidates = [...pool];
+    const shuffled = candidates.sort(() => Math.random() - 0.5);
     const options: string[] = shuffled.slice(0, Math.min(MAP_VOTE_OPTIONS, shuffled.length));
     if (options.length === 0) options.push(room.mapId);
+    // Hold the vote open past the Play-of-the-Match cinematic (which is now
+    // non-skippable) so its timer never lapses mid-replay; players get the full
+    // MAP_VOTE_DURATION after PotG. The client hides the vote UI behind the
+    // replay and clamps the displayed countdown to MAP_VOTE_DURATION.
+    const endsAt = Date.now() + (POTG_GUARD_SEC + MAP_VOTE_DURATION_SEC) * 1000;
     room.vote = {
       options,
       votes: new Map(),
-      endsAt: Date.now() + MAP_VOTE_DURATION_SEC * 1000,
+      endsAt,
       winnerId,
       winnerTeam,
     };
     broadcastRoom(room, {
       type: 'vote-start',
       options,
-      endsAt: room.vote.endsAt,
+      endsAt,
       durationMs: MAP_VOTE_DURATION_SEC * 1000,
       winnerId,
       winnerTeam,
@@ -908,11 +925,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
       if (room.mode === 'duel') room.roundWins.set(id, 0);
     }
-    broadcastRoom(room, {
-      type: 'vote-result',
-      mapId: winner,
-      resumeAt: room.resumeAt,
-    });
+    // Per-client so each gets their OWN server-assigned spawn — otherwise every
+    // client would self-pick the same default spot and stack on one spawn.
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (!c) continue;
+      sendRaw(c.socket, {
+        type: 'vote-result',
+        mapId: winner,
+        resumeAt: room.resumeAt,
+        spawn: { ...c.pos },
+      });
+    }
     broadcastRoomList();
   };
 
@@ -935,13 +959,19 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
     const roundWins: Record<string, number> = {};
     for (const [id, w] of room.roundWins) roundWins[id] = w;
-    broadcastRoom(room, {
-      type: 'round',
-      roundNum: room.roundNum,
-      roundWins,
-      winnerId: lastWinnerId,
-      resumeAt: room.resumeAt,
-    });
+    // Per-client so each duelist gets their OWN server spawn (not the same one).
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (!c) continue;
+      sendRaw(c.socket, {
+        type: 'round',
+        roundNum: room.roundNum,
+        roundWins,
+        winnerId: lastWinnerId,
+        resumeAt: room.resumeAt,
+        spawn: { ...c.pos },
+      });
+    }
   };
 
   // ── Shooting ──────────────────────────────────────────────────────────
@@ -1295,7 +1325,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
               sendRaw(socket, { type: 'join-failed', reason: 'rate' });
               break;
             }
-            const mapId = ONLINE_MAP_POOL[Math.floor(Math.random() * ONLINE_MAP_POOL.length)];
+            const pool = mapPoolForMode(mode);
+            const mapId = pool[Math.floor(Math.random() * pool.length)];
             target = createRoom({
               name: mode === 'duel' ? 'Quick Duel' : mode === 'tdm' ? 'Quick TDM' : 'Quick Match',
               mode,

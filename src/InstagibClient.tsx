@@ -980,10 +980,6 @@ function GameView({
     gameRef.current?.voteForMap(mapId);
   }, []);
 
-  const skipPom = useCallback(() => {
-    gameRef.current?.skipPlayOfMatch?.();
-  }, []);
-
   // Apply live preference changes to the running game.
   useEffect(() => {
     const game = gameRef.current;
@@ -1088,7 +1084,7 @@ function GameView({
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
       {hud.pom && (
-        <PlayOfTheMatchOverlay pom={hud.pom} onSkip={skipPom} settings={settings} />
+        <PlayOfTheMatchOverlay pom={hud.pom} settings={settings} />
       )}
       {hud.vote && !onlineResults && !hud.pom && (
         <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />
@@ -2163,11 +2159,9 @@ function ReplayKillMarker({ hitId, headshot }: { hitId: number; headshot: boolea
 
 function PlayOfTheMatchOverlay({
   pom,
-  onSkip,
   settings,
 }: {
   pom: PomState;
-  onSkip: () => void;
   settings: Settings;
 }) {
   const reduced = settings.reducedEffects;
@@ -2180,17 +2174,8 @@ function PlayOfTheMatchOverlay({
     const t = setTimeout(() => setTitleVisible(false), 1900);
     return () => clearTimeout(t);
   }, [pom.phase]);
-  // Skip on Esc / Enter / Space, matching the on-screen button.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        onSkip();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onSkip]);
+  // The Play-of-the-Match cinematic is intentionally NOT skippable — it always
+  // plays to completion, and the map vote opens after it (see POTG_GUARD_SEC).
 
   const pct = pom.total > 0 ? Math.max(0, Math.min(100, (1 - pom.remaining / pom.total) * 100)) : 0;
   const barH = reduced ? '8vh' : '11vh';
@@ -2227,7 +2212,7 @@ function PlayOfTheMatchOverlay({
         </div>
       )}
 
-      {/* Play of the Match: title + lower-third + skip. */}
+      {/* Play of the Match: title + lower-third. */}
       {isPotg && (
         <>
           <div
@@ -2248,13 +2233,6 @@ function PlayOfTheMatchOverlay({
               {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
             </div>
           </div>
-
-          <button
-            onClick={onSkip}
-            className='pointer-events-auto absolute right-[4vw] bottom-[14vh] rounded-lg border border-white/25 bg-black/50 px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.2em] text-white/85 backdrop-blur-sm transition hover:bg-white/10'
-          >
-            Skip ▸
-          </button>
         </>
       )}
 

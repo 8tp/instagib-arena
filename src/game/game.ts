@@ -934,7 +934,7 @@ export class Game {
     }
   }
 
-  private handleVoteResult(r: { mapId: string; resumeAtClient: number }) {
+  private handleVoteResult(r: { mapId: string; resumeAtClient: number; spawn?: { x: number; y: number; z: number } }) {
     this.vote = null;
     // The clip is normally done by the time the vote resolves; finish it
     // defensively (no-op if not playing) so a fresh match starts clean.
@@ -953,13 +953,15 @@ export class Game {
     this.wonLastMatch = false;
     this.resetMatchDrama();
     const desired = mapById(r.mapId);
-    if (desired !== this.map) {
-      this.setMap(desired);
-    } else {
-      // Same map → still respawn fresh (player radius so we don't clip a box).
-      this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
-      this.player.vel = { x: 0, y: 0, z: 0 };
-    }
+    if (desired !== this.map) this.setMap(desired);
+    // Use the server-assigned spawn (distributed per player) so everyone doesn't
+    // land on the same default spot. Fall back to a local pick only if the server
+    // didn't send one (e.g. an older server).
+    this.player.pos = r.spawn
+      ? { x: r.spawn.x, y: r.spawn.y, z: r.spawn.z }
+      : { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
     this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
     this.banner = {
       id: this.nextEventId++,
@@ -985,6 +987,7 @@ export class Game {
     roundWins: Record<string, number>;
     winnerId: string | null;
     resumeAtClient: number;
+    spawn?: { x: number; y: number; z: number };
   }) {
     const myId = this.net?.clientId ?? '';
     const myWins = r.roundWins[myId] ?? 0;
@@ -1001,7 +1004,10 @@ export class Game {
     this.playerFrags = 0;
     this.playerDeaths = 0;
     this.resetMatchDrama();
-    this.player.pos = { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
+    // Server-assigned per-duelist spawn (so both don't land on the same spot).
+    this.player.pos = r.spawn
+      ? { x: r.spawn.x, y: r.spawn.y, z: r.spawn.z }
+      : { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
     this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
@@ -1909,11 +1915,6 @@ export class Game {
     this.pomOnDone = null;
     done?.();
     this.emitHud(); // push pom:null so the overlay clears and results show
-  }
-
-  // Public: skip the cinematic (Skip button / Esc) — jump straight to results.
-  skipPlayOfMatch() {
-    this.finishPlayOfMatch();
   }
 
   private collectStats(won: boolean): MatchResult {
