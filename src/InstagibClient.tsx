@@ -3779,7 +3779,11 @@ function Lobby({
   const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
   const [chatNotice, setChatNotice] = useState<string | null>(null);
 
-  const serverUrl = settings.serverUrl || defaultServerUrl();
+  // A custom server URL is a dev/LAN-only convenience. In production we ALWAYS
+  // use the same-origin server and ignore any persisted/imported serverUrl, so
+  // the live client can't be pointed at another server (the setting is hidden).
+  const serverUrl =
+    import.meta.env.DEV && settings.serverUrl ? settings.serverUrl : defaultServerUrl();
   const lobbyRef = useRef<LobbyClient | null>(null);
   // Presence anti-flicker: apply increases immediately, but hold a DECREASE for a
   // short beat before showing it. A player switching menu↔match briefly drops one
@@ -5821,12 +5825,16 @@ function SettingsModal({
                 }
                 onChange={() => {}}
               />
-              <TextField
-                label='Server URL (blank = this server)'
-                value={settings.serverUrl}
-                placeholder='wss://your-server.example/ws/instagib'
-                onChange={(v) => onChange({ ...settings, serverUrl: v.trim() })}
-              />
+              {/* Custom server URL is dev/LAN-only — hidden in production, where
+                  the client always uses the same-origin server (see serverUrl). */}
+              {import.meta.env.DEV && (
+                <TextField
+                  label='Server URL (blank = this server)'
+                  value={settings.serverUrl}
+                  placeholder='wss://your-server.example/ws/instagib'
+                  onChange={(v) => onChange({ ...settings, serverUrl: v.trim() })}
+                />
+              )}
               <SettingsShare settings={settings} onImport={onChange} />
             </Section>
           )}
