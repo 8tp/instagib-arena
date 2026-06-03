@@ -33,6 +33,7 @@ import {
   MAX_PLAYERS,
   MAX_TOASTS,
   NUM_BOTS,
+  PITCH_LIMIT,
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
   KILL_FLASH_DURATION_SEC,
@@ -1078,6 +1079,10 @@ export class Game {
       if (this.disposed) return;
       const dt = Math.min(0.1, (now - this.lastTime) / 1000);
       this.lastTime = now;
+      // Apply mouse look once per RENDERED frame, before stepping the sim, so
+      // aim is as smooth as the display refresh (not quantized to the 64Hz sim)
+      // and this frame's movement reads the freshly-updated yaw.
+      this.applyLook();
       this.accumulator += dt;
       let steps = 0;
       while (this.accumulator >= TICK_DT && steps < 5) {
@@ -1308,6 +1313,19 @@ export class Game {
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 5.5;
   }
 
+  // Mouse look, applied once per rendered frame (see the tick loop). Decoupled
+  // from the fixed 64Hz sim so flick aim is as smooth as the monitor on 144Hz+.
+  private applyLook() {
+    // Always drain the accumulator so a held-but-not-applied delta (dead/paused/
+    // match over) can't pile up and snap the view when control resumes.
+    const look = this.input.consumeLook();
+    if (!this.locked || this.matchOver || this.killcam !== null || this.replay) return;
+    this.player.yaw -= look.yawDelta;
+    this.player.pitch -= look.pitchDelta;
+    if (this.player.pitch < -PITCH_LIMIT) this.player.pitch = -PITCH_LIMIT;
+    else if (this.player.pitch > PITCH_LIMIT) this.player.pitch = PITCH_LIMIT;
+  }
+
   private simStep(dt: number) {
     if (!this.locked || this.matchOver) return;
     this.elapsed += dt;
@@ -1316,9 +1334,9 @@ export class Game {
     this.wantZoom = input.zoom;
     const dead = this.killcam !== null;
 
-    // While dead the input is still consumed (so accumYaw/accumPitch don't
-    // pile up and snap the view on respawn), but it does NOT apply to the
-    // player. The camera is owned by the killcam in render().
+    // While dead, movement is frozen — the camera is owned by the killcam in
+    // render(). (Look is drained every frame in applyLook(), so it can't pile up
+    // and snap the view on respawn.)
     if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
 
     // Self-heal the local sim: a NaN (degenerate collision) or falling out of
