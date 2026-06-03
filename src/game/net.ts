@@ -613,6 +613,20 @@ export type LobbyRoom = {
 
 export type LobbyStatus = 'connecting' | 'open' | 'closed' | 'error';
 
+// Live menu presence + global chat (server-authoritative; see server/instagib-game.ts).
+export type PresencePlayer = { name: string; admin: boolean; verified: boolean; inMatch: boolean };
+export type PresenceState = { online: number; guests: number; players: PresencePlayer[] };
+export type ChatMessage = {
+  id: number;
+  name: string;
+  text: string;
+  ts: number;
+  admin: boolean;
+  verified: boolean;
+  guest: boolean;
+};
+export type ChatRejectReason = 'rate' | 'blocked' | 'account';
+
 // Lightweight WS client for the main menu: lists public rooms and runs the
 // create / quick-match handshakes. It does NOT join gameplay — once it resolves
 // a roomId, the menu starts a match whose Game opens its own NetClient.
@@ -626,6 +640,10 @@ export class LobbyClient {
   onStatus: (s: LobbyStatus) => void = () => {};
   onResolved: (info: { roomId: string; mapId: string; kind: 'created' | 'matched'; isPublic?: boolean }) => void =
     () => {};
+  onPresence: (p: PresenceState) => void = () => {};
+  onChat: (m: ChatMessage) => void = () => {};
+  onChatHistory: (m: ChatMessage[]) => void = () => {};
+  onChatRejected: (reason: ChatRejectReason) => void = () => {};
 
   constructor(url: string, name: string) {
     this.url = url;
@@ -653,18 +671,59 @@ export class LobbyClient {
       this.send({ type: 'list' });
     };
     this.ws.onmessage = (e) => {
-      let msg: { type?: string; rooms?: LobbyRoom[]; roomId?: string; mapId?: string; isPublic?: boolean };
+      let msg: {
+        type?: string;
+        rooms?: LobbyRoom[];
+        roomId?: string;
+        mapId?: string;
+        isPublic?: boolean;
+        online?: number;
+        guests?: number;
+        players?: PresencePlayer[];
+        messages?: ChatMessage[];
+        reason?: ChatRejectReason;
+      } & Partial<ChatMessage>;
       try {
         msg = JSON.parse(typeof e.data === 'string' ? e.data : '');
       } catch {
         return;
       }
-      if (msg.type === 'rooms' && Array.isArray(msg.rooms)) {
-        this.onRooms(msg.rooms);
-      } else if (msg.type === 'created' && msg.roomId && msg.mapId) {
-        this.onResolved({ roomId: msg.roomId, mapId: msg.mapId, kind: 'created', isPublic: msg.isPublic });
-      } else if (msg.type === 'matched' && msg.roomId && msg.mapId) {
-        this.onResolved({ roomId: msg.roomId, mapId: msg.mapId, kind: 'matched' });
+      switch (msg.type) {
+        case 'rooms':
+          if (Array.isArray(msg.rooms)) this.onRooms(msg.rooms);
+          break;
+        case 'created':
+          if (msg.roomId && msg.mapId)
+            this.onResolved({ roomId: msg.roomId, mapId: msg.mapId, kind: 'created', isPublic: msg.isPublic });
+          break;
+        case 'matched':
+          if (msg.roomId && msg.mapId)
+            this.onResolved({ roomId: msg.roomId, mapId: msg.mapId, kind: 'matched' });
+          break;
+        case 'presence':
+          if (typeof msg.online === 'number' && Array.isArray(msg.players))
+            this.onPresence({ online: msg.online, guests: msg.guests ?? 0, players: msg.players });
+          break;
+        case 'chat':
+          if (typeof msg.id === 'number' && typeof msg.name === 'string' && typeof msg.text === 'string')
+            this.onChat({
+              id: msg.id,
+              name: msg.name,
+              text: msg.text,
+              ts: msg.ts ?? 0,
+              admin: !!msg.admin,
+              verified: !!msg.verified,
+              guest: !!msg.guest,
+            });
+          break;
+        case 'chat-history':
+          if (Array.isArray(msg.messages)) this.onChatHistory(msg.messages);
+          break;
+        case 'chat-rejected':
+          this.onChatRejected(
+            msg.reason === 'rate' ? 'rate' : msg.reason === 'account' ? 'account' : 'blocked',
+          );
+          break;
       }
     };
     this.ws.onclose = () => {
@@ -677,6 +736,14 @@ export class LobbyClient {
 
   refresh() {
     this.send({ type: 'list' });
+  }
+
+  // Send a global-chat message. The server sanitizes, length-caps, profanity-
+  // filters, rate-limits, and stamps the authoritative sender identity, then
+  // echoes it back via onChat (so we render our own message from the broadcast,
+  // never optimistically).
+  sendChat(text: string) {
+    this.send({ type: 'chat', text });
   }
 
   // `mode: 'any'` is the mode-agnostic "Play Now" super-queue (joins the fullest
