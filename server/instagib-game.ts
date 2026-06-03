@@ -25,6 +25,7 @@ import {
   DUEL_ROUND_FRAG_LIMIT,
   DUEL_ROUNDS_TO_WIN,
   DUEL_ROUND_BREAK_SEC,
+  KILLCAM_DURATION_SEC,
   TDM_FRAG_LIMIT,
   TEAM_COUNT,
   modeCapacity,
@@ -58,6 +59,12 @@ const EMPTY_ROOM_GRACE_MS = 30_000; // post-match grace for a room that HAS been
 const FRESH_ROOM_GRACE_MS = 5 * 60_000; // never-occupied (invite) rooms live longer for slow joins
 const KILL_MAX_RANGE = 220;
 const SPAWN_INVULN_MS = 2_000;
+// A killed player can't act until their client's killcam finishes, so their
+// post-frag invuln must SPAN the killcam and still leave SPAWN_INVULN_MS once
+// they regain control — otherwise it elapses mid-killcam and they spawn exposed
+// (and are spawn-killable while watching it). Mirrors the offline grace in
+// game.ts handleLocalDeath (KILLCAM_DURATION_SEC + grace).
+const KILL_RESPAWN_INVULN_MS = KILLCAM_DURATION_SEC * 1000 + SPAWN_INVULN_MS;
 // Warmup: a short "get ready" countdown at the start of a match. Reuses the
 // existing `resumeAt` shot-freeze, so nobody can be fragged before it ends. Set
 // on room creation and when a room fills from 1→2 players (a match begins).
@@ -1081,7 +1088,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     });
     victim.pos = { ...respawnPos };
     victim.history.length = 0;
-    victim.invulnUntilMs = now + SPAWN_INVULN_MS;
+    // Invuln spans the victim's killcam + a full spawn grace after it (see
+    // KILL_RESPAWN_INVULN_MS) so they're protected the whole time they can't act.
+    victim.invulnUntilMs = now + KILL_RESPAWN_INVULN_MS;
 
     // Mode-aware resolution of the kill.
     if (room.mode === 'tdm') {
