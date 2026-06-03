@@ -96,6 +96,13 @@ import {
 const FINALE_TIME_SCALE = 0.5; // play the final blow at half speed
 const FINALE_FREEZE_SEC = 1.9; // then hold on the frozen frame: the VICTORY/DEFEAT beat
 
+// Killcam framing: the camera sits a FIXED distance from the killer (on the side
+// you died from) and follows them, so a long-range frag isn't a tiny speck — and
+// a tighter FOV zooms in on who got you.
+const KILLCAM_DIST = 5; // metres from the killer
+const KILLCAM_HEIGHT = 1.6; // metres above the killer's centre (mild down-angle)
+const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
+
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
 import { createCamera, createRenderer, createScene } from './renderer';
@@ -2443,9 +2450,11 @@ export class Game {
       // Play of the Match: the ReplayPlayer owns the camera (positioned in its
       // update() earlier this frame), so leave it untouched here.
     } else if (this.killcam) {
-      // Killcam: camera parks at the deathPos (slightly above eye-line),
-      // looking at the killer's center. Look-at point is smoothed so the
-      // killer running around doesn't jitter the camera.
+      // Killcam: track the killer's center (smoothed so them running around
+      // doesn't jitter the shot), then park the camera a FIXED distance from
+      // them — on the side you died from, so you see who shot you up close and
+      // the camera follows them. Long-range frags are framed the same as point
+      // blank instead of showing a distant speck.
       const killer = this.remotePlayers.get(this.killcam.killerId);
       const killerBot = killer
         ? null
@@ -2471,12 +2480,26 @@ export class Game {
       this.killcamLookAt.x += (targetX - this.killcamLookAt.x) * a;
       this.killcamLookAt.y += (targetY - this.killcamLookAt.y) * a;
       this.killcamLookAt.z += (targetZ - this.killcamLookAt.z) * a;
+      const look = this.killcamLookAt;
+      // Horizontal direction from the killer back toward where you died (so the
+      // camera is on your side, looking at the killer roughly face-on). Falls
+      // back to a fixed axis for a point-blank frag (killer ≈ death spot).
+      let dx = this.killcam.deathPos.x - look.x;
+      let dz = this.killcam.deathPos.z - look.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.5) {
+        dx = 0;
+        dz = 1;
+      } else {
+        dx /= len;
+        dz /= len;
+      }
       this.camera.position.set(
-        this.killcam.deathPos.x,
-        this.killcam.deathPos.y + 2.2,
-        this.killcam.deathPos.z,
+        look.x + dx * KILLCAM_DIST,
+        look.y + KILLCAM_HEIGHT,
+        look.z + dz * KILLCAM_DIST,
       );
-      this.camera.lookAt(this.killcamLookAt);
+      this.camera.lookAt(look);
     } else {
       this.camera.position.set(
         this.player.pos.x,
@@ -2495,10 +2518,13 @@ export class Game {
       this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
       this.shake *= Math.exp(-9.05 * this.frameDt); // ≈ 0.86/frame at 60fps, fps-independent
     }
-    // Zoom: ease FOV toward the zoom target while the bind is held in-play.
+    // Zoom: ease FOV toward the zoom target. The killcam tightens to KILLCAM_FOV
+    // (a cinematic zoom onto your killer); otherwise it's the ADS zoom while held,
+    // else the base FOV. The shared ease handles the smooth zoom-in and the
+    // zoom-out back to gameplay when the killcam ends.
     const zooming =
       this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote && !this.replay;
-    const targetFov = zooming ? this.zoomFov : this.baseFov;
+    const targetFov = this.killcam ? KILLCAM_FOV : zooming ? this.zoomFov : this.baseFov;
     if (Math.abs(this.camera.fov - targetFov) > 0.01) {
       this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 * this.frameDt));
       this.camera.updateProjectionMatrix();
