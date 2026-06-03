@@ -46,6 +46,7 @@ import type { CardPayload, Vec3 } from '../src/game/types';
 import { isCard, isEmote, isHat, isNameColor, isSpawnEffect, isUnusual } from '../src/game/cosmetics';
 import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
+import { containsProfanity } from './profanity';
 
 const SNAPSHOT_HZ = 32;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
@@ -76,6 +77,13 @@ const MAX_VERTICAL_SPEED = 80;
 const AFK_TIMEOUT_MS = 120_000;
 const MSG_RATE_WINDOW_MS = 1_000;
 const MSG_RATE_LIMIT = 150; // inbound messages/sec before a socket is closed (flood guard)
+// Global lobby chat guards. Stricter than the socket flood guard above: chat is
+// the one place a client picks the content, so it's rate-limited per sender,
+// length-capped, sanitized, and run through the username profanity filter.
+const CHAT_MAX_LEN = 240; // hard cap after sanitize
+const CHAT_RATE_WINDOW_MS = 10_000; // rolling per-sender window
+const CHAT_RATE_LIMIT = 6; // messages per window before we drop + notify
+const CHAT_HISTORY_MAX = 50; // recent messages replayed to a client on open
 // Hitbox dims (must match the client's PLAYER_RADIUS / PLAYER_HEIGHT).
 const PLAYER_RADIUS = 0.4;
 const PLAYER_HEIGHT = 1.8;
@@ -110,6 +118,8 @@ type ClientRecord = {
   msgCount: number; // messages seen in the current window
   roomWindowStart: number; // room-creation rate window start
   roomCount: number; // rooms created in the current window
+  chatWindowStart: number; // global-chat rate window start
+  chatCount: number; // chat messages sent in the current window
   history: HistorySample[]; // ascending by t
   // Rolling aim stats for the anti-aimbot heuristic (decayed each window).
   aimShots: number;
@@ -170,6 +180,7 @@ type ClientMessage =
   | { type: 'nameColor'; id?: string }
   | { type: 'spawnEffect'; id?: string }
   | { type: 'card'; card?: unknown }
+  | { type: 'chat'; text?: string }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
   | { type: 'ping'; ts: number; rtt?: number }
   | {
@@ -183,6 +194,27 @@ type ClientMessage =
       maxDist?: number;
       renderTime?: number;
     };
+
+// Server→client lobby social payloads (presence list + global chat). Identity
+// fields are SERVER-set from the account, never the client, so chat can't be
+// used to impersonate or to inject an unmoderated name.
+type PresencePlayer = { name: string; admin: boolean; verified: boolean; inMatch: boolean };
+type PresenceBroadcast = {
+  type: 'presence';
+  online: number; // distinct accounts + guest sockets currently connected
+  guests: number; // connected sockets without an account
+  players: PresencePlayer[]; // registered, deduped by account, name-sorted
+};
+type ChatBroadcast = {
+  type: 'chat';
+  id: number;
+  name: string; // account username, or "Guest N" for anonymous senders
+  text: string; // sanitized + length-capped
+  ts: number;
+  admin: boolean;
+  verified: boolean;
+  guest: boolean;
+};
 
 // Does this connection's progression identity own the given cosmetic id? Read
 // fresh each time so an item just bought in the Locker is immediately equippable
@@ -299,6 +331,77 @@ export function attachInstagibWs(wss: WebSocketServer) {
   const clients = new Map<ClientId, ClientRecord>();
   const rooms = new Map<RoomId, Room>();
   const listers = new Set<ClientId>();
+
+  // ── Global lobby presence + chat ──────────────────────────────────────
+  // One global room. Recent chat is kept in memory only (cleared on restart)
+  // and replayed to a client when it opens the menu. `listers` (clients that
+  // sent `list`, i.e. are sitting in the menu) is both the chat audience and
+  // the set allowed to send — in-match sockets aren't listers.
+  const chatHistory: ChatBroadcast[] = [];
+  let chatSeq = 0;
+  let presenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Strip control chars, zero-width, and BiDi-override characters, collapse
+  // whitespace, and length-cap. Returns null for empty/non-string. React escapes
+  // on render, so this is defense-in-depth (anti spoofing / layout abuse), not
+  // the sole XSS guard.
+  const sanitizeChat = (raw: unknown): string | null => {
+    if (typeof raw !== 'string') return null;
+    const cleaned = raw
+      // eslint-disable-next-line no-control-regex -- intentionally stripping control chars
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return cleaned ? cleaned.slice(0, CHAT_MAX_LEN) : null;
+  };
+
+  // Online presence for the menu: registered players are deduped by account
+  // (multi-tab → one entry) and listed by name; guests are only counted, never
+  // named (anonymous → indistinguishable, and a name list would be a slur vector).
+  const buildPresence = (): PresenceBroadcast => {
+    const byAccount = new Map<string, PresencePlayer>();
+    let guests = 0;
+    for (const c of clients.values()) {
+      if (c.disconnectedAt > 0) continue; // dropped, awaiting resume — not live
+      if (c.playerId) {
+        const seen = byAccount.get(c.playerId);
+        if (seen) seen.inMatch = seen.inMatch || c.roomId != null;
+        else
+          byAccount.set(c.playerId, {
+            name: c.name,
+            admin: c.admin,
+            verified: c.verified,
+            inMatch: c.roomId != null,
+          });
+      } else {
+        guests += 1;
+      }
+    }
+    const players = [...byAccount.values()].sort((a, b) =>
+      a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+    );
+    return { type: 'presence', online: players.length + guests, guests, players };
+  };
+
+  const broadcastPresence = () => {
+    if (listers.size === 0) return;
+    const payload = JSON.stringify(buildPresence());
+    for (const id of listers) {
+      const c = clients.get(id);
+      if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+    }
+  };
+
+  // Coalesce bursts (e.g. a room emptying mid-sweep) into one presence push.
+  const schedulePresence = () => {
+    if (presenceTimer) return;
+    presenceTimer = setTimeout(() => {
+      presenceTimer = null;
+      broadcastPresence();
+    }, 200);
+    presenceTimer.unref?.();
+  };
 
   const sendRaw = (socket: WebSocket, msg: unknown) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
@@ -630,6 +733,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (remaining) startVote(room, remaining);
     }
     broadcastRoomList();
+    schedulePresence(); // this player's inMatch flag just cleared
   };
 
   // Socket dropped: if mid-match, HOLD the slot + score for a reconnect (the
@@ -640,11 +744,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const room = rec.roomId ? rooms.get(rec.roomId) : null;
     if (room && room.state === 'active' && room.members.has(rec.id)) {
       rec.disconnectedAt = Date.now();
+      schedulePresence(); // held for resume, but hidden from the live list meanwhile
       return;
     }
     leaveRoom(rec);
     listers.delete(rec.id);
     clients.delete(rec.id);
+    schedulePresence();
   };
 
   // ── Lobby listing ─────────────────────────────────────────────────────
@@ -1026,6 +1132,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       msgCount: 0,
       roomWindowStart: now,
       roomCount: 0,
+      chatWindowStart: now,
+      chatCount: 0,
       hat: 'hat.none',
       unusual: 'unusual.none',
       emote: 'emote.cheer',
@@ -1044,6 +1152,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     };
     clients.set(id, record);
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
+    schedulePresence(); // a new socket bumps the online count for everyone in the menu
 
     socket.on('message', (raw) => {
       const ts = Date.now();
@@ -1078,7 +1187,59 @@ export function attachInstagibWs(wss: WebSocketServer) {
         case 'list':
           listers.add(record.id);
           sendRaw(socket, { type: 'rooms', rooms: publicRoomList() });
+          // Opening the menu: seed the live online list + recent chat, then
+          // refresh everyone else (this client's inMatch flag just cleared).
+          sendRaw(socket, buildPresence());
+          if (chatHistory.length > 0) sendRaw(socket, { type: 'chat-history', messages: chatHistory });
+          schedulePresence();
           break;
+
+        case 'chat': {
+          // Global lobby chat. Only menu clients (listers) may send or receive;
+          // identity is server-authoritative; content is sanitized, length-
+          // capped, profanity-filtered, and rate-limited per sender.
+          if (!listers.has(record.id)) break;
+          // Sending requires a registered account — guests can read but not post,
+          // so every message ties to a moderated, profanity-checked identity that
+          // can be acted on later. (Guests still appear in the presence count.)
+          if (!record.playerId) {
+            sendRaw(socket, { type: 'chat-rejected', reason: 'account' });
+            break;
+          }
+          const text = sanitizeChat(msg.text);
+          if (!text) break;
+          if (ts - record.chatWindowStart >= CHAT_RATE_WINDOW_MS) {
+            record.chatWindowStart = ts;
+            record.chatCount = 0;
+          }
+          record.chatCount += 1;
+          if (record.chatCount > CHAT_RATE_LIMIT) {
+            sendRaw(socket, { type: 'chat-rejected', reason: 'rate' });
+            break;
+          }
+          if (containsProfanity(text)) {
+            sendRaw(socket, { type: 'chat-rejected', reason: 'blocked' });
+            break;
+          }
+          const out: ChatBroadcast = {
+            type: 'chat',
+            id: (chatSeq += 1),
+            name: record.name, // server-authoritative account username
+            text,
+            ts,
+            admin: record.admin,
+            verified: record.verified,
+            guest: false,
+          };
+          chatHistory.push(out);
+          if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
+          const payload = JSON.stringify(out);
+          for (const lid of listers) {
+            const c = clients.get(lid);
+            if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+          }
+          break;
+        }
 
         case 'create': {
           if (!chargeRoomCreate(record, ts)) {
@@ -1389,6 +1550,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
         !room.wasEverOccupied && !room.isPublic ? FRESH_ROOM_GRACE_MS : EMPTY_ROOM_GRACE_MS;
       if (now - room.emptySince > grace) rooms.delete(rid);
     }
+    // Catch-all so the menu's online list reflects in-match joins/leaves and any
+    // reaped sockets even on paths that don't call schedulePresence() directly.
+    broadcastPresence();
   }, 5000);
 
   snapshotTimer.unref?.();

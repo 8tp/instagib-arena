@@ -3,7 +3,14 @@ import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './
 import { useAuth, LoginModal, type Account } from './auth';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
-import { LobbyClient, type LobbyRoom, type LobbyStatus } from './game/net';
+import {
+  LobbyClient,
+  type LobbyRoom,
+  type LobbyStatus,
+  type PresenceState,
+  type PresencePlayer,
+  type ChatMessage,
+} from './game/net';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
   AIR_JUMPS,
@@ -3627,6 +3634,12 @@ async function submitMatchStats(
   }
 }
 
+// Menu chat caps. CLIENT_LEN mirrors the server's CHAT_MAX_LEN (the server is
+// authoritative; this is just so the input + counter agree). LOG_MAX bounds the
+// in-memory log (the server already trims replayed history to 50).
+const CHAT_CLIENT_MAX_LEN = 240;
+const CHAT_LOG_MAX = 120;
+
 function Lobby({
   settings,
   onChangeSettings,
@@ -3662,6 +3675,10 @@ function Lobby({
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
   // Selected online game mode for Quick Match + Create Match (FFA / Duel / TDM).
   const [selectedMode, setSelectedMode] = useState<GameMode>(DEFAULT_GAME_MODE);
+  // Live menu presence + global chat (pushed over the lobby socket).
+  const [presence, setPresence] = useState<PresenceState | null>(null);
+  const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
 
   const serverUrl = settings.serverUrl || defaultServerUrl();
   const lobbyRef = useRef<LobbyClient | null>(null);
@@ -3689,6 +3706,21 @@ function Lobby({
         setInvite({ roomId: info.roomId, mapId: info.mapId });
       }
     };
+    lobby.onPresence = setPresence;
+    lobby.onChatHistory = (m) => setChatLog(m.slice(-CHAT_LOG_MAX));
+    lobby.onChat = (m) =>
+      setChatLog((log) => {
+        const next = [...log, m];
+        return next.length > CHAT_LOG_MAX ? next.slice(next.length - CHAT_LOG_MAX) : next;
+      });
+    lobby.onChatRejected = (reason) =>
+      setChatNotice(
+        reason === 'rate'
+          ? 'Slow down — too many messages.'
+          : reason === 'account'
+            ? 'Log in to chat.'
+            : 'Message blocked by the filter.',
+      );
     lobby.connect();
     return () => {
       lobby.dispose();
@@ -3704,6 +3736,13 @@ function Lobby({
   useEffect(() => {
     lobbyRef.current?.setName(settings.playerName || 'Player');
   }, [settings.playerName]);
+
+  // Auto-dismiss a chat rejection notice (rate-limit / filter).
+  useEffect(() => {
+    if (!chatNotice) return;
+    const t = setTimeout(() => setChatNotice(null), 3000);
+    return () => clearTimeout(t);
+  }, [chatNotice]);
 
   // Pull credits/level + the claimable-challenge count for the lobby chrome.
   // Re-pulls whenever a modal that can change them closes (refreshTick).
@@ -3899,14 +3938,27 @@ function Lobby({
             {lastResult && <LastMatchBanner result={lastResult} />}
           </section>
 
-          {/* Right — live lobby feed */}
-          <aside className='deck-rise min-h-0' style={{ animationDelay: '200ms' }}>
-            <OpenLobbies
-              rooms={rooms}
-              online={online}
-              onJoin={(r) => startOnline(r.id, r.mapId)}
-              onRefresh={() => lobbyRef.current?.refresh()}
-            />
+          {/* Right — social column: who's online, open lobbies, global chat */}
+          <aside className='deck-rise flex min-h-0 flex-col gap-3' style={{ animationDelay: '200ms' }}>
+            <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
+            <div className='min-h-[10rem] flex-1'>
+              <OpenLobbies
+                rooms={rooms}
+                online={online}
+                onJoin={(r) => startOnline(r.id, r.mapId)}
+                onRefresh={() => lobbyRef.current?.refresh()}
+              />
+            </div>
+            <div className='min-h-[13rem] flex-1'>
+              <GlobalChatPanel
+                messages={chatLog}
+                online={online}
+                canChat={!!account}
+                youName={account?.username ?? null}
+                notice={chatNotice}
+                onSend={(text) => lobbyRef.current?.sendChat(text)}
+              />
+            </div>
           </aside>
         </main>
 
@@ -4163,6 +4215,177 @@ function OpenLobbies({
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Expandable "who's online" panel. Registered players are listed by name (with
+// staff/verified badges + an in-match dot); guests are shown only as an
+// aggregate count (never named — they're anonymous and a name list would be a
+// slur vector). All values are server-authoritative.
+function OnlinePlayersPanel({
+  presence,
+  youName,
+}: {
+  presence: PresenceState | null;
+  youName: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const players: PresencePlayer[] = presence?.players ?? [];
+  const guests = presence?.guests ?? 0;
+  return (
+    <div className='clip-deck shrink-0 border border-white/10 bg-black/40 backdrop-blur-sm'>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className='flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03]'
+      >
+        <span className='flex items-center gap-2 font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
+          <span className='deck-pulse h-1.5 w-1.5 rounded-full bg-emerald-400' />
+          {presence ? `${presence.online} Online` : 'Online…'}
+        </span>
+        <span className='font-mono text-[10px] uppercase tracking-[0.16em] text-white/40'>
+          {open ? 'Hide ▾' : 'Show ▸'}
+        </span>
+      </button>
+      {open && (
+        <div className='deck-scroll max-h-44 overflow-y-auto border-t border-white/10 px-3 py-2'>
+          {players.length === 0 && guests === 0 ? (
+            <div className='px-1 py-3 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-white/30'>
+              No one online
+            </div>
+          ) : (
+            <div className='flex flex-col gap-0.5'>
+              {players.map((p) => {
+                const you = !!youName && p.name === youName;
+                return (
+                  <div
+                    key={p.name}
+                    className={`flex items-center gap-1.5 px-1.5 py-1 text-[12px] ${you ? 'text-cyan-100' : 'text-white/85'}`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${p.inMatch ? 'bg-amber-400' : 'bg-emerald-400/70'}`}
+                      title={p.inMatch ? 'In a match' : 'In the menu'}
+                    />
+                    <span className='truncate'>{p.name}</span>
+                    <NameBadges admin={p.admin} verified={p.verified} size={11} />
+                    {you && (
+                      <span className='ml-0.5 shrink-0 text-[9px] uppercase tracking-[0.1em] text-cyan-300/80'>
+                        you
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              {guests > 0 && (
+                <div className='mt-1 border-t border-white/8 px-1.5 pt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-white/40'>
+                  + {guests} {guests === 1 ? 'guest' : 'guests'}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Live global chat (one room). Identity + content are server-authoritative and
+// server-moderated (sanitized, length-capped, profanity-filtered, rate-limited);
+// we render names/text as React text nodes, so they're escaped — no raw HTML.
+function GlobalChatPanel({
+  messages,
+  online,
+  canChat,
+  youName,
+  notice,
+  onSend,
+}: {
+  messages: ChatMessage[];
+  online: boolean;
+  canChat: boolean; // false for guests — they can read but not send
+  youName: string | null;
+  notice: string | null;
+  onSend: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Stick to the newest message as the log grows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const canSend = online && canChat;
+  const submit = () => {
+    const text = draft.trim();
+    if (!text || !canSend) return;
+    onSend(text.slice(0, CHAT_CLIENT_MAX_LEN));
+    setDraft('');
+  };
+
+  return (
+    <div className='clip-deck flex h-full min-h-0 flex-col border border-white/10 bg-black/40 backdrop-blur-sm'>
+      <div className='flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3'>
+        <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
+          Global Chat
+        </span>
+        <span className='font-mono text-[9px] uppercase tracking-[0.16em] text-white/30'>keep it clean</span>
+      </div>
+      <div ref={scrollRef} className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2'>
+        {messages.length === 0 ? (
+          <div className='flex h-full items-center justify-center px-6 py-8 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.12em] text-white/25'>
+            {online ? 'Say hi 👋' : 'Linking to server…'}
+          </div>
+        ) : (
+          <div className='flex flex-col gap-1'>
+            {messages.map((m) => {
+              const mine = !!youName && !m.guest && m.name === youName;
+              return (
+                <div key={m.id} className='text-[12px] leading-snug'>
+                  <span
+                    className={`mr-1 inline-flex items-center gap-0.5 font-semibold ${
+                      m.guest ? 'text-white/45' : mine ? 'text-cyan-200' : 'text-cyan-300/90'
+                    }`}
+                  >
+                    {m.name}
+                    <NameBadges admin={m.admin} verified={m.verified} size={11} />
+                    <span className='text-white/30'>:</span>
+                  </span>
+                  <span className='break-words text-white/85'>{m.text}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {notice && (
+        <div className='shrink-0 border-t border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-center font-mono text-[10px] uppercase tracking-[0.12em] text-amber-200'>
+          {notice}
+        </div>
+      )}
+      <div className='flex shrink-0 items-center gap-2 border-t border-white/10 p-2'>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          maxLength={CHAT_CLIENT_MAX_LEN}
+          disabled={!canSend}
+          placeholder={!online ? 'Offline' : !canChat ? 'Log in to chat' : 'Message everyone…'}
+          className='min-w-0 flex-1 bg-white/[0.04] px-3 py-2 font-mono text-[12px] text-white outline-none transition placeholder:text-white/30 focus:bg-white/[0.07] disabled:opacity-40'
+        />
+        <button
+          onClick={submit}
+          disabled={!canSend || draft.trim().length === 0}
+          className='clip-deck-sm shrink-0 bg-cyan-400 px-4 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/40'
+        >
+          Send
+        </button>
       </div>
     </div>
   );
