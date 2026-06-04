@@ -211,6 +211,7 @@ export class Game {
   // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
   // input latency, at high CPU cost). See scheduleFrame().
   private fpsLimit = 0;
+  private netDebugOn = false; // F3 net-debug overlay
   private frameTimeout: ReturnType<typeof setTimeout> | null = null;
   private fpsChannel: MessageChannel | null = null;
   private tickFn: ((now: number) => void) | null = null;
@@ -2418,6 +2419,13 @@ export class Game {
     );
   }
 
+  // Net-debug overlay toggle (F3). Surfaces live netcode diagnostics so we can
+  // SEE the cause of jitter in a real match (localhost can't reproduce it).
+  toggleNetDebug() {
+    this.netDebugOn = !this.netDebugOn;
+    this.emitHud();
+  }
+
   private emitHud() {
     const speed = Math.hypot(this.player.vel.x, this.player.vel.z);
     const pct = (hit: number, fired: number): number | null =>
@@ -2547,6 +2555,7 @@ export class Game {
       training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
       pom: this.pom ? { ...this.pom } : null,
       chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
+      netDebug: this.netDebugOn && this.net ? this.net.getDebugStats() : null,
     });
   }
 

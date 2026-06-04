@@ -209,6 +209,21 @@ export type PomState = {
   hitHeadshot: boolean;
 };
 
+// Live net diagnostics for the in-match debug overlay (toggle). Read-only — used
+// to SEE the cause of jitter in real play (TCP stalls vs clock vs render), which
+// localhost can't reproduce.
+export type NetDebugStats = {
+  rttMs: number; // round-trip ping
+  interpDelayMs: number; // current interpolation buffer delay
+  snapHz: number; // measured snapshot arrival rate
+  snapJitterMs: number; // arrival-interval jitter (high = bursty/TCP stalls)
+  extrapPct: number; // % of frames extrapolating (the TCP head-of-line tell)
+  bufferMs: number; // headroom: newest snapshot time − renderT (− = underrunning)
+  clockDriftMs: number; // clock-offset wander (high = render-clock jitter)
+  transport: 'ws' | 'wt'; // reliable WS today; 'wt' once datagrams are wired
+  peers: number;
+};
+
 export type HudState = {
   frags: number;
   railCooldown: number;
@@ -250,6 +265,8 @@ export type HudState = {
   pom: PomState | null;
   // In-game chat: the composer's open state + the recent message log.
   chat: { open: boolean; lines: ChatLine[] };
+  // Net-debug overlay stats when toggled on (F3); null when hidden.
+  netDebug: NetDebugStats | null;
 };
 
 export type TrainingHud = {

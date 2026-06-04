@@ -707,6 +707,7 @@ const INITIAL_HUD: HudState = {
   training: null,
   pom: null,
   chat: { open: false, lines: [] },
+  netDebug: null,
 };
 
 export default function InstagibClient() {
@@ -963,6 +964,14 @@ function GameView({
       }
     });
     gameRef.current = game;
+    // F3 toggles the net-debug overlay (works whether or not pointer-locked).
+    const onDebugKey = (e: KeyboardEvent) => {
+      if (e.code === 'F3') {
+        e.preventDefault();
+        gameRef.current?.toggleNetDebug();
+      }
+    };
+    window.addEventListener('keydown', onDebugKey);
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
         setJoinError(
@@ -976,6 +985,7 @@ function GameView({
     applyMatchConfig(game, config);
     void game.start();
     return () => {
+      window.removeEventListener('keydown', onDebugKey);
       gameRef.current?.dispose();
       gameRef.current = null;
     };
@@ -2494,6 +2504,7 @@ function HudOverlay({
         <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
       )}
       {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
+      {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
       {hud.training && <TrainingPanel t={hud.training} />}
       <BannerOverlay banner={hud.banner} />
       <CaptionLayer hud={hud} captions={settings.captions} />
@@ -2753,6 +2764,35 @@ function DuelRoundHud({ duel }: { duel: HudState['duel'] }) {
           First to {roundsToWin}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Net-debug overlay (F3). Top-left live netcode readout so we can see the cause
+// of jitter in a real match. The two tells: `extrap` high (frames rendering
+// past the buffer = TCP stalls → UDP is the fix) vs `clkDrift` high (render
+// clock wandering → a client-side cause UDP won't fix). `buffer` going negative
+// means we're underrunning.
+function NetDebugOverlay({ s }: { s: NonNullable<HudState['netDebug']> }) {
+  const warn = (b: boolean) => (b ? 'text-rose-400' : 'text-emerald-300');
+  const Row = ({ k, v, cls }: { k: string; v: string; cls?: string }) => (
+    <div className="flex justify-between gap-4">
+      <span className="text-white/45">{k}</span>
+      <span className={`tabular-nums ${cls ?? 'text-white/85'}`}>{v}</span>
+    </div>
+  );
+  return (
+    <div className="pointer-events-none absolute left-2 top-2 z-50 rounded-md border border-white/15 bg-black/70 px-3 py-2 font-mono text-[10px] leading-relaxed backdrop-blur-sm">
+      <div className="mb-1 font-bold uppercase tracking-[0.2em] text-cyan-300">net · F3</div>
+      <Row k="transport" v={s.transport.toUpperCase()} cls={s.transport === 'wt' ? 'text-cyan-300' : 'text-amber-300'} />
+      <Row k="ping" v={`${s.rttMs}ms`} cls={warn(s.rttMs > 120)} />
+      <Row k="snap rate" v={`${s.snapHz}Hz`} cls={warn(s.snapHz < 45)} />
+      <Row k="snap jitter" v={`${s.snapJitterMs}ms`} cls={warn(s.snapJitterMs > 12)} />
+      <Row k="extrap" v={`${s.extrapPct}%`} cls={warn(s.extrapPct > 5)} />
+      <Row k="buffer" v={`${s.bufferMs}ms`} cls={warn(s.bufferMs < 20)} />
+      <Row k="clk drift" v={`${s.clockDriftMs}ms`} cls={warn(s.clockDriftMs > 8)} />
+      <Row k="interp" v={`${s.interpDelayMs}ms`} />
+      <Row k="peers" v={`${s.peers}`} />
     </div>
   );
 }

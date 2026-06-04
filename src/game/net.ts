@@ -1,5 +1,5 @@
 import type { GameMode } from './constants';
-import type { CardPayload } from './types';
+import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, toView } from './netcodec';
 
 export type Vec3 = { x: number; y: number; z: number };
@@ -284,6 +284,17 @@ export class NetClient {
   // the rendered remotes are then ahead of the server's truth, so the Game skips
   // predicted hitmarkers that frame (they'd "hit" something the server won't).
   extrapolating = false;
+  // Read-only diagnostics for the in-match net-debug overlay (telemetry only —
+  // none of this drives behavior; it exists because localhost probes can't
+  // reproduce real-match feel). EMAs of snapshot arrival timing, extrapolation
+  // rate, buffer headroom, and clock-offset stability.
+  private dbgSnapIntervalMs = 0;
+  private dbgSnapJitterMs = 0;
+  private dbgLastArrival = 0;
+  private dbgExtrapEma = 0;
+  private dbgBufferMs = 0;
+  private dbgClockMeanMs = 0;
+  private dbgClockDriftMs = 0;
   private snapBuffer: BufferedSnapshot[] = [];
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -415,6 +426,21 @@ export class NetClient {
     return performance.now() + this.clockOffset;
   }
 
+  // Snapshot of live net diagnostics for the debug overlay (read-only).
+  getDebugStats(): NetDebugStats {
+    return {
+      rttMs: Math.round(this.rttMs),
+      interpDelayMs: Math.round(this.interpDelayMs),
+      snapHz: this.dbgSnapIntervalMs > 0 ? Math.round(1000 / this.dbgSnapIntervalMs) : 0,
+      snapJitterMs: Math.round(this.dbgSnapJitterMs),
+      extrapPct: Math.round(this.dbgExtrapEma * 100),
+      bufferMs: Math.round(this.dbgBufferMs),
+      clockDriftMs: Math.round(this.dbgClockDriftMs),
+      transport: 'ws',
+      peers: this.remotes.size,
+    };
+  }
+
   // Equip a hat: remember it and tell the server (which echoes it in snapshots so
   // other players render it). Safe to call before connect — sent on the next hello.
   setLocalHat(id: string): void {
@@ -471,6 +497,12 @@ export class NetClient {
     } else if (dt > 0) {
       this.clockOffset += (this.clockOffsetTarget - this.clockOffset) * (1 - Math.exp(-CLOCK_SLEW_HZ * dt));
     }
+    // Read-only diagnostics for the net-debug overlay (no behavior impact):
+    // clock-offset stability + how often we extrapolate (the TCP-stall tell).
+    this.dbgClockMeanMs =
+      this.dbgClockMeanMs === 0 ? this.clockOffset : this.dbgClockMeanMs + (this.clockOffset - this.dbgClockMeanMs) * 0.02;
+    this.dbgClockDriftMs += (Math.abs(this.clockOffset - this.dbgClockMeanMs) - this.dbgClockDriftMs) * 0.05;
+    this.dbgExtrapEma += ((this.extrapolating ? 1 : 0) - this.dbgExtrapEma) * 0.05; // last frame's value
     const renderT = this.estimatedServerNow() - this.interpDelayMs;
     const buf = this.snapBuffer;
     const now = performance.now();
@@ -489,6 +521,7 @@ export class NetClient {
     // snapping when data resumes. Yaw holds at the latest — extrapolated angle
     // overshoot reads worse than a still head.
     const newest = buf[buf.length - 1];
+    this.dbgBufferMs = newest.t - renderT; // headroom: + = buffered ahead of renderT
     if (renderT > newest.t && buf.length >= 2) {
       this.extrapolating = true; // rendering ahead of the newest snapshot
       const prev = buf[buf.length - 2];
@@ -653,6 +686,17 @@ export class NetClient {
     }
     if (msg.type === 'state') {
       this.setResume(msg.resumeAt);
+      // Telemetry: snapshot arrival interval + jitter (EMA), for the overlay.
+      const arr = performance.now();
+      if (this.dbgLastArrival > 0) {
+        const gap = arr - this.dbgLastArrival;
+        if (gap > 0 && gap < 500) {
+          this.dbgSnapIntervalMs =
+            this.dbgSnapIntervalMs === 0 ? gap : this.dbgSnapIntervalMs + (gap - this.dbgSnapIntervalMs) * 0.1;
+          this.dbgSnapJitterMs += (Math.abs(gap - this.dbgSnapIntervalMs) - this.dbgSnapJitterMs) * 0.1;
+        }
+      }
+      this.dbgLastArrival = arr;
       const players = new Map<string, StatePlayer>();
       for (const p of msg.players) {
         players.set(p.id, p);
