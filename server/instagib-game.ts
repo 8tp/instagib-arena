@@ -82,12 +82,24 @@ const RESPAWN_HIDE_MS = KILLCAM_DURATION_SEC * 1000;
 //   1. don't drop a player into a live threat's AIM CONE (their crosshair line), and
 //   2. don't reuse a spawn spot a camper might be sitting on.
 // Both reshape pickSpawn's distance score (values are in "metres of safety").
-const SPAWN_VIEW_RANGE = 42; // m: a threat's aim only endangers a spawn within this
+const SPAWN_VIEW_RANGE = 50; // m: a threat's aim endangers a spawn within this (covers the maps)
 const SPAWN_VIEW_DOT = 0.55; // cos(~57°): past this, the spawn is "in their crosshair"
-const SPAWN_VIEW_PENALTY = 34; // safety cost (m-equiv) for a dead-centre, point-blank aim
+// Safety cost (m-equiv) for a dead-centre aim. This is INSTAGIB — the rail is
+// hitscan, so a crosshair-line spawn is just as lethal at 40m as at 5m. So the
+// penalty barely falls off with range (mild 0.5 floor), and it's set ABOVE the
+// max recent-spawn penalty so the anti-camp avoidance can't be out-voted by the
+// variety term (i.e. we never rotate a player INTO a held sightline for variety).
+const SPAWN_VIEW_PENALTY = 34;
 const SPAWN_RECENT_MS = 5_000; // remember each chosen spawn spot for this long
 const SPAWN_RECENT_RADIUS = 6; // m: a candidate within this of a recent spawn counts as reuse
 const SPAWN_RECENT_PENALTY = 16; // safety cost (m-equiv) for reusing a just-used spot
+// Hard separation: never spawn within this of ANY other player's committed
+// position — including a killcam-hidden one (they're about to reappear at the
+// spot already written to their record). Stops the "two players materialize on
+// top of each other" case that the (live-only) threat set can't see. Enforced as
+// a near-hard exclusion with graceful fallback, NOT a soft penalty, so it can't
+// be out-voted by the distance/variety scoring.
+const SPAWN_SEPARATION = 6;
 // Warmup: a short "get ready" countdown at the start of a match. Reuses the
 // existing `resumeAt` shot-freeze, so nobody can be fragged before it ends. Set
 // on room creation and when a room fills from 1→2 players (a match begins).
@@ -622,27 +634,31 @@ export function attachInstagibWs(wss: WebSocketServer) {
         ? TDM_FRAG_LIMIT
         : MATCH_FRAG_LIMIT;
 
-  // Pick the SAFEST spawn for `forClient`. Safety starts as "distance to the
-  // nearest live threat" (maximize the minimum — also the telefrag guard) and is
-  // then docked for two things the server CAN reason about without geometry:
-  // dropping into a threat's aim cone, and reusing a just-used (campable) spot.
+  // Pick a spawn for `forClient`. Two independent concerns:
+  //  • SAFETY (soft, tunable): distance to nearest live threat, docked for sitting
+  //    in a threat's aim cone or reusing a just-used (campable) spot. Drives
+  //    "spawn away from danger" and keeps variety (random among the near-safest).
+  //  • SEPARATION (hard): never land within SPAWN_SEPARATION of ANY other player's
+  //    committed position — even a killcam-hidden one (excluded from threats since
+  //    it can't shoot, but it's about to reappear at that exact spot). This is what
+  //    stops players materializing on top of each other; kept as a near-hard
+  //    exclusion so the safety/variety scoring can't override it.
   // `avoid` is an extra point to stay away from (the killer's pos on a frag).
   const pickSpawn = (room: Room, forClient: ClientRecord | null, avoid: Vec | null): Vec => {
     const spawns = arenaNet(room.mapId).spawns;
     if (spawns.length === 0) return { x: 0, y: 0.05, z: 0 };
     const now = Date.now();
-    // THREATS: other players who could shoot you on spawn, with their aim dir so
-    // we can test the view cone. Exclude yourself, the dropped (disconnected),
-    // the dead/hidden (mid-killcam), and — in TDM — teammates (can't hurt you).
-    // `aimed` threats contribute the view-cone penalty; `avoid` is position-only.
     type Threat = { x: number; z: number; fx: number; fz: number; aimed: boolean };
-    const threats: Threat[] = [];
+    const threats: Threat[] = []; // live enemies (danger/aim-cone) — excludes hidden + teammates
+    const occupants: { x: number; z: number }[] = []; // ANY present player (overlap avoidance)
     for (const id of room.members) {
       const c = clients.get(id);
       if (!c) continue;
       if (forClient && c.id === forClient.id) continue;
-      if (c.disconnectedAt > 0) continue;
-      if (c.respawnAt > now) continue; // dead/hidden → not a threat
+      if (c.disconnectedAt > 0) continue; // gone (awaiting resume) → not present, gets its own pick
+      // Present body → never spawn on top of it, regardless of whether it's a threat.
+      occupants.push({ x: c.pos.x, z: c.pos.z });
+      if (c.respawnAt > now) continue; // dead/hidden → occupies space but isn't a threat
       if (room.mode === 'tdm' && forClient && c.team != null && c.team === forClient.team) continue;
       // Forward dir from yaw matches the client: forward = (-sin yaw, -cos yaw).
       threats.push({ x: c.pos.x, z: c.pos.z, fx: -Math.sin(c.yaw), fz: -Math.cos(c.yaw), aimed: true });
@@ -663,7 +679,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           const dot = (t.fx * dx + t.fz * dz) / dist; // 1 = dead ahead of them
           if (dot > SPAWN_VIEW_DOT) {
             const centre = (dot - SPAWN_VIEW_DOT) / (1 - SPAWN_VIEW_DOT); // 0..1 centredness
-            const close = 1 - dist / SPAWN_VIEW_RANGE; // 0..1 (nearer = worse)
+            const close = 1 - 0.5 * (dist / SPAWN_VIEW_RANGE); // 1.0 → 0.5 (hitscan: range barely matters)
             viewPenalty = Math.max(viewPenalty, SPAWN_VIEW_PENALTY * centre * close);
           }
         }
@@ -674,15 +690,24 @@ export function attachInstagibWs(wss: WebSocketServer) {
           recentPenalty = Math.max(recentPenalty, SPAWN_RECENT_PENALTY * (1 - (now - r.t) / SPAWN_RECENT_MS));
         }
       }
+      // Hard overlap guard: is another present body too close to this spot?
+      let occupied = false;
+      for (const o of occupants) {
+        if (Math.hypot(s.x - o.x, s.z - o.z) < SPAWN_SEPARATION) { occupied = true; break; }
+      }
       const base = Number.isFinite(nearest) ? nearest : SPAWN_VIEW_RANGE * 2; // no threats → all equal
-      return { s, safety: base - viewPenalty - recentPenalty };
+      return { s, safety: base - viewPenalty - recentPenalty, occupied };
     });
-    scored.sort((a, b) => b.safety - a.safety);
-    // Take the safest, but keep a little variety among the near-safest so spawns
-    // aren't perfectly deterministic (a fixed pattern is itself campable).
-    const best = scored[0].safety;
+    // Prefer spawns that aren't already occupied; only fall back to occupied ones
+    // if EVERY spawn is crowded (tiny map / more players than spread allows).
+    const free = scored.filter((c) => !c.occupied);
+    const pool = free.length > 0 ? free : scored;
+    pool.sort((a, b) => b.safety - a.safety);
+    // Keep variety among the near-safest so spawns aren't a predictable pattern
+    // (a fixed rotation is itself campable) — random within a band of the best.
+    const best = pool[0].safety;
     const band = Math.max(4, Math.abs(best) * 0.15);
-    const eligible = scored.filter((c) => c.safety >= best - band);
+    const eligible = pool.filter((c) => c.safety >= best - band);
     const chosen = eligible[Math.floor(Math.random() * eligible.length)].s;
     room.recentSpawns.push({ x: chosen.x, z: chosen.z, t: now });
     // Small jitter so simultaneous respawns don't perfectly overlap.
