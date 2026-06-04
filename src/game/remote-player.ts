@@ -285,6 +285,13 @@ export class RemotePlayer {
     return this.group.position.y + BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD;
   }
 
+  // True once the real skinned model is installed (vs the fallback capsule).
+  // The Game upgrades a fallback → model when the GLB finishes loading after the
+  // socket already connected (so a slow/late model load doesn't leave "pills").
+  hasModel(): boolean {
+    return this.modelRoot !== null;
+  }
+
   setName(name: string) {
     this.name = name;
     // Cheap version — full re-render would require regenerating the sprite.
