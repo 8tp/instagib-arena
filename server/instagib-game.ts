@@ -50,7 +50,14 @@ import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
 
-const SNAPSHOT_HZ = 32;
+// Dynamic snapshots now carry ONLY per-tick numerics (pos/yaw/pitch/frags/
+// deaths/invuln/ping) — the static per-player profile (name, cosmetics, team,
+// badges) moved to the on-change `meta` channel (see broadcastMeta). That cut
+// each snapshot ~60%, so we can afford a higher tick rate than the old 32Hz:
+// more interpolation keyframes = smoother direction changes, while still
+// sending FEWER bytes/sec than before. 40Hz (25ms) sits comfortably under the
+// 100ms client interp delay (4 keyframes deep).
+const SNAPSHOT_HZ = 40;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
 // A dropped in-match player's slot + score are held this long for a reconnect to
 // reclaim (via the resume token) before the record is reaped.
@@ -652,6 +659,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
     broadcastRoom(room, { type: 'peer-joined', clientId: record.id, name: record.name }, record.id);
     broadcastRoomList();
+    // Ship the full room profile so the joiner sees everyone's name/cosmetics/
+    // team immediately and peers get the joiner's. The joiner's own cosmetics
+    // arrive moments later (after the welcome handshake) and re-broadcast via
+    // bumpMeta — see the cosmetic setters.
+    broadcastMeta(room);
   };
 
   // Reclaim a dropped player's slot: migrate the OLD record's match state onto
@@ -713,6 +725,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
     broadcastRoom(room, { type: 'peer-joined', clientId: record.id, name: record.name }, record.id);
     broadcastRoomList();
+    broadcastMeta(room); // reclaimed slot: refresh the room profile for everyone
     return true;
   };
 
@@ -725,6 +738,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.members.delete(record.id);
     room.roundWins.delete(record.id);
     broadcastRoom(room, { type: 'peer-left', clientId: record.id });
+    broadcastMeta(room); // refresh the roster profile sans the departed player
     // Drop their ballot so a departed player can't skew the tally or trip the
     // "everyone voted" early-resolve. Re-check resolution after pruning.
     if (room.vote) {
@@ -793,6 +807,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Snapshots ─────────────────────────────────────────────────────────
+  // The high-rate snapshot: ONLY the fields that change per tick. Everything
+  // static (name, team, cosmetics, badges) rides the `meta` channel below, sent
+  // on change, so it isn't re-serialized + re-parsed 40×/sec for no reason.
   const roomSnapshot = (room: Room) => {
     const now = Date.now();
     const players: object[] = [];
@@ -802,8 +819,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (c.disconnectedAt > 0) continue; // dropped (awaiting resume) → hidden, untargetable
       players.push({
         id: c.id,
-        name: c.name,
-        team: c.team,
         x: c.pos.x,
         y: c.pos.y,
         z: c.pos.z,
@@ -812,17 +827,51 @@ export function attachInstagibWs(wss: WebSocketServer) {
         frags: c.frags,
         deaths: c.deaths,
         invulnMs: Math.max(0, c.invulnUntilMs - now),
-        hat: c.hat,
-        unusual: c.unusual,
-        emote: c.emote,
-        nameColor: c.nameColor,
-        spawnEffect: c.spawnEffect,
         ping: Math.round(c.rttMs),
-        admin: c.admin,
-        verified: c.verified,
       });
     }
     return { type: 'state' as const, t: now, players, resumeAt: room.resumeAt };
+  };
+
+  // The slow-changing per-player profile, factored out of the snapshot. Sent as
+  // a full room roster whenever something here changes (join, leave, resume, a
+  // cosmetic equip) — not per tick. Safe because the WebSocket is TCP (reliable
+  // + ordered): a send-on-change update can never be lost on a live connection,
+  // and Node's single-threaded loop guarantees this is flushed before any
+  // snapshot that could reference a newly-joined player (members.add and
+  // broadcastMeta run without an await between them). The client merges these
+  // onto the dynamic snapshot, defaulting gracefully if a profile hasn't arrived.
+  const playerMeta = (c: ClientRecord) => ({
+    id: c.id,
+    name: c.name,
+    team: c.team,
+    hat: c.hat,
+    unusual: c.unusual,
+    emote: c.emote,
+    nameColor: c.nameColor,
+    spawnEffect: c.spawnEffect,
+    admin: c.admin,
+    verified: c.verified,
+  });
+
+  const roomMeta = (room: Room) => {
+    const players: object[] = [];
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (!c || c.disconnectedAt > 0) continue;
+      players.push(playerMeta(c));
+    }
+    return { type: 'meta' as const, players };
+  };
+
+  const broadcastMeta = (room: Room) => broadcastRoom(room, roomMeta(room));
+
+  // Re-broadcast a player's room profile after a meta field changed (cosmetic
+  // equip). No-op while they're browsing the lobby (not in a room yet).
+  const bumpMeta = (c: ClientRecord) => {
+    if (!c.roomId) return;
+    const room = rooms.get(c.roomId);
+    if (room) broadcastMeta(room);
   };
 
   // Interpolate a player's position at a past server-clock time `t`.
@@ -1440,43 +1489,53 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
         }
 
-        case 'hat':
+        case 'hat': {
           // Cosmetic only — validate against the manifest AND the player's owned
           // set (so locked hats can't be equipped in MP by a modified client),
-          // then echo it in snapshots so other players render it. Else = bare.
-          record.hat =
-            typeof msg.id === 'string' && isHat(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : 'hat.none';
+          // then echo it via the meta channel so other players render it. Else =
+          // bare. bumpMeta only fires on an actual change (debounces the burst of
+          // equip messages a client sends right after the welcome handshake).
+          const next =
+            typeof msg.id === 'string' && isHat(msg.id) && owns(record, msg.id) ? msg.id : 'hat.none';
+          if (next !== record.hat) { record.hat = next; bumpMeta(record); }
           break;
+        }
 
-        case 'unusual':
-          record.unusual =
+        case 'unusual': {
+          const next =
             typeof msg.id === 'string' && isUnusual(msg.id) && owns(record, msg.id)
               ? msg.id
               : 'unusual.none';
+          if (next !== record.unusual) { record.unusual = next; bumpMeta(record); }
           break;
+        }
 
-        case 'emote':
-          record.emote =
+        case 'emote': {
+          const next =
             typeof msg.id === 'string' && isEmote(msg.id) && owns(record, msg.id)
               ? msg.id
               : 'emote.cheer';
+          if (next !== record.emote) { record.emote = next; bumpMeta(record); }
           break;
+        }
 
-        case 'nameColor':
-          record.nameColor =
+        case 'nameColor': {
+          const next =
             typeof msg.id === 'string' && isNameColor(msg.id) && owns(record, msg.id)
               ? msg.id
               : 'name.default';
+          if (next !== record.nameColor) { record.nameColor = next; bumpMeta(record); }
           break;
+        }
 
-        case 'spawnEffect':
-          record.spawnEffect =
+        case 'spawnEffect': {
+          const next =
             typeof msg.id === 'string' && isSpawnEffect(msg.id) && owns(record, msg.id)
               ? msg.id
               : 'spawn.beam';
+          if (next !== record.spawnEffect) { record.spawnEffect = next; bumpMeta(record); }
           break;
+        }
 
         case 'card':
           record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId), {

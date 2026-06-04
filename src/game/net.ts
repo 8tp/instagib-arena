@@ -37,9 +37,11 @@ export type KillEvent = {
   t: number;
 };
 
+// The per-tick dynamic snapshot row. Static identity/cosmetics moved to
+// PlayerMeta (the `meta` channel), so this is now all numbers — smaller on the
+// wire and cheaper to JSON.parse 40×/sec.
 type StatePlayer = {
   id: string;
-  name: string;
   x: number;
   y: number;
   z: number;
@@ -48,19 +50,28 @@ type StatePlayer = {
   frags: number;
   deaths: number;
   invulnMs: number;
-  team?: number | null;
-  hat?: string;
-  unusual?: string;
-  emote?: string;
-  nameColor?: string;
-  spawnEffect?: string;
   ping?: number;
-  admin?: boolean; // staff badge
-  verified?: boolean; // verified blue check
+};
+
+// The slow-changing per-player profile, delivered on the `meta` channel (sent
+// on join/leave/resume/cosmetic-change, not per tick) and merged onto the
+// dynamic snapshot in upsertRemote.
+type PlayerMeta = {
+  id: string;
+  name: string;
+  team: number | null;
+  hat: string;
+  unusual: string;
+  emote: string;
+  nameColor: string;
+  spawnEffect: string;
+  admin: boolean;
+  verified: boolean;
 };
 
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
 type StateMessage = { type: 'state'; t: number; players: StatePlayer[]; resumeAt?: number };
+type MetaMessage = { type: 'meta'; players: PlayerMeta[] };
 type KillBroadcast = {
   type: 'kill';
   killerId: string;
@@ -117,6 +128,7 @@ type BeamMessage = {
 type ServerMessage =
   | WelcomeMessage
   | StateMessage
+  | MetaMessage
   | KillBroadcast
   | JoinedMessage
   | VoteStartMessage
@@ -223,6 +235,10 @@ export class NetClient {
   // snapshot objects every render frame — that steady per-frame garbage was a
   // source of GC pauses that show up as micro-stutter at high refresh rates.
   private scratchSeen = new Set<string>();
+  // Slow-changing per-player profile (name, team, cosmetics, badges) from the
+  // `meta` channel, merged onto each dynamic snapshot in upsertRemote. Persists
+  // between snapshots — meta is only re-sent on change, not per tick.
+  private metaById = new Map<string, PlayerMeta>();
   localHat = 'hat.none'; // equipped hat id, sent to the server so remotes render it
   localUnusual = 'unusual.none'; // equipped unusual-effect id
   localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
@@ -303,6 +319,7 @@ export class NetClient {
       this.ws = null;
       this.clientId = null;
       this.remotes.clear();
+      this.metaById.clear();
       this.snapBuffer.length = 0;
       this.stopPing();
       this.setStatus('closed');
@@ -503,15 +520,19 @@ export class NetClient {
     seen: Set<string>,
   ): void {
     seen.add(b.id);
+    // Static fields come from the meta channel; default gracefully if a profile
+    // hasn't landed yet (shouldn't happen — the server flushes meta before any
+    // snapshot referencing a new player — but a one-frame default is harmless).
+    const m = this.metaById.get(b.id);
     let s = this.remotes.get(b.id);
     if (!s) {
-      s = { id: b.id, name: b.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
+      s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
         frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', ping: 0,
         admin: false, verified: false, receivedAt: now };
       this.remotes.set(b.id, s);
     }
-    s.name = b.name ?? b.id;
+    // Dynamic (per-tick snapshot):
     s.pos.x = px;
     s.pos.y = py;
     s.pos.z = pz;
@@ -520,15 +541,17 @@ export class NetClient {
     s.frags = b.frags ?? 0;
     s.deaths = b.deaths ?? 0;
     s.invulnMs = b.invulnMs ?? 0;
-    s.team = b.team ?? null;
-    s.hat = b.hat ?? 'hat.none';
-    s.unusual = b.unusual ?? 'unusual.none';
-    s.emote = b.emote ?? 'emote.cheer';
-    s.nameColor = b.nameColor ?? 'name.default';
-    s.spawnEffect = b.spawnEffect ?? 'spawn.beam';
     s.ping = b.ping ?? 0;
-    s.admin = b.admin ?? false;
-    s.verified = b.verified ?? false;
+    // Static (meta channel):
+    s.name = m?.name ?? b.id;
+    s.team = m?.team ?? null;
+    s.hat = m?.hat ?? 'hat.none';
+    s.unusual = m?.unusual ?? 'unusual.none';
+    s.emote = m?.emote ?? 'emote.cheer';
+    s.nameColor = m?.nameColor ?? 'name.default';
+    s.spawnEffect = m?.spawnEffect ?? 'spawn.beam';
+    s.admin = m?.admin ?? false;
+    s.verified = m?.verified ?? false;
     s.receivedAt = now;
   }
 
@@ -602,13 +625,11 @@ export class NetClient {
       for (const p of msg.players) {
         players.set(p.id, p);
         if (p.id === this.clientId) {
+          // Dynamic self-state. Identity (name/admin/verified/team) now arrives
+          // on the `meta` channel instead — see the 'meta' handler.
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
           this.localInvulnMs = p.invulnMs ?? 0;
-          if (p.name) this.localName = p.name; // server's authoritative name for us
-          this.localAdmin = !!p.admin;
-          this.localVerified = !!p.verified;
-          if (p.team !== undefined) this.localTeam = p.team;
         }
       }
       // Keep buffer ordered by server time; drop anything older than the window.
@@ -617,6 +638,27 @@ export class NetClient {
       while (this.snapBuffer.length > 2 && this.snapBuffer[0].t < cutoff) {
         this.snapBuffer.shift();
       }
+      return;
+    }
+    if (msg.type === 'meta') {
+      // Full room roster of slow-changing profiles. Replace ours wholesale, then
+      // sweep anyone no longer present (a leaver) so metaById stays authoritative.
+      // Cold path (only on join/leave/equip), so a local set is fine here.
+      const seen = new Set<string>();
+      for (const p of msg.players) {
+        seen.add(p.id);
+        this.metaById.set(p.id, p);
+        if (p.id === this.clientId) {
+          if (p.name) this.localName = p.name; // server's authoritative name for us
+          this.localAdmin = !!p.admin;
+          this.localVerified = !!p.verified;
+          this.localTeam = p.team ?? null;
+        }
+      }
+      for (const id of this.metaById.keys()) {
+        if (!seen.has(id)) this.metaById.delete(id);
+      }
+      this.emit();
       return;
     }
     if (msg.type === 'kill') {
@@ -694,6 +736,7 @@ export class NetClient {
     if (msg.type === 'peer-left') {
       // Interpolation drops them once they fall out of fresh snapshots.
       this.remotes.delete(msg.clientId);
+      this.metaById.delete(msg.clientId);
       this.emit();
       return;
     }
