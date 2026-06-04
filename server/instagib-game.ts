@@ -72,6 +72,11 @@ const SPAWN_INVULN_MS = 1_500; // spawn grace once you have control (matches off
 // (and are spawn-killable while watching it). Mirrors the offline grace in
 // game.ts handleLocalDeath (KILLCAM_DURATION_SEC + grace).
 const KILL_RESPAWN_INVULN_MS = KILLCAM_DURATION_SEC * 1000 + SPAWN_INVULN_MS;
+// Anti-spawn-kill: a freshly-killed player is HIDDEN from everyone's snapshot and
+// untargetable for the length of their killcam, then "appears" at their (already
+// away-from-killer) spawn with the remaining invuln. So nobody can see or camp
+// the spawn while the victim is stuck watching their killcam — the big 1v1 issue.
+const RESPAWN_HIDE_MS = KILLCAM_DURATION_SEC * 1000;
 // Warmup: a short "get ready" countdown at the start of a match. Reuses the
 // existing `resumeAt` shot-freeze, so nobody can be fragged before it ends. Set
 // on room creation and when a room fills from 1→2 players (a match begins).
@@ -142,6 +147,7 @@ type ClientRecord = {
   frags: number;
   deaths: number;
   invulnUntilMs: number;
+  respawnAt: number; // >0 and in the future → hidden + untargetable (killcam window); 0 = live
   connectedAt: number;
   lastSeen: number;
   lastActiveMs: number; // last meaningful input (real movement or a shot) — for AFK
@@ -843,6 +849,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const c = clients.get(id);
       if (!c) continue;
       if (c.disconnectedAt > 0) continue; // dropped (awaiting resume) → hidden, untargetable
+      if (c.respawnAt > now) continue; // dead, watching killcam → hidden (anti-spawn-camp)
       players.push({
         id: c.id,
         // Resampled, anti-aliased pose (set on the snapshot tick before this runs);
@@ -1043,6 +1050,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.history.length = 0;
       c.pos = { ...pickSpawn(room, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
+      c.respawnAt = 0; // fresh match — everyone visible
       if (room.mode === 'duel') room.roundWins.set(id, 0);
     }
     // Per-client so each gets their OWN server-assigned spawn — otherwise every
@@ -1076,6 +1084,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.history.length = 0;
       c.pos = { ...pickSpawn(room, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + DUEL_ROUND_BREAK_SEC * 1000;
+      c.respawnAt = 0; // fresh round — everyone visible
     }
     const roundWins: Record<string, number> = {};
     for (const [id, w] of room.roundWins) roundWins[id] = w;
@@ -1151,6 +1160,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // TDM: no friendly fire — teammates can't be hit.
       if (room.mode === 'tdm' && victim.team != null && victim.team === shooter.team) continue;
       if (victim.invulnUntilMs > now) continue;
+      if (victim.respawnAt > now) continue; // hidden during their killcam → untargetable
       if (victim.disconnectedAt > 0) continue; // dropped player can't be fragged mid-grace
       const pp = rewind(victim, rt);
       const min: Vec = { x: pp.x - PLAYER_RADIUS, y: pp.y, z: pp.z - PLAYER_RADIUS };
@@ -1223,7 +1233,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
     });
     victim.pos = { ...respawnPos };
     victim.history.length = 0;
-    // Invuln spans the victim's killcam + a full spawn grace after it (see
+    victim.posSamples.length = 0; // reappear cleanly at the spawn (no resample slide)
+    // Hide the victim (snapshot + targeting) for their killcam, so nobody can see
+    // or spawn-camp them while they're stuck watching it. They reappear at the
+    // (already away-from-killer) spawn when it ends — see RESPAWN_HIDE_MS.
+    victim.respawnAt = now + RESPAWN_HIDE_MS;
+    // Invuln spans the killcam + a full spawn grace after they reappear (see
     // KILL_RESPAWN_INVULN_MS) so they're protected the whole time they can't act.
     victim.invulnUntilMs = now + KILL_RESPAWN_INVULN_MS;
 
@@ -1293,6 +1308,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       frags: 0,
       deaths: 0,
       invulnUntilMs: 0,
+      respawnAt: 0,
       connectedAt: now,
       lastSeen: now,
       lastActiveMs: now,
