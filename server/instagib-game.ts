@@ -46,7 +46,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import type { CardPayload, Vec3 } from '../src/game/types';
 import { isCard, isEmote, isHat, isNameColor, isSpawnEffect, isUnusual } from '../src/game/cosmetics';
-import { encodeState, decodePos, toView, type BinStatePlayer } from '../src/game/netcodec';
+import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
 import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
@@ -58,6 +58,14 @@ import { containsProfanity } from './profanity';
 // old 32Hz fat snapshot did, while giving the client twice the interpolation
 // keyframes (smoother direction changes) and finer (15.6ms) lag-comp history.
 const SNAPSHOT_HZ = 64;
+// Opt-in production/load-test telemetry for diagnosing snapshot cadence and
+// socket queueing without logging every tick. Enable with NETCODE_DIAG=1.
+const NETCODE_DIAG = process.env.NETCODE_DIAG === '1';
+const NETCODE_DIAG_INTERVAL_MS = 5_000;
+// State snapshots are absolute, so sending another one into a backed-up TCP
+// socket only makes that viewer see older truth later. Let the queue drain and
+// resume from a fresh frame instead. This budget is roughly four full 8p frames.
+const MAX_SNAPSHOT_BUFFERED_BYTES = 1024;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
 // A dropped in-match player's slot + score are held this long for a reconnect to
 // reclaim (via the resume token) before the record is reaped.
@@ -1812,8 +1820,27 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Timers ────────────────────────────────────────────────────────────
+  let snapshotDiagLastTick = 0;
+  let snapshotDiagStarted = Date.now();
+  let snapshotDiagTicks = 0;
+  let snapshotDiagTickGapTotal = 0;
+  let snapshotDiagTickGapMax = 0;
+  let snapshotDiagFrames = 0;
+  let snapshotDiagBytes = 0;
+  let snapshotDiagBufferedMax = 0;
+  let snapshotDiagSkipped = 0;
+
   const snapshotTimer = setInterval(() => {
     const now = Date.now();
+    if (NETCODE_DIAG) {
+      if (snapshotDiagLastTick > 0) {
+        const gap = now - snapshotDiagLastTick;
+        snapshotDiagTickGapTotal += gap;
+        snapshotDiagTickGapMax = Math.max(snapshotDiagTickGapMax, gap);
+      }
+      snapshotDiagLastTick = now;
+      snapshotDiagTicks += 1;
+    }
     for (const room of rooms.values()) {
       if (room.members.size === 0) continue;
       // Record each member's pose into the lag-comp history AT SNAPSHOT TIME (not
@@ -1840,6 +1867,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
         } else {
           c.renderPos.x = c.pos.x; c.renderPos.y = c.pos.y; c.renderPos.z = c.pos.z; c.renderPos.yaw = c.yaw;
         }
+        // Snap the outgoing position to the wire grid BEFORE recording history.
+        // The browser decodes these exact values, so lag-comp rewinds to the
+        // same pose the shooter rendered (render == rewind stays intact).
+        c.renderPos.x = quantizeStateCoord(c.renderPos.x);
+        c.renderPos.y = quantizeStateCoord(c.renderPos.y);
+        c.renderPos.z = quantizeStateCoord(c.renderPos.z);
         c.history.push({ t: now, x: c.renderPos.x, y: c.renderPos.y, z: c.renderPos.z });
         const cutoff = now - HISTORY_MS;
         while (c.history.length > 2 && c.history[0].t < cutoff) c.history.shift();
@@ -1848,10 +1881,42 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // tick). ~3× smaller and no JSON.parse on the client's hot path.
       const snap = roomSnapshot(room);
       const buf = encodeState(snap.t, snap.players as unknown as BinStatePlayer[], snap.resumeAt ?? 0);
+      if (NETCODE_DIAG) {
+        snapshotDiagFrames += 1;
+        snapshotDiagBytes += buf.byteLength;
+      }
       for (const id of room.members) {
         const c = clients.get(id);
-        if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(buf);
+        if (c && c.socket.readyState === c.socket.OPEN) {
+          if (NETCODE_DIAG) snapshotDiagBufferedMax = Math.max(snapshotDiagBufferedMax, c.socket.bufferedAmount);
+          if (c.socket.bufferedAmount > MAX_SNAPSHOT_BUFFERED_BYTES) {
+            if (NETCODE_DIAG) snapshotDiagSkipped += 1;
+            continue;
+          }
+          c.socket.send(buf);
+        }
       }
+    }
+    if (NETCODE_DIAG && now - snapshotDiagStarted >= NETCODE_DIAG_INTERVAL_MS) {
+      console.log('[netcode-diag]', JSON.stringify({
+        elapsedMs: now - snapshotDiagStarted,
+        rooms: rooms.size,
+        clients: clients.size,
+        tickHz: Number((snapshotDiagTicks * 1000 / (now - snapshotDiagStarted)).toFixed(1)),
+        tickGapMeanMs: Number((snapshotDiagTickGapTotal / Math.max(1, snapshotDiagTicks - 1)).toFixed(1)),
+        tickGapMaxMs: snapshotDiagTickGapMax,
+        frameBytesMean: Math.round(snapshotDiagBytes / Math.max(1, snapshotDiagFrames)),
+        socketBufferedMax: snapshotDiagBufferedMax,
+        snapshotsSkipped: snapshotDiagSkipped,
+      }));
+      snapshotDiagStarted = now;
+      snapshotDiagTicks = 0;
+      snapshotDiagTickGapTotal = 0;
+      snapshotDiagTickGapMax = 0;
+      snapshotDiagFrames = 0;
+      snapshotDiagBytes = 0;
+      snapshotDiagBufferedMax = 0;
+      snapshotDiagSkipped = 0;
     }
   }, 1000 / SNAPSHOT_HZ);
 
