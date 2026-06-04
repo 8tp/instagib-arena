@@ -77,6 +77,10 @@ export function decodeState(
   for (let i = 0; i < count; i++) {
     if (o + 1 > dv.byteLength) return null;
     const idLen = dv.getUint8(o); o += 1;
+    // Bounds-check the WHOLE row (id bytes + 5×f32 + 4×u16) before reading, so a
+    // truncated / corrupt / fragmented-short frame returns null per this
+    // function's contract instead of throwing a RangeError mid-decode.
+    if (o + idLen + 5 * 4 + 4 * 2 > dv.byteLength) return null;
     let id = '';
     for (let j = 0; j < idLen; j++) { id += String.fromCharCode(dv.getUint8(o)); o += 1; }
     const x = dv.getFloat32(o, true); o += 4;
