@@ -1611,15 +1611,15 @@ export class Game {
     let bestT = maxDist;
     let hit = false;
     let headshot = false;
-    for (const [id, rp] of this.remotePlayers) {
-      if (!rp.group.visible) continue; // dead / hidden
-      const snap = this.net.remotes.get(id);
-      if (!snap) continue;
+    // Raycast the freshly-interpolated snapshot positions (net.remotes) — the
+    // exact positions the server rewinds to at our renderTime. Players hidden
+    // during their killcam / dropped are absent from net.remotes, so skipped.
+    for (const [, snap] of this.net.remotes) {
       if (snap.invulnMs > 0) continue; // protected — server won't count it
       if (tdm && localTeam != null && snap.team === localTeam) continue; // friendly fire off
-      const px = rp.group.position.x;
-      const py = rp.group.position.y;
-      const pz = rp.group.position.z;
+      const px = snap.pos.x;
+      const py = snap.pos.y;
+      const pz = snap.pos.z;
       this.tmpAabb.min.x = px - PLAYER_RADIUS;
       this.tmpAabb.min.y = py;
       this.tmpAabb.min.z = pz - PLAYER_RADIUS;
@@ -1739,6 +1739,11 @@ export class Game {
     // detection against remote players. maxDist = distance to the nearest wall.
     if (this.net) {
       const maxDist = muzzle.distanceTo(result.end);
+      // Refresh remote positions to THIS instant before predicting + sending, so
+      // the prediction raycast and the shot's renderTime agree with what the
+      // server rewinds to. Without this the prediction used last frame's render
+      // (~16ms stale), which flips edge hits on fast movers → ghost markers.
+      this.net.interpolate(0);
       this.net.sendShot(
         { x: muzzle.x, y: muzzle.y, z: muzzle.z },
         { x: this.tmpForward.x, y: this.tmpForward.y, z: this.tmpForward.z },
