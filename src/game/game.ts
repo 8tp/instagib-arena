@@ -67,6 +67,7 @@ import {
   DEFAULT_RAILGUN_FINISH,
   DEFAULT_NAME_COLOR,
   DEFAULT_SPAWN_EFFECT,
+  DEFAULT_TITLE,
   isKillEffectStyle,
   isRailColor,
   isRailgunFinish,
@@ -75,10 +76,12 @@ import {
   isEmote,
   isNameColor,
   isSpawnEffect,
+  isTitle,
   railColorById,
   railgunFinishById,
   spawnEffectById,
   SPAWN_EFFECTS,
+  titleById,
   type KillEffectStyle,
 } from './cosmetics';
 import { NetClient, type KillEvent, type ChatMessage } from './net';
@@ -346,6 +349,7 @@ export class Game {
   private localRailgunFinish: string = DEFAULT_RAILGUN_FINISH; // viewmodel skin (local)
   private localNameColor: string = DEFAULT_NAME_COLOR; // nameplate tint (broadcast)
   private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
+  private localTitle: string = DEFAULT_TITLE; // earned title flair under the name (broadcast)
   private botAlive = new Map<string, boolean>(); // prev alive-state per bot (spawn fx edge)
   private localHat: string = DEFAULT_HAT; // equipped hat (broadcast to remotes)
   private localUnusual: string = DEFAULT_UNUSUAL; // equipped unusual effect
@@ -722,6 +726,13 @@ export class Game {
   setSpawnEffect(id: string) {
     this.localSpawnEffect = isSpawnEffect(id) ? id : DEFAULT_SPAWN_EFFECT;
     this.net?.setLocalSpawnEffect(this.localSpawnEffect);
+  }
+
+  // Equipped title flair — broadcast so others see it under your name on the
+  // nameplate + scoreboard (and on your killcard).
+  setTitle(id: string) {
+    this.localTitle = isTitle(id) ? id : DEFAULT_TITLE;
+    this.net?.setLocalTitle(this.localTitle);
   }
 
   // Your playercard (built client-side from your profile + card settings).
@@ -2448,6 +2459,7 @@ export class Game {
         team: this.localTeam,
         hat: this.localHat,
         emote: this.localEmote,
+        title: titleById(this.localTitle).text,
       },
     ];
     if (this.bots) {
@@ -2503,6 +2515,7 @@ export class Game {
           team: r.team,
           hat: r.hat,
           emote: r.emote,
+          title: titleById(r.title).text,
           ping: r.ping,
           admin: r.admin,
           verified: r.verified,

@@ -4,7 +4,7 @@ import { applyHighlight, type BotModel } from './bots';
 import { LocomotionBlender } from './locomotion';
 import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
-import { nameColorById } from './cosmetics';
+import { nameColorById, titleById } from './cosmetics';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
@@ -21,24 +21,39 @@ const MODEL_YAW_OFFSET = 0;
 // players top out well under this.
 const REPLAY_TELEPORT_SPEED = 60;
 
-function makeNameSprite(name: string, color: string): THREE.Sprite {
+const NAME_FONT = 'bold 28px ui-monospace, SFMono-Regular, Menlo, monospace';
+const TITLE_FONT = '600 18px ui-monospace, SFMono-Regular, Menlo, monospace';
+
+// The floating nameplate: the player's name, plus — when they have an equipped
+// title — a smaller, fainter flair line UNDER the name. The canvas grows taller
+// when a title is present; the sprite's Y scale tracks the canvas aspect so the
+// on-screen text size stays constant (the plate just gets taller).
+function makeNameSprite(name: string, color: string, title = ''): THREE.Sprite {
+  const hasTitle = title.length > 0;
   const canvas = document.createElement('canvas');
   canvas.width = 256;
-  canvas.height = 64;
+  canvas.height = hasTitle ? 96 : 64;
   const ctx = canvas.getContext('2d');
   if (ctx) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.font = 'bold 28px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const metrics = ctx.measureText(name);
+    // Size the box to the wider of the two lines.
+    ctx.font = NAME_FONT;
+    const nameW = ctx.measureText(name).width;
+    const flair = hasTitle ? title.toUpperCase() : '';
+    let titleW = 0;
+    if (hasTitle) {
+      ctx.font = TITLE_FONT;
+      titleW = ctx.measureText(flair).width;
+    }
     const padding = 16;
-    const boxW = Math.min(canvas.width - 4, metrics.width + padding * 2);
-    const boxH = 40;
-    ctx.fillStyle = 'rgba(8,10,14,0.7)';
+    const boxW = Math.min(canvas.width - 4, Math.max(nameW, titleW) + padding * 2);
+    const boxH = hasTitle ? 72 : 40;
     const r = 8;
     const x = (canvas.width - boxW) / 2;
     const y = (canvas.height - boxH) / 2;
+    ctx.fillStyle = 'rgba(8,10,14,0.7)';
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.arcTo(x + boxW, y, x + boxW, y + boxH, r);
@@ -50,8 +65,16 @@ function makeNameSprite(name: string, color: string): THREE.Sprite {
     ctx.strokeStyle = `${color}59`;
     ctx.lineWidth = 1.5;
     ctx.stroke();
+    // Name (primary line).
+    ctx.font = NAME_FONT;
     ctx.fillStyle = color;
-    ctx.fillText(name, canvas.width / 2, canvas.height / 2 + 1);
+    ctx.fillText(name, canvas.width / 2, hasTitle ? canvas.height / 2 - 11 : canvas.height / 2 + 1);
+    // Title flair (secondary line) — smaller, fainter, tracked uppercase.
+    if (hasTitle) {
+      ctx.font = TITLE_FONT;
+      ctx.fillStyle = 'rgba(214,224,255,0.66)';
+      ctx.fillText(flair, canvas.width / 2, canvas.height / 2 + 17);
+    }
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -62,7 +85,9 @@ function makeNameSprite(name: string, color: string): THREE.Sprite {
     transparent: true,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(2.0, 0.5, 1);
+  // Base plate is 2.0 × 0.5 for a 256×64 canvas; scale Y by the aspect so a
+  // taller (title) canvas keeps the same world-units-per-pixel.
+  sprite.scale.set(2.0, 0.5 * (canvas.height / 64), 1);
   return sprite;
 }
 
@@ -99,6 +124,8 @@ export class RemotePlayer {
   private unusualId = 'unusual.none';
   private nameColorId = 'name.default';
   private spawnEffectId = 'spawn.beam';
+  private titleId = 'title.none';
+  private titleText = ''; // resolved flair text drawn under the name ('' = none)
   private mixer: THREE.AnimationMixer | null = null;
   private loco: LocomotionBlender | null = null;
   private hold: WeaponHold | null = null;
@@ -211,6 +238,13 @@ export class RemotePlayer {
       this.cosmeticColor = nameColorById(this.nameColorId).color;
       this.resolveNameColor();
     }
+    // Equipped title flair (echoed from the server) — resolve to display text and
+    // rebuild the plate only on change so it isn't regenerated every frame.
+    if (snapshot.title !== this.titleId) {
+      this.titleId = snapshot.title;
+      this.titleText = titleById(this.titleId).text;
+      this.rebuildNameSprite();
+    }
     this.spawnEffectId = snapshot.spawnEffect; // remembered for the spawn-in burst
 
     this.drive(dt, moveSpeed);
@@ -294,15 +328,7 @@ export class RemotePlayer {
 
   setName(name: string) {
     this.name = name;
-    // Cheap version — full re-render would require regenerating the sprite.
-    // Names rarely change; lazy update on demand.
-    const smMat = this.nameSprite.material as THREE.SpriteMaterial;
-    smMat.map?.dispose();
-    smMat.dispose();
-    this.group.remove(this.nameSprite);
-    this.nameSprite = makeNameSprite(name, this.appliedNameColor);
-    this.nameSprite.position.y = BOT_HEIGHT + 0.35;
-    this.group.add(this.nameSprite);
+    this.rebuildNameSprite();
   }
 
   // TDM team override (set by Game): a hex that takes precedence over the
@@ -319,12 +345,20 @@ export class RemotePlayer {
     const next = this.teamColor ?? this.cosmeticColor;
     if (next === this.appliedNameColor) return;
     this.appliedNameColor = next;
+    this.rebuildNameSprite();
+  }
+
+  // Regenerate the nameplate sprite from the current name + color + title flair.
+  // The single rebuild path for every input that changes the plate (name, name
+  // color, team override, title). A taller plate (title present) is nudged up so
+  // the name keeps its screen position and the flair sits beneath it.
+  private rebuildNameSprite() {
     const smMat = this.nameSprite.material as THREE.SpriteMaterial;
     smMat.map?.dispose();
     smMat.dispose();
     this.group.remove(this.nameSprite);
-    this.nameSprite = makeNameSprite(this.name, this.appliedNameColor);
-    this.nameSprite.position.y = BOT_HEIGHT + 0.35;
+    this.nameSprite = makeNameSprite(this.name, this.appliedNameColor, this.titleText);
+    this.nameSprite.position.y = BOT_HEIGHT + 0.35 + (this.titleText ? 0.13 : 0);
     this.group.add(this.nameSprite);
   }
 

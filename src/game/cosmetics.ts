@@ -10,14 +10,20 @@
 
 export type Rarity = 'common' | 'rare' | 'epic';
 
+// A career-stat an achievement-earned cosmetic (titles) keys off. Evaluated
+// server-side against the player's clamped aggregate stats (see titleGrantsFrom).
+export type AchievementStat = 'kills' | 'headshots' | 'wins' | 'bestStreak' | 'games' | 'accuracy';
+
 // How a cosmetic is obtained. `default` = owned by everyone; `level` = unlocked
 // by reaching an account level (prestige, can't be bought); `credits` = bought
-// in the Locker with earned credits (player choice). A cosmetic is one OR the
-// other, never both, to avoid "I leveled to it AND paid for it" feel-bad.
+// in the Locker with earned credits (player choice); `achievement` = earned by
+// crossing a career-stat milestone (titles). A cosmetic is one source only,
+// never several, to avoid "I leveled to it AND paid for it" feel-bad.
 export type CosmeticSource =
   | { type: 'default' }
   | { type: 'level'; level: number }
   | { type: 'credits'; price: number }
+  | { type: 'achievement'; stat: AchievementStat; min: number; minGames?: number }
   | { type: 'admin' }; // staff-exclusive: auto-granted to admins, never earnable/buyable
 
 // ── Kill-effect slot ────────────────────────────────────────────────────────
@@ -297,6 +303,12 @@ export function caseHats(): HatCosmetic[] {
 // see your own as a kill-confirm flourish. `bg`/`accent` are CSS for the card.
 export const DEFAULT_CARD = 'card.slate';
 
+// Optional motion layer drawn over the card's static `bg`. Pure CSS (see the
+// .pcard-anim-* classes in src/index.css); the static gradient stays the base so
+// the card is always legible, and the animation is suppressed under reduced
+// effects / prefers-reduced-motion. `undefined` = a plain static card.
+export type CardAnim = 'holo' | 'shimmer' | 'pulse' | 'aurora' | 'scan';
+
 export type CardCosmetic = {
   id: string;
   name: string;
@@ -305,16 +317,22 @@ export type CardCosmetic = {
   source: CosmeticSource;
   bg: string; // CSS background (gradient)
   accent: string; // hex accent for the level badge + stat numbers
+  anim?: CardAnim; // optional animated overlay (epic+ tier)
 };
 
 export const CARD_STYLES: readonly CardCosmetic[] = [
-  { id: 'card.slate',  name: 'Slate',     blurb: 'Clean gunmetal.',          rarity: 'common', source: { type: 'default' },              bg: 'linear-gradient(135deg,#1e293b,#0b1220)',                          accent: '#67e8f9' },
-  { id: 'card.ember',  name: 'Ember',     blurb: 'Molten edges.',            rarity: 'rare',   source: { type: 'level', level: 4 },      bg: 'linear-gradient(135deg,#7c2d12,#180a05)',                          accent: '#fb923c' },
-  { id: 'card.toxic',  name: 'Toxic',     blurb: 'Acid wash.',               rarity: 'rare',   source: { type: 'credits', price: 600 },  bg: 'linear-gradient(135deg,#14532d,#05140a)',                          accent: '#86efac' },
-  { id: 'card.cyber',  name: 'Cyber',     blurb: 'Neon grid.',               rarity: 'rare',   source: { type: 'level', level: 10 },     bg: 'linear-gradient(135deg,#0e7490,#3b0764)',                          accent: '#22d3ee' },
-  { id: 'card.void',   name: 'Void',      blurb: 'Deep violet.',             rarity: 'epic',   source: { type: 'credits', price: 1500 }, bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa' },
-  { id: 'card.gold',   name: 'Gilded',    blurb: 'For the elite.',           rarity: 'epic',   source: { type: 'level', level: 20 },     bg: 'linear-gradient(135deg,#854d0e,#1c1206)',                          accent: '#fbbf24' },
-  { id: 'card.admin',  name: 'Sovereign', blurb: 'Staff only.',              rarity: 'epic',   source: { type: 'admin' },                bg: 'linear-gradient(135deg,#3a2c05,#0c0a04)',                          accent: '#ffd700' },
+  { id: 'card.slate',  name: 'Slate',     blurb: 'Clean gunmetal.',           rarity: 'common', source: { type: 'default' },              bg: 'linear-gradient(135deg,#1e293b,#0b1220)',                          accent: '#67e8f9' },
+  { id: 'card.ember',  name: 'Ember',     blurb: 'Molten edges.',             rarity: 'rare',   source: { type: 'level', level: 4 },      bg: 'linear-gradient(135deg,#7c2d12,#180a05)',                          accent: '#fb923c' },
+  { id: 'card.toxic',  name: 'Toxic',     blurb: 'Acid wash.',                rarity: 'rare',   source: { type: 'credits', price: 600 },  bg: 'linear-gradient(135deg,#14532d,#05140a)',                          accent: '#86efac' },
+  { id: 'card.cyber',  name: 'Cyber',     blurb: 'Neon grid.',                rarity: 'rare',   source: { type: 'level', level: 10 },     bg: 'linear-gradient(135deg,#0e7490,#3b0764)',                          accent: '#22d3ee' },
+  { id: 'card.void',   name: 'Void',      blurb: 'Deep violet, slow aurora.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa', anim: 'aurora' },
+  { id: 'card.gold',   name: 'Gilded',    blurb: 'A drifting golden sheen.',  rarity: 'epic',   source: { type: 'level', level: 20 },     bg: 'linear-gradient(135deg,#854d0e,#1c1206)',                          accent: '#fbbf24', anim: 'shimmer' },
+  { id: 'card.admin',  name: 'Sovereign', blurb: 'Staff only — holographic.', rarity: 'epic',   source: { type: 'admin' },                bg: 'linear-gradient(135deg,#3a2c05,#0c0a04)',                          accent: '#ffd700', anim: 'holo' },
+  // Animated tier — the card slot's premium upgrade. Each pairs a static base
+  // gradient with a CSS motion layer (.pcard-anim-*).
+  { id: 'card.prism',  name: 'Prism',     blurb: 'A rotating holographic foil.', rarity: 'epic', source: { type: 'credits', price: 2600 }, bg: 'linear-gradient(135deg,#0b1220,#1e1b4b)',                         accent: '#a5f3fc', anim: 'holo' },
+  { id: 'card.nebula', name: 'Nebula',    blurb: 'Living violet-teal aurora.',   rarity: 'epic', source: { type: 'level', level: 28 },     bg: 'radial-gradient(circle at 70% 30%,#155e75,#1e1b4b 60%,#05010f)',  accent: '#67e8f9', anim: 'aurora' },
+  { id: 'card.matrix', name: 'Matrix',    blurb: 'Scrolling neon scanlines.',    rarity: 'epic', source: { type: 'credits', price: 2200 }, bg: 'linear-gradient(135deg,#022c22,#03140f)',                        accent: '#4ade80', anim: 'scan' },
 ];
 
 export function cardById(id: string): CardCosmetic {
@@ -355,6 +373,79 @@ export function isEmote(id: string): boolean {
   return EMOTES.some((e) => e.id === id);
 }
 
+// ── Title / flair slot ───────────────────────────────────────────────────────
+// An earned text "flair" shown UNDER the player's name on the in-world nameplate
+// (small + faint), beside their row on the scoreboard, and on their playercard.
+// Titles are ACHIEVEMENT-earned — granted when a career-stat milestone is crossed
+// (see titleGrantsFrom, evaluated server-side from clamped aggregate stats) — so
+// they read as a badge of what you've actually done. `title.none` is the free
+// default (no flair).
+export const DEFAULT_TITLE = 'title.none';
+
+export type TitleCosmetic = {
+  id: string;
+  name: string; // Locker label
+  blurb: string; // Locker description / unlock hint
+  rarity: Rarity;
+  source: CosmeticSource;
+  text: string; // the flair text actually displayed ('' = no title)
+};
+
+export const TITLES: readonly TitleCosmetic[] = [
+  { id: 'title.none',         name: 'No Title',     blurb: 'No flair under your name.',                     rarity: 'common', source: { type: 'default' },                                              text: '' },
+  { id: 'title.centurion',    name: 'Centurion',    blurb: 'Land 100 career frags.',                        rarity: 'common', source: { type: 'achievement', stat: 'kills', min: 100 },                  text: 'Centurion' },
+  { id: 'title.executioner',  name: 'Executioner',  blurb: 'Land 1,000 career frags.',                      rarity: 'rare',   source: { type: 'achievement', stat: 'kills', min: 1000 },                 text: 'Executioner' },
+  { id: 'title.railgod',      name: 'Rail God',     blurb: 'Land 5,000 career frags.',                      rarity: 'epic',   source: { type: 'achievement', stat: 'kills', min: 5000 },                 text: 'Rail God' },
+  { id: 'title.headhunter',   name: 'Headhunter',   blurb: 'Land 500 career headshots.',                    rarity: 'rare',   source: { type: 'achievement', stat: 'headshots', min: 500 },              text: 'Headhunter' },
+  { id: 'title.champion',     name: 'Champion',     blurb: 'Win 50 matches.',                               rarity: 'rare',   source: { type: 'achievement', stat: 'wins', min: 50 },                    text: 'Champion' },
+  { id: 'title.untouchable',  name: 'Untouchable',  blurb: 'Reach a 20-frag streak.',                       rarity: 'rare',   source: { type: 'achievement', stat: 'bestStreak', min: 20 },              text: 'Untouchable' },
+  { id: 'title.sharpshooter', name: 'Sharpshooter', blurb: 'Finish a match at 50%+ accuracy (20+ games).',  rarity: 'rare',   source: { type: 'achievement', stat: 'accuracy', min: 50, minGames: 20 },  text: 'Sharpshooter' },
+  { id: 'title.veteran',      name: 'Veteran',      blurb: 'Play 200 matches.',                             rarity: 'common', source: { type: 'achievement', stat: 'games', min: 200 },                  text: 'Veteran' },
+  { id: 'title.sovereign',    name: 'Sovereign',    blurb: 'Staff only.',                                   rarity: 'epic',   source: { type: 'admin' },                                                text: 'Sovereign' },
+];
+
+export function titleById(id: string): TitleCosmetic {
+  return TITLES.find((t) => t.id === id) ?? TITLES[0];
+}
+export function isTitle(id: string): boolean {
+  return TITLES.some((t) => t.id === id);
+}
+
+// Career aggregate the achievement titles evaluate against (server-side, from the
+// player's clamped stats). `accuracy` is best single-match accuracy (0..100).
+export type TitleStats = {
+  kills: number;
+  headshots: number;
+  wins: number;
+  bestStreak: number;
+  games: number;
+  accuracy: number;
+};
+
+// IDs a player has earned purely from career stats (achievement titles). Used
+// server-side to grant titles on match record and client-side to label locked
+// items. default/admin/level/credits titles are never granted here.
+export function titleGrantsFrom(stats: TitleStats): string[] {
+  return TITLES.filter((t) => {
+    if (t.source.type !== 'achievement') return false;
+    const s = t.source;
+    if (s.minGames != null && stats.games < s.minGames) return false;
+    const val =
+      s.stat === 'kills'
+        ? stats.kills
+        : s.stat === 'headshots'
+          ? stats.headshots
+          : s.stat === 'wins'
+            ? stats.wins
+            : s.stat === 'bestStreak'
+              ? stats.bestStreak
+              : s.stat === 'games'
+                ? stats.games
+                : stats.accuracy;
+    return val >= s.min;
+  }).map((t) => t.id);
+}
+
 // ── Cross-slot helpers (the seam the progression backend reads) ──────────────
 export type CosmeticSlot =
   | 'killEffect'
@@ -365,7 +456,8 @@ export type CosmeticSlot =
   | 'card'
   | 'emote'
   | 'nameColor'
-  | 'spawnEffect';
+  | 'spawnEffect'
+  | 'title';
 
 // Each catalog entry tagged with its slot, so a single id-keyed lookup works
 // across all slots. Future slots (name color…) concat here.
@@ -378,7 +470,8 @@ export type CatalogEntry =
   | (CardCosmetic & { slot: 'card' })
   | (EmoteCosmetic & { slot: 'emote' })
   | (NameColorCosmetic & { slot: 'nameColor' })
-  | (SpawnEffectCosmetic & { slot: 'spawnEffect' });
+  | (SpawnEffectCosmetic & { slot: 'spawnEffect' })
+  | (TitleCosmetic & { slot: 'title' });
 
 export const ALL_COSMETICS: readonly CatalogEntry[] = [
   ...KILL_EFFECTS.map((c) => ({ ...c, slot: 'killEffect' as const })),
@@ -390,6 +483,7 @@ export const ALL_COSMETICS: readonly CatalogEntry[] = [
   ...EMOTES.map((c) => ({ ...c, slot: 'emote' as const })),
   ...NAME_COLORS.map((c) => ({ ...c, slot: 'nameColor' as const })),
   ...SPAWN_EFFECTS.map((c) => ({ ...c, slot: 'spawnEffect' as const })),
+  ...TITLES.map((c) => ({ ...c, slot: 'title' as const })),
 ];
 
 export function cosmeticById(id: string): CatalogEntry | undefined {
@@ -423,6 +517,24 @@ export function sourceLabel(source: CosmeticSource): string {
       return `Level ${source.level}`;
     case 'credits':
       return `${source.price} credits`;
+    case 'achievement': {
+      const games = source.minGames ? ` (${source.minGames}+ games)` : '';
+      switch (source.stat) {
+        case 'kills':
+          return `${source.min.toLocaleString()} frags`;
+        case 'headshots':
+          return `${source.min.toLocaleString()} headshots`;
+        case 'wins':
+          return `${source.min} wins`;
+        case 'bestStreak':
+          return `${source.min}-frag streak`;
+        case 'games':
+          return `${source.min} matches played`;
+        case 'accuracy':
+          return `${source.min}% match accuracy${games}`;
+      }
+      return 'Achievement';
+    }
     case 'admin':
       return 'Admin';
   }

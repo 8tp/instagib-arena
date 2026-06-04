@@ -19,6 +19,7 @@ export type RemotePlayerSnapshot = {
   emote: string; // equipped podium-emote cosmetic id
   nameColor: string; // equipped nameplate-color cosmetic id
   spawnEffect: string; // equipped spawn-in-effect cosmetic id
+  title: string; // equipped title cosmetic id (resolved to flair text client-side)
   ping: number; // this player's reported round-trip ping (ms)
   admin: boolean; // staff badge
   verified: boolean; // verified blue check
@@ -34,6 +35,7 @@ export type RosterEntry = {
   team: number | null;
   hat: string;
   emote: string;
+  title: string;
   admin: boolean;
   verified: boolean;
   frags: number;
@@ -82,6 +84,7 @@ type PlayerMeta = {
   emote: string;
   nameColor: string;
   spawnEffect: string;
+  title: string;
   admin: boolean;
   verified: boolean;
 };
@@ -279,6 +282,7 @@ export class NetClient {
   localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
   localNameColor = 'name.default'; // equipped nameplate-color id (seen by others)
   localSpawnEffect = 'spawn.beam'; // equipped spawn-in-effect id (seen by others)
+  localTitle = 'title.none'; // equipped title id (flair shown under the name, seen by others)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
@@ -495,6 +499,11 @@ export class NetClient {
     this.send({ type: 'spawnEffect', id });
   }
 
+  setLocalTitle(id: string): void {
+    this.localTitle = id;
+    this.send({ type: 'title', id });
+  }
+
   setLocalCard(card: CardPayload): void {
     this.localCard = card;
     this.send({ type: 'card', card });
@@ -620,8 +629,8 @@ export class NetClient {
     if (!s) {
       s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
         frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
-        emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', ping: 0,
-        admin: false, verified: false, receivedAt: now };
+        emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
+        ping: 0, admin: false, verified: false, receivedAt: now };
       this.remotes.set(b.id, s);
     }
     // Dynamic (per-tick snapshot):
@@ -642,6 +651,7 @@ export class NetClient {
     s.emote = m?.emote ?? 'emote.cheer';
     s.nameColor = m?.nameColor ?? 'name.default';
     s.spawnEffect = m?.spawnEffect ?? 'spawn.beam';
+    s.title = m?.title ?? 'title.none';
     s.admin = m?.admin ?? false;
     s.verified = m?.verified ?? false;
     s.receivedAt = now;
@@ -685,6 +695,7 @@ export class NetClient {
       this.send({ type: 'emote', id: this.localEmote });
       this.send({ type: 'nameColor', id: this.localNameColor });
       this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
+      this.send({ type: 'title', id: this.localTitle });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       // Keyed off performance.now() to match estimatedServerNow().
@@ -918,6 +929,7 @@ export class NetClient {
         team: m.team,
         hat: m.hat,
         emote: m.emote,
+        title: m.title,
         admin: m.admin,
         verified: m.verified,
         frags: s?.frags ?? 0,

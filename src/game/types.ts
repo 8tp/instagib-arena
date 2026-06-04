@@ -69,6 +69,9 @@ export type PlayerScore = {
   // Known for the local player + (online) remotes; absent for offline bots.
   hat?: string;
   emote?: string;
+  // Equipped title flair text ('' / undefined = none). Shown under the name on
+  // the scoreboard; broadcast for online players, local for the player themself.
+  title?: string;
   // Round-trip ping (ms) for online players; undefined for bots / offline.
   ping?: number;
   // Account moderation flags (online only): staff badge + verified blue check.
@@ -161,6 +164,7 @@ export type CardPayload = {
   level: number;
   style: string; // card cosmetic id
   stats: { label: string; value: string }[]; // up to 3
+  title?: string; // equipped title flair text ('' = none); ownership-checked server-side
   verified?: boolean; // blue verified check (server-set from the account)
   admin?: boolean; // staff badge (server-set from the account)
 };
