@@ -1319,6 +1319,20 @@ export class Game {
     // Add new + tick existing
     for (const [id, snap] of this.net.remotes) {
       let rp = this.remotePlayers.get(id);
+      // Upgrade a fallback "pill" to the real model once the GLB is ready — the
+      // socket can connect (setMultiplayer) before start()'s awaited model load
+      // finishes, so early remotes are created modelless. Recreate them in place.
+      if (rp && this.botModel && !rp.hasModel()) {
+        const px = rp.group.position.x;
+        const py = rp.group.position.y;
+        const pz = rp.group.position.z;
+        rp.dispose(this.scene);
+        rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
+        rp.group.position.set(px, py, pz);
+        rp.team = snap.team;
+        this.applyRemoteColor(rp);
+        this.remotePlayers.set(id, rp);
+      }
       if (!rp) {
         rp = new RemotePlayer(id, snap.name, this.scene, this.botModel);
         rp.group.position.set(snap.pos.x, snap.pos.y, snap.pos.z);
@@ -1736,7 +1750,13 @@ export class Game {
       // of a full round-trip later. Purely cosmetic: the kill, killfeed, medals,
       // and score still come from the server's `kill` broadcast (handleNetKill),
       // which de-dupes the sound against this prediction.
-      const pred = this.predictRemoteHit(muzzle, this.tmpForward, maxDist);
+      // Only predict when the buffer is healthy (we're interpolating, so the
+      // rendered remotes match what the server will rewind to). If we're
+      // extrapolating (underrun), the remotes are ahead of the server's truth,
+      // so a local "hit" would likely ghost — wait for the server's kill.
+      const pred = this.net.extrapolating
+        ? { hit: false, headshot: false }
+        : this.predictRemoteHit(muzzle, this.tmpForward, maxDist);
       if (pred.hit) {
         this.predictedHitMs = performance.now();
         this.hitMarker = {
