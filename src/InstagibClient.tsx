@@ -964,9 +964,10 @@ function GameView({
       }
     });
     gameRef.current = game;
-    // F3 toggles the net-debug overlay (works whether or not pointer-locked).
+    // Toggle the net-debug overlay. F3 (often Mission Control on macOS) OR the
+    // backtick/tilde key (`) which has no OS conflict. Works locked or not.
     const onDebugKey = (e: KeyboardEvent) => {
-      if (e.code === 'F3') {
+      if (e.code === 'F3' || e.code === 'Backquote') {
         e.preventDefault();
         gameRef.current?.toggleNetDebug();
       }
@@ -984,6 +985,9 @@ function GameView({
     applySettingsToGame(game, settings);
     applyMatchConfig(game, config);
     void game.start();
+    // Bulletproof activation: ?netdebug in the URL turns the overlay on with no
+    // keypress (so a macOS F3/Mission-Control conflict can't block it).
+    if (new URLSearchParams(window.location.search).has('netdebug')) game.toggleNetDebug();
     return () => {
       window.removeEventListener('keydown', onDebugKey);
       gameRef.current?.dispose();
