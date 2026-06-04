@@ -46,6 +46,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import type { CardPayload, Vec3 } from '../src/game/types';
 import { isCard, isEmote, isHat, isNameColor, isSpawnEffect, isUnusual } from '../src/game/cosmetics';
+import { encodeState, decodePos, toView, type BinStatePlayer } from '../src/game/netcodec';
 import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
@@ -1263,7 +1264,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
     schedulePresence(); // a new socket bumps the online count for everyone in the menu
 
-    socket.on('message', (raw) => {
+    socket.on('message', (raw, isBinary) => {
       const ts = Date.now();
       // Inbound message-rate guard (#2): a flood of pos/shoot/list is a cheap
       // DoS. Count per rolling second and close a socket that blows past the cap.
@@ -1281,10 +1282,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
         return;
       }
       let msg: ClientMessage;
-      try {
-        msg = JSON.parse(raw.toString()) as ClientMessage;
-      } catch {
-        return;
+      if (isBinary) {
+        // The only binary frame a client sends is the hot 64Hz position update.
+        const data = Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer);
+        const p = decodePos(toView(data));
+        if (!p) return; // unknown/garbage binary → ignore
+        msg = { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+      } else {
+        try {
+          msg = JSON.parse(raw.toString()) as ClientMessage;
+        } catch {
+          return;
+        }
       }
       record.lastSeen = ts;
       switch (msg.type) {
@@ -1635,7 +1644,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
         const cutoff = now - HISTORY_MS;
         while (c.history.length > 2 && c.history[0].t < cutoff) c.history.shift();
       }
-      broadcastRoom(room, roomSnapshot(room));
+      // Encode the snapshot ONCE as a binary frame and fan it out (vs JSON per
+      // tick). ~3× smaller and no JSON.parse on the client's hot path.
+      const snap = roomSnapshot(room);
+      const buf = encodeState(snap.t, snap.players as unknown as BinStatePlayer[], snap.resumeAt ?? 0);
+      for (const id of room.members) {
+        const c = clients.get(id);
+        if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(buf);
+      }
     }
   }, 1000 / SNAPSHOT_HZ);
 

@@ -167,6 +167,10 @@ const POS_HEARTBEAT_MS = 250;
 // (subject to the heartbeat). Tight enough that real movement always sends.
 const POS_EPSILON = 1e-3; // metres
 const YAW_EPSILON = 5e-4; // radians
+// A single sim tick can move the local player at most ~0.8m (max speed × TICK_DT).
+// A render-frame delta above this is a teleport (respawn / vote reset / OOB
+// recovery), so we snap the camera instead of gliding the interpolation across it.
+const LOCAL_RENDER_TELEPORT_M = 2;
 
 const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
   'first-blood':   'first-blood',
@@ -256,6 +260,16 @@ export class Game {
   private multiplayerUrl = '';
   private multiplayerRoomId = '';
   private posSendAccumMs = 0;
+  // The local player's sim position at the start of the most recent sim step, so
+  // render() can interpolate the camera between the last two 64Hz sim states by
+  // the leftover accumulator fraction. Without this the camera translates in
+  // 64Hz steps and judders on >64Hz displays (aim is already per-frame smooth).
+  private simPrevPos = { x: 0, y: 0, z: 0 };
+  // performance.now() of the last LOCALLY-PREDICTED hit, so the server kill
+  // broadcast doesn't replay the hit-confirm sound we already played instantly.
+  private predictedHitMs = 0;
+  // Reused AABB for the predicted-hit raycast (no per-shot allocation).
+  private tmpAabb: AABB = { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
   // Last position/orientation actually sent to the server + when, for idle dedup
   // (see POS_SEND_HZ / POS_HEARTBEAT_MS). lastPosSentMs = 0 makes the heartbeat
   // branch fire on the very first tick, so we always send an initial position.
@@ -1206,6 +1220,11 @@ export class Game {
       this.accumulator += dt;
       let steps = 0;
       while (this.accumulator >= TICK_DT && steps < 5) {
+        // Snapshot the pre-step position so render() can interpolate toward the
+        // post-step one by the leftover accumulator fraction (smooth on any refresh).
+        this.simPrevPos.x = this.player.pos.x;
+        this.simPrevPos.y = this.player.pos.y;
+        this.simPrevPos.z = this.player.pos.z;
         this.simStep(TICK_DT);
         this.accumulator -= TICK_DT;
         steps += 1;
@@ -1559,6 +1578,49 @@ export class Game {
     }
   }
 
+  // Local prediction of whether a shot hit a remote player, mirroring the
+  // server's lag-comp raycast: same hitbox dims (PLAYER_RADIUS × PLAYER_HEIGHT),
+  // same headshot fraction, same skip rules (spawn-invuln, friendly fire in TDM,
+  // dead/hidden), capped at the wall distance. Cast against the RENDERED
+  // (interpolated, delayed) positions — exactly what the server rewinds to — so
+  // the prediction agrees with the authoritative result the vast majority of the
+  // time. Used only to show instant hit feedback; never touches score.
+  private predictRemoteHit(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number,
+  ): { hit: boolean; headshot: boolean } {
+    if (!this.net) return { hit: false, headshot: false };
+    const tdm = this.net.mode === 'tdm';
+    const localTeam = this.net.localTeam;
+    let bestT = maxDist;
+    let hit = false;
+    let headshot = false;
+    for (const [id, rp] of this.remotePlayers) {
+      if (!rp.group.visible) continue; // dead / hidden
+      const snap = this.net.remotes.get(id);
+      if (!snap) continue;
+      if (snap.invulnMs > 0) continue; // protected — server won't count it
+      if (tdm && localTeam != null && snap.team === localTeam) continue; // friendly fire off
+      const px = rp.group.position.x;
+      const py = rp.group.position.y;
+      const pz = rp.group.position.z;
+      this.tmpAabb.min.x = px - PLAYER_RADIUS;
+      this.tmpAabb.min.y = py;
+      this.tmpAabb.min.z = pz - PLAYER_RADIUS;
+      this.tmpAabb.max.x = px + PLAYER_RADIUS;
+      this.tmpAabb.max.y = py + PLAYER_HEIGHT;
+      this.tmpAabb.max.z = pz + PLAYER_RADIUS;
+      const t = rayAabb(origin, dir, this.tmpAabb);
+      if (t == null || t <= 0 || t >= bestT) continue;
+      bestT = t;
+      hit = true;
+      const hitY = origin.y + dir.y * t;
+      headshot = hitY >= py + PLAYER_HEIGHT * BOT_HEADSHOT_THRESHOLD;
+    }
+    return { hit, headshot };
+  }
+
   private handleFire() {
     this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler);
@@ -1667,6 +1729,25 @@ export class Game {
         { x: this.tmpForward.x, y: this.tmpForward.y, z: this.tmpForward.z },
         maxDist,
       );
+      // Predicted hit feedback. We render remotes at the same delayed positions
+      // the server rewinds to, so a local raycast against them (with the server's
+      // hitbox dims + the same invuln/team/wall rules) matches the authoritative
+      // result almost always — so show the hitmarker + confirm tick NOW instead
+      // of a full round-trip later. Purely cosmetic: the kill, killfeed, medals,
+      // and score still come from the server's `kill` broadcast (handleNetKill),
+      // which de-dupes the sound against this prediction.
+      const pred = this.predictRemoteHit(muzzle, this.tmpForward, maxDist);
+      if (pred.hit) {
+        this.predictedHitMs = performance.now();
+        this.hitMarker = {
+          id: this.nextEventId++,
+          kind: pred.headshot ? 'headshot' : 'kill',
+          remaining: HIT_MARKER_KILL_DURATION_SEC,
+          total: HIT_MARKER_KILL_DURATION_SEC,
+        };
+        this.audio.hitConfirm(pred.headshot, 0.5);
+        this.emitHud();
+      }
     }
 
     if (result.hits.length === 0) return; // missed every bot
@@ -2101,12 +2182,16 @@ export class Game {
     if (iAmKiller) {
       // Killer: trust the server-authoritative score (next snapshot will
       // confirm); play kill SFX + medal locally for immediate feedback.
+      // If we already predicted this hit (handleFire), the confirm tick + ring
+      // played instantly — don't replay the tick now (a full RTT later); the
+      // 'kill' gib SFX still fires here as the authoritative confirmation.
+      const wasPredicted = performance.now() - this.predictedHitMs < 1000;
       this.audio.play('kill', 0.7);
-      this.audio.hitConfirm(ev.headshot, 0.5);
+      if (!wasPredicted) this.audio.hitConfirm(ev.headshot, 0.5);
       this.fireKillFeedback(ev.headshot);
-      // Crosshair hitmarker — online hits are server-resolved (no local raycast),
-      // so this is the only place it fires in multiplayer (the bot path covers
-      // offline). Without it, you got no hit feedback ring on networked frags.
+      // Crosshair hitmarker — refreshed here as the authoritative confirmation
+      // (or shown for the first time if the hit wasn't predicted, e.g. the
+      // server's rewind landed a shot our local raycast didn't).
       this.hitMarker = {
         id: this.nextEventId++,
         kind: ev.headshot ? 'headshot' : 'kill',
@@ -2576,11 +2661,27 @@ export class Game {
       );
       this.camera.lookAt(look);
     } else {
-      this.camera.position.set(
-        this.player.pos.x,
-        this.player.pos.y + EYE_HEIGHT,
-        this.player.pos.z,
-      );
+      // Interpolate the camera between the last two 64Hz sim positions by the
+      // leftover accumulator fraction, so motion is smooth at any refresh rate
+      // instead of stepping at the sim rate. Snap across teleports. The shot
+      // still fires from the authoritative sim pos (handleFire), so this ≤1-tick
+      // visual blend never affects where bullets actually come from; aim
+      // (rotation) is exact every frame.
+      const p = this.player.pos;
+      const moved =
+        Math.abs(p.x - this.simPrevPos.x) +
+        Math.abs(p.y - this.simPrevPos.y) +
+        Math.abs(p.z - this.simPrevPos.z);
+      let cx = p.x;
+      let cy = p.y;
+      let cz = p.z;
+      if (moved <= LOCAL_RENDER_TELEPORT_M) {
+        const a = Math.min(1, Math.max(0, this.accumulator / TICK_DT));
+        cx = this.simPrevPos.x + (p.x - this.simPrevPos.x) * a;
+        cy = this.simPrevPos.y + (p.y - this.simPrevPos.y) * a;
+        cz = this.simPrevPos.z + (p.z - this.simPrevPos.z) * a;
+      }
+      this.camera.position.set(cx, cy + EYE_HEIGHT, cz);
       // viewKick is a transient upward view-punch on fire — visual only, so it
       // never alters the authoritative aim (player.pitch).
       this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');

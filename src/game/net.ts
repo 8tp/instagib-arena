@@ -1,5 +1,6 @@
 import type { GameMode } from './constants';
 import type { CardPayload } from './types';
+import { decodeState, encodePos, toView } from './netcodec';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -310,6 +311,9 @@ export class NetClient {
     try {
       this.setStatus('connecting');
       this.ws = new WebSocket(this.url);
+      // Receive binary frames as ArrayBuffer (synchronous decode) rather than the
+      // default Blob — the state snapshot arrives as a binary frame at 64Hz.
+      this.ws.binaryType = 'arraybuffer';
     } catch (err) {
       console.warn('[instagib-net] failed to construct WebSocket', err);
       this.setStatus('error');
@@ -329,8 +333,13 @@ export class NetClient {
     };
     this.ws.onmessage = (e) => {
       try {
-        const msg = JSON.parse(typeof e.data === 'string' ? e.data : '') as ServerMessage;
-        this.handle(msg);
+        if (typeof e.data === 'string') {
+          this.handle(JSON.parse(e.data) as ServerMessage);
+        } else if (e.data instanceof ArrayBuffer) {
+          // The hot state snapshot rides a binary frame; decode → same handler.
+          const dec = decodeState(toView(e.data));
+          if (dec) this.handle({ type: 'state', t: dec.t, players: dec.players, resumeAt: dec.resumeAt });
+        }
       } catch {
         // ignore malformed
       }
@@ -371,7 +380,11 @@ export class NetClient {
   }
 
   sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
-    this.send({ type: 'pos', x, y, z, yaw, pitch });
+    // The hottest client→server message (64Hz) — send it as a compact binary
+    // frame instead of JSON. The server decodes it back to a `pos` message.
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(encodePos(x, y, z, yaw, pitch));
+    }
   }
 
   sendVote(mapId: string) {
