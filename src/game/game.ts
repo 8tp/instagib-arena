@@ -2486,22 +2486,26 @@ export class Game {
       // Local player's accuracy is tracked client-side from confirmed kills.
       scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
       scores[0].ping = Math.round(this.net.rttMs);
-      for (const [id, snap] of this.net.remotes) {
+      // Build from the meta roster, not `net.remotes`: a player hidden from
+      // snapshots during their killcam is absent from `remotes`, so iterating it
+      // would drop their scoreboard row for ~2.4s. roster() keeps every room
+      // member with their last-known score.
+      for (const r of this.net.roster()) {
         scores.push({
-          id,
-          name: snap.name,
+          id: r.id,
+          name: r.name,
           isLocal: false,
-          frags: snap.frags,
-          deaths: snap.deaths,
+          frags: r.frags,
+          deaths: r.deaths,
           bestStreak: 0,
           currentStreak: 0,
           accuracy: null, // server doesn't report remote shot counts
-          team: snap.team,
-          hat: snap.hat,
-          emote: snap.emote,
-          ping: snap.ping,
-          admin: snap.admin,
-          verified: snap.verified,
+          team: r.team,
+          hat: r.hat,
+          emote: r.emote,
+          ping: r.ping,
+          admin: r.admin,
+          verified: r.verified,
         });
       }
     }
@@ -2548,7 +2552,11 @@ export class Game {
       showScoreboard: this.input.scoreboardHeld,
       matchOver: this.matchOver ? { won: this.matchWon } : null,
       netStatus: this.net?.status ?? 'off',
-      netPeers: this.net ? this.net.remotes.size : 0,
+      // Room membership (meta roster), NOT the interpolated `remotes` view: a
+      // killed player is hidden from snapshots during their killcam, so
+      // remotes.size briefly hits 0 in a 1v1 — keying "waiting for opponents"
+      // off that falsely pauses the match. They're still in the room.
+      netPeers: this.net ? this.net.otherPeers() : 0,
       netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
       warmupMsLeft: this.warmupMsLeft(),
       localInvulnMs: this.net?.localInvulnMs ?? 0,

@@ -25,6 +25,22 @@ export type RemotePlayerSnapshot = {
   receivedAt: number;
 };
 
+// A scoreboard-ready row for every player in the room, built from the meta
+// roster (so killed players hidden from snapshots during their killcam still
+// have a row) merged with their last-known dynamic stats.
+export type RosterEntry = {
+  id: string;
+  name: string;
+  team: number | null;
+  hat: string;
+  emote: string;
+  admin: boolean;
+  verified: boolean;
+  frags: number;
+  deaths: number;
+  ping: number;
+};
+
 export type KillEvent = {
   killerId: string;
   killerName: string;
@@ -248,6 +264,10 @@ export class NetClient {
   // `meta` channel, merged onto each dynamic snapshot in upsertRemote. Persists
   // between snapshots — meta is only re-sent on change, not per tick.
   private metaById = new Map<string, PlayerMeta>();
+  // Last-known dynamic stats (frags/deaths/ping) per remote, retained even while
+  // a player is hidden from snapshots during their killcam — so their scoreboard
+  // row keeps its score instead of vanishing. Swept alongside metaById.
+  private lastStatsById = new Map<string, { frags: number; deaths: number; ping: number }>();
   localHat = 'hat.none'; // equipped hat id, sent to the server so remotes render it
   localUnusual = 'unusual.none'; // equipped unusual-effect id
   localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
@@ -355,6 +375,7 @@ export class NetClient {
       this.clientId = null;
       this.remotes.clear();
       this.metaById.clear();
+      this.lastStatsById.clear();
       this.snapBuffer.length = 0;
       this.stopPing();
       this.setStatus('closed');
@@ -706,6 +727,14 @@ export class NetClient {
           this.localFrags = p.frags ?? 0;
           this.localDeaths = p.deaths ?? 0;
           this.localInvulnMs = p.invulnMs ?? 0;
+        } else {
+          // Retain each remote's latest score so their scoreboard row survives
+          // the killcam window when they're temporarily absent from snapshots.
+          this.lastStatsById.set(p.id, {
+            frags: p.frags ?? 0,
+            deaths: p.deaths ?? 0,
+            ping: p.ping ?? 0,
+          });
         }
       }
       // Keep buffer ordered by server time; drop anything older than the window.
@@ -732,7 +761,10 @@ export class NetClient {
         }
       }
       for (const id of this.metaById.keys()) {
-        if (!seen.has(id)) this.metaById.delete(id);
+        if (!seen.has(id)) {
+          this.metaById.delete(id);
+          this.lastStatsById.delete(id);
+        }
       }
       this.emit();
       return;
@@ -813,6 +845,7 @@ export class NetClient {
       // Interpolation drops them once they fall out of fresh snapshots.
       this.remotes.delete(msg.clientId);
       this.metaById.delete(msg.clientId);
+      this.lastStatsById.delete(msg.clientId);
       this.emit();
       return;
     }
@@ -845,6 +878,44 @@ export class NetClient {
       this.reconnectTimer = null;
       this.connect();
     }, RECONNECT_DELAY_MS);
+  }
+
+  // How many OTHER players share this room, by the authoritative `meta` roster
+  // (not the interpolated `remotes` view). A killed player is hidden from
+  // snapshots for their killcam — so `remotes.size` briefly drops to 0 in a 1v1
+  // — but they're still in the room. Presence/"waiting for opponents" must key
+  // off membership, not visibility, or the match falsely pauses mid-killcam.
+  otherPeers(): number {
+    let n = 0;
+    for (const id of this.metaById.keys()) {
+      if (id !== this.clientId) n++;
+    }
+    return n;
+  }
+
+  // Scoreboard rows for every OTHER player in the room, from the meta roster (so
+  // a player hidden mid-killcam keeps their row + last-known score) merged with
+  // retained dynamic stats. Use this for the scoreboard instead of `remotes`,
+  // which only holds currently-visible players.
+  roster(): RosterEntry[] {
+    const out: RosterEntry[] = [];
+    for (const [id, m] of this.metaById) {
+      if (id === this.clientId) continue;
+      const s = this.lastStatsById.get(id);
+      out.push({
+        id,
+        name: m.name,
+        team: m.team,
+        hat: m.hat,
+        emote: m.emote,
+        admin: m.admin,
+        verified: m.verified,
+        frags: s?.frags ?? 0,
+        deaths: s?.deaths ?? 0,
+        ping: s?.ping ?? 0,
+      });
+    }
+    return out;
   }
 
   private setStatus(s: NetStatus) {
