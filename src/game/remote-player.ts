@@ -68,6 +68,15 @@ function makeNameSprite(name: string, color: string): THREE.Sprite {
 
 const DEAD_HIDE_DURATION_SEC = 1.4;
 
+// Per-second smoothing rate for the locomotion blend's input speed. The speed
+// is measured from the interpolated frame-to-frame displacement, which steps a
+// little at the snapshot rate; smoothing keeps the idle/walk/run blend from
+// flickering. Expressed as a RATE (not a per-frame factor) so it behaves the
+// same at 60Hz and 144Hz — a fixed 0.15/frame lerp over-smoothed on high-refresh
+// displays (more lag) and under-smoothed on slow ones. ~10/s ≈ the old
+// 0.15/frame feel at 60fps.
+const MOVESPEED_SMOOTH_HZ = 10;
+
 const DEFAULT_NAME_COLOR = '#c7e0ff';
 
 export class RemotePlayer {
@@ -239,7 +248,8 @@ export class RemotePlayer {
     // Pin the gun-carry pose over the animated arms.
     this.hold?.apply();
     this.lastSeenPos.copy(this.group.position);
-    this.lastMoveSpeed = this.lastMoveSpeed * 0.85 + moveSpeed * 0.15;
+    const k = dt > 0 ? 1 - Math.exp(-MOVESPEED_SMOOTH_HZ * dt) : 1;
+    this.lastMoveSpeed += (moveSpeed - this.lastMoveSpeed) * k;
     this.loco?.update(this.lastMoveSpeed, dt);
     if (this.modelRoot) {
       this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);

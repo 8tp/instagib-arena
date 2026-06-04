@@ -218,6 +218,11 @@ export class NetClient {
   status: NetStatus = 'idle';
   // Interpolated view of remote players, refreshed by interpolate() each frame.
   remotes = new Map<string, RemotePlayerSnapshot>();
+  // Ids touched in the current interpolate() pass. We update `remotes` IN PLACE
+  // (mark-and-sweep against this set) instead of allocating a fresh Map + N
+  // snapshot objects every render frame — that steady per-frame garbage was a
+  // source of GC pauses that show up as micro-stutter at high refresh rates.
+  private scratchSeen = new Set<string>();
   localHat = 'hat.none'; // equipped hat id, sent to the server so remotes render it
   localUnusual = 'unusual.none'; // equipped unusual-effect id
   localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
@@ -236,10 +241,14 @@ export class NetClient {
   // Warmup / breather end, converted to the local clock. `warmupMsLeft` drives
   // the client's "GET READY" countdown; 0 once play is live.
   private warmupUntilClient = 0;
-  // serverClock - clientClock (ms). `clockOffset` is the APPLIED value (used by
-  // estimatedServerNow); it slews toward `clockOffsetTarget` (the ping-refined
-  // estimate) a little each frame so the interpolation render-time advances
-  // smoothly instead of hitching ~1×/sec when a pong nudges the estimate.
+  // serverClock - performance.now() (ms). `clockOffset` is the APPLIED value
+  // (used by estimatedServerNow); it slews toward `clockOffsetTarget` (the
+  // ping-refined estimate) a little each frame so the interpolation render-time
+  // advances smoothly instead of hitching ~1×/sec when a pong nudges the
+  // estimate. We deliberately key the offset off the MONOTONIC performance.now()
+  // clock, not Date.now(): Date.now() is wall-clock, so an NTP step or its
+  // coarse (1ms) quantization can jump the derived render time and pop every
+  // remote's position. performance.now() only ever moves forward, smoothly.
   private clockOffset = 0;
   private clockOffsetTarget = 0;
   private clockSeeded = false;
@@ -356,7 +365,7 @@ export class NetClient {
   }
 
   estimatedServerNow(): number {
-    return Date.now() + this.clockOffset;
+    return performance.now() + this.clockOffset;
   }
 
   // Equip a hat: remember it and tell the server (which echoes it in snapshots so
@@ -418,10 +427,11 @@ export class NetClient {
     const renderT = this.estimatedServerNow() - INTERP_DELAY_MS;
     const buf = this.snapBuffer;
     const now = performance.now();
-    const next = new Map<string, RemotePlayerSnapshot>();
+    const seen = this.scratchSeen;
+    seen.clear();
 
     if (buf.length === 0) {
-      this.remotes = next;
+      this.remotes.clear();
       return;
     }
 
@@ -439,12 +449,12 @@ export class NetClient {
       for (const [id, b] of newest.players) {
         if (id === this.clientId) continue;
         const a = prev.players.get(id);
-        const pos: Vec3 = a
-          ? { x: b.x + (b.x - a.x) * k, y: b.y + (b.y - a.y) * k, z: b.z + (b.z - a.z) * k }
-          : { x: b.x, y: b.y, z: b.z };
-        next.set(id, this.snapFor(b, pos, b.yaw, now));
+        const px = a ? b.x + (b.x - a.x) * k : b.x;
+        const py = a ? b.y + (b.y - a.y) * k : b.y;
+        const pz = a ? b.z + (b.z - a.z) * k : b.z;
+        this.upsertRemote(b, px, py, pz, b.yaw, now, seen);
       }
-      this.remotes = next;
+      this.sweepUnseen(seen);
       return;
     }
 
@@ -469,38 +479,65 @@ export class NetClient {
     for (const [id, b] of newer!.players) {
       if (id === this.clientId) continue;
       const a = older!.players.get(id);
-      const pos: Vec3 = a
-        ? { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, z: a.z + (b.z - a.z) * f }
-        : { x: b.x, y: b.y, z: b.z };
-      next.set(id, this.snapFor(b, pos, a ? lerpAngle(a.yaw, b.yaw, f) : b.yaw, now));
+      const px = a ? a.x + (b.x - a.x) * f : b.x;
+      const py = a ? a.y + (b.y - a.y) * f : b.y;
+      const pz = a ? a.z + (b.z - a.z) * f : b.z;
+      const yaw = a ? lerpAngle(a.yaw, b.yaw, f) : b.yaw;
+      this.upsertRemote(b, px, py, pz, yaw, now, seen);
     }
-    this.remotes = next;
+    this.sweepUnseen(seen);
   }
 
-  // Build the public remote snapshot from a server StatePlayer plus a resolved
-  // position/yaw (interpolated or extrapolated). Centralized so the interp and
+  // Update (or create) the public remote snapshot for `b` IN PLACE from a
+  // resolved position/yaw (interpolated or extrapolated), reusing the existing
+  // object + its `pos` so a steady-state frame allocates nothing. `seen` records
+  // that this id is still live this pass. Centralized so the interp and
   // dead-reckoning paths stay in sync.
-  private snapFor(b: StatePlayer, pos: Vec3, yaw: number, now: number): RemotePlayerSnapshot {
-    return {
-      id: b.id,
-      name: b.name ?? b.id,
-      pos,
-      yaw,
-      pitch: b.pitch ?? 0,
-      frags: b.frags ?? 0,
-      deaths: b.deaths ?? 0,
-      invulnMs: b.invulnMs ?? 0,
-      team: b.team ?? null,
-      hat: b.hat ?? 'hat.none',
-      unusual: b.unusual ?? 'unusual.none',
-      emote: b.emote ?? 'emote.cheer',
-      nameColor: b.nameColor ?? 'name.default',
-      spawnEffect: b.spawnEffect ?? 'spawn.beam',
-      ping: b.ping ?? 0,
-      admin: b.admin ?? false,
-      verified: b.verified ?? false,
-      receivedAt: now,
-    };
+  private upsertRemote(
+    b: StatePlayer,
+    px: number,
+    py: number,
+    pz: number,
+    yaw: number,
+    now: number,
+    seen: Set<string>,
+  ): void {
+    seen.add(b.id);
+    let s = this.remotes.get(b.id);
+    if (!s) {
+      s = { id: b.id, name: b.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
+        frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
+        emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', ping: 0,
+        admin: false, verified: false, receivedAt: now };
+      this.remotes.set(b.id, s);
+    }
+    s.name = b.name ?? b.id;
+    s.pos.x = px;
+    s.pos.y = py;
+    s.pos.z = pz;
+    s.yaw = yaw;
+    s.pitch = b.pitch ?? 0;
+    s.frags = b.frags ?? 0;
+    s.deaths = b.deaths ?? 0;
+    s.invulnMs = b.invulnMs ?? 0;
+    s.team = b.team ?? null;
+    s.hat = b.hat ?? 'hat.none';
+    s.unusual = b.unusual ?? 'unusual.none';
+    s.emote = b.emote ?? 'emote.cheer';
+    s.nameColor = b.nameColor ?? 'name.default';
+    s.spawnEffect = b.spawnEffect ?? 'spawn.beam';
+    s.ping = b.ping ?? 0;
+    s.admin = b.admin ?? false;
+    s.verified = b.verified ?? false;
+    s.receivedAt = now;
+  }
+
+  // Drop any remote not refreshed this interpolate() pass (left the room / fell
+  // out of fresh snapshots). Deleting during Map iteration is safe per spec.
+  private sweepUnseen(seen: Set<string>): void {
+    for (const id of this.remotes.keys()) {
+      if (!seen.has(id)) this.remotes.delete(id);
+    }
   }
 
   private startPing() {
@@ -535,8 +572,9 @@ export class NetClient {
       this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
+      // Keyed off performance.now() to match estimatedServerNow().
       if (!this.clockSeeded) {
-        this.clockOffset = msg.serverTime - Date.now();
+        this.clockOffset = msg.serverTime - performance.now();
         this.clockOffsetTarget = this.clockOffset;
         this.clockSeeded = true;
       }
@@ -549,8 +587,9 @@ export class NetClient {
         this.rttMs = this.rttMs === 0 ? rtt : this.rttMs * 0.8 + rtt * 0.2;
         // serverTime was the server clock when it replied (~ rtt/2 ago). Refine
         // the TARGET; the applied offset slews toward it in interpolate() so the
-        // correction doesn't land as a one-frame jump.
-        const sample = msg.serverTime + rtt / 2 - Date.now();
+        // correction doesn't land as a one-frame jump. Keyed off performance.now()
+        // (monotonic) to match estimatedServerNow().
+        const sample = msg.serverTime + rtt / 2 - performance.now();
         this.clockOffsetTarget = this.clockSeeded ? this.clockOffsetTarget * 0.8 + sample * 0.2 : sample;
         if (!this.clockSeeded) this.clockOffset = this.clockOffsetTarget;
         this.clockSeeded = true;
