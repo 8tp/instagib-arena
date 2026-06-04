@@ -233,9 +233,9 @@ export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'credits', price: 400 }, model: `${HAT_DIR}/hard-hat.glb`, fit: 1.0, sink: 0.0 },
   { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 5 },     model: `${HAT_DIR}/graduation-cap.glb`, fit: 1.0, sink: 0.09 },
   { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'credits', price: 1000 }, model: `${HAT_DIR}/top-hat.glb`, fit: 0.95, sink: -0.02, stretch: 1.7 },
-  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 14 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 1.15, sink: -0.02 },
+  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 14 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 1.0, sink: -0.07 },
   { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'credits', price: 1800 }, model: `${HAT_DIR}/wizard-hat.glb`, fit: 0.95, sink: -0.02, stretch: 1.15 },
-  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: `${HAT_DIR}/crown.glb`, fit: 1.05, sink: 0.06 },
+  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: `${HAT_DIR}/crown.glb`, fit: 0.9, sink: -0.02 },
 ];
 
 export function hatById(id: string): HatCosmetic {

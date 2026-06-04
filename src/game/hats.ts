@@ -3,10 +3,12 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { hatById, unusualById, type UnusualKind } from './cosmetics';
 
 // Hats: a glTF model worn on a player model's head. Attachment is a world-space
-// follower — each frame we read the wearer's `mixamorigHead` world position and
-// seat an auto-fit hat on the crown, facing the body's yaw. Auto-fit (scale to a
-// target width from the model's own bounding box) was verified across hats whose
-// source scales ranged from 3 to 300 units, so no per-hat tuning is needed.
+// follower — each frame we read the wearer's `mixamorigHead` transform and seat
+// an auto-fit hat on the crown. A bind-pose correction removes the Mixamo bone's
+// odd local frame while preserving its animated pitch/roll/yaw, so hats move
+// with the head instead of hovering upright above it. Auto-fit (scale to a target
+// width from the model's own bounding box) was verified across hats whose source
+// scales ranged from 3 to 300 units, so no per-hat tuning is needed.
 
 const TARGET_WIDTH = 0.34; // metres — sits a bit wider than the head so it reads
 // Metres above the head BONE where a hat's base seats. The Soldier's head bone
@@ -183,8 +185,7 @@ class UnusualEffect {
 
 // One worn hat instance. The container is parented to the wearer's top-level
 // `group` (not the cm-scaled rig), so it inherits position/visibility — but it's
-// re-seated each frame from the head bone's WORLD position, dodging the rig's
-// distorted bone frame entirely.
+// re-seated each frame from the head bone's WORLD transform.
 export class WornHat {
   private container = new THREE.Group();
   // Anchor the unusual effect rides in — its local Y tracks the top of the
@@ -198,9 +199,10 @@ export class WornHat {
   private sink = 0; // per-hat downward seat offset (metres), set on setHat
   private hatTop = 0.12; // top of the equipped hat in container-local metres
   private readonly tmp = new THREE.Vector3();
-  private readonly q = new THREE.Quaternion();
-  private readonly qp = new THREE.Quaternion();
-  private readonly euler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private readonly crown = new THREE.Vector3();
+  private readonly headWorldQ = new THREE.Quaternion();
+  private readonly parentWorldQ = new THREE.Quaternion();
+  private readonly headToHatQ = new THREE.Quaternion();
 
   constructor(
     private parent: THREE.Object3D,
@@ -211,6 +213,15 @@ export class WornHat {
       modelRoot.getObjectByName('mixamorig:Head') ??
       modelRoot.getObjectByName('Head') ??
       null;
+    if (this.head) {
+      // At bind pose, hats should share the model root's orientation, not the
+      // Mixamo head bone's rotated local frame. Preserve that correction and
+      // apply it to the animated head transform each frame.
+      this.head.updateWorldMatrix(true, false);
+      this.head.getWorldQuaternion(this.headWorldQ);
+      this.modelRoot.getWorldQuaternion(this.headToHatQ);
+      this.headToHatQ.premultiply(this.headWorldQ.clone().invert());
+    }
     this.container.add(this.unusualAnchor);
     parent.add(this.container);
   }
@@ -287,28 +298,27 @@ export class WornHat {
 
   // Seat the hat on the wearer's head each frame. Updates the bone's world matrix
   // first (the animation mixer only writes bone-LOCAL transforms), then converts
-  // the head world position into the parent group's local frame.
+  // the corrected head world transform into the parent group's local frame.
   update(dt: number): void {
     this.unusual?.update(dt);
     if (!this.head) return;
     this.head.updateWorldMatrix(true, false); // refresh head + ancestors' world matrices
     this.head.getWorldPosition(this.tmp);
+    this.head.getWorldQuaternion(this.headWorldQ);
+    this.headWorldQ.multiply(this.headToHatQ);
+    // Move from the head bone to the crown along the animated hat-up direction.
+    // A global-Y offset is what made hats hover separately as the head tilted.
+    this.crown.set(0, CROWN_OFFSET - this.sink, 0).applyQuaternion(this.headWorldQ);
+    this.tmp.add(this.crown);
     // worldToLocal inverts the parent's full matrixWorld, so this stays correct
     // even when the parent group is rotated/animated (e.g. the podium + Locker
     // preview spin/sway the group) — do NOT replace it with a raw subtraction.
     this.parent.worldToLocal(this.tmp);
-    this.container.position.set(this.tmp.x, this.tmp.y + CROWN_OFFSET - this.sink, this.tmp.z);
-    // Face the hat along the BODY's yaw. The container is a child of `parent`, so
-    // its local yaw must be the model's world yaw expressed in the parent's frame
-    // (model − parent). Using the model's world yaw directly double-counts any
-    // rotation on the parent group (the podium + Locker preview spin/sway it),
-    // which used to point cap brims backwards and spin hats at 2× on the podium.
-    this.modelRoot.getWorldQuaternion(this.q);
-    this.euler.setFromQuaternion(this.q, 'YXZ');
-    const modelYaw = this.euler.y;
-    this.parent.getWorldQuaternion(this.qp);
-    this.euler.setFromQuaternion(this.qp, 'YXZ');
-    this.container.rotation.y = modelYaw - this.euler.y;
+    this.container.position.copy(this.tmp);
+    // Express the corrected world orientation in the container parent's frame.
+    // This keeps podium/Locker outer-group spins from being counted twice.
+    this.parent.getWorldQuaternion(this.parentWorldQ);
+    this.container.quaternion.copy(this.parentWorldQ).invert().multiply(this.headWorldQ);
   }
 
   setVisible(v: boolean): void {
