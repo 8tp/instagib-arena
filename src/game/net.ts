@@ -206,11 +206,22 @@ const LOBBY_STATUS_GRACE_MS = 4000;
 // frame hitch): extrapolate a remote from its last known velocity for up to this
 // long instead of freezing in place, then snapping when data resumes.
 const EXTRAPOLATION_CAP_MS = 120;
-// Render remote players this far in the past so we always have two snapshots to
-// interpolate between (covers the 31.25ms snapshot interval + jitter). The
-// server rewinds to the same render time when resolving our shots, so what we
-// aim at is what the server tests — that's the lag compensation contract.
-const INTERP_DELAY_MS = 100;
+// Adaptive interpolation delay (jitter buffer). We render remote players this
+// far in the past so there are always two snapshots to interpolate between.
+// Rather than a fixed delay, we size it to the connection: a low floor on a
+// clean link so remotes feel current (Valorant-style small buffer), growing
+// with measured snapshot-arrival jitter so a bursty link stops stuttering. The
+// client reports the delay it ACTUALLY used as `renderTime` on every shot, so
+// the server rewinds to exactly what was on screen at any buffer size — the
+// favor-the-shooter lag-comp contract holds regardless of the current delay.
+const INTERP_MIN_MS = 45; // floor on a clean connection (~3 keyframes @ 64Hz)
+const INTERP_MAX_MS = 140; // ceiling on a jittery one
+const INTERP_INIT_MS = 80; // start cautious; settles toward the floor as we measure
+// How fast the applied delay chases its jitter-driven target. Asymmetric on
+// purpose: ADD cushion fast (the instant jitter grows, to head off an
+// underrun→stutter) but REMOVE it slowly (don't yank perceived latency around).
+const INTERP_RISE_HZ = 8;
+const INTERP_FALL_HZ = 0.5;
 const SNAP_BUFFER_MS = 1200;
 // How fast the applied clock offset eases toward the ping-refined target (per
 // second). Small ongoing corrections slew imperceptibly; a big gap snaps once.
@@ -268,6 +279,15 @@ export class NetClient {
   private clockOffset = 0;
   private clockOffsetTarget = 0;
   private clockSeeded = false;
+  // Adaptive jitter buffer (see INTERP_MIN/MAX/INIT). `interpDelayMs` is the
+  // APPLIED delay (slewed); `interpDelayTarget` is the jitter-driven goal.
+  // snapMeanGapMs/snapJitterMs are EMAs of snapshot inter-arrival time and its
+  // deviation, measured in the `state` handler.
+  private interpDelayMs = INTERP_INIT_MS;
+  private interpDelayTarget = INTERP_INIT_MS;
+  private snapMeanGapMs = 0;
+  private snapJitterMs = 0;
+  private lastSnapArrivalMs = 0;
   private snapBuffer: BufferedSnapshot[] = [];
   private disposed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -321,6 +341,7 @@ export class NetClient {
       this.remotes.clear();
       this.metaById.clear();
       this.snapBuffer.length = 0;
+      this.lastSnapArrivalMs = 0; // don't measure a giant gap across the reconnect
       this.stopPing();
       this.setStatus('closed');
       this.scheduleReconnect();
@@ -377,7 +398,9 @@ export class NetClient {
       dy: dir.y,
       dz: dir.z,
       maxDist,
-      renderTime: this.estimatedServerNow() - INTERP_DELAY_MS,
+      // The EXACT delay we're currently rendering remotes at, so the server
+      // rewinds targets to precisely what was on our screen (favor-the-shooter).
+      renderTime: this.estimatedServerNow() - this.interpDelayMs,
     });
   }
 
@@ -441,7 +464,13 @@ export class NetClient {
     } else if (dt > 0) {
       this.clockOffset += (this.clockOffsetTarget - this.clockOffset) * (1 - Math.exp(-CLOCK_SLEW_HZ * dt));
     }
-    const renderT = this.estimatedServerNow() - INTERP_DELAY_MS;
+    // Slew the jitter-buffer delay toward its target (rise fast, fall slow).
+    // Smooth so renderT doesn't pop when the target shifts.
+    if (dt > 0 && this.interpDelayTarget !== this.interpDelayMs) {
+      const hz = this.interpDelayTarget > this.interpDelayMs ? INTERP_RISE_HZ : INTERP_FALL_HZ;
+      this.interpDelayMs += (this.interpDelayTarget - this.interpDelayMs) * (1 - Math.exp(-hz * dt));
+    }
+    const renderT = this.estimatedServerNow() - this.interpDelayMs;
     const buf = this.snapBuffer;
     const now = performance.now();
     const seen = this.scratchSeen;
@@ -621,6 +650,24 @@ export class NetClient {
     }
     if (msg.type === 'state') {
       this.setResume(msg.resumeAt);
+      // Size the jitter buffer from how (un)evenly snapshots actually arrive.
+      // EMAs are slow so the target is stable; absurd gaps (backgrounded tab /
+      // long stall) are ignored so they don't poison the estimate.
+      const arrival = performance.now();
+      if (this.lastSnapArrivalMs > 0) {
+        const gap = arrival - this.lastSnapArrivalMs;
+        if (gap > 0 && gap < 500) {
+          this.snapMeanGapMs =
+            this.snapMeanGapMs === 0 ? gap : this.snapMeanGapMs + (gap - this.snapMeanGapMs) * 0.05;
+          this.snapJitterMs += (Math.abs(gap - this.snapMeanGapMs) - this.snapJitterMs) * 0.05;
+        }
+      }
+      this.lastSnapArrivalMs = arrival;
+      // ~1.5 intervals (always two keyframes to straddle) + a jitter cushion.
+      this.interpDelayTarget = Math.max(
+        INTERP_MIN_MS,
+        Math.min(INTERP_MAX_MS, this.snapMeanGapMs * 1.5 + this.snapJitterMs * 2.5),
+      );
       const players = new Map<string, StatePlayer>();
       for (const p of msg.players) {
         players.set(p.id, p);
