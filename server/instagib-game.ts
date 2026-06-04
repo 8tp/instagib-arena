@@ -77,6 +77,19 @@ const KILL_RESPAWN_INVULN_MS = KILLCAM_DURATION_SEC * 1000 + SPAWN_INVULN_MS;
 // on room creation and when a room fills from 1→2 players (a match begins).
 const WARMUP_MS = 3_000;
 const HISTORY_MS = 1_000; // how far back we keep position history for rewind
+// Anti-alias resampling. A client sends its position at ~64Hz and the server
+// snapshots at 64Hz on an INDEPENDENT timer, so the last-received position is
+// 0–16ms stale by a VARYING amount — at 30–50 m/s (rocket-jump / air-strafe)
+// that's ~0.3–0.8m of position wobble per snapshot, the dominant high-speed
+// jitter. Instead of snapshotting the raw last-received pos, we resample each
+// player to a single consistent instant `now − POS_LAG_MS` by interpolating
+// their received-pos buffer (pure interpolation — no extrapolation/overshoot,
+// since 64Hz sends keep a sample within 16ms). The SAME resampled pos feeds both
+// the snapshot AND the lag-comp history, so what a viewer sees is exactly what
+// the server rewinds to → smoother motion AND fewer "hit but no kill".
+const POS_LAG_MS = 20; // resample target = snapshot time − this (keeps it interpolation)
+const POS_SAMPLE_WINDOW_MS = 300; // received-pos buffer retention
+const POS_RESAMPLE_TELEPORT = 5; // m between adjacent samples above which we DON'T lerp (respawn)
 const MAX_REWIND_MS = 350; // clamp how far a shot may rewind targets
 const DEFAULT_CAPACITY = 8;
 // Anti-cheat / abuse guards. The server is authoritative for hits + score, so
@@ -108,6 +121,8 @@ type Vec = Vec3;
 type ClientId = string;
 type RoomId = string;
 type HistorySample = { t: number; x: number; y: number; z: number };
+// Received-pos sample (RECEIVE-time stamped) used to resample to snapshot time.
+type PosSample = { t: number; x: number; y: number; z: number; yaw: number };
 
 type ClientRecord = {
   id: ClientId;
@@ -135,7 +150,9 @@ type ClientRecord = {
   roomCount: number; // rooms created in the current window
   chatWindowStart: number; // global-chat rate window start
   chatCount: number; // chat messages sent in the current window
-  history: HistorySample[]; // ascending by t
+  history: HistorySample[]; // ascending by t (RESAMPLED positions — see snapshot tick)
+  posSamples: PosSample[]; // received-pos buffer (receive-time stamped) for resampling
+  renderPos: { x: number; y: number; z: number; yaw: number }; // resampled pos for snapshot + history
   // Rolling aim stats for the anti-aimbot heuristic (decayed each window).
   aimShots: number;
   aimHits: number;
@@ -819,10 +836,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (c.disconnectedAt > 0) continue; // dropped (awaiting resume) → hidden, untargetable
       players.push({
         id: c.id,
-        x: c.pos.x,
-        y: c.pos.y,
-        z: c.pos.z,
-        yaw: c.yaw,
+        // Resampled, anti-aliased pose (set on the snapshot tick before this runs);
+        // matches what the lag-comp history recorded so render == rewind.
+        x: c.renderPos.x,
+        y: c.renderPos.y,
+        z: c.renderPos.z,
+        yaw: c.renderPos.yaw,
         pitch: c.pitch,
         frags: c.frags,
         deaths: c.deaths,
@@ -874,11 +893,47 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (room) broadcastMeta(room);
   };
 
-  // Interpolate a player's position at a past server-clock time `t`.
+  // Resample a received-pos buffer at server-clock time `t` — pure interpolation
+  // between the two straddling samples (clamped to the ends). Across a
+  // teleport-sized gap (respawn) it returns the newer sample instead of sliding.
+  const sampleAt = (samples: PosSample[], t: number): PosSample | null => {
+    const n = samples.length;
+    if (n === 0) return null;
+    if (t <= samples[0].t) return samples[0];
+    if (t >= samples[n - 1].t) return samples[n - 1];
+    for (let i = n - 1; i > 0; i--) {
+      const a = samples[i - 1];
+      const b = samples[i];
+      if (t >= a.t && t <= b.t) {
+        if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > POS_RESAMPLE_TELEPORT) return b;
+        const span = b.t - a.t || 1;
+        const f = (t - a.t) / span;
+        let dyaw = b.yaw - a.yaw;
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        return {
+          t,
+          x: a.x + (b.x - a.x) * f,
+          y: a.y + (b.y - a.y) * f,
+          z: a.z + (b.z - a.z) * f,
+          yaw: a.yaw + dyaw * f,
+        };
+      }
+    }
+    return samples[n - 1];
+  };
+
+  // Interpolate a player's position at a past server-clock time `t`. History now
+  // holds RESAMPLED positions (what viewers actually render), so the clamps must
+  // return the newest/oldest HISTORY entry — NOT the raw c.pos, which a viewer
+  // never sees. Returning raw c.pos for `t >= newest` was a latent ghost-miss:
+  // the client renders the resampled (delayed) pos but the server would rewind to
+  // the raw (ahead) pos. Raw c.pos is only the fallback when there's no history.
   const rewind = (c: ClientRecord, t: number): Vec => {
     const h = c.history;
     if (h.length === 0) return { ...c.pos };
-    if (t >= h[h.length - 1].t) return { ...c.pos };
+    const last = h[h.length - 1];
+    if (t >= last.t) return { x: last.x, y: last.y, z: last.z };
     if (t <= h[0].t) return { x: h[0].x, y: h[0].y, z: h[0].z };
     for (let i = h.length - 1; i > 0; i--) {
       const b = h[i];
@@ -893,7 +948,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         };
       }
     }
-    return { ...c.pos };
+    return { x: last.x, y: last.y, z: last.z };
   };
 
   // ── Map voting ────────────────────────────────────────────────────────
@@ -1254,6 +1309,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
       history: [],
+      posSamples: [],
+      renderPos: { x: 0, y: 0, z: 0, yaw: 0 },
       aimShots: 0,
       aimHits: 0,
       aimHeadshots: 0,
@@ -1591,7 +1648,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
               record.pitch = msg.pitch;
             }
-            // (Lag-comp history is sampled on the snapshot tick, not here.)
+            // Buffer the receive-time-stamped sample so the snapshot tick can
+            // resample to a consistent instant (anti-alias — see POS_LAG_MS).
+            record.posSamples.push({ t: ts, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
+            const sCut = ts - POS_SAMPLE_WINDOW_MS;
+            while (record.posSamples.length > 2 && record.posSamples[0].t < sCut) {
+              record.posSamples.shift();
+            }
+            // (Lag-comp history is sampled — from the RESAMPLED pos — on the snapshot tick.)
             const room = rooms.get(record.roomId);
             if (room) recoverIfOob(record, room, ts);
           }
@@ -1640,7 +1704,17 @@ export function attachInstagibWs(wss: WebSocketServer) {
       for (const id of room.members) {
         const c = clients.get(id);
         if (!c || c.disconnectedAt > 0) continue;
-        c.history.push({ t: now, x: c.pos.x, y: c.pos.y, z: c.pos.z });
+        // Resample to a consistent instant (anti-alias). The SAME resampled pos
+        // is what the snapshot sends AND what the lag-comp history records, so a
+        // viewer's render and the server's rewind agree exactly. Falls back to
+        // the raw latest pos until a sample buffer exists (just-joined / respawn).
+        const sp = sampleAt(c.posSamples, now - POS_LAG_MS);
+        if (sp) {
+          c.renderPos.x = sp.x; c.renderPos.y = sp.y; c.renderPos.z = sp.z; c.renderPos.yaw = sp.yaw;
+        } else {
+          c.renderPos.x = c.pos.x; c.renderPos.y = c.pos.y; c.renderPos.z = c.pos.z; c.renderPos.yaw = c.yaw;
+        }
+        c.history.push({ t: now, x: c.renderPos.x, y: c.renderPos.y, z: c.renderPos.z });
         const cutoff = now - HISTORY_MS;
         while (c.history.length > 2 && c.history[0].t < cutoff) c.history.shift();
       }
