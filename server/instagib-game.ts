@@ -45,7 +45,16 @@ import {
 } from '../src/game/arena-data';
 import { randomBytes } from 'node:crypto';
 import type { CardPayload, Vec3 } from '../src/game/types';
-import { isCard, isEmote, isHat, isNameColor, isSpawnEffect, isUnusual } from '../src/game/cosmetics';
+import {
+  isCard,
+  isEmote,
+  isHat,
+  isNameColor,
+  isSpawnEffect,
+  isTitle,
+  isUnusual,
+  titleById,
+} from '../src/game/cosmetics';
 import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
 import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
@@ -210,6 +219,7 @@ type ClientRecord = {
   emote: string; // equipped podium-emote cosmetic id
   nameColor: string; // equipped nameplate-color cosmetic id (echoed in snapshots)
   spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
+  title: string; // equipped title cosmetic id (flair under the name; echoed in snapshots)
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
@@ -260,6 +270,7 @@ type ClientMessage =
   | { type: 'emote'; id?: string }
   | { type: 'nameColor'; id?: string }
   | { type: 'spawnEffect'; id?: string }
+  | { type: 'title'; id?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'chat'; text?: string }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
@@ -322,12 +333,13 @@ function chargeRoomCreate(record: ClientRecord, ts: number): boolean {
 // Sanitize a client-sent playercard into a bounded, trusted shape before we
 // relay it to other players (cosmetic-only). The NAME is forced to the
 // server-known name (clients can't impersonate on the killcam), the STYLE is
-// ownership-checked, and stat strings are length-clamped.
+// ownership-checked, the TITLE is forced from the player's server-validated
+// equipped title (never the client payload), and stat strings are length-clamped.
 function sanitizeCard(
   raw: unknown,
   serverName: string,
   owned: Set<string>,
-  flags: { admin: boolean; verified: boolean },
+  flags: { admin: boolean; verified: boolean; title: string },
 ): CardPayload | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
@@ -350,9 +362,10 @@ function sanitizeCard(
       }
     }
   }
-  // verified/admin are SERVER-set from the account, never the client payload, so
-  // a modified client can't fake a blue check or staff badge on its killcard.
-  return { name, level, style, stats, verified: flags.verified, admin: flags.admin };
+  // verified/admin/title are SERVER-set (from the account + validated equipped
+  // title), never the client payload, so a modified client can't fake a blue
+  // check, staff badge, or a title it hasn't earned on its killcard.
+  return { name, level, style, stats, title: flags.title, verified: flags.verified, admin: flags.admin };
 }
 
 function genId(len = 8): ClientId {
@@ -809,6 +822,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.emote = old.emote;
     record.nameColor = old.nameColor;
     record.spawnEffect = old.spawnEffect;
+    record.title = old.title;
     record.card = old.card;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
     record.history.length = 0;
@@ -975,6 +989,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     emote: c.emote,
     nameColor: c.nameColor,
     spawnEffect: c.spawnEffect,
+    title: c.title,
     admin: c.admin,
     verified: c.verified,
   });
@@ -1419,6 +1434,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       emote: 'emote.cheer',
       nameColor: 'name.default',
       spawnEffect: 'spawn.beam',
+      title: 'title.none',
       card: null,
       playerId,
       admin: !!account?.isAdmin,
@@ -1719,10 +1735,28 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
         }
 
+        case 'title': {
+          // Achievement-earned flair shown under the name. Validate against the
+          // manifest + the player's owned set (a modified client can't equip a
+          // title it hasn't earned), then echo via meta. Keep the killcard's title
+          // in sync so a mid-match equip updates the card others see too.
+          const next =
+            typeof msg.id === 'string' && isTitle(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : 'title.none';
+          if (next !== record.title) {
+            record.title = next;
+            if (record.card) record.card.title = titleById(next).text;
+            bumpMeta(record);
+          }
+          break;
+        }
+
         case 'card':
           record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId), {
             admin: record.admin,
             verified: record.verified,
+            title: titleById(record.title).text,
           });
           break;
 

@@ -539,6 +539,7 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     emote: 'emote.cheer',
     nameColor: profile.nameColor,
     spawnEffect: 'spawn.beam',
+    title: 'title.none',
     ping: 0,
     admin: false,
     verified: false,

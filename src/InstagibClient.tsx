@@ -84,6 +84,7 @@ import {
   EMOTES,
   NAME_COLORS,
   SPAWN_EFFECTS,
+  TITLES,
   DEFAULT_KILL_EFFECT,
   DEFAULT_RAIL_COLOR,
   DEFAULT_RAILGUN_FINISH,
@@ -93,12 +94,14 @@ import {
   DEFAULT_EMOTE,
   DEFAULT_NAME_COLOR,
   DEFAULT_SPAWN_EFFECT,
+  DEFAULT_TITLE,
   cardById,
   cosmeticById,
   HAT_CASE_COST,
   caseHats,
   hatById,
   sourceLabel,
+  titleById,
   type KillEffectStyle,
   type Rarity,
   type CosmeticSource,
@@ -248,6 +251,7 @@ type Settings = {
   emote: string; // equipped emote (played on the end-of-match podium)
   nameColor: string; // equipped nameplate color (seen by others)
   spawnEffect: string; // equipped spawn-in effect
+  title: string; // equipped title flair (shown under the name + on the scoreboard/card)
   reducedEffects: boolean; // accessibility: suppress camera shake + kill flash + heavy bursts
   hideChat: boolean; // hide the in-game chat log + disable opening the composer
 };
@@ -337,6 +341,7 @@ const DEFAULT_SETTINGS: Settings = {
   emote: DEFAULT_EMOTE,
   nameColor: DEFAULT_NAME_COLOR,
   spawnEffect: DEFAULT_SPAWN_EFFECT,
+  title: DEFAULT_TITLE,
   reducedEffects: prefersReducedMotion(),
   hideChat: false,
 };
@@ -389,6 +394,7 @@ function buildCardPayload(
     level: profile.level,
     style: settings.card,
     stats,
+    title: titleById(settings.title).text,
     verified: !!account?.isVerified,
     admin: !!account?.isAdmin,
   };
@@ -437,6 +443,7 @@ function CardStatsEditor({
           label: CARD_STAT_DEFS.find((d) => d.key === k)?.label ?? k.toUpperCase(),
           value: '—',
         })),
+        title: titleById(settings.title).text,
         verified: !!account?.isVerified,
         admin: !!account?.isAdmin,
       };
@@ -444,7 +451,7 @@ function CardStatsEditor({
   return (
     <Section label='Card Stats'>
       <div className='flex justify-center py-1'>
-        <PlayerCard card={preview} size='small' />
+        <PlayerCard card={preview} size='small' reduced={settings.reducedEffects} />
       </div>
       <div className='grid grid-cols-2 gap-2'>
         {CARD_STAT_DEFS.map((d) => {
@@ -530,17 +537,28 @@ function NameBadges({
   );
 }
 
-function PlayerCard({ card, size = 'normal' }: { card: CardPayload; size?: 'normal' | 'small' }) {
+function PlayerCard({
+  card,
+  size = 'normal',
+  reduced = false,
+}: {
+  card: CardPayload;
+  size?: 'normal' | 'small';
+  reduced?: boolean;
+}) {
   const style = cardById(card.style);
   const small = size === 'small';
   return (
     <div
       className={`relative overflow-hidden rounded-xl border border-white/15 font-mono shadow-2xl ${
         small ? 'w-[260px] p-3' : 'w-[340px] p-4'
-      }`}
+      } ${reduced ? 'reduced-effects' : ''}`}
       style={{ background: style.bg }}
     >
       <div className='absolute inset-0 bg-black/10' />
+      {/* Animated motion layer (epic+ cards) — sits over the static gradient,
+          under the content; CSS suppresses it under reduced motion/effects. */}
+      {style.anim && <div className={`pcard-anim pcard-anim-${style.anim}`} aria-hidden />}
       <div className='relative flex items-center gap-3'>
         <div
           className='flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-lg border'
@@ -554,7 +572,16 @@ function PlayerCard({ card, size = 'normal' }: { card: CardPayload; size?: 'norm
             <span className='truncate'>{card.name}</span>
             <NameBadges admin={card.admin} verified={card.verified} size={small ? 13 : 16} />
           </div>
-          <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Instagib Arena</div>
+          {card.title ? (
+            <div
+              className='truncate text-[10px] font-semibold uppercase tracking-[0.18em]'
+              style={{ color: style.accent }}
+            >
+              {card.title}
+            </div>
+          ) : (
+            <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Instagib Arena</div>
+          )}
         </div>
       </div>
       {card.stats.length > 0 && (
@@ -652,6 +679,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setEmote?.(s.emote);
   game.setNameColor?.(s.nameColor);
   game.setSpawnEffect?.(s.spawnEffect);
+  game.setTitle?.(s.title);
   game.setReducedEffects?.(s.reducedEffects);
   game.setHideChat?.(s.hideChat);
   game.setFpsLimit?.(s.fpsLimit);
@@ -1206,7 +1234,8 @@ type LockerSlotDef = {
     | 'card'
     | 'emote'
     | 'nameColor'
-    | 'spawnEffect';
+    | 'spawnEffect'
+    | 'title';
   label: string;
   items: readonly LockerItem[];
   current: (s: Settings) => string;
@@ -1261,6 +1290,13 @@ const LOCKER_SLOTS: LockerSlotDef[] = [
     items: NAME_COLORS,
     current: (s) => s.nameColor,
     apply: (s, id) => ({ ...s, nameColor: id }),
+  },
+  {
+    slot: 'title',
+    label: 'Title',
+    items: TITLES,
+    current: (s) => s.title,
+    apply: (s, id) => ({ ...s, title: id }),
   },
   {
     slot: 'card',
@@ -1343,7 +1379,7 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
 }
 
 const LOCKER_TABS = [
-  { id: 'character', label: 'Character', slots: ['hat', 'unusual', 'nameColor'], view: 'character' as const },
+  { id: 'character', label: 'Character', slots: ['hat', 'unusual', 'nameColor', 'title'], view: 'character' as const },
   { id: 'emote', label: 'Emotes', slots: ['emote'], view: 'emote' as const },
   { id: 'weapon', label: 'Weapon', slots: ['railColor', 'railgunFinish', 'killEffect', 'spawnEffect'], view: 'weapon' as const },
   { id: 'card', label: 'Card', slots: ['card'], view: null },
@@ -2515,7 +2551,7 @@ function HudOverlay({
       <FragPopup confirm={hud.killConfirm} />
       {/* Your own card is NOT shown on your kills — it's broadcast so the VICTIM
           sees it on their killcam. The killer's card shows on YOUR killcam below. */}
-      <KillcamOverlay killcam={hud.killcam} />
+      <KillcamOverlay killcam={hud.killcam} reduced={settings.reducedEffects} />
       {!dead && <SpeedAndStreak speed={hud.speed} streak={hud.currentStreak} />}
       {!dead && (
         <CooldownCluster
@@ -2591,7 +2627,7 @@ function InvulnPill({ remainingMs }: { remainingMs: number }) {
   );
 }
 
-function KillcamOverlay({ killcam }: { killcam: KillcamState | null }) {
+function KillcamOverlay({ killcam, reduced = false }: { killcam: KillcamState | null; reduced?: boolean }) {
   if (!killcam) return null;
   const t = 1 - killcam.remaining / killcam.total;
   const enter = Math.min(1, t / 0.18);
@@ -2635,7 +2671,7 @@ function KillcamOverlay({ killcam }: { killcam: KillcamState | null }) {
         </div>
         {killcam.killerCard && (
           <div className='mt-5'>
-            <PlayerCard card={killcam.killerCard} />
+            <PlayerCard card={killcam.killerCard} reduced={reduced} />
           </div>
         )}
         <div className='mt-6 text-[11px] uppercase tracking-[0.3em] text-white/55'>
@@ -3604,19 +3640,26 @@ function ScoreboardRow({
   const useTeamTint = !score.isLocal && nameColor != null;
   return (
     <>
-      <div className='flex items-center gap-2 py-1.5'>
-        <span
-          className={`truncate ${
-            score.isLocal ? 'font-bold text-emerald-300' : useTeamTint ? 'font-semibold' : 'text-white/90'
-          }`}
-          style={useTeamTint ? { color: nameColor } : undefined}
-        >
-          {score.name}
-        </span>
-        <NameBadges admin={score.admin} verified={score.verified} size={13} />
-        {score.currentStreak >= 3 && (
-          <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
-            ON FIRE
+      <div className='flex min-w-0 flex-col py-1.5'>
+        <div className='flex items-center gap-2'>
+          <span
+            className={`truncate ${
+              score.isLocal ? 'font-bold text-emerald-300' : useTeamTint ? 'font-semibold' : 'text-white/90'
+            }`}
+            style={useTeamTint ? { color: nameColor } : undefined}
+          >
+            {score.name}
+          </span>
+          <NameBadges admin={score.admin} verified={score.verified} size={13} />
+          {score.currentStreak >= 3 && (
+            <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
+              ON FIRE
+            </span>
+          )}
+        </div>
+        {score.title && (
+          <span className='truncate text-[9px] font-semibold uppercase tracking-[0.16em] text-white/40'>
+            {score.title}
           </span>
         )}
       </div>

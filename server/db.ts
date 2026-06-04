@@ -24,6 +24,7 @@ import {
   levelGrantsAt,
   RARITY_WEIGHT,
   slotOf,
+  titleGrantsFrom,
 } from '../src/game/cosmetics';
 import {
   activeChallenges,
@@ -534,9 +535,22 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
   const newLevel = levelForXp(newXp);
   const leveledUp = newLevel > prevLevel;
 
-  // Grant milestone (level-gated) unlocks the player has now earned.
+  // Grant milestone (level-gated) unlocks + achievement titles the player has
+  // now earned. `stats` is the post-match clamped aggregate, so titles unlock the
+  // moment a career threshold is crossed and surface in newUnlocks (end-of-match
+  // "UNLOCKED" moment). Both grant sets are server-derived — never client-claimed.
   const before = new Set(owned);
   for (const id of levelGrantsAt(newLevel)) owned.add(id);
+  for (const id of titleGrantsFrom({
+    kills: stats.totalKills,
+    headshots: stats.headshots,
+    wins: stats.totalWins,
+    bestStreak: stats.bestKillStreak,
+    games: stats.totalGames,
+    accuracy: stats.bestAccuracy,
+  })) {
+    owned.add(id);
+  }
   const newUnlocks = [...owned].filter((id) => !before.has(id));
 
   const newCredits = curCredits + creditsGained;
