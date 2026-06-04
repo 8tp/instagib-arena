@@ -213,13 +213,19 @@ const EXTRAPOLATION_CAP_MS = 120;
 // it adaptively from measured snapshot-arrival jitter, but our transport is TCP,
 // where snapshots arrive in BURSTS after any head-of-line stall — so the measured
 // "jitter" spiked, the delay wobbled, and that wobble became the dominant jitter
-// source. Lesson: don't drive the playback clock off arrival timing.) 110ms over
-// our 64Hz (15.6ms) stream keeps ~7 snapshots buffered, so a TCP stall almost
-// never underruns into extrapolation — which would render remotes AHEAD of the
-// server's lag-comp rewind (both visible jitter AND "hitmarker but no kill").
-// The server rewinds shots to exactly this delay, so favor-the-shooter hit-reg
-// is unaffected by the value; it only trades a little peeker's advantage.
-const INTERP_DELAY_MS = 110;
+// source. Lesson: don't drive the playback clock off arrival timing.) Keep the
+// delay deterministic between roster changes, but give larger rooms more fixed
+// headroom because their state frames consume more of a constrained TCP link.
+// The server rewinds shots to exactly the active delay, so favor-the-shooter
+// hit-reg is unaffected by the value; it only trades a little peeker's advantage.
+const INTERP_DELAY_MIN_MS = 110;
+const INTERP_DELAY_MAX_MS = 170;
+const INTERP_DELAY_MAX_PLAYERS = 8;
+const interpDelayForPlayerCount = (players: number): number => {
+  const extraPlayers = Math.max(0, Math.min(INTERP_DELAY_MAX_PLAYERS, players) - 2);
+  return INTERP_DELAY_MIN_MS +
+    (extraPlayers / (INTERP_DELAY_MAX_PLAYERS - 2)) * (INTERP_DELAY_MAX_MS - INTERP_DELAY_MIN_MS);
+};
 const SNAP_BUFFER_MS = 1200;
 // How fast the applied clock offset eases toward the ping-refined target (per
 // second). Small ongoing corrections slew imperceptibly; a big gap snaps once.
@@ -277,9 +283,9 @@ export class NetClient {
   private clockOffset = 0;
   private clockOffsetTarget = 0;
   private clockSeeded = false;
-  // Fixed interpolation delay (see INTERP_DELAY_MS). Also reported as the shot
+  // Fixed interpolation delay (see interpDelayForPlayerCount). Also reported as the shot
   // renderTime so the server rewinds to exactly what we rendered.
-  private interpDelayMs = INTERP_DELAY_MS;
+  private interpDelayMs = INTERP_DELAY_MIN_MS;
   // True when the last interpolate() pass had to EXTRAPOLATE (buffer underrun):
   // the rendered remotes are then ahead of the server's truth, so the Game skips
   // predicted hitmarkers that frame (they'd "hit" something the server won't).
@@ -485,7 +491,7 @@ export class NetClient {
     }
   }
 
-  // Rebuild `remotes` as the interpolated view at (serverNow - INTERP_DELAY).
+  // Rebuild `remotes` as the interpolated view at (serverNow - interpDelayMs).
   // Call once per render frame before reading positions; `dt` is the real frame
   // delta (s), used to slew the clock smoothly.
   interpolate(dt = 0) {
@@ -720,6 +726,10 @@ export class NetClient {
       // Full room roster of slow-changing profiles. Replace ours wholesale, then
       // sweep anyone no longer present (a leaver) so metaById stays authoritative.
       // Cold path (only on join/leave/equip), so a local set is fine here.
+      // This is also the stable source for the player-count-scaled FIXED
+      // interpolation delay: unlike state snapshots, the roster does not wobble
+      // when a dead player is temporarily hidden during their killcam.
+      this.interpDelayMs = interpDelayForPlayerCount(msg.players.length);
       const seen = new Set<string>();
       for (const p of msg.players) {
         seen.add(p.id);
