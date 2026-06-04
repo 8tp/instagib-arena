@@ -50,14 +50,13 @@ import { findUserById, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
 
-// Dynamic snapshots now carry ONLY per-tick numerics (pos/yaw/pitch/frags/
-// deaths/invuln/ping) — the static per-player profile (name, cosmetics, team,
-// badges) moved to the on-change `meta` channel (see broadcastMeta). That cut
-// each snapshot ~60%, so we can afford a higher tick rate than the old 32Hz:
-// more interpolation keyframes = smoother direction changes, while still
-// sending FEWER bytes/sec than before. 40Hz (25ms) sits comfortably under the
-// 100ms client interp delay (4 keyframes deep).
-const SNAPSHOT_HZ = 40;
+// Snapshot rate, paired with the client's 64Hz sim + 64Hz position upload so
+// the whole pipeline runs on one cadence. The lean-snapshot split (static
+// profile moved to the on-change `meta` channel — see broadcastMeta) shrank each
+// row ~60%, so even at 64Hz a full 8-player room sends FEWER bytes/sec than the
+// old 32Hz fat snapshot did, while giving the client twice the interpolation
+// keyframes (smoother direction changes) and finer (15.6ms) lag-comp history.
+const SNAPSHOT_HZ = 64;
 const STALE_CLIENT_TIMEOUT_MS = 10_000;
 // A dropped in-match player's slot + score are held this long for a reconnect to
 // reclaim (via the resume token) before the record is reaped.

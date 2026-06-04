@@ -234,6 +234,14 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy(); // over capacity — drop before allocating a game slot
     return;
   }
+  // Disable Nagle's algorithm on the game socket. Our hot path is many small
+  // frames (64Hz position upload + 64Hz snapshots, ~100 bytes each); with Nagle
+  // on, the kernel can hold a small write waiting to coalesce it with the next
+  // one (interacting badly with delayed-ACK), adding up to ~40ms of latency and
+  // jitter to every update. A realtime game wants frames out immediately. (The
+  // upgrade event types the stream as a bare Duplex; the runtime object is a
+  // net/TLS Socket that has setNoDelay — guard so it's a no-op if it ever isn't.)
+  (socket as { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
   instagibWss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
     wsTotal++;
     wsPerIp.set(ip, (wsPerIp.get(ip) ?? 0) + 1);
