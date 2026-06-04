@@ -278,6 +278,64 @@ export const TRAINING: ArenaMap = (() => {
   };
 })();
 
+// "Nuketown" — homage to CoD's Nuketown, scaled up for free-for-all (64×44,
+// open-top outdoor). Two mirrored two-storey houses face each other across a
+// central road broken up by vehicle cover (a bus, a van, two cars); backyards
+// behind each house and the side lanes around them are the (well-spread) spawn
+// zones. Each house has an open front, a ramped upper-floor balcony overlooking
+// the road, and a boost-only roof perch. Built from our arena texture set — a
+// LAYOUT homage, not an art reproduction (we have no custom Nuketown textures).
+export const NUKETOWN: ArenaMap = (() => {
+  const boxes: AABB[] = [];
+  // floor + invisible cap (openTop → skybox shows overhead)
+  boxes.push({ min: { x: -32, y: -1, z: -22 }, max: { x: 32, y: 0, z: 22 } });
+  boxes.push({ min: { x: -32, y: 16, z: -22 }, max: { x: 32, y: 17, z: 22 } });
+  // perimeter walls (full height so boost-jumps can't escape)
+  boxes.push({ min: { x: -32, y: 0, z: -22 }, max: { x: -31, y: 16, z: 22 } });
+  boxes.push({ min: { x: 31, y: 0, z: -22 }, max: { x: 32, y: 16, z: 22 } });
+  boxes.push({ min: { x: -32, y: 0, z: 21 }, max: { x: 32, y: 16, z: 22 } });
+  boxes.push({ min: { x: -32, y: 0, z: -22 }, max: { x: 32, y: 16, z: -21 } });
+
+  // ── West house (open front faces east, toward the road) ──
+  boxes.push({ min: { x: -27, y: 0, z: -9 }, max: { x: -26, y: 7, z: 9 } }); // back wall
+  boxes.push({ min: { x: -27, y: 0, z: 8 }, max: { x: -20, y: 7, z: 9 } }); // north side (partial)
+  boxes.push({ min: { x: -27, y: 0, z: -9 }, max: { x: -20, y: 7, z: -8 } }); // south side (partial)
+  boxes.push({ min: { x: -26, y: 3.6, z: -9 }, max: { x: -19, y: 4.0, z: 9 } }); // upper-floor balcony
+  // ramp up to the balcony (1.3m steps, climbing back from the open front)
+  boxes.push({ min: { x: -21, y: 0, z: -8 }, max: { x: -19, y: 1.3, z: -5 } });
+  boxes.push({ min: { x: -24, y: 1.3, z: -8 }, max: { x: -21, y: 2.6, z: -5 } });
+  boxes.push({ min: { x: -26, y: 2.6, z: -8 }, max: { x: -24, y: 4.0, z: -5 } });
+  boxes.push({ min: { x: -18, y: 0, z: -3 }, max: { x: -17, y: 1.3, z: 3 } }); // front porch cover
+  boxes.push({ min: { x: -27, y: 6.5, z: -9 }, max: { x: -19, y: 7.0, z: 9 } }); // boost-only roof perch
+
+  // ── East house (mirror of the west house across x=0) ──
+  boxes.push({ min: { x: 26, y: 0, z: -9 }, max: { x: 27, y: 7, z: 9 } }); // back wall
+  boxes.push({ min: { x: 20, y: 0, z: 8 }, max: { x: 27, y: 7, z: 9 } }); // north side (partial)
+  boxes.push({ min: { x: 20, y: 0, z: -9 }, max: { x: 27, y: 7, z: -8 } }); // south side (partial)
+  boxes.push({ min: { x: 19, y: 3.6, z: -9 }, max: { x: 26, y: 4.0, z: 9 } }); // upper-floor balcony
+  boxes.push({ min: { x: 19, y: 0, z: -8 }, max: { x: 21, y: 1.3, z: -5 } });
+  boxes.push({ min: { x: 21, y: 1.3, z: -8 }, max: { x: 24, y: 2.6, z: -5 } });
+  boxes.push({ min: { x: 24, y: 2.6, z: -8 }, max: { x: 26, y: 4.0, z: -5 } });
+  boxes.push({ min: { x: 17, y: 0, z: -3 }, max: { x: 18, y: 1.3, z: 3 } }); // front porch cover
+  boxes.push({ min: { x: 19, y: 6.5, z: -9 }, max: { x: 27, y: 7.0, z: 9 } }); // boost-only roof perch
+
+  // ── Central road: the iconic Nuketown vehicle cover ──
+  boxes.push({ min: { x: -6, y: 0, z: 9 }, max: { x: 8, y: 2.9, z: 12 } }); // school bus (full cover)
+  boxes.push({ min: { x: -8, y: 0, z: -12 }, max: { x: 2, y: 2.6, z: -9 } }); // moving van (full cover)
+  boxes.push({ min: { x: 3, y: 0, z: -6 }, max: { x: 8, y: 1.4, z: -3 } }); // car (chest cover)
+  boxes.push({ min: { x: -8, y: 0, z: 3 }, max: { x: -3, y: 1.4, z: 6 } }); // car (chest cover)
+  boxes.push({ min: { x: -2, y: 0, z: -2 }, max: { x: 2, y: 1.2, z: 2 } }); // central planter (waist cover)
+  boxes.push({ min: { x: -2, y: 0, z: 15 }, max: { x: 3, y: 1.3, z: 18 } }); // north-lane crate
+  boxes.push({ min: { x: -3, y: 0, z: -18 }, max: { x: 2, y: 1.3, z: -15 } }); // south-lane crate
+  return {
+    name: 'Nuketown',
+    boxes,
+    spawn: { x: -29, y: 0.05, z: 0 },
+    bounds: { min: { x: -32, y: -1, z: -22 }, max: { x: 32, y: 17, z: 22 } },
+    openTop: true,
+  };
+})();
+
 // Selectable map registry — the trimmed competitive pool plus the
 // single-player practice range. Larger maps (Causeway/Reactor/Lounge) carry
 // FFA/TDM; the tight symmetric maps (Container Yard/Derrick) carry 1v1 duels.
@@ -286,6 +344,7 @@ export const MAPS: ReadonlyArray<{ id: string; label: string; map: ArenaMap }> =
   { id: 'causeway', label: 'Causeway (FFA/TDM)', map: CAUSEWAY },
   { id: 'reactor', label: 'Reactor (FFA/TDM)', map: REACTOR },
   { id: 'lounge', label: 'Lounge (FFA/TDM)', map: LOUNGE },
+  { id: 'nuketown', label: 'Nuketown (FFA/TDM)', map: NUKETOWN },
   // 1v1 duel maps
   { id: 'containeryard', label: 'Container Yard (1v1)', map: CONTAINERYARD },
   { id: 'derrick', label: 'Derrick (1v1)', map: DERRICK },
