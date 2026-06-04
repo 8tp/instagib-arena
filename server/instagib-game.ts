@@ -87,7 +87,14 @@ const HISTORY_MS = 1_000; // how far back we keep position history for rewind
 // since 64Hz sends keep a sample within 16ms). The SAME resampled pos feeds both
 // the snapshot AND the lag-comp history, so what a viewer sees is exactly what
 // the server rewinds to → smoother motion AND fewer "hit but no kill".
-const POS_LAG_MS = 20; // resample target = snapshot time − this (keeps it interpolation)
+// The resample lag is PER PLAYER and adaptive: a clean ~40ms sender gets the
+// floor; a player whose position arrives in bursts (TCP stalls on their upstream
+// — what makes a high-ping player stutter for everyone) gets buffered more, so
+// their motion stays smoothly INTERPOLATED instead of held-then-jumped. Sized to
+// each sender's measured arrival-jitter. Low-ping players are unaffected.
+const POS_LAG_MS = 20; // floor: minimal resample delay for a clean, steady sender
+const POS_LAG_MAX_MS = 180; // ceiling: even a very bursty sender isn't delayed past this
+const POS_LAG_JITTER_K = 2.5; // how many σ of a sender's arrival-jitter to buffer
 const POS_SAMPLE_WINDOW_MS = 300; // received-pos buffer retention
 const POS_RESAMPLE_TELEPORT = 5; // m between adjacent samples above which we DON'T lerp (respawn)
 const MAX_REWIND_MS = 350; // clamp how far a shot may rewind targets
@@ -153,6 +160,8 @@ type ClientRecord = {
   history: HistorySample[]; // ascending by t (RESAMPLED positions — see snapshot tick)
   posSamples: PosSample[]; // received-pos buffer (receive-time stamped) for resampling
   renderPos: { x: number; y: number; z: number; yaw: number }; // resampled pos for snapshot + history
+  posGapEma: number; // EMA of inter-arrival gap of this player's pos (while moving)
+  posGapJitterEma: number; // EMA of that gap's deviation → sizes their adaptive resample lag
   // Rolling aim stats for the anti-aimbot heuristic (decayed each window).
   aimShots: number;
   aimHits: number;
@@ -1311,6 +1320,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       history: [],
       posSamples: [],
       renderPos: { x: 0, y: 0, z: 0, yaw: 0 },
+      posGapEma: 0,
+      posGapJitterEma: 0,
       aimShots: 0,
       aimHits: 0,
       aimHeadshots: 0,
@@ -1640,6 +1651,17 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (moved > 0.1) {
               record.lastActiveMs = ts;
               if (record.invulnUntilMs > ts) record.invulnUntilMs = 0;
+              // Track this sender's arrival cadence ONLY while moving (idle-dedup
+              // heartbeats would otherwise inflate the gap). Drives their adaptive
+              // resample lag at snapshot time. prevPosMs = the prior receive time.
+              if (prevPosMs > 0) {
+                const gap = ts - prevPosMs;
+                if (gap > 0 && gap < 500) {
+                  record.posGapEma =
+                    record.posGapEma === 0 ? gap : record.posGapEma + (gap - record.posGapEma) * 0.1;
+                  record.posGapJitterEma += (Math.abs(gap - record.posGapEma) - record.posGapJitterEma) * 0.1;
+                }
+              }
             }
             record.pos.x = msg.x;
             record.pos.y = msg.y;
@@ -1708,7 +1730,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
         // is what the snapshot sends AND what the lag-comp history records, so a
         // viewer's render and the server's rewind agree exactly. Falls back to
         // the raw latest pos until a sample buffer exists (just-joined / respawn).
-        const sp = sampleAt(c.posSamples, now - POS_LAG_MS);
+        // PER-PLAYER lag: buffer a bursty sender enough to stay interpolating
+        // (smooth) instead of holding-then-jumping; clean senders get the floor.
+        const lag = Math.max(
+          POS_LAG_MS,
+          Math.min(POS_LAG_MAX_MS, c.posGapEma + POS_LAG_JITTER_K * c.posGapJitterEma),
+        );
+        const sp = sampleAt(c.posSamples, now - lag);
         if (sp) {
           c.renderPos.x = sp.x; c.renderPos.y = sp.y; c.renderPos.z = sp.z; c.renderPos.yaw = sp.yaw;
         } else {
