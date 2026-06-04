@@ -607,28 +607,45 @@ export function attachInstagibWs(wss: WebSocketServer) {
         ? TDM_FRAG_LIMIT
         : MATCH_FRAG_LIMIT;
 
-  const pickSpawn = (room: Room, avoid: Vec | null): Vec => {
+  // Pick a spawn as FAR as possible from live threats. `forClient` (the player
+  // being spawned) lets us build an accurate threat set; `avoid` is an extra
+  // point to stay away from (the killer's position on a frag).
+  const pickSpawn = (room: Room, forClient: ClientRecord | null, avoid: Vec | null): Vec => {
     const spawns = arenaNet(room.mapId).spawns;
     if (spawns.length === 0) return { x: 0, y: 0.05, z: 0 };
-    // Spawn AWAY FROM EVERY live opponent, not just the killer — score each
-    // candidate by its distance to the nearest player and pick among the safest
-    // few (so it isn't perfectly predictable). This avoids spawning in someone's
-    // crosshair and doubles as a telefrag guard (an occupied spawn scores ~0).
+    const now = Date.now();
+    // THREATS only: other players who could actually shoot you on spawn. Exclude
+    // yourself, the dropped (disconnected), the dead/hidden (mid-killcam), and —
+    // in TDM — teammates (they can't hurt you, and a stale teammate position
+    // shouldn't pull your spawn away from the safe corner).
     const enemies: Vec[] = [];
     for (const id of room.members) {
       const c = clients.get(id);
-      if (c) enemies.push(c.pos);
+      if (!c) continue;
+      if (forClient && c.id === forClient.id) continue;
+      if (c.disconnectedAt > 0) continue;
+      if (c.respawnAt > now) continue; // dead/hidden → not a threat
+      if (room.mode === 'tdm' && forClient && c.team != null && c.team === forClient.team) continue;
+      enemies.push(c.pos);
     }
     if (avoid) enemies.push(avoid);
+    // Score each spawn by distance to its NEAREST threat (maximize the minimum —
+    // also a telefrag guard, since an occupied spawn scores ~0).
     const scored = spawns.map((s) => {
       let nearest = Infinity;
       for (const e of enemies) nearest = Math.min(nearest, Math.hypot(s.x - e.x, s.z - e.z));
       return { s, nearest };
     });
     scored.sort((a, b) => b.nearest - a.nearest);
-    const topK = scored.slice(0, Math.min(3, scored.length));
-    const best = topK[Math.floor(Math.random() * topK.length)].s;
-    // Small jitter so stacked respawns don't perfectly overlap.
+    // Strongly prefer the FARTHEST: only spawns within 85% of the best distance
+    // are eligible, then random among those. So a clearly-safest spawn is always
+    // taken; variety (anti-camp) only kicks in when several are ~equally safe.
+    const maxD = scored[0].nearest;
+    const eligible = Number.isFinite(maxD)
+      ? scored.filter((c) => c.nearest >= maxD * 0.85)
+      : scored.slice(0, Math.min(3, scored.length)); // no threats → just spread out
+    const best = eligible[Math.floor(Math.random() * eligible.length)].s;
+    // Small jitter so simultaneous respawns don't perfectly overlap.
     return { x: best.x + (Math.random() - 0.5), y: best.y, z: best.z + (Math.random() - 0.5) };
   };
 
@@ -659,7 +676,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       room.resumeAt = Date.now() + WARMUP_MS;
     }
     // Spawn into the room's current map.
-    const spawn = pickSpawn(room, null);
+    const spawn = pickSpawn(room, record, null);
     record.pos = { ...spawn };
     record.yaw = 0;
     record.pitch = 0;
@@ -1048,7 +1065,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.frags = 0;
       c.deaths = 0;
       c.history.length = 0;
-      c.pos = { ...pickSpawn(room, null) };
+      c.pos = { ...pickSpawn(room, c, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
       c.respawnAt = 0; // fresh match — everyone visible
       if (room.mode === 'duel') room.roundWins.set(id, 0);
@@ -1082,7 +1099,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.frags = 0;
       c.deaths = 0;
       c.history.length = 0;
-      c.pos = { ...pickSpawn(room, null) };
+      c.pos = { ...pickSpawn(room, c, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + DUEL_ROUND_BREAK_SEC * 1000;
       c.respawnAt = 0; // fresh round — everyone visible
     }
@@ -1215,7 +1232,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
     shooter.frags += 1;
     victim.deaths += 1;
-    const respawnPos = pickSpawn(room, shooter.pos);
+    const respawnPos = pickSpawn(room, victim, shooter.pos);
     const firstBlood = !room.firstBloodAwarded;
     room.firstBloodAwarded = true;
     broadcastRoom(room, {
@@ -1274,7 +1291,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // teleport the client, before its respawn applies — only recover once.
     if (now - c.lastRecoverMs < 1500) return;
     c.lastRecoverMs = now;
-    const spawn = pickSpawn(room, null);
+    const spawn = pickSpawn(room, c, null);
     c.pos = { ...spawn };
     c.deaths += 1;
     c.history.length = 0;
