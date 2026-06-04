@@ -149,7 +149,24 @@ export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
 const BOT_MODEL_URL = '/models/instagib/soldier.glb';
-const POS_SEND_HZ = 32;
+// Stream our position at the sim-tick rate (64Hz) rather than the 32Hz snapshot
+// rate. The server samples whatever pos it last received when it builds each
+// 32Hz snapshot; if we only send at 32Hz those two unsynchronized clocks beat
+// against each other, so the captured sample is anywhere from 0–31ms stale and
+// the staleness wobbles snapshot-to-snapshot. Remote viewers interpolate
+// assuming an even 31.25ms spacing, so that wobble reads as velocity jitter —
+// the worse the faster you strafe. Sending every tick keeps the server's
+// sample ≤~16ms fresh, halving the aliasing. Idle frames are deduped below so
+// this isn't a bandwidth regression when nobody's moving.
+const POS_SEND_HZ = 64;
+// Heartbeat a position even when we haven't moved, so the server's activity /
+// AFK bookkeeping and any late joiner stay current. Well under the snapshot
+// rate, so idle players cost almost nothing on the wire.
+const POS_HEARTBEAT_MS = 250;
+// Below these deltas a frame counts as "not moved" and the pos send is skipped
+// (subject to the heartbeat). Tight enough that real movement always sends.
+const POS_EPSILON = 1e-3; // metres
+const YAW_EPSILON = 5e-4; // radians
 
 const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
   'first-blood':   'first-blood',
@@ -239,6 +256,13 @@ export class Game {
   private multiplayerUrl = '';
   private multiplayerRoomId = '';
   private posSendAccumMs = 0;
+  // Last position/orientation actually sent to the server + when, for idle dedup
+  // (see POS_SEND_HZ / POS_HEARTBEAT_MS). lastPosSentMs = 0 makes the heartbeat
+  // branch fire on the very first tick, so we always send an initial position.
+  private lastSentPos = { x: NaN, y: NaN, z: NaN };
+  private lastSentYaw = NaN;
+  private lastSentPitch = NaN;
+  private lastPosSentMs = 0;
   // End-of-match map vote (server-driven). Non-null → vote overlay + pointer
   // released; the local player idles until the result resumes play.
   private vote: MapVoteState | null = null;
@@ -1506,19 +1530,31 @@ export class Game {
 
     if (input.firePressed && !dead && !this.inCountdown) this.handleFire();
 
-    // Throttled position broadcast
+    // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
+    // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
+    // viewers see (see POS_SEND_HZ); the dedup keeps an idle player near-silent.
     if (this.net) {
       this.posSendAccumMs += dt * 1000;
       const intervalMs = 1000 / POS_SEND_HZ;
       if (this.posSendAccumMs >= intervalMs) {
         this.posSendAccumMs = 0;
-        this.net.sendPosition(
-          this.player.pos.x,
-          this.player.pos.y,
-          this.player.pos.z,
-          this.player.yaw,
-          this.player.pitch,
-        );
+        const p = this.player.pos;
+        const moved =
+          Math.abs(p.x - this.lastSentPos.x) > POS_EPSILON ||
+          Math.abs(p.y - this.lastSentPos.y) > POS_EPSILON ||
+          Math.abs(p.z - this.lastSentPos.z) > POS_EPSILON ||
+          Math.abs(this.player.yaw - this.lastSentYaw) > YAW_EPSILON ||
+          Math.abs(this.player.pitch - this.lastSentPitch) > YAW_EPSILON;
+        const nowMs = performance.now();
+        if (moved || nowMs - this.lastPosSentMs >= POS_HEARTBEAT_MS) {
+          this.net.sendPosition(p.x, p.y, p.z, this.player.yaw, this.player.pitch);
+          this.lastSentPos.x = p.x;
+          this.lastSentPos.y = p.y;
+          this.lastSentPos.z = p.z;
+          this.lastSentYaw = this.player.yaw;
+          this.lastSentPitch = this.player.pitch;
+          this.lastPosSentMs = nowMs;
+        }
       }
     }
   }
