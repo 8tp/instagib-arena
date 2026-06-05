@@ -17,6 +17,7 @@ import cookieParser from 'cookie-parser';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { statsRouter } from './stats';
 import { leaderboardRouter } from './leaderboard';
+import { rankedRouter } from './ranked';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminRouter } from './admin';
 import { syncAdminsFromEnv } from './db';
@@ -138,6 +139,7 @@ app.get('/api/live', (_req, res) => res.json(liveCounts()));
 app.use('/api', authRouter);
 app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
+app.use('/api', rankedRouter);
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;

@@ -161,15 +161,16 @@ export const GAME_MODES: ReadonlyArray<{
   blurb: string;
 }> = [
   { id: 'ffa', label: 'Free-for-all', blurb: 'Everyone for themselves — first to the frag limit.' },
-  { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one, best-of rounds.' },
+  { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one — first to the frag limit.' },
   { id: 'tdm', label: 'Team Deathmatch', blurb: 'Red vs Blue — first team to the frag limit.' },
 ];
 
-// Duel: each round is a race to DUEL_ROUND_FRAG_LIMIT frags; the first player to
-// win DUEL_ROUNDS_TO_WIN rounds takes the match (then the map vote opens).
-export const DUEL_ROUND_FRAG_LIMIT = 7;
-export const DUEL_ROUNDS_TO_WIN = 3; // best of 5
-export const DUEL_ROUND_BREAK_SEC = 4; // between-round freeze/reset
+// Duel (casual + ranked share one format): a single continuous 1v1 race to the
+// frag limit — no rounds, no between-round pauses (anti-camp spawns do the rest).
+// Casual ends in the usual end-of-match map vote; ranked ends in an Elo update +
+// room dissolve (server/instagib-game.ts). Two constants so they can diverge.
+export const DUEL_FRAG_LIMIT = 15; // casual 1v1 target
+export const RANKED_DUEL_FRAG_LIMIT = 15; // ranked 1v1 target (login-only)
 
 // TDM: two teams; first team to TDM_FRAG_LIMIT total frags wins.
 export const TDM_FRAG_LIMIT = 40;

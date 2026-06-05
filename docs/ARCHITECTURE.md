@@ -192,11 +192,11 @@ chosen at create/quick-match time; the mode drives capacity and the win
 condition, evaluated server-side after every kill:
 
 - **FFA** — first player to `MATCH_FRAG_LIMIT` ends the match → map vote.
-- **Duel** — capacity 2. A kill that reaches `DUEL_ROUND_FRAG_LIMIT` ends the
-  round; the server bumps `roundNum`, resets both scoreboards, repositions both
-  players, and broadcasts `round` (with the round tally) after a short freeze.
-  First to `DUEL_ROUNDS_TO_WIN` rounds wins the match → vote. A mid-match leave
-  forfeits to the survivor.
+- **Duel** — capacity 2. A single continuous 1v1 race: first to
+  `DUEL_FRAG_LIMIT` ends the match → map vote (no rounds, no between-round
+  pauses). A mid-match leave forfeits to the survivor. **Ranked Duel** reuses
+  this exact format (a room with `isRanked`) but ends in an Elo update + room
+  dissolve instead of a vote — see "Ranked ladder" below.
 - **TDM** — players are balanced onto two teams on join (`team` index 0/1).
   Friendly fire is rejected in `handleShoot`; the first team whose summed frags
   reach `TDM_FRAG_LIMIT` wins (the win rides `vote-start` as `winnerTeam`).

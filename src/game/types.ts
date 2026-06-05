@@ -80,13 +80,6 @@ export type PlayerScore = {
 };
 
 // Duel HUD: round number + each side's round wins.
-export type DuelHud = {
-  roundNum: number;
-  roundsToWin: number;
-  myWins: number;
-  oppWins: number;
-};
-
 export type KillfeedEntry = {
   id: number;
   killer: string;
@@ -261,8 +254,6 @@ export type HudState = {
   localTeam: number | null; // your team index in TDM; null otherwise
   // TDM team frag totals [red, blue]; null outside TDM.
   teamScores: [number, number] | null;
-  // Duel round state; null outside Duel.
-  duel: DuelHud | null;
   // Training-range live stats; null outside the training range.
   training: TrainingHud | null;
   // Play of the Match cinematic; non-null → replay playing, results deferred.

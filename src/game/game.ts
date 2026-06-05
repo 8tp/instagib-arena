@@ -47,8 +47,8 @@ import {
   TEAM_COLORS,
   TDM_FRIEND_COLOR,
   TDM_FRAG_LIMIT,
-  DUEL_ROUND_FRAG_LIMIT,
-  DUEL_ROUNDS_TO_WIN,
+  DUEL_FRAG_LIMIT,
+  RANKED_DUEL_FRAG_LIMIT,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
@@ -84,7 +84,7 @@ import {
   titleById,
   type KillEffectStyle,
 } from './cosmetics';
-import { NetClient, type KillEvent, type ChatMessage } from './net';
+import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
 import {
@@ -115,7 +115,6 @@ import type {
   BannerState,
   CardPayload,
   ChatLine,
-  DuelHud,
   HitMarker,
   HudState,
   KillConfirm,
@@ -150,7 +149,8 @@ export type MatchEndListener = (result: MatchResult) => void;
 // changes are shown in-game via a HUD banner, not through this channel.
 export type NetMatchEvent =
   | { type: 'join-failed'; reason: string }
-  | { type: 'spectate-ended' }; // the watched match ended / room reaped → leave to lobby
+  | { type: 'spectate-ended' } // the watched match ended / room reaped → leave to lobby
+  | { type: 'ranked-result'; result: RankedResult; won: boolean }; // ranked match over → show overlay
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
@@ -302,9 +302,8 @@ export class Game {
   private matchSubmitted = false;
   // Active online game mode + this client's team (TDM). Offline is always FFA.
   private netMode: GameMode = 'ffa';
+  private ranked = false; // current online match is a ranked Duel (first-to-N)
   private localTeam: number | null = null;
-  // Duel round tracking (mirrors the server; drives the round HUD).
-  private duel: DuelHud | null = null;
 
   private killfeed: KillfeedEntry[] = [];
   private toasts: ToastEntry[] = [];
@@ -1043,7 +1042,7 @@ export class Game {
           onVoteStart: (v) => this.handleVoteStart(v),
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
-          onRound: (r) => this.handleNetRound(r),
+          onRankedResult: (r) => this.handleNetRankedResult(r),
           onChat: (m) => this.handleNetChat(m),
           onBeam: (b) => this.handleNetBeam(b),
         },
@@ -1054,8 +1053,8 @@ export class Game {
       this.net = null;
       this.vote = null;
       this.netMode = 'ffa';
+      this.ranked = false;
       this.localTeam = null;
-      this.duel = null;
       for (const rp of this.remotePlayers.values()) rp.dispose(this.scene);
       this.remotePlayers.clear();
     }
@@ -1068,20 +1067,12 @@ export class Game {
     spawn: { x: number; y: number; z: number };
     state: 'active' | 'voting';
     mode: GameMode;
+    ranked: boolean;
     team: number | null;
-    roundsToWin: number | null;
   }) {
     this.netMode = info.mode;
+    this.ranked = info.ranked;
     this.localTeam = info.team;
-    this.duel =
-      info.mode === 'duel'
-        ? {
-            roundNum: 1,
-            roundsToWin: info.roundsToWin ?? DUEL_ROUNDS_TO_WIN,
-            myWins: 0,
-            oppWins: 0,
-          }
-        : null;
     const desired = mapById(info.mapId);
     if (desired !== this.map) this.setMap(desired);
     this.player.pos = { x: info.spawn.x, y: info.spawn.y, z: info.spawn.z };
@@ -1110,7 +1101,6 @@ export class Game {
   private handleNetSpectating(info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) {
     this.netMode = info.mode;
     this.localTeam = null;
-    this.duel = null;
     const desired = mapById(info.mapId);
     if (desired !== this.map) this.setMap(desired);
     this.killcam = null;
@@ -1275,63 +1265,25 @@ export class Game {
   // locally — also zero the NetClient's authoritative counters so the very next
   // emitHud doesn't momentarily re-show the pre-reset total from a stale snapshot
   // (subsequent snapshots are already 0). Then update the round tally + banner.
-  private handleNetRound(r: {
-    roundNum: number;
-    roundWins: Record<string, number>;
-    winnerId: string | null;
-    resumeAtClient: number;
-    spawn?: { x: number; y: number; z: number };
-  }) {
-    // Spectators just track the round counter for the banner; no respawn/lock.
+  // Ranked Duel resolved (frag limit reached, or a forfeit). The match is over:
+  // latch win/loss, submit career stats once (tagged 'ranked' via getMatchModeTag),
+  // release the cursor, and hand the rating deltas to React for the result overlay.
+  private handleNetRankedResult(r: RankedResult) {
+    // A spectator just bows out — the room dissolves and they'd get spectate-ended
+    // anyway; route them straight back to the lobby with the result they saw.
     if (this.spectator) {
-      this.banner = {
-        id: this.nextEventId++,
-        tier: 'special',
-        title: `Round ${r.roundNum}`,
-        subtitle: 'Spectating',
-        remaining: BANNER_DURATION_SEC,
-        total: BANNER_DURATION_SEC,
-      };
-      this.emitHud();
+      this.onNetEvent({ type: 'spectate-ended' });
       return;
     }
-    const myId = this.net?.clientId ?? '';
-    const myWins = r.roundWins[myId] ?? 0;
-    let oppWins = 0;
-    for (const [id, w] of Object.entries(r.roundWins)) {
-      if (id !== myId) oppWins = Math.max(oppWins, w);
+    this.wonLastMatch = r.won;
+    if (this.net && !this.matchSubmitted) {
+      this.matchSubmitted = true;
+      this.onMatchEnd(this.collectStats(this.wonLastMatch));
     }
-    this.duel = {
-      roundNum: r.roundNum,
-      roundsToWin: this.duel?.roundsToWin ?? DUEL_ROUNDS_TO_WIN,
-      myWins,
-      oppWins,
-    };
-    this.playerFrags = 0;
-    this.playerDeaths = 0;
-    if (this.net) {
-      this.net.localFrags = 0;
-      this.net.localDeaths = 0;
+    if (typeof document !== 'undefined' && document.pointerLockElement) {
+      document.exitPointerLock();
     }
-    this.resetMatchDrama();
-    // Server-assigned per-duelist spawn (so both don't land on the same spot).
-    this.player.pos = r.spawn
-      ? { x: r.spawn.x, y: r.spawn.y, z: r.spawn.z }
-      : { ...pickFreeSpot(this.map, null, PLAYER_RADIUS) };
-    this.player.vel = { x: 0, y: 0, z: 0 };
-    this.player.onGround = false;
-    this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
-    const iWon = r.winnerId != null && r.winnerId === myId;
-    this.banner = {
-      id: this.nextEventId++,
-      tier: 'special',
-      title: `Round ${r.roundNum}`,
-      subtitle: iWon ? 'You won the round' : 'Round lost',
-      remaining: BANNER_DURATION_SEC,
-      total: BANNER_DURATION_SEC,
-    };
-    this.input.requestLock();
-    this.playLocalSpawnEffect(); // materialize at the fresh round spawn
+    this.onNetEvent({ type: 'ranked-result', result: r, won: r.won });
     this.emitHud();
   }
 
@@ -2382,6 +2334,13 @@ export class Game {
     return this.playerFrags > 0 || this.playerDeaths > 0 || this.playerShotsFired > 0;
   }
 
+  // The active match's mode tag for the stats POST: 'ranked' for a ranked Duel,
+  // else the joined room's game mode (offline is always 'ffa'). Powers the admin
+  // dashboard's mode breakdown. Cosmetic metadata only.
+  getMatchModeTag(): GameMode | 'ranked' {
+    return this.ranked ? 'ranked' : this.netMode;
+  }
+
   // Server `kill` broadcast — drives the same effect set as a local bot kill
   // but works for every client in the match (including the victim).
   private handleNetKill(ev: KillEvent) {
@@ -2781,7 +2740,6 @@ export class Game {
       mode: this.netMode,
       localTeam: this.localTeam,
       teamScores,
-      duel: this.duel ? { ...this.duel } : null,
       training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
       pom: this.pom ? { ...this.pom } : null,
       chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
@@ -2831,7 +2789,12 @@ export class Game {
         if (s.isLocal) mine = s.frags;
         else oppBest = Math.max(oppBest, s.frags);
       }
-      limit = this.netMode === 'duel' ? DUEL_ROUND_FRAG_LIMIT : MATCH_FRAG_LIMIT;
+      limit =
+        this.netMode === 'duel'
+          ? this.ranked
+            ? RANKED_DUEL_FRAG_LIMIT
+            : DUEL_FRAG_LIMIT
+          : MATCH_FRAG_LIMIT;
     }
 
     // "MATCH POINT": the leader (either side) needs exactly one more frag.

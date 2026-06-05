@@ -10,6 +10,7 @@ import Landing from './pages/Landing';
 const InstagibClient = lazy(() => import('./InstagibClient'));
 const PodiumLab = lazy(() => import('./PodiumLab'));
 const LockerLab = lazy(() => import('./LockerLab'));
+const AdminDashboard = lazy(() => import('./AdminDashboard'));
 
 // Minimal full-screen fallback while the game chunk downloads — matches the
 // app's dark background so there's no flash.
@@ -59,6 +60,14 @@ createRoot(document.getElementById('root')!).render(
         element={
           <Suspense fallback={<Loading />}>
             <LockerLab />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/admin"
+        element={
+          <Suspense fallback={<Loading />}>
+            <AdminDashboard />
           </Suspense>
         }
       />

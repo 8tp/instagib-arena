@@ -22,9 +22,8 @@ import {
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
   EYE_HEIGHT,
-  DUEL_ROUND_FRAG_LIMIT,
-  DUEL_ROUNDS_TO_WIN,
-  DUEL_ROUND_BREAK_SEC,
+  DUEL_FRAG_LIMIT,
+  RANKED_DUEL_FRAG_LIMIT,
   KILLCAM_DURATION_SEC,
   TDM_FRAG_LIMIT,
   TEAM_COUNT,
@@ -60,7 +59,7 @@ import {
   titleById,
 } from '../src/game/cosmetics';
 import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
-import { findUserById, unlockedSetFor } from './db';
+import { findUserById, getRankedRating, recordRankedResult, unlockedSetFor } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
 
@@ -230,6 +229,7 @@ type ClientRecord = {
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
+  ip: string; // client IP (x-forwarded-for, best-effort) — ranked anti-collusion only
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
   verified: boolean; // account is_verified — drives the blue check (echoed in snapshots)
 };
@@ -240,6 +240,10 @@ type Room = {
   mode: GameMode;
   mapId: string;
   isPublic: boolean;
+  // Ranked Duel: a single first-to-N 1v1 (no rounds, no map vote). Reuses the
+  // duel room machinery (capacity 2, 1v1 maps + spawns) but ends via Elo update +
+  // room dissolve instead of rounds/vote. Kept out of the public lobby list.
+  isRanked: boolean;
   capacity: number;
   hostId: ClientId | null;
   members: Set<ClientId>;
@@ -253,10 +257,7 @@ type Room = {
     winnerTeam: number | null;
   } | null;
   resumeAt: number; // ms timestamp; shots ignored until then (post-vote breather)
-  // Duel: per-player round wins + the current round number (1-based).
-  roundWins: Map<ClientId, number>;
-  roundNum: number;
-  firstBloodAwarded: boolean; // first kill of the current match/round has landed
+  firstBloodAwarded: boolean; // first kill of the current match has landed
   emptySince: number; // ms timestamp it became empty, 0 if occupied
   wasEverOccupied: boolean; // distinguishes a never-joined invite room from a post-match empty
   createdAt: number;
@@ -270,6 +271,9 @@ type ClientMessage =
   | { type: 'list' }
   | { type: 'create'; name?: string; mapId?: string; isPublic?: boolean; capacity?: number; mode?: string }
   | { type: 'quickmatch'; name?: string; mode?: string }
+  | { type: 'ranked-queue' }
+  | { type: 'ranked-cancel' }
+  | { type: 'ranked-rooms' }
   | { type: 'join'; roomId?: string; name?: string }
   | { type: 'spectate'; roomId?: string; name?: string }
   | { type: 'resume'; token?: string; roomId?: string; name?: string }
@@ -439,6 +443,26 @@ export function attachInstagibWs(wss: WebSocketServer) {
   const clients = new Map<ClientId, ClientRecord>();
   const rooms = new Map<RoomId, Room>();
   const listers = new Set<ClientId>();
+  // Ranked Duel matchmaking queue: account-only sockets waiting for a 1v1. The
+  // pairing tick (below) matches the two closest-rated waiters, widening the
+  // acceptable rating gap the longer someone waits. Keyed by connection id.
+  const rankedQueue = new Map<ClientId, { rating: number; joinedAt: number }>();
+  // Anti match-fixing: remember which account PAIRS recently played a ranked match
+  // so the same two can't immediately re-queue and trade wins back-and-forth.
+  // Keyed by the sorted account-id pair → last match-start time.
+  const recentRankedPairs = new Map<string, number>();
+  const RANKED_REMATCH_COOLDOWN_MS = 5 * 60_000;
+  const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  // Is this account already in a live ranked match (on any of its connections)?
+  // Stops queueing a second tab while playing ranked.
+  const accountInRankedMatch = (playerId: string): boolean => {
+    for (const c of clients.values()) {
+      if (c.playerId !== playerId || !c.roomId) continue;
+      const r = rooms.get(c.roomId);
+      if (r?.isRanked && r.state === 'active' && r.members.has(c.id)) return true;
+    }
+    return false;
+  };
 
   // ── Global lobby presence + chat ──────────────────────────────────────
   // One global room. Recent chat is kept in memory only (cleared on restart)
@@ -554,6 +578,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     isPublic: boolean;
     capacity: number;
     hostId: ClientId | null;
+    isRanked?: boolean;
   }): Room => {
     // Duel is locked to 2; ffa/tdm clamp the requested capacity to the mode max.
     const maxCap = modeCapacity(opts.mode);
@@ -563,6 +588,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       id: genRoomCode(),
       name: opts.name,
       mode: opts.mode,
+      isRanked: opts.isRanked === true,
       // Enforce the mode's map pool server-side: a duel can't be created on a
       // huge FFA map and FFA can't be created on a tight 1v1 arena, regardless
       // of what the client requested.
@@ -578,8 +604,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
       state: 'active',
       vote: null,
       resumeAt: Date.now() + WARMUP_MS, // initial get-ready before the first frag
-      roundWins: new Map(),
-      roundNum: 1,
       firstBloodAwarded: false,
       emptySince: Date.now(),
       wasEverOccupied: false,
@@ -658,25 +682,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
   };
 
-  // Highest frag count among everyone in the room except `exceptId` — used for
-  // duel deuce/advantage and FFA mercy-lead checks.
-  const topOtherFrags = (room: Room, exceptId: ClientId): number => {
-    let m = 0;
-    for (const id of room.members) {
-      if (id === exceptId) continue;
-      const c = clients.get(id);
-      if (c) m = Math.max(m, c.frags);
-    }
-    return m;
-  };
-
-  // The frag target the HUD shows: per-round in duel, per-match otherwise.
+  // The frag target the HUD shows: ranked / casual duel are both first-to-N 1v1
+  // races; tdm is the team total; ffa is the per-match limit.
   const fragLimitFor = (room: Room): number =>
-    room.mode === 'duel'
-      ? DUEL_ROUND_FRAG_LIMIT
-      : room.mode === 'tdm'
-        ? TDM_FRAG_LIMIT
-        : MATCH_FRAG_LIMIT;
+    room.isRanked
+      ? RANKED_DUEL_FRAG_LIMIT
+      : room.mode === 'duel'
+        ? DUEL_FRAG_LIMIT
+        : room.mode === 'tdm'
+          ? TDM_FRAG_LIMIT
+          : MATCH_FRAG_LIMIT;
 
   // Pick a spawn for `forClient`. Two independent concerns:
   //  • SAFETY (soft, tunable): distance to nearest live threat, docked for sitting
@@ -771,7 +786,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.emptySince = 0;
     room.wasEverOccupied = true;
     if (!room.hostId) room.hostId = record.id;
-    if (room.mode === 'duel') room.roundWins.set(record.id, 0);
     // A match begins the moment a room fills from 1→2: give BOTH players a
     // get-ready warmup (the existing resumeAt shot-freeze) so neither can be
     // fragged on the join frame. Guard on a FRESH match (nobody has scored yet)
@@ -797,12 +811,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
       type: 'joined',
       roomId: room.id,
       mode: room.mode,
+      ranked: room.isRanked,
       team: record.team,
       mapId: room.mapId,
       spawn,
       state: room.state,
       fragLimit: fragLimitFor(room),
-      roundsToWin: room.mode === 'duel' ? DUEL_ROUNDS_TO_WIN : undefined,
       resumeAt: room.resumeAt, // warmup/breather end (server clock)
     });
     // Late joiner during an end-of-match vote: replay the ballot so they get
@@ -856,10 +870,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.members.delete(old.id);
     room.members.add(record.id);
     if (room.hostId === old.id) room.hostId = record.id;
-    if (room.roundWins.has(old.id)) {
-      room.roundWins.set(record.id, room.roundWins.get(old.id) ?? 0);
-      room.roundWins.delete(old.id);
-    }
     if (room.vote?.votes.has(old.id)) {
       room.vote.votes.set(record.id, room.vote.votes.get(old.id)!);
       room.vote.votes.delete(old.id);
@@ -869,12 +879,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
       type: 'joined',
       roomId: room.id,
       mode: room.mode,
+      ranked: room.isRanked,
       team: record.team,
       mapId: room.mapId,
       spawn: record.pos,
       state: room.state,
       fragLimit: fragLimitFor(room),
-      roundsToWin: room.mode === 'duel' ? DUEL_ROUNDS_TO_WIN : undefined,
       resumeAt: room.resumeAt,
     });
     if (room.state === 'voting' && room.vote) {
@@ -898,7 +908,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.team = null;
     if (!room) return;
     room.members.delete(record.id);
-    room.roundWins.delete(record.id);
     broadcastRoom(room, { type: 'peer-left', clientId: record.id });
     broadcastMeta(room); // refresh the roster profile sans the departed player
     // Drop their ballot so a departed player can't skew the tally or trip the
@@ -921,9 +930,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
     // Duel: a player bailing mid-match forfeits — the lone survivor wins and the
     // map vote opens (size === 1 means the room had 2 and one just left).
-    if (room.mode === 'duel' && room.state === 'active' && room.members.size === 1) {
+    if (room.mode === 'duel' && !room.isRanked && room.state === 'active' && room.members.size === 1) {
       const remaining = room.members.values().next().value;
       if (remaining) startVote(room, remaining);
+    }
+    // Ranked: bailing mid-match is a forfeit — the survivor wins (the leaver takes
+    // the loss + Elo hit). `record` is the departing loser (already removed above).
+    if (room.isRanked && room.state === 'active' && room.members.size === 1) {
+      const remainingId = room.members.values().next().value;
+      const remaining = remainingId ? clients.get(remainingId) : undefined;
+      if (remaining) endRankedMatch(room, remaining, record);
     }
     broadcastRoomList();
     schedulePresence(); // this player's inMatch flag just cleared
@@ -958,6 +974,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // post-match vote, or already-disconnected — reap immediately.
   const handleDisconnect = (rec: ClientRecord) => {
     if (rec.disconnectedAt > 0) return; // already handled (error then close)
+    rankedQueue.delete(rec.id); // a queued socket dropping leaves the queue
     const room = rec.roomId ? rooms.get(rec.roomId) : null;
     if (room && room.state === 'active' && room.members.has(rec.id)) {
       rec.disconnectedAt = Date.now();
@@ -1198,9 +1215,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.state = 'active';
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
-    // Fresh match on the new map: reset duel rounds.
-    room.roundNum = 1;
-    room.roundWins.clear();
     room.firstBloodAwarded = false;
 
     // Reset scoreboard + reposition everyone onto the new map.
@@ -1214,7 +1228,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
       c.pos = { ...pickSpawn(room, c, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
       c.respawnAt = 0; // fresh match — everyone visible
-      if (room.mode === 'duel') room.roundWins.set(id, 0);
     }
     // Per-client so each gets their OWN server-assigned spawn — otherwise every
     // client would self-pick the same default spot and stack on one spawn.
@@ -1237,53 +1250,45 @@ export function attachInstagibWs(wss: WebSocketServer) {
     broadcastRoomList();
   };
 
-  // Duel: a round was won — bump the round, reset both players + scoreboard,
-  // and tell clients (who show a "Round N" banner and the round tally). A short
-  // breather (resumeAt) freezes shots so nobody dies during the reset.
-  const startNewRound = (room: Room, lastWinnerId: ClientId) => {
-    room.roundNum += 1;
-    room.firstBloodAwarded = false;
-    const now = Date.now();
-    room.resumeAt = now + DUEL_ROUND_BREAK_SEC * 1000;
-    for (const id of room.members) {
-      const c = clients.get(id);
-      if (!c) continue;
-      c.frags = 0;
-      c.deaths = 0;
-      c.history.length = 0;
-      c.pos = { ...pickSpawn(room, c, null) };
-      c.invulnUntilMs = now + SPAWN_INVULN_MS + DUEL_ROUND_BREAK_SEC * 1000;
-      c.respawnAt = 0; // fresh round — everyone visible
-    }
-    const roundWins: Record<string, number> = {};
-    for (const [id, w] of room.roundWins) roundWins[id] = w;
-    // Per-client so each duelist gets their OWN server spawn (not the same one).
-    for (const id of room.members) {
-      const c = clients.get(id);
-      if (!c) continue;
-      sendRaw(c.socket, {
-        type: 'round',
-        roundNum: room.roundNum,
-        roundWins,
-        winnerId: lastWinnerId,
-        resumeAt: room.resumeAt,
-        spawn: { ...c.pos },
-      });
-    }
-    // Spectators get the round bump too (no spawn) so their "Round N" banner +
-    // map stay in sync with the duel they're watching.
-    for (const id of room.spectators) {
-      const c = clients.get(id);
-      if (c) {
-        sendRaw(c.socket, {
-          type: 'round',
-          roundNum: room.roundNum,
-          roundWins,
-          winnerId: lastWinnerId,
-          resumeAt: room.resumeAt,
-        });
-      }
-    }
+  // Ranked match over (frag limit reached, or a forfeit). Applies the
+  // server-authoritative Elo update, broadcasts the result (rating deltas) to
+  // both players + spectators, and freezes the room so no more shots land — the
+  // clients show the result then return to the lobby and the room reaps empty.
+  // `loserOverride` is the departed player on a forfeit (already out of members).
+  const endRankedMatch = (room: Room, winner: ClientRecord, loserOverride?: ClientRecord) => {
+    if (room.state !== 'active') return; // guard against double-resolve
+    const loserId = loserOverride ? null : [...room.members].find((id) => id !== winner.id);
+    const loser = loserOverride ?? (loserId ? clients.get(loserId) : undefined);
+    // Defense-in-depth against match-fixing: only move Elo for two DISTINCT
+    // accounts on DISTINCT networks. The queue already refuses to pair same-account
+    // or same-IP, so this should never fire — but it guarantees no self-/collusion
+    // farming even if some future path puts two such players in a ranked room.
+    const legit =
+      !!loser &&
+      !!winner.playerId &&
+      !!loser.playerId &&
+      winner.playerId !== loser.playerId &&
+      !(winner.ip !== 'unknown' && winner.ip === loser.ip);
+    const rating =
+      legit && loser
+        ? recordRankedResult(winner.playerId, winner.name, loser.playerId, loser.name)
+        : null;
+    room.state = 'voting'; // reuse the shot-freeze guard; no actual map vote for ranked
+    room.vote = null;
+    const payload = {
+      type: 'ranked-result' as const,
+      winnerId: winner.id,
+      winnerName: winner.name,
+      loserId: loser?.id ?? null,
+      loserName: loser?.name ?? null,
+      forfeit: !!loserOverride,
+      winnerFrags: winner.frags,
+      loserFrags: loser?.frags ?? 0,
+      fragLimit: RANKED_DUEL_FRAG_LIMIT,
+      rating, // { winner: { rating, delta, rank }, loser: {...} } | null (guests/missing)
+    };
+    broadcastRoom(room, payload);
+    broadcastRoomList(); // room left the joinable/active set
   };
 
   // ── Shooting ──────────────────────────────────────────────────────────
@@ -1426,22 +1431,20 @@ export function attachInstagibWs(wss: WebSocketServer) {
     victim.invulnUntilMs = now + KILL_RESPAWN_INVULN_MS;
 
     // Mode-aware resolution of the kill.
-    if (room.mode === 'tdm') {
+    if (room.isRanked) {
+      // Ranked Duel: a flat first-to-N race. No rounds, no vote — reaching the
+      // limit ends the match (Elo update + result + dissolve).
+      if (shooter.frags >= RANKED_DUEL_FRAG_LIMIT) endRankedMatch(room, shooter);
+    } else if (room.mode === 'tdm') {
       if (shooter.team != null) {
         const mine = teamFrags(room, shooter.team);
         // First team to the frag limit wins; matches always play to the limit.
         if (mine >= TDM_FRAG_LIMIT) startVote(room, null, shooter.team);
       }
     } else if (room.mode === 'duel') {
-      // Deuce/advantage: a round needs the frag limit AND a 2-frag lead, so a
-      // neck-and-neck round goes to sudden-death instead of ending on a tie.
-      const oppFrags = topOtherFrags(room, shooter.id);
-      if (shooter.frags >= DUEL_ROUND_FRAG_LIMIT && shooter.frags - oppFrags >= 2) {
-        const wins = (room.roundWins.get(shooter.id) ?? 0) + 1;
-        room.roundWins.set(shooter.id, wins);
-        if (wins >= DUEL_ROUNDS_TO_WIN) startVote(room, shooter.id); // match win
-        else startNewRound(room, shooter.id);
-      }
+      // Casual Duel: a single first-to-N 1v1 race (same format as ranked, but it
+      // ends in the normal map vote instead of an Elo update + dissolve).
+      if (shooter.frags >= DUEL_FRAG_LIMIT) startVote(room, shooter.id);
     } else {
       // FFA: first to the frag limit ends the match (no early mercy stop).
       if (shooter.frags >= MATCH_FRAG_LIMIT) startVote(room, shooter.id);
@@ -1466,13 +1469,21 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
+  wss.on('connection', (socket: WebSocket, req?: { headers?: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } }) => {
     const id = genId();
     const now = Date.now();
     // The progression identity (the logged-in account behind the httpOnly
     // `igsession` cookie) rides the WS upgrade on the same origin — we use it to
     // ownership-check cosmetic equips. Guests resolve to '' (defaults only).
-    const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
+    const playerId = accountIdFromCookieHeader(
+      typeof req?.headers?.cookie === 'string' ? req.headers.cookie : undefined,
+    );
+    // Best-effort client IP (proxy-forwarded first hop). Used ONLY for ranked
+    // anti-collusion (don't auto-match two sockets from the same network — the
+    // "open another tab + alt account" self-match). Never shown to players.
+    const xff = req?.headers?.['x-forwarded-for'];
+    const fwd = Array.isArray(xff) ? xff[0] : xff;
+    const ip = (fwd ? String(fwd).split(',')[0] : req?.socket?.remoteAddress ?? '').trim() || 'unknown';
     // The display name is SERVER-AUTHORITATIVE — never taken from the client.
     // A logged-in player gets their account username (moderated at registration,
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
@@ -1519,6 +1530,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       crosshair: '',
       card: null,
       playerId,
+      ip,
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
       history: [],
@@ -1644,6 +1656,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         }
 
         case 'create': {
+          rankedQueue.delete(record.id); // creating a room → leave the ranked queue
           if (!chargeRoomCreate(record, ts)) {
             sendRaw(socket, { type: 'join-failed', reason: 'rate' });
             break;
@@ -1708,11 +1721,64 @@ export function attachInstagibWs(wss: WebSocketServer) {
               hostId: null,
             });
           }
+          rankedQueue.delete(record.id); // chose casual → leave the ranked queue
           sendRaw(socket, { type: 'matched', roomId: target.id, mapId: target.mapId });
           break;
         }
 
+        case 'ranked-queue': {
+          // Ranked Duel is account-only — a guest has no persistent rating.
+          if (!record.playerId) {
+            sendRaw(socket, { type: 'ranked-status', state: 'idle', reason: 'account' });
+            break;
+          }
+          if (record.roomId || record.spectating) break; // can't queue mid-match
+          // Anti-abuse: one account may hold at most ONE queue slot. Drop any other
+          // connection of the same account already queued (a second tab) so a
+          // player can never be matched against themselves.
+          for (const [qid] of rankedQueue) {
+            const qc = clients.get(qid);
+            if (qid !== record.id && qc?.playerId === record.playerId) rankedQueue.delete(qid);
+          }
+          // And can't queue while already playing a ranked match in another tab.
+          if (accountInRankedMatch(record.playerId)) {
+            sendRaw(socket, { type: 'ranked-status', state: 'idle', reason: 'in-match' });
+            break;
+          }
+          rankedQueue.set(record.id, { rating: getRankedRating(record.playerId), joinedAt: ts });
+          sendRaw(socket, { type: 'ranked-status', state: 'searching', size: rankedQueue.size, since: ts });
+          break;
+        }
+
+        case 'ranked-cancel': {
+          rankedQueue.delete(record.id);
+          sendRaw(socket, { type: 'ranked-status', state: 'idle' });
+          break;
+        }
+
+        case 'ranked-rooms': {
+          // Live ranked duels available to spectate (the ladder side-panel).
+          const list: {
+            id: string;
+            mapId: string;
+            spectators: number;
+            players: { name: string; frags: number }[];
+          }[] = [];
+          for (const r of rooms.values()) {
+            if (!r.isRanked || r.members.size === 0 || r.state !== 'active') continue;
+            const players: { name: string; frags: number }[] = [];
+            for (const mid of r.members) {
+              const c = clients.get(mid);
+              if (c) players.push({ name: c.name, frags: c.frags });
+            }
+            list.push({ id: r.id, mapId: r.mapId, spectators: r.spectators.size, players });
+          }
+          sendRaw(socket, { type: 'ranked-rooms', rooms: list });
+          break;
+        }
+
         case 'join': {
+          rankedQueue.delete(record.id); // joining a room → leave the ranked queue
           const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
           if (!room) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
@@ -1736,6 +1802,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             sendRaw(socket, { type: 'spectate-failed', reason: 'gone' });
             break;
           }
+          rankedQueue.delete(record.id); // watching instead → leave the ranked queue
           leaveRoom(record); // can't be a player and a spectator at once
           leaveSpectate(record); // single-spectate invariant
           // If THIS connection was the room's last member, leaveRoom just emptied
@@ -2136,6 +2203,85 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
   }, 250);
 
+  // Ranked matchmaking: pair the closest-rated waiters (oldest waiter first), the
+  // acceptable rating gap widening the longer they've waited so a lone outlier
+  // still gets a game. ANTI MATCH-FIXING: never auto-pair two sockets of the same
+  // account or the same IP (the "open another tab + alt account, queue against
+  // yourself" exploit), and don't immediately re-pair the same two accounts
+  // (win-trading). Pairs spawn a private ranked room — both clients are 'matched'
+  // into it (same handoff as quickmatch).
+  const rankedTimer = setInterval(() => {
+    const now = Date.now();
+    // Forget pair cooldowns that have lapsed (keeps the map bounded).
+    for (const [k, t] of recentRankedPairs) {
+      if (now - t > RANKED_REMATCH_COOLDOWN_MS) recentRankedPairs.delete(k);
+    }
+    // Prune stale entries (socket gone, or the client moved into a match/spectate).
+    for (const [id] of rankedQueue) {
+      const c = clients.get(id);
+      if (!c || c.socket.readyState !== c.socket.OPEN || c.roomId || c.spectating || !c.playerId) {
+        rankedQueue.delete(id);
+      }
+    }
+    let guard = 0;
+    let progressed = true;
+    while (progressed && rankedQueue.size >= 2 && guard++ < 64) {
+      progressed = false;
+      const waiting = [...rankedQueue.entries()].sort((a, b) => a[1].joinedAt - b[1].joinedAt);
+      // Find the first waiter that has an ELIGIBLE partner (skipping same-account /
+      // same-IP / recently-played pairs). Pairing the oldest first keeps it fair;
+      // an ineligible oldest waiter just waits while others can still match.
+      for (let wi = 0; wi < waiting.length && !progressed; wi++) {
+        const [aId, a] = waiting[wi];
+        const ca = clients.get(aId);
+        if (!ca) {
+          rankedQueue.delete(aId);
+          progressed = true;
+          break;
+        }
+        let bestId: ClientId | null = null;
+        let bestGap = Infinity;
+        for (let j = 0; j < waiting.length; j++) {
+          if (j === wi) continue;
+          const [cid, cv] = waiting[j];
+          const cc = clients.get(cid);
+          if (!cc) continue;
+          if (cc.playerId === ca.playerId) continue; // same account (two tabs)
+          if (cc.ip !== 'unknown' && cc.ip === ca.ip) continue; // same network / device
+          const last = recentRankedPairs.get(pairKey(ca.playerId, cc.playerId));
+          if (last != null && now - last < RANKED_REMATCH_COOLDOWN_MS) continue; // anti win-trade
+          const gap = Math.abs(cv.rating - a.rating);
+          if (gap < bestGap) {
+            bestGap = gap;
+            bestId = cid;
+          }
+        }
+        if (!bestId) continue; // this waiter has no eligible partner yet — try the next
+        const allowedGap = 150 + ((now - a.joinedAt) / 1000) * 75; // ~75 elo/sec wider
+        if (bestGap > allowedGap) continue; // closest eligible still too far — keep waiting
+        const cb = clients.get(bestId);
+        rankedQueue.delete(aId);
+        rankedQueue.delete(bestId);
+        progressed = true;
+        if (!cb) break;
+        recentRankedPairs.set(pairKey(ca.playerId, cb.playerId), now);
+        const pool = mapPoolForMode('duel');
+        const mapId = pool[Math.floor(Math.random() * pool.length)] ?? DEFAULT_ARENA_ID;
+        const room = createRoom({
+          name: 'Ranked Duel',
+          mode: 'duel',
+          mapId,
+          isPublic: false,
+          capacity: 2,
+          hostId: null,
+          isRanked: true,
+        });
+        sendRaw(ca.socket, { type: 'matched', roomId: room.id, mapId: room.mapId, ranked: true });
+        sendRaw(cb.socket, { type: 'matched', roomId: room.id, mapId: room.mapId, ranked: true });
+      }
+    }
+  }, 1500);
+
   const sweepTimer = setInterval(() => {
     const now = Date.now();
     // Drop stale clients (socket dead) and AFK players (alive socket but no real
@@ -2190,6 +2336,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   snapshotTimer.unref?.();
   voteTimer.unref?.();
+  rankedTimer.unref?.();
   sweepTimer.unref?.();
 
   // Live counts for the lobby/landing "N playing now" social-proof readout.

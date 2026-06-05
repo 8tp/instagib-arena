@@ -10,6 +10,9 @@ import {
   type PresenceState,
   type PresencePlayer,
   type ChatMessage,
+  type RankedStatus,
+  type RankedRoom,
+  type RankedResult,
 } from './game/net';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
@@ -740,7 +743,6 @@ const INITIAL_HUD: HudState = {
   mode: 'ffa',
   localTeam: null,
   teamScores: null,
-  duel: null,
   training: null,
   pom: null,
   chat: { open: false, lines: [] },
@@ -985,6 +987,8 @@ function GameView({
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  // Ranked Duel end-of-match result (rating delta) → full-screen overlay.
+  const [rankedResult, setRankedResult] = useState<RankedResult | null>(null);
   // Online: the results podium is shown briefly at match-end BEFORE the map vote.
   // We freeze the final standings here so a late snapshot can't change the podium.
   const [onlineResults, setOnlineResults] = useState(false);
@@ -1004,7 +1008,7 @@ function GameView({
     // the results podium, then continues to the server-driven map vote.
     const game = new Game(canvas, listener, (result) => {
       setEndResult(result);
-      void submitMatchStats(result, offlineMatch).then((p) => {
+      void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
         if (p) setEndProgression(p);
       });
       if (config.mode === 'multiplayer') {
@@ -1029,6 +1033,8 @@ function GameView({
             ? 'That lobby is full.'
             : 'That lobby no longer exists.',
         );
+      } else if (ev.type === 'ranked-result') {
+        setRankedResult(ev.result);
       }
     });
     applySettingsToGame(game, settings);
@@ -1099,7 +1105,7 @@ function GameView({
     exitFullscreen();
     const game = gameRef.current;
     const r = game?.getStats() ?? null;
-    if (r && game?.hasRecordableStats()) void submitMatchStats(r, offlineMatch);
+    if (r && game?.hasRecordableStats()) void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
     onExit(r);
   }, [onExit, offlineMatch]);
 
@@ -1194,7 +1200,7 @@ function GameView({
       {disconnected && !waiting && (
         <DisconnectedOverlay error={hud.netStatus === 'error'} onLeave={leave} />
       )}
-      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && !hud.pom && (
+      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && !hud.pom && !rankedResult && (
         <ClickToPlay
           onPlay={requestPlay}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -1203,7 +1209,17 @@ function GameView({
           settings={settings}
         />
       )}
-      {hud.matchOver && !hud.pom && (
+      {rankedResult && (
+        <RankedResultOverlay
+          result={rankedResult}
+          progression={endProgression}
+          onLobby={() => {
+            exitFullscreen();
+            onExit(endResult);
+          }}
+        />
+      )}
+      {!rankedResult && hud.matchOver && !hud.pom && (
         <MatchOverOverlay
           won={hud.matchOver.won}
           scores={hud.scores}
@@ -2782,7 +2798,6 @@ function HudOverlay({
       {hud.mode === 'tdm' && hud.teamScores && (
         <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
       )}
-      {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
       {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
       {hud.training && <TrainingPanel t={hud.training} />}
       <BannerOverlay banner={hud.banner} />
@@ -3001,47 +3016,6 @@ function TeamScoreBar({
             </div>
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-/* ───────────────────────── Duel round indicator (top-center) ───────────────────────── */
-
-// "ROUND N" + a You vs Opp round tally rendered as pips (filled = won), first to
-// roundsToWin takes the match.
-function DuelRoundHud({ duel }: { duel: HudState['duel'] }) {
-  if (!duel) return null;
-  const { roundNum, roundsToWin, myWins, oppWins } = duel;
-  const pips = (won: number, color: string) =>
-    Array.from({ length: roundsToWin }).map((_, i) => (
-      <span
-        key={i}
-        className='h-2.5 w-2.5 rounded-full'
-        style={{
-          backgroundColor: i < won ? color : 'rgba(255,255,255,0.15)',
-          boxShadow: i < won ? `0 0 6px ${color}` : undefined,
-        }}
-      />
-    ));
-  return (
-    <div className='absolute left-1/2 top-4 -translate-x-1/2'>
-      <div className='flex flex-col items-center gap-1 rounded-lg border border-white/15 bg-black/60 px-5 py-1.5 font-mono backdrop-blur-sm'>
-        <div className='text-[10px] font-bold uppercase tracking-[0.3em] text-white/70'>
-          Round {roundNum}
-        </div>
-        <div className='flex items-center gap-3'>
-          <span className='text-[10px] uppercase tracking-[0.16em] text-emerald-300'>You</span>
-          <div className='flex items-center gap-1'>{pips(myWins, '#34d399')}</div>
-          <span className='text-sm font-bold tabular-nums text-white/85'>
-            {myWins}–{oppWins}
-          </span>
-          <div className='flex items-center gap-1'>{pips(oppWins, '#fb7185')}</div>
-          <span className='text-[10px] uppercase tracking-[0.16em] text-rose-300'>Opp</span>
-        </div>
-        <div className='text-[9px] uppercase tracking-[0.2em] text-white/35'>
-          First to {roundsToWin}
-        </div>
       </div>
     </div>
   );
@@ -4040,16 +4014,18 @@ type ProgressionResp = {
 async function submitMatchStats(
   result: MatchResult,
   offline: boolean,
+  mode?: GameMode | 'ranked',
 ): Promise<ProgressionResp | null> {
   try {
     // Stats are keyed server-side by an anonymous per-browser cookie; the name
     // is cosmetic (for the leaderboard), so send the local display name. The
     // `offline` flag scales XP server-side (practice shouldn't be the best farm).
+    // `mode` is recorded on the audit row only (powers the dashboard breakdown).
     const res = await fetch('/api/stats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ ...result, name: savedPlayerName(), offline }),
+      body: JSON.stringify({ ...result, name: savedPlayerName(), offline, mode }),
     });
     if (!res.ok) return null;
     return (await res.json()) as ProgressionResp;
@@ -4064,6 +4040,329 @@ async function submitMatchStats(
 // in-memory log (the server already trims replayed history to 50).
 const CHAT_CLIENT_MAX_LEN = 240;
 const CHAT_LOG_MAX = 120;
+
+// ── Ranked Duel ──────────────────────────────────────────────────────────────
+// Shared profile shape from GET /api/ranked/me (mirrors server db.ts RankedProfile).
+type RankedProfile = {
+  id: string;
+  userName: string;
+  rating: number;
+  peak: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  rank: number;
+  provisional: boolean;
+};
+type RankedLeaderEntry = {
+  id: string;
+  userName: string;
+  rating: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  admin: boolean;
+  verified: boolean;
+};
+
+// Starting Elo for a brand-new ranked player (mirrors server RANKED_BASE_RATING).
+const RANKED_BASE = 1000;
+// Visual tier from an Elo rating (cosmetic — there is no rating gate to play).
+const RANKED_TIERS = [
+  { name: 'Grandmaster', min: 2000, color: '#f0abfc' },
+  { name: 'Master', min: 1800, color: '#c4b5fd' },
+  { name: 'Diamond', min: 1600, color: '#67e8f9' },
+  { name: 'Platinum', min: 1400, color: '#5eead4' },
+  { name: 'Gold', min: 1200, color: '#fbbf24' },
+  { name: 'Silver', min: 1000, color: '#cbd5e1' },
+  { name: 'Bronze', min: 0, color: '#d6a06a' },
+] as const;
+function rankedTier(rating: number): { name: string; color: string } {
+  return RANKED_TIERS.find((t) => rating >= t.min) ?? RANKED_TIERS[RANKED_TIERS.length - 1];
+}
+
+// Full-screen ranked end-of-match overlay: VICTORY/DEFEAT + the rating delta.
+function RankedResultOverlay({
+  result,
+  progression,
+  onLobby,
+}: {
+  result: RankedResult;
+  progression: ProgressionResp | null;
+  onLobby: () => void;
+}) {
+  const won = result.won;
+  const mine = result.rating ? (won ? result.rating.winner : result.rating.loser) : null;
+  const tier = mine ? rankedTier(mine.rating) : null;
+  const delta = mine?.delta ?? 0;
+  return (
+    <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
+      <div className="w-[420px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl">
+        <div className={`px-7 py-6 text-center ${won ? 'bg-emerald-400/10' : 'bg-rose-500/10'}`}>
+          <div
+            className={`font-display text-4xl uppercase tracking-[0.18em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
+          >
+            {won ? 'Victory' : 'Defeat'}
+          </div>
+          <div className="mt-1 text-[12px] uppercase tracking-[0.2em] text-white/45">
+            Ranked Duel · {result.winnerFrags}–{result.loserFrags}
+            {result.forfeit && ' · forfeit'}
+          </div>
+        </div>
+        <div className="px-7 py-6">
+          {mine ? (
+            <div className="text-center">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">New rating</div>
+              <div className="mt-1 flex items-center justify-center gap-3">
+                <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
+                  {mine.rating}
+                </span>
+                <span
+                  className={`font-mono text-lg tabular-nums ${delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}
+                >
+                  {delta >= 0 ? '+' : ''}
+                  {delta}
+                </span>
+              </div>
+              <div className="mt-1 text-[12px] text-white/55">
+                {tier?.name} · ladder #{mine.rank}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-[12px] text-white/50">Unranked result.</div>
+          )}
+          {progression && (progression.xpGained > 0 || progression.creditsGained > 0) && (
+            <div className="mt-4 text-center text-[12px] text-white/50">
+              <span className="text-cyan-200">+{progression.xpGained} XP</span>
+              {progression.creditsGained > 0 && (
+                <>
+                  {' · '}
+                  <span className="text-amber-200">+{progression.creditsGained} credits</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-center border-t border-white/10 px-7 py-4">
+          <button
+            onClick={onLobby}
+            className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
+          >
+            Back to lobby
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Ranked Duel lobby modal: your rank card, the queue, the ladder, and a side
+// panel of live ranked duels to spectate. Login-gated (a guest sees a prompt).
+function RankedModal({
+  account,
+  status,
+  rooms,
+  onQueue,
+  onCancel,
+  onRequestRooms,
+  onSpectate,
+  onOpenLogin,
+  onClose,
+}: {
+  account: Account;
+  status: RankedStatus | null;
+  rooms: RankedRoom[];
+  onQueue: () => void;
+  onCancel: () => void;
+  onRequestRooms: () => void;
+  onSpectate: (roomId: string, mapId: string) => void;
+  onOpenLogin: () => void;
+  onClose: () => void;
+}) {
+  const [profile, setProfile] = useState<RankedProfile | null>(null);
+  const [ladder, setLadder] = useState<RankedLeaderEntry[]>([]);
+  const [elapsed, setElapsed] = useState(0);
+  const searching = status?.state === 'searching';
+
+  const refreshProfile = useCallback(() => {
+    if (!account) return;
+    fetch('/api/ranked/me', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { profile?: RankedProfile } | null) => setProfile(d?.profile ?? null))
+      .catch(() => {});
+    fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { entries?: RankedLeaderEntry[] } | null) => setLadder(d?.entries ?? []))
+      .catch(() => {});
+  }, [account]);
+
+  useEffect(() => {
+    refreshProfile();
+  }, [refreshProfile]);
+
+  // Poll live ranked duels for the spectate panel while the modal is open.
+  useEffect(() => {
+    onRequestRooms();
+    const t = setInterval(onRequestRooms, 3000);
+    return () => clearInterval(t);
+  }, [onRequestRooms]);
+
+  // Tick the "searching… Ns" label.
+  useEffect(() => {
+    if (!searching) {
+      setElapsed(0);
+      return;
+    }
+    const since = status?.since ?? Date.now();
+    const t = setInterval(() => setElapsed(Math.max(0, Math.floor((Date.now() - since) / 1000))), 500);
+    return () => clearInterval(t);
+  }, [searching, status?.since]);
+
+  const tier = profile ? rankedTier(profile.rating) : null;
+
+  return (
+    <ModalShell title="Ranked Duel" onClose={onClose}>
+      {!account ? (
+        <div className="flex flex-col items-center gap-4 py-6 text-center font-mono">
+          <p className="text-[13px] text-white/60">
+            Ranked Duel is for logged-in players — your rating follows your account.
+          </p>
+          <button
+            onClick={onOpenLogin}
+            className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
+          >
+            Log in to play ranked
+          </button>
+        </div>
+      ) : (
+        <div className="grid gap-5 font-mono md:grid-cols-[1.2fr_1fr]">
+          {/* Left: your rank + queue + ladder */}
+          <div className="flex flex-col gap-4">
+            <div className="rounded-lg border border-white/12 bg-black/30 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/45">Your rating</div>
+                  <div className="mt-0.5 flex items-baseline gap-2">
+                    <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
+                      {profile?.rating ?? RANKED_BASE}
+                    </span>
+                    {tier && <span className="text-[12px] text-white/55">{tier.name}</span>}
+                  </div>
+                </div>
+                <div className="text-right text-[11px] text-white/50">
+                  {profile && profile.rank > 0 ? (
+                    <div>
+                      Ladder <span className="text-cyan-200">#{profile.rank}</span>
+                    </div>
+                  ) : (
+                    <div className="text-white/35">Unranked</div>
+                  )}
+                  <div className="tabular-nums">
+                    {profile?.wins ?? 0}W · {profile?.losses ?? 0}L
+                  </div>
+                  {profile?.provisional && <div className="text-amber-300/80">provisional</div>}
+                </div>
+              </div>
+              <div className="mt-4">
+                {searching ? (
+                  <button
+                    onClick={onCancel}
+                    className="w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-500/20"
+                  >
+                    Searching… {elapsed}s · cancel
+                  </button>
+                ) : (
+                  <button
+                    onClick={onQueue}
+                    className="w-full rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
+                  >
+                    Find ranked match
+                  </button>
+                )}
+                {status?.reason === 'account' && (
+                  <p className="mt-2 text-center text-[11px] text-rose-300">Ranked needs an account.</p>
+                )}
+                {status?.reason === 'in-match' && (
+                  <p className="mt-2 text-center text-[11px] text-rose-300">
+                    You're already in a ranked match in another tab.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-white/12 bg-black/30 p-4">
+              <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-white/45">Ladder</div>
+              {ladder.length === 0 ? (
+                <div className="py-4 text-center text-[12px] text-white/35">No ranked players yet — be the first.</div>
+              ) : (
+                <div className="max-h-[260px] overflow-y-auto">
+                  <table className="w-full text-left text-[12px]">
+                    <tbody>
+                      {ladder.map((e, i) => {
+                        const t = rankedTier(e.rating);
+                        const me = profile?.id === e.id;
+                        return (
+                          <tr key={e.id} className={`border-t border-white/8 ${me ? 'bg-cyan-400/10' : ''}`}>
+                            <td className="py-1.5 pr-2 tabular-nums text-white/40">{i + 1}</td>
+                            <td className="py-1.5 pr-2 text-white/85">
+                              <span className="flex items-center gap-1">
+                                {e.userName}
+                                {e.verified && <span className="text-cyan-300">✓</span>}
+                              </span>
+                            </td>
+                            <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: t.color }}>
+                              {e.rating}
+                            </td>
+                            <td className="py-1.5 text-right tabular-nums text-white/40">
+                              {e.wins}-{e.losses}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right: live ranked duels to spectate */}
+          <div className="rounded-lg border border-white/12 bg-black/30 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">Live ranked duels</span>
+              <span className="text-[10px] text-white/30">👁 spectate</span>
+            </div>
+            {rooms.length === 0 ? (
+              <div className="py-6 text-center text-[12px] text-white/35">No live ranked duels right now.</div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {rooms.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => onSpectate(r.id, r.mapId)}
+                    className="flex items-center justify-between rounded-md border border-white/12 bg-black/40 px-3 py-2 text-left transition hover:border-cyan-400/50 hover:bg-cyan-400/5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-white/80">
+                      {r.players.map((p) => p.name).join('  vs  ') || 'Ranked duel'}
+                    </span>
+                    <span className="ml-3 shrink-0 tabular-nums text-[12px] text-cyan-200">
+                      {r.players.map((p) => p.frags).join(' – ')}
+                    </span>
+                    {r.spectators > 0 && (
+                      <span className="ml-2 shrink-0 text-[10px] text-white/35">👁 {r.spectators}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
 
 function Lobby({
   settings,
@@ -4098,6 +4397,9 @@ function Lobby({
   const [lobbyStatus, setLobbyStatus] = useState<LobbyStatus>('connecting');
   const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
+  const [rankedOpen, setRankedOpen] = useState(false);
+  const [rankedStatus, setRankedStatus] = useState<RankedStatus | null>(null);
+  const [rankedRooms, setRankedRooms] = useState<RankedRoom[]>([]);
   // Selected online game mode for Quick Match + Create Match (FFA / Duel / TDM).
   const [selectedMode, setSelectedMode] = useState<GameMode>(DEFAULT_GAME_MODE);
   // Live menu presence + global chat (pushed over the lobby socket).
@@ -4179,6 +4481,8 @@ function Lobby({
             ? 'Log in to chat.'
             : 'Message blocked by the filter.',
       );
+    lobby.onRankedStatus = setRankedStatus;
+    lobby.onRankedRooms = setRankedRooms;
     lobby.connect();
     return () => {
       lobby.dispose();
@@ -4368,6 +4672,21 @@ function Lobby({
                 ⌖ Training Range
               </DeckButton>
               <div className='col-span-2'>
+                <DeckButton
+                  onClick={() => setRankedOpen(true)}
+                  disabled={!online || playDisabled}
+                  accent='fuchsia'
+                  full
+                >
+                  <span className='inline-flex items-center gap-2'>
+                    🏆 Ranked Duel
+                    <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
+                      1v1 · Elo ladder
+                    </span>
+                  </span>
+                </DeckButton>
+              </div>
+              <div className='col-span-2'>
                 <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled} full>
                   ◭ Solo vs Bots
                 </DeckButton>
@@ -4477,6 +4796,29 @@ function Lobby({
         />
       )}
       {leaderboardOpen && <LeaderboardModal onClose={() => setLeaderboardOpen(false)} />}
+      {rankedOpen && (
+        <RankedModal
+          account={account}
+          status={rankedStatus}
+          rooms={rankedRooms}
+          onQueue={() => lobbyRef.current?.rankedQueue()}
+          onCancel={() => lobbyRef.current?.rankedCancel()}
+          onRequestRooms={() => lobbyRef.current?.requestRankedRooms()}
+          onSpectate={(roomId, mapId) => {
+            setRankedOpen(false);
+            onStart({ mode: 'spectator', mapId, serverUrl, roomId });
+          }}
+          onOpenLogin={() => {
+            setRankedOpen(false);
+            onOpenLogin();
+          }}
+          onClose={() => {
+            // Leaving the ranked screen cancels any pending search.
+            if (rankedStatus?.state === 'searching') lobbyRef.current?.rankedCancel();
+            setRankedOpen(false);
+          }}
+        />
+      )}
       {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} />}
       {settingsOpen && (
         <SettingsModal
@@ -5652,6 +5994,13 @@ function AdminModal({ onClose }: { onClose: () => void }) {
   return (
     <ModalShell title='Admin' onClose={onClose}>
       <div className='flex flex-col gap-3 font-mono'>
+        <a
+          href='/admin'
+          className='flex items-center justify-between rounded-md border border-cyan-400/40 bg-cyan-400/10 px-3 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/15'
+        >
+          <span>📊 Metrics dashboard</span>
+          <span aria-hidden>→</span>
+        </a>
         <div className='flex gap-2'>
           <input
             value={username}
