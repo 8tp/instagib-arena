@@ -271,11 +271,13 @@ export class RemotePlayer {
       this.cosmeticColor = nameColorById(this.nameColorId).color;
       this.resolveNameColor();
     }
-    // Equipped title flair (echoed from the server) — resolve to display text and
-    // rebuild the plate only on change so it isn't regenerated every frame.
-    if (snapshot.title !== this.titleId) {
+    // Equipped title flair — prefer the server-resolved text (a dynamic ranked
+    // title keeps the same id while its "#N"/tier text changes), falling back to
+    // the manifest text. Rebuild the plate only when the displayed text changes.
+    const nextTitleText = snapshot.titleText ?? titleById(snapshot.title).text;
+    if (snapshot.title !== this.titleId || nextTitleText !== this.titleText) {
       this.titleId = snapshot.title;
-      this.titleText = titleById(this.titleId).text;
+      this.titleText = nextTitleText;
       this.rebuildNameSprite();
     }
     this.spawnEffectId = snapshot.spawnEffect; // remembered for the spawn-in burst

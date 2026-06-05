@@ -102,8 +102,11 @@ export const BOT_HEIGHT = 1.8;
 export const BOT_EYE_FRAC = 0.85; // bot "eye" height as a fraction of BOT_HEIGHT
 export const BOT_HEADSHOT_THRESHOLD = 0.72; // fraction of height above which a hit counts as headshot
 export const BOT_RESPAWN_DELAY = 1.5;
-export const BOT_MOVE_INTERVAL_MIN = 3.5;
-export const BOT_MOVE_INTERVAL_MAX = 7.5;
+// How long a roaming bot pauses once it reaches a wander point before picking the
+// next one. Kept SHORT so bots keep moving and never look like they froze (the
+// old 3.5–7.5s pause read as a stand-still glitch).
+export const BOT_MOVE_INTERVAL_MIN = 0.5;
+export const BOT_MOVE_INTERVAL_MAX = 2.0;
 
 // Bot combat AI. Per-difficulty knobs that scale how dangerous — and how
 // human — a bot feels. The aim model tracks a SMOOTHED aim point toward the
@@ -138,9 +141,11 @@ export const BOT_DIFFICULTY: Record<
   // settle) + a big per-speed penalty + frequent whiffs make it miss movers a lot.
   easy:   { sightRange: 22, reaction: 0.75, aimError: 0.05,  moveErr: 0.022, aimTrack: 5,  whiffChance: 0.18, fireCooldown: 2.2,  moveSpeed: 4.2, combatStrafe: 0.35 },
   medium: { sightRange: 34, reaction: 0.40, aimError: 0.028, moveErr: 0.009, aimTrack: 13, whiffChance: 0.06, fireCooldown: 1.6,  moveSpeed: 5.6, combatStrafe: 0.6 },
-  // Hard: near-instant tracking + tight cone, but a small whiff chance keeps it
-  // from feeling robotically perfect. fireCooldown stays >= RAIL_COOLDOWN.
-  hard:   { sightRange: 48, reaction: 0.18, aimError: 0.013, moveErr: 0.003, aimTrack: 30, whiffChance: 0.03, fireCooldown: 1.25, moveSpeed: 7.2, combatStrafe: 0.85 },
+  // Hard: still a strong tracker, but tuned to be FAIR — a real reaction beat, a
+  // cone that opens up against strafing, slightly laggier tracking and a few more
+  // whiffs, so good movement beats it instead of it feeling robotically perfect.
+  // fireCooldown stays >= RAIL_COOLDOWN. (Also the weekly-challenge opponent.)
+  hard:   { sightRange: 46, reaction: 0.26, aimError: 0.019, moveErr: 0.008, aimTrack: 22, whiffChance: 0.06, fireCooldown: 1.35, moveSpeed: 6.8, combatStrafe: 0.78 },
 };
 export const DEFAULT_BOT_DIFFICULTY: BotDifficulty = 'medium';
 
@@ -161,15 +166,42 @@ export const GAME_MODES: ReadonlyArray<{
   blurb: string;
 }> = [
   { id: 'ffa', label: 'Free-for-all', blurb: 'Everyone for themselves — first to the frag limit.' },
-  { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one, best-of rounds.' },
+  { id: 'duel', label: 'Duel (1v1)', blurb: 'One on one — first to the frag limit.' },
   { id: 'tdm', label: 'Team Deathmatch', blurb: 'Red vs Blue — first team to the frag limit.' },
 ];
 
-// Duel: each round is a race to DUEL_ROUND_FRAG_LIMIT frags; the first player to
-// win DUEL_ROUNDS_TO_WIN rounds takes the match (then the map vote opens).
-export const DUEL_ROUND_FRAG_LIMIT = 7;
-export const DUEL_ROUNDS_TO_WIN = 3; // best of 5
-export const DUEL_ROUND_BREAK_SEC = 4; // between-round freeze/reset
+// Duel (casual + ranked share one format): a single continuous 1v1 race to the
+// frag limit — no rounds, no between-round pauses (anti-camp spawns do the rest).
+// Casual ends in the usual end-of-match map vote; ranked ends in an Elo update +
+// room dissolve (server/instagib-game.ts). Two constants so they can diverge.
+export const DUEL_FRAG_LIMIT = 15; // casual 1v1 target
+export const RANKED_DUEL_FRAG_LIMIT = 15; // ranked 1v1 target (login-only)
+
+// Weekly Challenge: a 1v1 race to DUEL_FRAG_LIMIT vs a single HARD bot on a fixed
+// arena. Its own weekly leaderboard (most kills, then fastest win); never touches
+// career K/D. Fixed map so every run is comparable.
+export const WEEKLY_CHALLENGE_MAP = 'derrick';
+
+// Ranked Elo tiers (purely cosmetic — there is NO rating gate to play ranked).
+// Shared client+server so the ladder, the playercard, and the dynamic rank title
+// all label a rating the same way. Ordered high→low; the first whose `min` you
+// meet is your tier. Base rating is 1000 (see server RANKED_BASE_RATING).
+export type RankedTier = { name: string; min: number; color: string };
+export const RANKED_TIERS: ReadonlyArray<RankedTier> = [
+  { name: 'Grandmaster', min: 2000, color: '#f0abfc' },
+  { name: 'Master', min: 1800, color: '#c4b5fd' },
+  { name: 'Diamond', min: 1600, color: '#67e8f9' },
+  { name: 'Platinum', min: 1400, color: '#5eead4' },
+  { name: 'Gold', min: 1200, color: '#fbbf24' },
+  { name: 'Silver', min: 1000, color: '#cbd5e1' },
+  { name: 'Bronze', min: 0, color: '#d6a06a' },
+];
+export function rankedTier(rating: number): RankedTier {
+  return RANKED_TIERS.find((t) => rating >= t.min) ?? RANKED_TIERS[RANKED_TIERS.length - 1];
+}
+export function rankedTierName(rating: number): string {
+  return rankedTier(rating).name;
+}
 
 // TDM: two teams; first team to TDM_FRAG_LIMIT total frags wins.
 export const TDM_FRAG_LIMIT = 40;

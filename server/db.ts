@@ -588,12 +588,16 @@ export type Profile = {
   unlocked: string[];
   equipped: Record<string, string>;
   stats: PublicStats;
+  // Ranked Duel standing (null = never played ranked) — drives the rating card
+  // stat + the live rank title. `getRankedProfile` is declared below (hoisted).
+  ranked: { rating: number; rank: number; provisional: boolean } | null;
 };
 
 export function getProfile(playerId: string): Profile {
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
   const totalXp = prog?.total_xp ?? 0;
   const lp = levelProgress(totalXp);
+  const rp = getRankedProfile(playerId);
   return {
     level: lp.level,
     totalXp,
@@ -603,6 +607,7 @@ export function getProfile(playerId: string): Profile {
     unlocked: [...ownedSet(prog, playerId)],
     equipped: parseEquipped(prog?.equipped),
     stats: getStats(playerId),
+    ranked: rp ? { rating: rp.rating, rank: rp.rank, provisional: rp.provisional } : null,
   };
 }
 
@@ -1114,4 +1119,686 @@ export function userIdFromSession(token: string): string {
 }
 export function deleteSession(token: string): void {
   deleteSessionStmt.run(token);
+}
+
+// ── Admin metrics (dashboard) ────────────────────────────────────────────────
+// Read-only aggregates for the /admin dashboard. Everything here derives from
+// data we already keep: instagib_stats (career totals + created_at/updated_at),
+// instagib_users (registrations), and instagib_audit (the per-event timeline —
+// every 'match', 'login', 'register' with a ts). All callers go through the
+// requireAdmin gate. Statements are prepared once; the queries run infrequently.
+
+const DAY_MS = 86_400_000;
+
+// Floor a timestamp to its UTC day index (days since epoch). Used to bucket the
+// audit/registration timelines without pulling strftime into hot SQL.
+function dayIndex(ts: number): number {
+  return Math.floor(ts / DAY_MS);
+}
+function dayIndexToISO(d: number): string {
+  return new Date(d * DAY_MS).toISOString().slice(0, 10);
+}
+
+const mAccountsTotal = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_users`);
+const mPlayersWithGames = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_stats WHERE total_games > 0`);
+const mMatchesTotal = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'match'`);
+// Offline/practice matches serialize "offline":true into the detail JSON; the
+// online count is everything that isn't that. A coarse but reliable LIKE — our
+// detail serialization is stable (see server/stats.ts).
+const mOnlineMatchesTotal = sqlite.prepare(
+  `SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'match' AND detail NOT LIKE '%"offline":true%'`,
+);
+const mAgg = sqlite.prepare(`
+  SELECT COALESCE(SUM(total_kills),0)  AS kills,
+         COALESCE(SUM(total_deaths),0) AS deaths,
+         COALESCE(SUM(shots_fired),0)  AS fired,
+         COALESCE(SUM(shots_hit),0)    AS hit,
+         COALESCE(SUM(total_xp),0)     AS xp
+    FROM instagib_stats`);
+const mLifetime = sqlite.prepare(
+  `SELECT AVG(updated_at - created_at) AS ms FROM instagib_stats WHERE total_games > 0`,
+);
+const mWinMatches = sqlite.prepare(
+  `SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'match' AND ts >= ?`,
+);
+const mWinActive = sqlite.prepare(
+  `SELECT COUNT(DISTINCT actor_id) AS n FROM instagib_audit
+     WHERE event IN ('match','login') AND actor_id <> '' AND ts >= ?`,
+);
+const mWinNewAccounts = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_users WHERE created_at >= ?`);
+const mWinLogins = sqlite.prepare(`SELECT COUNT(*) AS n FROM instagib_audit WHERE event = 'login' AND ts >= ?`);
+
+export type MetricsWindow = {
+  matches: number;
+  activePlayers: number;
+  newAccounts: number;
+  logins: number;
+};
+export type MetricsOverview = {
+  totalAccounts: number;
+  playersWithGames: number;
+  totalMatches: number; // recorded match submissions (incl. offline/practice)
+  onlineMatches: number; // excludes offline/practice
+  totalKills: number;
+  totalDeaths: number;
+  globalAccuracy: number; // SUM(hit)/SUM(fired) × 100, 0 if no shots
+  totalXp: number;
+  avgLifetimeDays: number; // mean (updated_at − created_at) over players with games
+  stickiness: number; // DAU / MAU, 0..1
+  windows: { day: MetricsWindow; week: MetricsWindow; month: MetricsWindow };
+};
+
+const num = (r: unknown): number => (r as { n: number }).n;
+function windowMetrics(sinceTs: number): MetricsWindow {
+  return {
+    matches: num(mWinMatches.get(sinceTs)),
+    activePlayers: num(mWinActive.get(sinceTs)),
+    newAccounts: num(mWinNewAccounts.get(sinceTs)),
+    logins: num(mWinLogins.get(sinceTs)),
+  };
+}
+
+export function getMetricsOverview(now: number = Date.now()): MetricsOverview {
+  const agg = mAgg.get() as { kills: number; deaths: number; fired: number; hit: number; xp: number };
+  const day = windowMetrics(now - DAY_MS);
+  const week = windowMetrics(now - 7 * DAY_MS);
+  const month = windowMetrics(now - 30 * DAY_MS);
+  const lifeMs = (mLifetime.get() as { ms: number | null }).ms ?? 0;
+  return {
+    totalAccounts: num(mAccountsTotal.get()),
+    playersWithGames: num(mPlayersWithGames.get()),
+    totalMatches: num(mMatchesTotal.get()),
+    onlineMatches: num(mOnlineMatchesTotal.get()),
+    totalKills: agg.kills,
+    totalDeaths: agg.deaths,
+    globalAccuracy: agg.fired > 0 ? round2((agg.hit / agg.fired) * 100) : 0,
+    totalXp: agg.xp,
+    avgLifetimeDays: round2(lifeMs / DAY_MS),
+    stickiness: month.activePlayers > 0 ? round2(day.activePlayers / month.activePlayers) : 0,
+    windows: { day, week, month },
+  };
+}
+
+const mTsMatches = sqlite.prepare(
+  `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n
+     FROM instagib_audit WHERE event = 'match' AND ts >= ? GROUP BY d`,
+);
+const mTsLogins = sqlite.prepare(
+  `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n
+     FROM instagib_audit WHERE event = 'login' AND ts >= ? GROUP BY d`,
+);
+const mTsActive = sqlite.prepare(
+  `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(DISTINCT actor_id) AS n
+     FROM instagib_audit WHERE event IN ('match','login') AND actor_id <> '' AND ts >= ? GROUP BY d`,
+);
+const mTsRegs = sqlite.prepare(
+  `SELECT CAST(created_at/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n
+     FROM instagib_users WHERE created_at >= ? GROUP BY d`,
+);
+
+export type DayPoint = {
+  date: string; // YYYY-MM-DD (UTC)
+  matches: number;
+  logins: number;
+  registrations: number;
+  activePlayers: number;
+};
+
+// A continuous daily series (gaps filled with zeros) for the last `days` days —
+// charts need a dense series, so we materialize every day in the range.
+export function getMetricsTimeseries(days: number, now: number = Date.now()): DayPoint[] {
+  const span = Math.max(1, Math.min(180, Math.floor(days)));
+  const today = dayIndex(now);
+  const start = today - (span - 1);
+  const cutoff = start * DAY_MS;
+  const toMap = (rows: unknown[]): Map<number, number> =>
+    new Map((rows as { d: number; n: number }[]).map((r) => [r.d, r.n]));
+  const matches = toMap(mTsMatches.all(cutoff));
+  const logins = toMap(mTsLogins.all(cutoff));
+  const active = toMap(mTsActive.all(cutoff));
+  const regs = toMap(mTsRegs.all(cutoff));
+  const out: DayPoint[] = [];
+  for (let d = start; d <= today; d++) {
+    out.push({
+      date: dayIndexToISO(d),
+      matches: matches.get(d) ?? 0,
+      logins: logins.get(d) ?? 0,
+      registrations: regs.get(d) ?? 0,
+      activePlayers: active.get(d) ?? 0,
+    });
+  }
+  return out;
+}
+
+// Cohort retention: of the accounts that registered on day D, how many came back
+// (a 'match' or 'login') within the next 1 day (D1) and the next 7 days (D7).
+// Both windows exclude the registration day itself. A single correlated-subquery
+// pass — fine at alpha volume, all indexed on (event, ts) / (actor_id implicit).
+const mRetention = sqlite.prepare(`
+  SELECT CAST(u.created_at/${DAY_MS} AS INTEGER) AS d,
+         COUNT(*) AS size,
+         SUM(CASE WHEN EXISTS (
+           SELECT 1 FROM instagib_audit a
+            WHERE a.actor_id = u.id AND a.event IN ('match','login')
+              AND a.ts >= u.created_at + ${DAY_MS} AND a.ts < u.created_at + 2*${DAY_MS}
+         ) THEN 1 ELSE 0 END) AS d1,
+         SUM(CASE WHEN EXISTS (
+           SELECT 1 FROM instagib_audit a
+            WHERE a.actor_id = u.id AND a.event IN ('match','login')
+              AND a.ts >= u.created_at + ${DAY_MS} AND a.ts < u.created_at + 8*${DAY_MS}
+         ) THEN 1 ELSE 0 END) AS d7
+    FROM instagib_users u
+   WHERE u.created_at >= ?
+   GROUP BY d ORDER BY d`);
+
+export type RetentionCohort = { date: string; size: number; d1: number; d7: number };
+export function getRetention(days: number, now: number = Date.now()): RetentionCohort[] {
+  const span = Math.max(1, Math.min(120, Math.floor(days)));
+  const cutoff = (dayIndex(now) - (span - 1)) * DAY_MS;
+  return (mRetention.all(cutoff) as { d: number; size: number; d1: number; d7: number }[]).map(
+    (r) => ({ date: dayIndexToISO(r.d), size: r.size, d1: r.d1, d7: r.d7 }),
+  );
+}
+
+const mRecentMatches = sqlite.prepare(
+  `SELECT id, ts, actor_id, actor_name, detail FROM instagib_audit
+     WHERE event = 'match' ORDER BY id DESC LIMIT ?`,
+);
+const mRecentMatchesBefore = sqlite.prepare(
+  `SELECT id, ts, actor_id, actor_name, detail FROM instagib_audit
+     WHERE event = 'match' AND id < ? ORDER BY id DESC LIMIT ?`,
+);
+
+export type MatchRow = {
+  id: number;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  kills: number;
+  deaths: number;
+  won: boolean;
+  headshots: number;
+  accuracy: number;
+  offline: boolean;
+  xp: number;
+  mode: string | null;
+};
+
+// Recent recorded matches, newest first, keyset-paginated by audit id (pass the
+// last id you saw as `beforeId`). The per-match detail blob is parsed here.
+export function getRecentMatches(limit: number, beforeId?: number): MatchRow[] {
+  const n = Math.max(1, Math.min(200, Math.floor(limit)));
+  const rows = (
+    beforeId && beforeId > 0 ? mRecentMatchesBefore.all(beforeId, n) : mRecentMatches.all(n)
+  ) as { id: number; ts: number; actor_id: string; actor_name: string; detail: string }[];
+  return rows.map((r) => {
+    let d: Record<string, unknown> = {};
+    try {
+      d = JSON.parse(r.detail) as Record<string, unknown>;
+    } catch {
+      /* malformed/empty detail → zeros */
+    }
+    const intOf = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+      id: r.id,
+      ts: r.ts,
+      playerId: r.actor_id,
+      playerName: r.actor_name || 'Guest',
+      kills: intOf(d.kills),
+      deaths: intOf(d.deaths),
+      won: d.won === true,
+      headshots: intOf(d.headshots),
+      accuracy: intOf(d.accuracy),
+      offline: d.offline === true,
+      xp: intOf(d.xp),
+      mode: typeof d.mode === 'string' ? d.mode : null,
+    };
+  });
+}
+
+export type PlayerRow = {
+  id: string;
+  userName: string;
+  level: number;
+  totalGames: number;
+  totalKills: number;
+  totalDeaths: number;
+  headshots: number;
+  bestAccuracy: number;
+  totalXp: number;
+  credits: number;
+  kd: number;
+  lastSeen: number; // updated_at
+  createdAt: number; // registration (users) or first stat row
+  admin: boolean;
+  verified: boolean;
+};
+
+type PlayerTableRow = {
+  player_id: string;
+  user_name: string;
+  level: number;
+  total_games: number;
+  total_kills: number;
+  total_deaths: number;
+  headshots: number;
+  best_accuracy: number;
+  total_xp: number;
+  credits: number;
+  updated_at: number;
+  created_at: number;
+  is_admin: number;
+  is_verified: number;
+};
+
+// Whitelisted sort → ORDER BY clause. The key is validated against this map's
+// own keys, so nothing user-supplied is ever interpolated into the SQL string.
+const PLAYER_SORTS: Record<string, string> = {
+  kills: 's.total_kills DESC',
+  games: 's.total_games DESC',
+  level: 's.level DESC, s.total_xp DESC',
+  accuracy: 's.best_accuracy DESC, s.total_games DESC',
+  xp: 's.total_xp DESC',
+  recent: 's.updated_at DESC',
+};
+const PLAYER_COLS = `s.player_id, s.user_name, s.level, s.total_games, s.total_kills,
+  s.total_deaths, s.headshots, s.best_accuracy, s.total_xp, s.credits, s.updated_at,
+  COALESCE(u.created_at, s.created_at) AS created_at,
+  COALESCE(u.is_admin, 0) AS is_admin, COALESCE(u.is_verified, 0) AS is_verified`;
+
+export function getPlayersTable(opts: {
+  sort?: string;
+  q?: string;
+  limit?: number;
+}): PlayerRow[] {
+  const orderBy = PLAYER_SORTS[opts.sort ?? 'recent'] ?? PLAYER_SORTS.recent;
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 100)));
+  const like = `%${(opts.q ?? '').slice(0, 40)}%`;
+  const rows = sqlite
+    .prepare(
+      `SELECT ${PLAYER_COLS}
+         FROM instagib_stats s LEFT JOIN instagib_users u ON u.id = s.player_id
+        WHERE s.total_games > 0 AND s.user_name LIKE ?
+        ORDER BY ${orderBy} LIMIT ?`,
+    )
+    .all(like, limit) as PlayerTableRow[];
+  return rows.map((r) => ({
+    id: r.player_id,
+    userName: r.user_name,
+    level: r.level,
+    totalGames: r.total_games,
+    totalKills: r.total_kills,
+    totalDeaths: r.total_deaths,
+    headshots: r.headshots,
+    bestAccuracy: r.best_accuracy,
+    totalXp: r.total_xp,
+    credits: r.credits,
+    kd: round2(r.total_deaths > 0 ? r.total_kills / r.total_deaths : r.total_kills),
+    lastSeen: r.updated_at,
+    createdAt: r.created_at,
+    admin: !!r.is_admin,
+    verified: !!r.is_verified,
+  }));
+}
+
+// ── Ranked Duel ladder (Elo) ─────────────────────────────────────────────────
+// Separate from career stats: a hidden-then-shown Elo rating per account, updated
+// only by ranked 1v1 results (server-authoritative — the game server reports the
+// winner, the client never sends a rating). Login-gated, so player_id is always a
+// real account id. Cosmetic-adjacent: rank is bragging rights, never an advantage.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_ranked (
+  player_id  TEXT PRIMARY KEY,
+  user_name  TEXT NOT NULL,
+  rating     INTEGER NOT NULL DEFAULT 1000,
+  peak       INTEGER NOT NULL DEFAULT 1000,
+  games      INTEGER NOT NULL DEFAULT 0,
+  wins       INTEGER NOT NULL DEFAULT 0,
+  losses     INTEGER NOT NULL DEFAULT 0,
+  streak     INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ranked_rating ON instagib_ranked(rating);
+`);
+
+export const RANKED_BASE_RATING = 1000;
+export const RANKED_PLACEMENT_GAMES = 5; // below this, rating shows as "provisional"
+
+// Classic Elo K-factor: volatile while provisional, calmer once established, and
+// smallest at the top so elite ratings don't swing on a single game.
+function kFactor(games: number, rating: number): number {
+  if (games < 10) return 40;
+  if (rating >= 2100) return 16;
+  return 24;
+}
+
+const rankedRowStmt = sqlite.prepare(`SELECT * FROM instagib_ranked WHERE player_id = ?`);
+const rankedEnsureStmt = sqlite.prepare(`
+  INSERT OR IGNORE INTO instagib_ranked (player_id, user_name, rating, peak, created_at, updated_at)
+  VALUES (@playerId, @userName, ${RANKED_BASE_RATING}, ${RANKED_BASE_RATING}, @now, @now)`);
+const rankedUpdateStmt = sqlite.prepare(`
+  UPDATE instagib_ranked
+     SET user_name = @userName, rating = @rating, peak = max(peak, @rating),
+         games = games + 1, wins = wins + @win, losses = losses + @loss,
+         streak = @streak, updated_at = @now
+   WHERE player_id = @playerId`);
+const rankedRankStmt = sqlite.prepare(
+  `SELECT COUNT(*) AS n FROM instagib_ranked WHERE games > 0 AND rating > ?`,
+);
+
+type RankedRow = {
+  player_id: string;
+  user_name: string;
+  rating: number;
+  peak: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type RankedProfile = {
+  id: string;
+  userName: string;
+  rating: number;
+  peak: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  rank: number; // ladder position (1 = top); 0 if unranked (no games)
+  provisional: boolean;
+};
+
+function toRankedProfile(r: RankedRow): RankedProfile {
+  return {
+    id: r.player_id,
+    userName: r.user_name,
+    rating: r.rating,
+    peak: r.peak,
+    games: r.games,
+    wins: r.wins,
+    losses: r.losses,
+    streak: r.streak,
+    rank: r.games > 0 ? num(rankedRankStmt.get(r.rating)) + 1 : 0,
+    provisional: r.games < RANKED_PLACEMENT_GAMES,
+  };
+}
+
+// A player's ranked profile (null = never queued ranked). The base rating for a
+// brand-new ranked player (so the queue can match on it before their first game).
+export function getRankedProfile(playerId: string): RankedProfile | null {
+  if (!playerId) return null;
+  const r = rankedRowStmt.get(playerId) as RankedRow | undefined;
+  return r ? toRankedProfile(r) : null;
+}
+
+// Current rating for matchmaking — the stored value, or the base for a newcomer.
+export function getRankedRating(playerId: string): number {
+  const r = rankedRowStmt.get(playerId) as RankedRow | undefined;
+  return r?.rating ?? RANKED_BASE_RATING;
+}
+
+export type RankedResult = {
+  winner: { id: string; userName: string; rating: number; delta: number; rank: number };
+  loser: { id: string; userName: string; rating: number; delta: number; rank: number };
+};
+
+// Apply a ranked 1v1 result (server-authoritative). Symmetric Elo: the winner
+// gains what the loser sheds, scaled by the upset. `weight` (0..1) damps the
+// rating change for a repeat opponent (anti match-fixing — see endRankedMatch);
+// at weight 1 it's a normal full-value game. Both rows are created on demand,
+// floored at 100 so a rating can't go negative. Synchronous + single-threaded,
+// so the read-compute-write can't interleave. Audited as 'ranked.match'.
+export function recordRankedResult(
+  winnerId: string,
+  winnerName: string,
+  loserId: string,
+  loserName: string,
+  now: number = Date.now(),
+  weight: number = 1,
+): RankedResult | null {
+  if (!winnerId || !loserId || winnerId === loserId) return null;
+  const w8 = Math.max(0, Math.min(1, weight));
+  rankedEnsureStmt.run({ playerId: winnerId, userName: winnerName, now });
+  rankedEnsureStmt.run({ playerId: loserId, userName: loserName, now });
+  const w = rankedRowStmt.get(winnerId) as RankedRow;
+  const l = rankedRowStmt.get(loserId) as RankedRow;
+  const expectedW = 1 / (1 + 10 ** ((l.rating - w.rating) / 400));
+  const dW = Math.round(kFactor(w.games, w.rating) * (1 - expectedW) * w8);
+  const dL = Math.round(kFactor(l.games, l.rating) * (0 - (1 - expectedW)) * w8);
+  const newW = Math.max(100, w.rating + dW);
+  const newL = Math.max(100, l.rating + dL);
+  rankedUpdateStmt.run({
+    playerId: winnerId,
+    userName: winnerName,
+    rating: newW,
+    win: 1,
+    loss: 0,
+    streak: w.streak >= 0 ? w.streak + 1 : 1,
+    now,
+  });
+  rankedUpdateStmt.run({
+    playerId: loserId,
+    userName: loserName,
+    rating: newL,
+    win: 0,
+    loss: 1,
+    streak: l.streak <= 0 ? l.streak - 1 : -1,
+    now,
+  });
+  logEvent({
+    event: 'ranked.match',
+    actorId: winnerId,
+    actorName: winnerName,
+    targetId: loserId,
+    detail: { winnerRating: newW, loserRating: newL, dW, dL, weight: w8, loser: loserName },
+    now,
+  });
+  return {
+    winner: { id: winnerId, userName: winnerName, rating: newW, delta: newW - w.rating, rank: num(rankedRankStmt.get(newW)) + 1 },
+    loser: { id: loserId, userName: loserName, rating: newL, delta: newL - l.rating, rank: num(rankedRankStmt.get(newL)) + 1 },
+  };
+}
+
+const rankedLeaderboardStmt = sqlite.prepare(
+  `SELECT * FROM instagib_ranked WHERE games > 0 ORDER BY rating DESC, wins DESC LIMIT ?`,
+);
+export type RankedLeaderEntry = {
+  id: string;
+  userName: string;
+  rating: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  admin: boolean;
+  verified: boolean;
+};
+export function getRankedLeaderboard(limit: number): RankedLeaderEntry[] {
+  const n = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = rankedLeaderboardStmt.all(n) as RankedRow[];
+  const base: RankedLeaderEntry[] = rows.map((r) => ({
+    id: r.player_id,
+    userName: r.user_name,
+    rating: r.rating,
+    games: r.games,
+    wins: r.wins,
+    losses: r.losses,
+    streak: r.streak,
+    admin: false,
+    verified: false,
+  }));
+  if (base.length) {
+    const ph = base.map(() => '?').join(',');
+    const flags = sqlite
+      .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+      .all(...base.map((e) => e.id)) as { id: string; is_admin: number; is_verified: number }[];
+    const byId = new Map(flags.map((f) => [f.id, f]));
+    for (const e of base) {
+      const f = byId.get(e.id);
+      if (f) {
+        e.admin = !!f.is_admin;
+        e.verified = !!f.is_verified;
+      }
+    }
+  }
+  return base;
+}
+
+// ── Weekly Challenge ─────────────────────────────────────────────────────────
+// A weekly leaderboard for the "1v1 vs a hard bot" challenge mode. Ranked by most
+// kills, then fastest WIN (best_time_ms, only set on a run that reached the cap).
+// Account-only and SEPARATE from career stats — it never touches K/D. The match
+// is offline (vs a bot) so scores are client-reported + clamped (best-effort,
+// like career stats); the stakes are a cosmetic weekly board.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_weekly_challenge (
+  player_id    TEXT NOT NULL,
+  week_key     TEXT NOT NULL,
+  user_name    TEXT NOT NULL,
+  best_kills   INTEGER NOT NULL DEFAULT 0,
+  best_time_ms INTEGER NOT NULL DEFAULT 0,  -- fastest winning run (0 = never won)
+  runs         INTEGER NOT NULL DEFAULT 0,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (player_id, week_key)
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_challenge ON instagib_weekly_challenge(week_key, best_kills);
+`);
+
+const wcRowStmt = sqlite.prepare(
+  `SELECT * FROM instagib_weekly_challenge WHERE player_id = ? AND week_key = ?`,
+);
+const wcEnsureStmt = sqlite.prepare(`
+  INSERT OR IGNORE INTO instagib_weekly_challenge (player_id, week_key, user_name, updated_at)
+  VALUES (@playerId, @weekKey, @userName, @now)`);
+const wcUpdateStmt = sqlite.prepare(`
+  UPDATE instagib_weekly_challenge
+     SET user_name = @userName, best_kills = @bestKills, best_time_ms = @bestTimeMs,
+         runs = runs + 1, updated_at = @now
+   WHERE player_id = @playerId AND week_key = @weekKey`);
+// Order: most kills first; among equal kills, a recorded win (best_time_ms > 0)
+// beats no-win, and faster wins rank higher. No-win rows sort after by recency.
+const WC_ORDER = `ORDER BY best_kills DESC,
+  (CASE WHEN best_time_ms > 0 THEN best_time_ms ELSE 9.0e18 END) ASC, updated_at ASC`;
+const wcLeaderboardStmt = sqlite.prepare(
+  `SELECT * FROM instagib_weekly_challenge WHERE week_key = ? ${WC_ORDER} LIMIT ?`,
+);
+const wcRankStmt = sqlite.prepare(`
+  SELECT COUNT(*) AS n FROM instagib_weekly_challenge
+   WHERE week_key = @weekKey AND (
+     best_kills > @kills OR
+     (best_kills = @kills AND @timeMs > 0 AND best_time_ms > 0 AND best_time_ms < @timeMs)
+   )`);
+
+type WcRow = {
+  player_id: string;
+  week_key: string;
+  user_name: string;
+  best_kills: number;
+  best_time_ms: number;
+  runs: number;
+  updated_at: number;
+};
+
+export type WeeklyChallengeEntry = {
+  id: string;
+  userName: string;
+  kills: number;
+  timeMs: number; // best winning time, 0 = never beat the bot
+  won: boolean;
+  runs: number;
+  admin: boolean;
+  verified: boolean;
+};
+export type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
+
+// Record a challenge run, keeping the player's BEST for the week: most kills, and
+// (if this run beat the bot) the fastest winning time. Account-only.
+export function recordWeeklyChallenge(
+  playerId: string,
+  userName: string,
+  kills: number,
+  won: boolean,
+  timeMs: number,
+  now: number = Date.now(),
+): WeeklyChallengeMe | null {
+  if (!playerId) return null;
+  const wk = weekKey(now);
+  wcEnsureStmt.run({ playerId, weekKey: wk, userName, now });
+  const cur = wcRowStmt.get(playerId, wk) as WcRow;
+  const bestKills = Math.max(cur.best_kills, kills);
+  const bestTimeMs =
+    won && timeMs > 0
+      ? cur.best_time_ms > 0
+        ? Math.min(cur.best_time_ms, timeMs)
+        : timeMs
+      : cur.best_time_ms;
+  wcUpdateStmt.run({ playerId, weekKey: wk, userName, bestKills, bestTimeMs, now });
+  const rank =
+    num(wcRankStmt.get({ weekKey: wk, kills: bestKills, timeMs: bestTimeMs })) + 1;
+  return {
+    id: playerId,
+    userName,
+    kills: bestKills,
+    timeMs: bestTimeMs,
+    won: bestTimeMs > 0,
+    runs: cur.runs + 1,
+    rank,
+    admin: false,
+    verified: false,
+  };
+}
+
+function toWcEntry(r: WcRow): WeeklyChallengeEntry {
+  return {
+    id: r.player_id,
+    userName: r.user_name,
+    kills: r.best_kills,
+    timeMs: r.best_time_ms,
+    won: r.best_time_ms > 0,
+    runs: r.runs,
+    admin: false,
+    verified: false,
+  };
+}
+
+export function getWeeklyChallengeLeaderboard(
+  limit: number,
+  now: number = Date.now(),
+): WeeklyChallengeEntry[] {
+  const n = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = wcLeaderboardStmt.all(weekKey(now), n) as WcRow[];
+  const base = rows.map(toWcEntry);
+  if (base.length) {
+    const ph = base.map(() => '?').join(',');
+    const flags = sqlite
+      .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+      .all(...base.map((e) => e.id)) as { id: string; is_admin: number; is_verified: number }[];
+    const byId = new Map(flags.map((f) => [f.id, f]));
+    for (const e of base) {
+      const f = byId.get(e.id);
+      if (f) {
+        e.admin = !!f.is_admin;
+        e.verified = !!f.is_verified;
+      }
+    }
+  }
+  return base;
+}
+
+export function getWeeklyChallengeMe(
+  playerId: string,
+  now: number = Date.now(),
+): WeeklyChallengeMe | null {
+  if (!playerId) return null;
+  const wk = weekKey(now);
+  const r = wcRowStmt.get(playerId, wk) as WcRow | undefined;
+  if (!r) return null;
+  const rank =
+    num(wcRankStmt.get({ weekKey: wk, kills: r.best_kills, timeMs: r.best_time_ms })) + 1;
+  return { ...toWcEntry(r), rank };
 }

@@ -18,7 +18,7 @@ on the hot path, no per-frame React reconciliation.
 
 - **One-shot railgun.** No health, no armor, no other weapons. Pure duel of aim + movement.
 - **Quake-style movement.** Strafe-jump acceleration, air control, directional dash, double-jump, wall-jump, and a damage-free boost-jump off surfaces.
-- **Three game modes** — Free-for-all, **Duel** (1v1, best-of rounds with deuce/advantage), and **Team Deathmatch** (Red vs Blue, friendly-fire off). Pre-match 3-2-1 countdown, mercy-rule blowout ends.
+- **Four game modes** — Free-for-all, **Duel** (1v1, first to the frag limit), **Team Deathmatch** (Red vs Blue, friendly-fire off), and a **Ranked Duel** Elo ladder (login-only 1v1). Pre-match 3-2-1 countdown, mercy-rule blowout ends.
 - **Server-authoritative multiplayer** over WebSocket:
   - Lag compensation — the server rewinds every target to the shooter's render time before raycasting hitboxes.
   - Clock sync, 32 Hz snapshots, client-side interpolation of remote players.
@@ -120,7 +120,7 @@ pairs you with rooms of the same mode).
 | Mode | Players | Win condition |
 | ---- | ------- | ------------- |
 | **Free-for-all** | up to 8 | First player to the frag limit ends the match → map vote. |
-| **Duel (1v1)** | 2 | Best-of rounds: each round is a race to a frag count; first to win the round majority takes the match. A short freeze + reset between rounds. Leaving mid-match forfeits. |
+| **Duel (1v1)** | 2 | A single race to the frag limit — no rounds, no pauses. Leaving mid-match forfeits. A login-only **Ranked Duel** ladder uses the same format with hidden Elo. |
 | **Team Deathmatch** | up to 8 | Red vs Blue. Friendly fire is off; first team to the team frag limit wins. Teammates are tinted green, foes wear their team color. |
 
 Mode tunables (frag/round limits, team sizes, colors) live in

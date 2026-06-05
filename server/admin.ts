@@ -9,6 +9,11 @@ import {
   findAccountByName,
   findUserById,
   getAuditLog,
+  getMetricsOverview,
+  getMetricsTimeseries,
+  getPlayersTable,
+  getRecentMatches,
+  getRetention,
   logEvent,
   setAdmin,
   setVerified,
@@ -101,4 +106,39 @@ adminRouter.get('/audit', (req, res) => {
   const event =
     typeof req.query.event === 'string' && req.query.event ? req.query.event : undefined;
   res.json({ events: getAuditLog(Number.isFinite(rawLimit) ? rawLimit : 100, event) });
+});
+
+// ── Metrics dashboard (read-only aggregates) ─────────────────────────────────
+// All gated by requireAdmin (router-level). The dashboard at /admin renders these.
+const intParam = (v: unknown, fallback: number): number => {
+  const n = typeof v === 'string' ? parseInt(v, 10) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+};
+
+// Headline KPIs + 24h/7d/30d activity windows + live concurrency.
+adminRouter.get('/metrics/overview', (_req, res) => {
+  res.json({ overview: getMetricsOverview() });
+});
+
+// Dense daily series (matches / logins / registrations / active players).
+adminRouter.get('/metrics/timeseries', (req, res) => {
+  res.json({ series: getMetricsTimeseries(intParam(req.query.days, 30)) });
+});
+
+// D1/D7 cohort retention by registration day.
+adminRouter.get('/metrics/retention', (req, res) => {
+  res.json({ cohorts: getRetention(intParam(req.query.days, 14)) });
+});
+
+// Recent recorded matches, keyset-paginated by audit id (?before=<lastId>).
+adminRouter.get('/metrics/matches', (req, res) => {
+  const before = intParam(req.query.before, 0);
+  res.json({ matches: getRecentMatches(intParam(req.query.limit, 50), before > 0 ? before : undefined) });
+});
+
+// Searchable player table (?sort=kills|games|level|accuracy|xp|recent &q=&limit=).
+adminRouter.get('/metrics/players', (req, res) => {
+  const sort = typeof req.query.sort === 'string' ? req.query.sort : undefined;
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  res.json({ players: getPlayersTable({ sort, q, limit: intParam(req.query.limit, 100) }) });
 });

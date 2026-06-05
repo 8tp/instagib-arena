@@ -20,6 +20,7 @@ export type RemotePlayerSnapshot = {
   nameColor: string; // equipped nameplate-color cosmetic id
   spawnEffect: string; // equipped spawn-in-effect cosmetic id
   title: string; // equipped title cosmetic id (resolved to flair text client-side)
+  titleText?: string; // server-resolved flair text (dynamic ranked title → "#N"/tier); overrides the id
   railColor: string; // equipped rail-beam color id (used for this player's beam + spectator viewmodel)
   railgunFinish: string; // equipped railgun finish id (3rd-person gun skin + spectator viewmodel)
   crosshair: string; // equipped crosshair share-code string ('' = default); rendered when spectating
@@ -39,6 +40,7 @@ export type RosterEntry = {
   hat: string;
   emote: string;
   title: string;
+  titleText?: string; // server-resolved flair (dynamic ranked title → "#N"/tier)
   admin: boolean;
   verified: boolean;
   frags: number;
@@ -88,6 +90,7 @@ type PlayerMeta = {
   nameColor: string;
   spawnEffect: string;
   title: string;
+  titleText?: string; // server-resolved flair (dynamic ranked title)
   railColor: string;
   railgunFinish: string;
   crosshair: string;
@@ -115,13 +118,47 @@ type JoinedMessage = {
   type: 'joined';
   roomId: string;
   mode?: GameMode;
+  ranked?: boolean; // ranked Duel (first-to-N, no rounds/vote)
   team?: number | null;
   mapId: string;
   spawn: Vec3;
   state: 'active' | 'voting';
   fragLimit: number;
-  roundsToWin?: number;
   resumeAt?: number; // warmup/breather end (server clock)
+};
+
+// Per-side rating change after a ranked match (mirrors server db.ts RankedResult).
+export type RankedSide = {
+  id: string;
+  userName: string;
+  rating: number;
+  delta: number;
+  rank: number;
+};
+type RankedResultMessage = {
+  type: 'ranked-result';
+  winnerId: string;
+  winnerName: string;
+  loserId: string | null;
+  loserName: string | null;
+  forfeit: boolean;
+  winnerFrags: number;
+  loserFrags: number;
+  fragLimit: number;
+  reduced?: boolean; // rating change damped (repeat opponent)
+  rating: { winner: RankedSide; loser: RankedSide } | null; // null if a guest slipped in
+};
+// What the Game forwards to the UI for the ranked end-of-match overlay.
+export type RankedResult = {
+  won: boolean;
+  forfeit: boolean;
+  reduced: boolean;
+  winnerName: string;
+  loserName: string | null;
+  winnerFrags: number;
+  loserFrags: number;
+  fragLimit: number;
+  rating: { winner: RankedSide; loser: RankedSide } | null;
 };
 // Confirmation that this connection is now watching a room (read-only). No spawn
 // or team — a spectator never plays. The client adopts the room's map + mode.
@@ -139,14 +176,6 @@ type VoteStartMessage = {
   durationMs: number;
   winnerId?: string | null; // client who reached the frag limit (match winner)
   winnerTeam?: number | null; // winning team index in TDM
-};
-type RoundMessage = {
-  type: 'round';
-  roundNum: number;
-  roundWins: Record<string, number>;
-  winnerId: string | null; // who won the round that just ended
-  resumeAt: number; // server-clock ms; play resumes after this breather
-  spawn?: Vec3; // this client's server-assigned fresh-round spawn
 };
 type VoteUpdateMessage = { type: 'vote-update'; counts: Record<string, number> };
 type VoteResultMessage = { type: 'vote-result'; mapId: string; resumeAt: number; spawn?: Vec3 };
@@ -170,7 +199,7 @@ type ServerMessage =
   | VoteStartMessage
   | VoteUpdateMessage
   | VoteResultMessage
-  | RoundMessage
+  | RankedResultMessage
   | RespawnMessage
   | BeamMessage
   | ChatBroadcastMessage
@@ -200,9 +229,11 @@ export type NetEvents = {
     spawn: Vec3;
     state: 'active' | 'voting';
     mode: GameMode;
+    ranked: boolean;
     team: number | null;
-    roundsToWin: number | null;
   }) => void;
+  // Ranked match resolved (frag limit or forfeit): rating deltas for the overlay.
+  onRankedResult?: (r: RankedResult) => void;
   onJoinFailed?: (reason: string) => void;
   // Spectating confirmed: adopt the watched room's map/mode (no spawn — read-only).
   onSpectating?: (info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) => void;
@@ -218,13 +249,6 @@ export type NetEvents = {
   }) => void;
   onVoteUpdate?: (counts: Record<string, number>) => void;
   onVoteResult?: (r: { mapId: string; resumeAtClient: number; spawn?: Vec3 }) => void;
-  onRound?: (r: {
-    roundNum: number;
-    roundWins: Record<string, number>;
-    winnerId: string | null;
-    resumeAtClient: number;
-    spawn?: Vec3;
-  }) => void;
   onChat?: (m: ChatMessage) => void; // in-game (room) chat broadcast
   onBeam?: (b: {
     id: string;
@@ -308,6 +332,7 @@ export class NetClient {
   localNameColor = 'name.default'; // equipped nameplate-color id (seen by others)
   localSpawnEffect = 'spawn.beam'; // equipped spawn-in-effect id (seen by others)
   localTitle = 'title.none'; // equipped title id (flair shown under the name, seen by others)
+  localTitleText = ''; // server-resolved flair for our own title (dynamic ranked → "#N"/tier)
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
   localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
   localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
@@ -320,6 +345,7 @@ export class NetClient {
   localVerified = false; // your verified blue check (server-authoritative; from snapshots)
   localTeam: number | null = null; // your team index in TDM; null otherwise
   mode: GameMode = 'ffa';
+  ranked = false; // this room is a ranked Duel (first-to-N, no rounds/vote)
   rttMs = 0;
   // Warmup / breather end, converted to the local clock. `warmupMsLeft` drives
   // the client's "GET READY" countdown; 0 once play is live.
@@ -719,6 +745,7 @@ export class NetClient {
     s.nameColor = m?.nameColor ?? 'name.default';
     s.spawnEffect = m?.spawnEffect ?? 'spawn.beam';
     s.title = m?.title ?? 'title.none';
+    s.titleText = m?.titleText;
     s.railColor = m?.railColor ?? 'rail.cyan';
     s.railgunFinish = m?.railgunFinish ?? 'gun.stock';
     s.crosshair = m?.crosshair ?? '';
@@ -852,6 +879,7 @@ export class NetClient {
           this.localAdmin = !!p.admin;
           this.localVerified = !!p.verified;
           this.localTeam = p.team ?? null;
+          this.localTitleText = p.titleText ?? ''; // live #N/tier for our own scoreboard row
         }
       }
       for (const id of this.metaById.keys()) {
@@ -880,6 +908,7 @@ export class NetClient {
     }
     if (msg.type === 'joined') {
       this.mode = msg.mode ?? 'ffa';
+      this.ranked = msg.ranked === true;
       this.localTeam = msg.team ?? null;
       this.setResume(msg.resumeAt);
       this.events.onJoined?.({
@@ -888,8 +917,23 @@ export class NetClient {
         spawn: msg.spawn,
         state: msg.state,
         mode: this.mode,
+        ranked: this.ranked,
         team: this.localTeam,
-        roundsToWin: msg.roundsToWin ?? null,
+      });
+      return;
+    }
+    if (msg.type === 'ranked-result') {
+      const won = msg.winnerId === this.clientId;
+      this.events.onRankedResult?.({
+        won,
+        forfeit: msg.forfeit,
+        reduced: msg.reduced === true,
+        winnerName: msg.winnerName,
+        loserName: msg.loserName,
+        winnerFrags: msg.winnerFrags,
+        loserFrags: msg.loserFrags,
+        fragLimit: msg.fragLimit,
+        rating: msg.rating,
       });
       return;
     }
@@ -923,18 +967,6 @@ export class NetClient {
         durationMs: msg.durationMs,
         winnerId: msg.winnerId ?? null,
         winnerTeam: msg.winnerTeam ?? null,
-      });
-      return;
-    }
-    if (msg.type === 'round') {
-      this.setResume(msg.resumeAt);
-      const resumeAtClient = Date.now() + (msg.resumeAt - this.estimatedServerNow());
-      this.events.onRound?.({
-        roundNum: msg.roundNum,
-        roundWins: msg.roundWins,
-        winnerId: msg.winnerId ?? null,
-        resumeAtClient,
-        spawn: msg.spawn,
       });
       return;
     }
@@ -1017,6 +1049,7 @@ export class NetClient {
         hat: m.hat,
         emote: m.emote,
         title: m.title,
+        titleText: m.titleText,
         admin: m.admin,
         verified: m.verified,
         frags: s?.frags ?? 0,
@@ -1079,6 +1112,23 @@ export type ChatMessage = {
 };
 export type ChatRejectReason = 'rate' | 'blocked' | 'account';
 
+// Ranked queue status pushed by the server (searching / idle). `reason` explains
+// an idle rejection: 'account' = a guest tried to queue (login-only); 'in-match' =
+// already in a ranked match in another tab.
+export type RankedStatus = {
+  state: 'searching' | 'idle';
+  size?: number; // players currently in the ranked queue
+  since?: number; // server-clock ms the search began
+  reason?: 'account' | 'in-match';
+};
+// A live ranked duel available to spectate (the ladder side-panel).
+export type RankedRoom = {
+  id: string;
+  mapId: string;
+  spectators: number;
+  players: { name: string; frags: number }[];
+};
+
 // Lightweight WS client for the main menu: lists public rooms and runs the
 // create / quick-match handshakes. It does NOT join gameplay — once it resolves
 // a roomId, the menu starts a match whose Game opens its own NetClient.
@@ -1099,6 +1149,8 @@ export class LobbyClient {
   onChat: (m: ChatMessage) => void = () => {};
   onChatHistory: (m: ChatMessage[]) => void = () => {};
   onChatRejected: (reason: ChatRejectReason) => void = () => {};
+  onRankedStatus: (s: RankedStatus) => void = () => {};
+  onRankedRooms: (rooms: RankedRoom[]) => void = () => {};
 
   constructor(url: string, name: string) {
     this.url = url;
@@ -1151,6 +1203,9 @@ export class LobbyClient {
         players?: PresencePlayer[];
         messages?: ChatMessage[];
         reason?: ChatRejectReason;
+        state?: string; // ranked-status
+        size?: number; // ranked queue size
+        since?: number; // ranked search start (server clock)
       } & Partial<ChatMessage>;
       try {
         msg = JSON.parse(typeof e.data === 'string' ? e.data : '');
@@ -1193,6 +1248,21 @@ export class LobbyClient {
             msg.reason === 'rate' ? 'rate' : msg.reason === 'account' ? 'account' : 'blocked',
           );
           break;
+        case 'ranked-status': {
+          const reason = (msg as { reason?: string }).reason;
+          this.onRankedStatus({
+            state: msg.state === 'searching' ? 'searching' : 'idle',
+            size: typeof msg.size === 'number' ? msg.size : undefined,
+            since: typeof msg.since === 'number' ? msg.since : undefined,
+            reason: reason === 'account' ? 'account' : reason === 'in-match' ? 'in-match' : undefined,
+          });
+          break;
+        }
+        case 'ranked-rooms': {
+          const rr = (msg as unknown as { rooms?: RankedRoom[] }).rooms;
+          this.onRankedRooms(Array.isArray(rr) ? rr : []);
+          break;
+        }
       }
     };
     this.ws.onclose = () => {
@@ -1256,6 +1326,19 @@ export class LobbyClient {
 
   createRoom(opts: { mapId: string; isPublic: boolean; capacity: number; mode: GameMode }) {
     this.send({ type: 'create', name: this.name, ...opts });
+  }
+
+  // Enter the ranked Duel queue (server pairs you with the closest-rated waiter →
+  // a 'matched' resolves the room, same as quick-match). Login-only server-side.
+  rankedQueue() {
+    this.send({ type: 'ranked-queue' });
+  }
+  rankedCancel() {
+    this.send({ type: 'ranked-cancel' });
+  }
+  // Ask for the list of live ranked duels to spectate (the ladder side-panel).
+  requestRankedRooms() {
+    this.send({ type: 'ranked-rooms' });
   }
 
   private send(msg: object) {

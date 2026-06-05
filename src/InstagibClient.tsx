@@ -10,6 +10,9 @@ import {
   type PresenceState,
   type PresencePlayer,
   type ChatMessage,
+  type RankedStatus,
+  type RankedRoom,
+  type RankedResult,
 } from './game/net';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
@@ -51,6 +54,9 @@ import {
   TEAM_COLORS,
   TEAM_NAMES,
   TOAST_FADE_SEC,
+  rankedTier,
+  rankedTierName,
+  WEEKLY_CHALLENGE_MAP,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
@@ -273,6 +279,8 @@ export type MatchConfig =
       botCount: number;
       difficulty: BotDifficulty;
       training?: boolean; // endless practice — no frag-limit match end
+      gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
+      challenge?: boolean; // weekly-challenge run (1v1 vs hard bot → weekly leaderboard, not career)
     }
   | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
@@ -362,20 +370,25 @@ const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
 const CARD_STAT_DEFS: ReadonlyArray<{
   key: string;
   label: string;
-  from: (s: InstagibStats) => string;
+  from: (p: InstagibProfile) => string;
 }> = [
-  { key: 'kills', label: 'KILLS', from: (s) => String(s.totalKills) },
-  { key: 'deaths', label: 'DEATHS', from: (s) => String(s.totalDeaths) },
-  { key: 'wins', label: 'WINS', from: (s) => String(s.totalWins) },
-  { key: 'games', label: 'GAMES', from: (s) => String(s.totalGames) },
+  { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
+  { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
+  { key: 'wins', label: 'WINS', from: (p) => String(p.stats.totalWins) },
+  { key: 'games', label: 'GAMES', from: (p) => String(p.stats.totalGames) },
   {
     key: 'kd',
     label: 'K/D',
-    from: (s) => (s.totalDeaths > 0 ? (s.totalKills / s.totalDeaths).toFixed(2) : String(s.totalKills)),
+    from: (p) =>
+      p.stats.totalDeaths > 0
+        ? (p.stats.totalKills / p.stats.totalDeaths).toFixed(2)
+        : String(p.stats.totalKills),
   },
-  { key: 'streak', label: 'BEST STREAK', from: (s) => String(s.bestKillStreak) },
-  { key: 'headshots', label: 'HEADSHOTS', from: (s) => String(s.headshots) },
-  { key: 'accuracy', label: 'ACCURACY', from: (s) => `${Math.round(s.bestAccuracy)}%` },
+  { key: 'streak', label: 'BEST STREAK', from: (p) => String(p.stats.bestKillStreak) },
+  { key: 'headshots', label: 'HEADSHOTS', from: (p) => String(p.stats.headshots) },
+  { key: 'accuracy', label: 'ACCURACY', from: (p) => `${Math.round(p.stats.bestAccuracy)}%` },
+  // Ranked Elo — "Unranked" until you've played a ranked match.
+  { key: 'rating', label: 'RANKED', from: (p) => (p.ranked ? String(p.ranked.rating) : 'Unranked') },
 ];
 
 const MAX_CARD_STATS = 3;
@@ -389,7 +402,12 @@ function buildCardPayload(
     .map((k) => CARD_STAT_DEFS.find((d) => d.key === k))
     .filter((d): d is (typeof CARD_STAT_DEFS)[number] => !!d)
     .slice(0, MAX_CARD_STATS)
-    .map((d) => ({ label: d.label, value: d.from(profile.stats) }));
+    .map((d) => ({ label: d.label, value: d.from(profile) }));
+  // A dynamic ranked title resolves to the live standing locally for the preview +
+  // the player's own kill-confirm card; the server re-forces it on the killcard
+  // others see, so this can't be faked.
+  const titleDef = titleById(settings.title);
+  const title = titleDef.dynamic === 'ranked' ? rankedStandingText(profile.ranked) : titleDef.text;
   // Badges mirror the account (server overrides them on the killcard others see,
   // so this only drives the local Locker preview). Guests carry neither.
   return {
@@ -397,7 +415,7 @@ function buildCardPayload(
     level: profile.level,
     style: settings.card,
     stats,
-    title: titleById(settings.title).text,
+    title,
     verified: !!account?.isVerified,
     admin: !!account?.isAdmin,
   };
@@ -706,6 +724,7 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
     game.setBotDifficulty(config.difficulty);
     game.setBotCount(config.botCount);
     game.setBotsEnabled(true);
+    game.setBotMode(config.gameMode ?? 'ffa'); // after the bots exist (sets teams in TDM)
   }
 }
 
@@ -740,7 +759,6 @@ const INITIAL_HUD: HudState = {
   mode: 'ffa',
   localTeam: null,
   teamScores: null,
-  duel: null,
   training: null,
   pom: null,
   chat: { open: false, lines: [] },
@@ -985,12 +1003,19 @@ function GameView({
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  // Ranked Duel end-of-match result (rating delta) → full-screen overlay.
+  const [rankedResult, setRankedResult] = useState<RankedResult | null>(null);
+  // Weekly-challenge end-of-run standing (rank/best) → small result banner.
+  const [challengeResult, setChallengeResult] = useState<WeeklyChallengeMe | null>(null);
   // Online: the results podium is shown briefly at match-end BEFORE the map vote.
   // We freeze the final standings here so a late snapshot can't change the podium.
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
   const hudRef = useRef<HudState>(INITIAL_HUD);
   const offlineMatch = config.mode !== 'multiplayer';
+  // Weekly-challenge run: submits kills/time to the weekly board, NOT career K/D.
+  const isChallenge = config.mode === 'local' && config.challenge === true;
+  const matchStartRef = useRef(0);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1004,15 +1029,24 @@ function GameView({
     // the results podium, then continues to the server-driven map vote.
     const game = new Game(canvas, listener, (result) => {
       setEndResult(result);
-      void submitMatchStats(result, offlineMatch).then((p) => {
-        if (p) setEndProgression(p);
-      });
+      if (isChallenge) {
+        // Weekly challenge: log kills + (if you beat the bot) the win time to the
+        // weekly board. Never touches career K/D.
+        void submitChallengeStats(result, Date.now() - matchStartRef.current).then((me) => {
+          if (me) setChallengeResult(me);
+        });
+      } else {
+        void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
+          if (p) setEndProgression(p);
+        });
+      }
       if (config.mode === 'multiplayer') {
         setPodiumScores(hudRef.current.scores);
         setOnlineResults(true);
       }
     });
     gameRef.current = game;
+    matchStartRef.current = Date.now(); // for the challenge win-time
     // Toggle the net-debug overlay. F3 (often Mission Control on macOS) OR the
     // backtick/tilde key (`) which has no OS conflict. Works locked or not.
     const onDebugKey = (e: KeyboardEvent) => {
@@ -1029,6 +1063,8 @@ function GameView({
             ? 'That lobby is full.'
             : 'That lobby no longer exists.',
         );
+      } else if (ev.type === 'ranked-result') {
+        setRankedResult(ev.result);
       }
     });
     applySettingsToGame(game, settings);
@@ -1099,9 +1135,13 @@ function GameView({
     exitFullscreen();
     const game = gameRef.current;
     const r = game?.getStats() ?? null;
-    if (r && game?.hasRecordableStats()) void submitMatchStats(r, offlineMatch);
+    // A weekly-challenge run only counts when it FINISHES (match-end); leaving
+    // mid-run abandons it. Other matches submit the partial run to career stats.
+    if (!isChallenge && r && game?.hasRecordableStats()) {
+      void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
+    }
     onExit(r);
-  }, [onExit, offlineMatch]);
+  }, [onExit, offlineMatch, isChallenge]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck
@@ -1194,7 +1234,7 @@ function GameView({
       {disconnected && !waiting && (
         <DisconnectedOverlay error={hud.netStatus === 'error'} onLeave={leave} />
       )}
-      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && !hud.pom && (
+      {!hud.locked && !hud.matchOver && !hud.vote && !onlineResults && !joinError && !waiting && !hud.pom && !rankedResult && (
         <ClickToPlay
           onPlay={requestPlay}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -1203,7 +1243,28 @@ function GameView({
           settings={settings}
         />
       )}
-      {hud.matchOver && !hud.pom && (
+      {rankedResult && (
+        <RankedResultOverlay
+          result={rankedResult}
+          progression={endProgression}
+          onLobby={() => {
+            exitFullscreen();
+            onExit(endResult);
+          }}
+        />
+      )}
+      {isChallenge && challengeResult && hud.matchOver && (
+        <div className='pointer-events-none absolute left-1/2 top-6 z-[55] -translate-x-1/2 rounded-lg border border-amber-400/40 bg-zinc-950/90 px-5 py-2.5 text-center font-mono shadow-lg'>
+          <div className='text-[10px] uppercase tracking-[0.2em] text-amber-300'>Weekly Challenge</div>
+          <div className='mt-1 text-sm text-white'>
+            {challengeResult.won
+              ? `Beat the bot — ${fmtChallengeTime(challengeResult.timeMs)}`
+              : `${challengeResult.kills} kills`}
+            <span className='text-white/50'> · best #{challengeResult.rank}</span>
+          </div>
+        </div>
+      )}
+      {!rankedResult && hud.matchOver && !hud.pom && (
         <MatchOverOverlay
           won={hud.matchOver.won}
           scores={hud.scores}
@@ -2782,7 +2843,6 @@ function HudOverlay({
       {hud.mode === 'tdm' && hud.teamScores && (
         <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
       )}
-      {hud.mode === 'duel' && hud.duel && <DuelRoundHud duel={hud.duel} />}
       {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
       {hud.training && <TrainingPanel t={hud.training} />}
       <BannerOverlay banner={hud.banner} />
@@ -3001,47 +3061,6 @@ function TeamScoreBar({
             </div>
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-/* ───────────────────────── Duel round indicator (top-center) ───────────────────────── */
-
-// "ROUND N" + a You vs Opp round tally rendered as pips (filled = won), first to
-// roundsToWin takes the match.
-function DuelRoundHud({ duel }: { duel: HudState['duel'] }) {
-  if (!duel) return null;
-  const { roundNum, roundsToWin, myWins, oppWins } = duel;
-  const pips = (won: number, color: string) =>
-    Array.from({ length: roundsToWin }).map((_, i) => (
-      <span
-        key={i}
-        className='h-2.5 w-2.5 rounded-full'
-        style={{
-          backgroundColor: i < won ? color : 'rgba(255,255,255,0.15)',
-          boxShadow: i < won ? `0 0 6px ${color}` : undefined,
-        }}
-      />
-    ));
-  return (
-    <div className='absolute left-1/2 top-4 -translate-x-1/2'>
-      <div className='flex flex-col items-center gap-1 rounded-lg border border-white/15 bg-black/60 px-5 py-1.5 font-mono backdrop-blur-sm'>
-        <div className='text-[10px] font-bold uppercase tracking-[0.3em] text-white/70'>
-          Round {roundNum}
-        </div>
-        <div className='flex items-center gap-3'>
-          <span className='text-[10px] uppercase tracking-[0.16em] text-emerald-300'>You</span>
-          <div className='flex items-center gap-1'>{pips(myWins, '#34d399')}</div>
-          <span className='text-sm font-bold tabular-nums text-white/85'>
-            {myWins}–{oppWins}
-          </span>
-          <div className='flex items-center gap-1'>{pips(oppWins, '#fb7185')}</div>
-          <span className='text-[10px] uppercase tracking-[0.16em] text-rose-300'>Opp</span>
-        </div>
-        <div className='text-[9px] uppercase tracking-[0.2em] text-white/35'>
-          First to {roundsToWin}
-        </div>
       </div>
     </div>
   );
@@ -4040,16 +4059,18 @@ type ProgressionResp = {
 async function submitMatchStats(
   result: MatchResult,
   offline: boolean,
+  mode?: GameMode | 'ranked',
 ): Promise<ProgressionResp | null> {
   try {
     // Stats are keyed server-side by an anonymous per-browser cookie; the name
     // is cosmetic (for the leaderboard), so send the local display name. The
     // `offline` flag scales XP server-side (practice shouldn't be the best farm).
+    // `mode` is recorded on the audit row only (powers the dashboard breakdown).
     const res = await fetch('/api/stats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ ...result, name: savedPlayerName(), offline }),
+      body: JSON.stringify({ ...result, name: savedPlayerName(), offline, mode }),
     });
     if (!res.ok) return null;
     return (await res.json()) as ProgressionResp;
@@ -4059,11 +4080,474 @@ async function submitMatchStats(
   }
 }
 
+// ── Weekly Challenge ─────────────────────────────────────────────────────────
+type WeeklyChallengeEntry = {
+  id: string;
+  userName: string;
+  kills: number;
+  timeMs: number; // best winning time (0 = never beat the bot)
+  won: boolean;
+  runs: number;
+  admin: boolean;
+  verified: boolean;
+};
+type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
+
+// mm:ss.s from a millisecond duration (for the challenge win time).
+function fmtChallengeTime(ms: number): string {
+  if (ms <= 0) return '—';
+  const s = ms / 1000;
+  const m = Math.floor(s / 60);
+  const rem = (s - m * 60).toFixed(1);
+  return m > 0 ? `${m}:${rem.padStart(4, '0')}` : `${rem}s`;
+}
+
+// Submit a finished weekly-challenge run. Records to the weekly board only — never
+// career K/D. Returns the player's updated standing (rank/best), or null.
+async function submitChallengeStats(
+  result: MatchResult,
+  timeMs: number,
+): Promise<WeeklyChallengeMe | null> {
+  try {
+    const res = await fetch('/api/challenge/weekly', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ kills: result.kills, won: result.won, timeMs }),
+    });
+    if (!res.ok) return null;
+    const d = (await res.json()) as { me?: WeeklyChallengeMe | null };
+    return d.me ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Menu chat caps. CLIENT_LEN mirrors the server's CHAT_MAX_LEN (the server is
 // authoritative; this is just so the input + counter agree). LOG_MAX bounds the
 // in-memory log (the server already trims replayed history to 50).
 const CHAT_CLIENT_MAX_LEN = 240;
 const CHAT_LOG_MAX = 120;
+
+// ── Ranked Duel ──────────────────────────────────────────────────────────────
+// Shared profile shape from GET /api/ranked/me (mirrors server db.ts RankedProfile).
+type RankedProfile = {
+  id: string;
+  userName: string;
+  rating: number;
+  peak: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  rank: number;
+  provisional: boolean;
+};
+type RankedLeaderEntry = {
+  id: string;
+  userName: string;
+  rating: number;
+  games: number;
+  wins: number;
+  losses: number;
+  streak: number;
+  admin: boolean;
+  verified: boolean;
+};
+
+// Starting Elo for a brand-new ranked player (mirrors server RANKED_BASE_RATING).
+const RANKED_BASE = 1000;
+// The live flair text for the dynamic ranked title from a profile's standing:
+// top-10 → "#N", otherwise the tier name; '' if the player has no ranked games.
+function rankedStandingText(ranked: InstagibProfile['ranked']): string {
+  if (!ranked) return '';
+  return ranked.rank >= 1 && ranked.rank <= 10 ? `#${ranked.rank}` : rankedTierName(ranked.rating);
+}
+
+// Full-screen ranked end-of-match overlay: VICTORY/DEFEAT + the rating delta.
+function RankedResultOverlay({
+  result,
+  progression,
+  onLobby,
+}: {
+  result: RankedResult;
+  progression: ProgressionResp | null;
+  onLobby: () => void;
+}) {
+  const won = result.won;
+  const mine = result.rating ? (won ? result.rating.winner : result.rating.loser) : null;
+  const tier = mine ? rankedTier(mine.rating) : null;
+  const delta = mine?.delta ?? 0;
+  return (
+    <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
+      <div className="w-[420px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl">
+        <div className={`px-7 py-6 text-center ${won ? 'bg-emerald-400/10' : 'bg-rose-500/10'}`}>
+          <div
+            className={`font-display text-4xl uppercase tracking-[0.18em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
+          >
+            {won ? 'Victory' : 'Defeat'}
+          </div>
+          <div className="mt-1 text-[12px] uppercase tracking-[0.2em] text-white/45">
+            Ranked Duel · {result.winnerFrags}–{result.loserFrags}
+            {result.forfeit && ' · forfeit'}
+          </div>
+        </div>
+        <div className="px-7 py-6">
+          {mine ? (
+            <div className="text-center">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">New rating</div>
+              <div className="mt-1 flex items-center justify-center gap-3">
+                <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
+                  {mine.rating}
+                </span>
+                <span
+                  className={`font-mono text-lg tabular-nums ${delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}
+                >
+                  {delta >= 0 ? '+' : ''}
+                  {delta}
+                </span>
+              </div>
+              <div className="mt-1 text-[12px] text-white/55">
+                {tier?.name} · ladder #{mine.rank}
+              </div>
+              {result.reduced && (
+                <div className="mt-2 text-[11px] text-amber-300/80">
+                  Reduced rating — repeat opponent
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center text-[12px] text-white/50">Unranked result.</div>
+          )}
+          {progression && (progression.xpGained > 0 || progression.creditsGained > 0) && (
+            <div className="mt-4 text-center text-[12px] text-white/50">
+              <span className="text-cyan-200">+{progression.xpGained} XP</span>
+              {progression.creditsGained > 0 && (
+                <>
+                  {' · '}
+                  <span className="text-amber-200">+{progression.creditsGained} credits</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-center border-t border-white/10 px-7 py-4">
+          <button
+            onClick={onLobby}
+            className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
+          >
+            Back to lobby
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Ranked Duel lobby modal: your rank card, the queue, the ladder, and a side
+// panel of live ranked duels to spectate. Login-gated (a guest sees a prompt).
+function RankedModal({
+  account,
+  status,
+  rooms,
+  onQueue,
+  onCancel,
+  onRequestRooms,
+  onSpectate,
+  onOpenLogin,
+  onClose,
+}: {
+  account: Account;
+  status: RankedStatus | null;
+  rooms: RankedRoom[];
+  onQueue: () => void;
+  onCancel: () => void;
+  onRequestRooms: () => void;
+  onSpectate: (roomId: string, mapId: string) => void;
+  onOpenLogin: () => void;
+  onClose: () => void;
+}) {
+  const [profile, setProfile] = useState<RankedProfile | null>(null);
+  const [ladder, setLadder] = useState<RankedLeaderEntry[]>([]);
+  const [elapsed, setElapsed] = useState(0);
+  const searching = status?.state === 'searching';
+
+  const refreshProfile = useCallback(() => {
+    if (!account) return;
+    fetch('/api/ranked/me', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { profile?: RankedProfile } | null) => setProfile(d?.profile ?? null))
+      .catch(() => {});
+    fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { entries?: RankedLeaderEntry[] } | null) => setLadder(d?.entries ?? []))
+      .catch(() => {});
+  }, [account]);
+
+  useEffect(() => {
+    refreshProfile();
+  }, [refreshProfile]);
+
+  // Poll live ranked duels for the spectate panel while the modal is open.
+  useEffect(() => {
+    onRequestRooms();
+    const t = setInterval(onRequestRooms, 3000);
+    return () => clearInterval(t);
+  }, [onRequestRooms]);
+
+  // Tick the "searching… Ns" label.
+  useEffect(() => {
+    if (!searching) {
+      setElapsed(0);
+      return;
+    }
+    const since = status?.since ?? Date.now();
+    const t = setInterval(() => setElapsed(Math.max(0, Math.floor((Date.now() - since) / 1000))), 500);
+    return () => clearInterval(t);
+  }, [searching, status?.since]);
+
+  const tier = profile ? rankedTier(profile.rating) : null;
+
+  return (
+    <ModalShell title="Ranked Duel" onClose={onClose}>
+      {!account ? (
+        <div className="flex flex-col items-center gap-4 py-6 text-center font-mono">
+          <p className="text-[13px] text-white/60">
+            Ranked Duel is for logged-in players — your rating follows your account.
+          </p>
+          <button
+            onClick={onOpenLogin}
+            className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
+          >
+            Log in to play ranked
+          </button>
+        </div>
+      ) : (
+        <div className="grid gap-5 font-mono md:grid-cols-[1.2fr_1fr]">
+          {/* Left: your rank + queue + ladder */}
+          <div className="flex flex-col gap-4">
+            <div className="rounded-lg border border-white/12 bg-black/30 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/45">Your rating</div>
+                  <div className="mt-0.5 flex items-baseline gap-2">
+                    <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
+                      {profile?.rating ?? RANKED_BASE}
+                    </span>
+                    {tier && <span className="text-[12px] text-white/55">{tier.name}</span>}
+                  </div>
+                </div>
+                <div className="text-right text-[11px] text-white/50">
+                  {profile && profile.rank > 0 ? (
+                    <div>
+                      Ladder <span className="text-cyan-200">#{profile.rank}</span>
+                    </div>
+                  ) : (
+                    <div className="text-white/35">Unranked</div>
+                  )}
+                  <div className="tabular-nums">
+                    {profile?.wins ?? 0}W · {profile?.losses ?? 0}L
+                  </div>
+                  {profile?.provisional && <div className="text-amber-300/80">provisional</div>}
+                </div>
+              </div>
+              <div className="mt-4">
+                {searching ? (
+                  <button
+                    onClick={onCancel}
+                    className="w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-500/20"
+                  >
+                    Searching… {elapsed}s · cancel
+                  </button>
+                ) : (
+                  <button
+                    onClick={onQueue}
+                    className="w-full rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
+                  >
+                    Find ranked match
+                  </button>
+                )}
+                {status?.reason === 'account' && (
+                  <p className="mt-2 text-center text-[11px] text-rose-300">Ranked needs an account.</p>
+                )}
+                {status?.reason === 'in-match' && (
+                  <p className="mt-2 text-center text-[11px] text-rose-300">
+                    You're already in a ranked match in another tab.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-white/12 bg-black/30 p-4">
+              <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-white/45">Ladder</div>
+              {ladder.length === 0 ? (
+                <div className="py-4 text-center text-[12px] text-white/35">No ranked players yet — be the first.</div>
+              ) : (
+                <div className="max-h-[260px] overflow-y-auto">
+                  <table className="w-full text-left text-[12px]">
+                    <tbody>
+                      {ladder.map((e, i) => {
+                        const t = rankedTier(e.rating);
+                        const me = profile?.id === e.id;
+                        return (
+                          <tr key={e.id} className={`border-t border-white/8 ${me ? 'bg-cyan-400/10' : ''}`}>
+                            <td className="py-1.5 pr-2 tabular-nums text-white/40">{i + 1}</td>
+                            <td className="py-1.5 pr-2 text-white/85">
+                              <span className="flex items-center gap-1">
+                                {e.userName}
+                                {e.verified && <span className="text-cyan-300">✓</span>}
+                              </span>
+                            </td>
+                            <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: t.color }}>
+                              {e.rating}
+                            </td>
+                            <td className="py-1.5 text-right tabular-nums text-white/40">
+                              {e.wins}-{e.losses}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right: live ranked duels to spectate */}
+          <div className="rounded-lg border border-white/12 bg-black/30 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">Live ranked duels</span>
+              <span className="text-[10px] text-white/30">👁 spectate</span>
+            </div>
+            {rooms.length === 0 ? (
+              <div className="py-6 text-center text-[12px] text-white/35">No live ranked duels right now.</div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {rooms.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => onSpectate(r.id, r.mapId)}
+                    className="flex items-center justify-between rounded-md border border-white/12 bg-black/40 px-3 py-2 text-left transition hover:border-cyan-400/50 hover:bg-cyan-400/5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-white/80">
+                      {r.players.map((p) => p.name).join('  vs  ') || 'Ranked duel'}
+                    </span>
+                    <span className="ml-3 shrink-0 tabular-nums text-[12px] text-cyan-200">
+                      {r.players.map((p) => p.frags).join(' – ')}
+                    </span>
+                    {r.spectators > 0 && (
+                      <span className="ml-2 shrink-0 text-[10px] text-white/35">👁 {r.spectators}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
+
+// Weekly Challenge: play a 1v1 vs a hard bot + the weekly board. Anyone can play;
+// only logged-in runs are recorded (consistent with career/ranked).
+function WeeklyChallengeModal({
+  account,
+  onPlay,
+  onClose,
+}: {
+  account: Account;
+  onPlay: () => void;
+  onClose: () => void;
+}) {
+  const [entries, setEntries] = useState<WeeklyChallengeEntry[]>([]);
+  const [me, setMe] = useState<WeeklyChallengeMe | null>(null);
+  const [info, setInfo] = useState<{ map: string; fragLimit: number } | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { entries?: WeeklyChallengeEntry[]; me?: WeeklyChallengeMe | null; map?: string; fragLimit?: number } | null) => {
+        if (!active || !d) return;
+        setEntries(d.entries ?? []);
+        setMe(d.me ?? null);
+        setInfo({ map: d.map ?? WEEKLY_CHALLENGE_MAP, fragLimit: d.fragLimit ?? 15 });
+        setReady(true);
+      })
+      .catch(() => active && setReady(true));
+    return () => {
+      active = false;
+    };
+  }, []);
+  const mapName = info ? (mapById(info.map)?.name ?? info.map) : '';
+  return (
+    <ModalShell title='Weekly Challenge' onClose={onClose}>
+      <div className='flex flex-col gap-4 font-mono'>
+        <p className='text-[13px] leading-relaxed text-white/65'>
+          1v1 a <span className='text-rose-300'>HARD bot</span>
+          {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Most kills tops the week; ties go
+          to the <span className='text-amber-200'>fastest win</span>. This is its own board — it never
+          touches your K/D.
+        </p>
+
+        <div className='flex items-center justify-between rounded-lg border border-white/12 bg-black/30 px-4 py-3'>
+          <div>
+            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>Your week</div>
+            {me ? (
+              <div className='mt-0.5 text-[13px] text-white/85'>
+                {me.won ? `Best win ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
+                <span className='text-white/45'> · rank #{me.rank}</span>
+              </div>
+            ) : (
+              <div className='mt-0.5 text-[12px] text-white/45'>
+                {account ? 'No run yet this week.' : 'Log in to save your score.'}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={onPlay}
+            className='rounded-lg bg-rose-400 px-5 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-rose-300'
+          >
+            Play challenge
+          </button>
+        </div>
+
+        <div className='rounded-lg border border-white/12 bg-black/30 p-4'>
+          <div className='mb-2 text-[10px] uppercase tracking-[0.2em] text-white/45'>This week</div>
+          {!ready ? (
+            <div className='py-4 text-center text-[12px] text-white/35'>Loading…</div>
+          ) : entries.length === 0 ? (
+            <div className='py-4 text-center text-[12px] text-white/35'>No runs yet — be the first.</div>
+          ) : (
+            <div className='max-h-[300px] overflow-y-auto'>
+              <table className='w-full text-left text-[12px]'>
+                <tbody>
+                  {entries.map((e, i) => (
+                    <tr key={e.id} className={`border-t border-white/8 ${e.id === me?.id ? 'bg-rose-400/10' : ''}`}>
+                      <td className='py-1.5 pr-2 tabular-nums text-white/40'>{i + 1}</td>
+                      <td className='py-1.5 pr-2 text-white/85'>
+                        <span className='flex items-center gap-1'>
+                          {e.userName}
+                          {e.verified && <span className='text-cyan-300'>✓</span>}
+                        </span>
+                      </td>
+                      <td className='py-1.5 pr-2 text-right tabular-nums text-white/80'>{e.kills} K</td>
+                      <td className='py-1.5 text-right tabular-nums text-amber-200/80'>
+                        {e.won ? fmtChallengeTime(e.timeMs) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
 
 function Lobby({
   settings,
@@ -4098,6 +4582,10 @@ function Lobby({
   const [lobbyStatus, setLobbyStatus] = useState<LobbyStatus>('connecting');
   const [invite, setInvite] = useState<{ roomId: string; mapId: string } | null>(null);
   const [searching, setSearching] = useState(false); // quick-match in flight (#26e)
+  const [rankedOpen, setRankedOpen] = useState(false);
+  const [rankedStatus, setRankedStatus] = useState<RankedStatus | null>(null);
+  const [rankedRooms, setRankedRooms] = useState<RankedRoom[]>([]);
+  const [weeklyOpen, setWeeklyOpen] = useState(false);
   // Selected online game mode for Quick Match + Create Match (FFA / Duel / TDM).
   const [selectedMode, setSelectedMode] = useState<GameMode>(DEFAULT_GAME_MODE);
   // Live menu presence + global chat (pushed over the lobby socket).
@@ -4179,6 +4667,8 @@ function Lobby({
             ? 'Log in to chat.'
             : 'Message blocked by the filter.',
       );
+    lobby.onRankedStatus = setRankedStatus;
+    lobby.onRankedRooms = setRankedRooms;
     lobby.connect();
     return () => {
       lobby.dispose();
@@ -4368,6 +4858,31 @@ function Lobby({
                 ⌖ Training Range
               </DeckButton>
               <div className='col-span-2'>
+                <DeckButton
+                  onClick={() => setRankedOpen(true)}
+                  disabled={!online || playDisabled}
+                  accent='fuchsia'
+                  full
+                >
+                  <span className='inline-flex items-center gap-2'>
+                    🏆 Ranked Duel
+                    <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
+                      1v1 · Elo ladder
+                    </span>
+                  </span>
+                </DeckButton>
+              </div>
+              <div className='col-span-2'>
+                <DeckButton onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' full>
+                  <span className='inline-flex items-center gap-2'>
+                    🗓 Weekly Challenge
+                    <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
+                      1v1 vs hard bot
+                    </span>
+                  </span>
+                </DeckButton>
+              </div>
+              <div className='col-span-2'>
                 <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled} full>
                   ◭ Solo vs Bots
                 </DeckButton>
@@ -4477,6 +4992,45 @@ function Lobby({
         />
       )}
       {leaderboardOpen && <LeaderboardModal onClose={() => setLeaderboardOpen(false)} />}
+      {rankedOpen && (
+        <RankedModal
+          account={account}
+          status={rankedStatus}
+          rooms={rankedRooms}
+          onQueue={() => lobbyRef.current?.rankedQueue()}
+          onCancel={() => lobbyRef.current?.rankedCancel()}
+          onRequestRooms={() => lobbyRef.current?.requestRankedRooms()}
+          onSpectate={(roomId, mapId) => {
+            setRankedOpen(false);
+            onStart({ mode: 'spectator', mapId, serverUrl, roomId });
+          }}
+          onOpenLogin={() => {
+            setRankedOpen(false);
+            onOpenLogin();
+          }}
+          onClose={() => {
+            // Leaving the ranked screen cancels any pending search.
+            if (rankedStatus?.state === 'searching') lobbyRef.current?.rankedCancel();
+            setRankedOpen(false);
+          }}
+        />
+      )}
+      {weeklyOpen && (
+        <WeeklyChallengeModal
+          account={account}
+          onPlay={() =>
+            onStart({
+              mode: 'local',
+              mapId: WEEKLY_CHALLENGE_MAP,
+              botCount: 1,
+              difficulty: 'hard',
+              gameMode: 'duel',
+              challenge: true,
+            })
+          }
+          onClose={() => setWeeklyOpen(false)}
+        />
+      )}
       {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} />}
       {settingsOpen && (
         <SettingsModal
@@ -5121,20 +5675,51 @@ function CreateMatchModal({
   const [players, setPlayers] = useState(MAX_PLAYERS);
   const [mapId, setMapId] = useState(settings.mapId);
   const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
+  const [gameMode, setGameMode] = useState<GameMode>('ffa');
+
+  // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
+  const effPlayers = gameMode === 'duel' ? 2 : players;
 
   const start = () => {
     onChangeSettings({ ...settings, mapId, difficulty });
-    onStart({ mode: 'local', mapId, botCount: Math.max(0, players - 1), difficulty });
+    onStart({
+      mode: 'local',
+      mapId,
+      botCount: Math.max(1, effPlayers - 1),
+      difficulty,
+      gameMode,
+    });
   };
 
   return (
     <ModalShell title='Solo vs Bots' onClose={onClose}>
       <SelectField label='Arena' value={mapId} options={MAPS} onChange={setMapId} />
-      <label className='flex flex-col gap-1.5'>
+      <div className='flex flex-col gap-1.5'>
+        <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Mode</span>
+        <div className='grid grid-cols-3 gap-2'>
+          {GAME_MODES.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setGameMode(m.id)}
+              title={m.blurb}
+              className={`rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
+                gameMode === m.id
+                  ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
+                  : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
+              }`}
+            >
+              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : 'Duel'}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className={`flex flex-col gap-1.5 ${gameMode === 'duel' ? 'opacity-40' : ''}`}>
         <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
           <span>Players</span>
           <span className='tabular-nums text-white/85'>
-            {players} ({players - 1} {players - 1 === 1 ? 'bot' : 'bots'})
+            {gameMode === 'duel'
+              ? '2 (1 bot · 1v1)'
+              : `${effPlayers} (${effPlayers - 1} ${effPlayers - 1 === 1 ? 'bot' : 'bots'}${gameMode === 'tdm' ? ' · 2 teams' : ''})`}
           </span>
         </div>
         <input
@@ -5142,7 +5727,8 @@ function CreateMatchModal({
           min={2}
           max={MAX_PLAYERS}
           step={1}
-          value={players}
+          value={effPlayers}
+          disabled={gameMode === 'duel'}
           onChange={(e) => setPlayers(Number(e.target.value))}
           className='w-full accent-emerald-400'
         />
@@ -5197,6 +5783,7 @@ type InstagibProfile = {
   unlocked: string[];
   equipped: Record<string, string>;
   stats: InstagibStats;
+  ranked: { rating: number; rank: number; provisional: boolean } | null;
 };
 
 function StatsModal({ onClose }: { onClose: () => void }) {
@@ -5453,11 +6040,12 @@ const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> =
   { id: 'accuracy', label: 'Accuracy' },
 ];
 
-type LeaderboardWindow = 'all' | 'weekly' | 'daily';
+type LeaderboardWindow = 'all' | 'weekly' | 'daily' | 'ranked';
 const LEADERBOARD_WINDOWS: ReadonlyArray<{ id: LeaderboardWindow; label: string }> = [
   { id: 'all', label: 'All-time' },
   { id: 'weekly', label: 'This week' },
   { id: 'daily', label: 'Today' },
+  { id: 'ranked', label: 'Ranked' },
 ];
 
 function LeaderboardModal({ onClose }: { onClose: () => void }) {
@@ -5465,11 +6053,30 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const [window, setWindow] = useState<LeaderboardWindow>('all');
   const [rows, setRows] = useState<LeaderboardEntry[]>([]);
   const [you, setYou] = useState<LeaderboardYou>(null);
+  const [rankedRows, setRankedRows] = useState<RankedLeaderEntry[]>([]);
+  const [rankedMe, setRankedMe] = useState<RankedProfile | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const isRanked = window === 'ranked';
 
   useEffect(() => {
     let active = true;
     setState('loading');
+    if (window === 'ranked') {
+      fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ranked unavailable'))))
+        .then((d: { entries?: RankedLeaderEntry[]; me?: RankedProfile | null }) => {
+          if (!active) return;
+          setRankedRows(Array.isArray(d.entries) ? d.entries : []);
+          setRankedMe(d.me ?? null);
+          setState('ready');
+        })
+        .catch(() => {
+          if (active) setState('error');
+        });
+      return () => {
+        active = false;
+      };
+    }
     fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25`, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
@@ -5489,24 +6096,62 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const youId = you?.entry.id;
   // Is the local player already visible in the top-N? If not, we pin them below.
   const youInTop = youId != null && rows.some((r) => r.id === youId);
+  const rankedMeInTop = rankedMe != null && rankedRows.some((r) => r.id === rankedMe.id);
 
   return (
     <ModalShell title='Leaderboard' onClose={onClose}>
       <ButtonGroup label='Window' value={window} options={LEADERBOARD_WINDOWS} onChange={setWindow} />
-      <ButtonGroup
-        label='Sort by'
-        value={sort}
-        options={LEADERBOARD_SORTS}
-        onChange={setSort}
-      />
+      {!isRanked && (
+        <ButtonGroup label='Sort by' value={sort} options={LEADERBOARD_SORTS} onChange={setSort} />
+      )}
       {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
-      {state === 'error' && (
+      {state === 'error' && isRanked && (
+        <div className='text-sm text-white/55'>Couldn&apos;t load the ranked ladder.</div>
+      )}
+      {state === 'ready' && isRanked && rankedRows.length === 0 && (
+        <div className='text-sm text-white/55'>No ranked players yet — queue a Ranked Duel to appear here.</div>
+      )}
+      {state === 'ready' && isRanked && rankedRows.length > 0 && (
+        <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
+          <div className='grid grid-cols-[1.75rem_1fr_4.5rem_3.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
+            <Th align='right'>#</Th>
+            <Th>Player</Th>
+            <Th align='right'>Rating</Th>
+            <Th>Tier</Th>
+            <Th align='right'>W-L</Th>
+            {rankedRows.map((row, i) => (
+              <RankedLeaderRow key={row.id} rank={i + 1} row={row} you={row.id === rankedMe?.id} />
+            ))}
+            {rankedMe && rankedMe.rank > 0 && !rankedMeInTop && (
+              <>
+                <div className='col-span-5 my-1 border-t border-dashed border-white/15' />
+                <RankedLeaderRow
+                  rank={rankedMe.rank}
+                  row={{
+                    id: rankedMe.id,
+                    userName: rankedMe.userName,
+                    rating: rankedMe.rating,
+                    games: rankedMe.games,
+                    wins: rankedMe.wins,
+                    losses: rankedMe.losses,
+                    streak: rankedMe.streak,
+                    admin: false,
+                    verified: false,
+                  }}
+                  you
+                />
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {state === 'error' && !isRanked && (
         <div className='text-sm text-white/55'>Couldn&apos;t load the leaderboard. Try again later.</div>
       )}
-      {state === 'ready' && rows.length === 0 && (
+      {state === 'ready' && !isRanked && rows.length === 0 && (
         <div className='text-sm text-white/55'>No ranked players yet — finish a match to appear here.</div>
       )}
-      {state === 'ready' && rows.length > 0 && (
+      {state === 'ready' && !isRanked && rows.length > 0 && (
         <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
           <div className='grid grid-cols-[1.75rem_1fr_2.75rem_2.75rem_2.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
             <Th align='right'>#</Th>
@@ -5558,6 +6203,29 @@ function LeaderboardRow({ rank, row, you = false }: { rank: number; row: Leaderb
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.kd.toFixed(2)}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.totalWins}</div>
       <div className='py-1.5 text-right tabular-nums text-cyan-200/80'>{row.bestAccuracy.toFixed(1)}%</div>
+    </>
+  );
+}
+
+// A row on the Ranked (Elo) ladder: rank, player, rating, tier, W-L.
+function RankedLeaderRow({ rank, row, you = false }: { rank: number; row: RankedLeaderEntry; you?: boolean }) {
+  const medal =
+    rank === 1 ? 'text-amber-300' : rank === 2 ? 'text-zinc-300' : rank === 3 ? 'text-orange-300' : 'text-white/45';
+  const tint = you ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/90';
+  const tier = rankedTier(row.rating);
+  return (
+    <>
+      <div className={`py-1.5 text-right tabular-nums font-bold ${you ? 'text-cyan-200' : medal}`}>{rank}</div>
+      <div className={`flex min-w-0 items-center gap-1 py-1.5 ${tint}`}>
+        <span className='truncate'>{row.userName}</span>
+        <NameBadges admin={row.admin} verified={row.verified} size={12} />
+        {you && <span className='ml-1 shrink-0 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
+      </div>
+      <div className='py-1.5 text-right font-bold tabular-nums' style={{ color: tier.color }}>{row.rating}</div>
+      <div className='py-1.5 text-[11px] uppercase tracking-[0.08em]' style={{ color: tier.color }}>{tier.name}</div>
+      <div className='py-1.5 text-right tabular-nums text-white/55'>
+        {row.wins}-{row.losses}
+      </div>
     </>
   );
 }
@@ -5652,6 +6320,13 @@ function AdminModal({ onClose }: { onClose: () => void }) {
   return (
     <ModalShell title='Admin' onClose={onClose}>
       <div className='flex flex-col gap-3 font-mono'>
+        <a
+          href='/admin'
+          className='flex items-center justify-between rounded-md border border-cyan-400/40 bg-cyan-400/10 px-3 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/15'
+        >
+          <span>📊 Metrics dashboard</span>
+          <span aria-hidden>→</span>
+        </a>
         <div className='flex gap-2'>
           <input
             value={username}

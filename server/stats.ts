@@ -116,6 +116,12 @@ statsRouter.post('/stats', (req, res) => {
   const wins = body.won === true ? 1 : 0;
   const offline = body.offline === true;
   const accuracy = shotsFired > 0 ? (shotsHit / shotsFired) * 100 : 0;
+  // Game mode is metadata for the audit row only (drives the admin dashboard's
+  // mode breakdown). Whitelisted so a forged body can't pollute the breakdown.
+  const mode =
+    typeof body.mode === 'string' && ['ffa', 'duel', 'tdm', 'ranked'].includes(body.mode)
+      ? body.mode
+      : undefined;
 
   // Leaderboard name is the account username (moderated at registration), never
   // the client-supplied display name — so the standings can't show a forged
@@ -141,7 +147,7 @@ statsRouter.post('/stats', (req, res) => {
     event: 'match',
     actorId: id,
     actorName: account?.username ?? cleanName(body.name),
-    detail: { kills, deaths, won: wins === 1, headshots, accuracy: Math.round(accuracy), offline, xp: result.xpGained },
+    detail: { kills, deaths, won: wins === 1, headshots, accuracy: Math.round(accuracy), offline, xp: result.xpGained, mode },
     ip: req.ip,
   });
 
