@@ -1543,24 +1543,28 @@ export type RankedResult = {
 };
 
 // Apply a ranked 1v1 result (server-authoritative). Symmetric Elo: the winner
-// gains what the loser sheds, scaled by the upset. Both rows are created on
-// demand, floored at 100 so a rating can't go negative. Synchronous + single-
-// threaded, so the read-compute-write can't interleave. Audited as 'ranked.match'.
+// gains what the loser sheds, scaled by the upset. `weight` (0..1) damps the
+// rating change for a repeat opponent (anti match-fixing — see endRankedMatch);
+// at weight 1 it's a normal full-value game. Both rows are created on demand,
+// floored at 100 so a rating can't go negative. Synchronous + single-threaded,
+// so the read-compute-write can't interleave. Audited as 'ranked.match'.
 export function recordRankedResult(
   winnerId: string,
   winnerName: string,
   loserId: string,
   loserName: string,
   now: number = Date.now(),
+  weight: number = 1,
 ): RankedResult | null {
   if (!winnerId || !loserId || winnerId === loserId) return null;
+  const w8 = Math.max(0, Math.min(1, weight));
   rankedEnsureStmt.run({ playerId: winnerId, userName: winnerName, now });
   rankedEnsureStmt.run({ playerId: loserId, userName: loserName, now });
   const w = rankedRowStmt.get(winnerId) as RankedRow;
   const l = rankedRowStmt.get(loserId) as RankedRow;
   const expectedW = 1 / (1 + 10 ** ((l.rating - w.rating) / 400));
-  const dW = Math.round(kFactor(w.games, w.rating) * (1 - expectedW));
-  const dL = Math.round(kFactor(l.games, l.rating) * (0 - (1 - expectedW)));
+  const dW = Math.round(kFactor(w.games, w.rating) * (1 - expectedW) * w8);
+  const dL = Math.round(kFactor(l.games, l.rating) * (0 - (1 - expectedW)) * w8);
   const newW = Math.max(100, w.rating + dW);
   const newL = Math.max(100, l.rating + dL);
   rankedUpdateStmt.run({
@@ -1586,7 +1590,7 @@ export function recordRankedResult(
     actorId: winnerId,
     actorName: winnerName,
     targetId: loserId,
-    detail: { winnerRating: newW, loserRating: newL, dW, dL, loser: loserName },
+    detail: { winnerRating: newW, loserRating: newL, dW, dL, weight: w8, loser: loserName },
     now,
   });
   return {

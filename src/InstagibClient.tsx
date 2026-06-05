@@ -4129,6 +4129,11 @@ function RankedResultOverlay({
               <div className="mt-1 text-[12px] text-white/55">
                 {tier?.name} · ladder #{mine.rank}
               </div>
+              {result.reduced && (
+                <div className="mt-2 text-[11px] text-amber-300/80">
+                  Reduced rating — repeat opponent
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-center text-[12px] text-white/50">Unranked result.</div>

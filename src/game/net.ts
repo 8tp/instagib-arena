@@ -142,12 +142,14 @@ type RankedResultMessage = {
   winnerFrags: number;
   loserFrags: number;
   fragLimit: number;
+  reduced?: boolean; // rating change damped (repeat opponent)
   rating: { winner: RankedSide; loser: RankedSide } | null; // null if a guest slipped in
 };
 // What the Game forwards to the UI for the ranked end-of-match overlay.
 export type RankedResult = {
   won: boolean;
   forfeit: boolean;
+  reduced: boolean;
   winnerName: string;
   loserName: string | null;
   winnerFrags: number;
@@ -919,6 +921,7 @@ export class NetClient {
       this.events.onRankedResult?.({
         won,
         forfeit: msg.forfeit,
+        reduced: msg.reduced === true,
         winnerName: msg.winnerName,
         loserName: msg.loserName,
         winnerFrags: msg.winnerFrags,

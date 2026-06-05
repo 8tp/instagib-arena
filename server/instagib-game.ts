@@ -229,7 +229,6 @@ type ClientRecord = {
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
-  ip: string; // client IP (x-forwarded-for, best-effort) — ranked anti-collusion only
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
   verified: boolean; // account is_verified — drives the blue check (echoed in snapshots)
 };
@@ -447,12 +446,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // pairing tick (below) matches the two closest-rated waiters, widening the
   // acceptable rating gap the longer someone waits. Keyed by connection id.
   const rankedQueue = new Map<ClientId, { rating: number; joinedAt: number }>();
-  // Anti match-fixing: remember which account PAIRS recently played a ranked match
-  // so the same two can't immediately re-queue and trade wins back-and-forth.
-  // Keyed by the sorted account-id pair → last match-start time.
-  const recentRankedPairs = new Map<string, number>();
-  const RANKED_REMATCH_COOLDOWN_MS = 5 * 60_000;
+  // Anti match-fixing (office-friendly): matches are NEVER blocked by IP or
+  // rematch limits — colleagues on one office IP must be able to duel freely.
+  // Instead, beating the SAME opponent repeatedly within a rolling window earns
+  // DIMINISHING Elo, so self-farming / win-trading is pointless while a normal
+  // game (even a rematch or two) still moves full rating. We track each account
+  // PAIR's recent match times (sorted, sorted-id key) and derive a rating weight.
+  const recentRankedPairs = new Map<string, number[]>();
+  const RANKED_REPEAT_WINDOW_MS = 60 * 60_000; // 1h rolling window for "repeat opponent"
   const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  // Rating weight from how many times this pair already played in the window:
+  // 0→1.0 (full), 1→0.5, 2→0.25, … (2^-n). Farming decays to ~nothing fast.
+  const repeatWeight = (priorMatches: number): number => 2 ** -Math.max(0, priorMatches);
   // Is this account already in a live ranked match (on any of its connections)?
   // Stops queueing a second tab while playing ranked.
   const accountInRankedMatch = (playerId: string): boolean => {
@@ -1259,19 +1264,25 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (room.state !== 'active') return; // guard against double-resolve
     const loserId = loserOverride ? null : [...room.members].find((id) => id !== winner.id);
     const loser = loserOverride ?? (loserId ? clients.get(loserId) : undefined);
-    // Defense-in-depth against match-fixing: only move Elo for two DISTINCT
-    // accounts on DISTINCT networks. The queue already refuses to pair same-account
-    // or same-IP, so this should never fire — but it guarantees no self-/collusion
-    // farming even if some future path puts two such players in a ranked room.
-    const legit =
-      !!loser &&
-      !!winner.playerId &&
-      !!loser.playerId &&
-      winner.playerId !== loser.playerId &&
-      !(winner.ip !== 'unknown' && winner.ip === loser.ip);
+    // Only move Elo between two DISTINCT accounts (a self-match moves nothing).
+    const legit = !!loser && !!winner.playerId && !!loser.playerId && winner.playerId !== loser.playerId;
+    // Diminishing returns vs the SAME opponent: count this pair's matches inside
+    // the rolling window, weight the rating change by 2^-priorMatches, then record
+    // this match. Repeat-farming a single opponent earns ~nothing; a normal game
+    // (incl. an occasional rematch) still moves full Elo. Office-friendly: never
+    // blocks the match, only scales what a repeated win is worth.
+    const now = Date.now();
+    let weight = 1;
+    if (legit && loser) {
+      const key = pairKey(winner.playerId, loser.playerId);
+      const times = (recentRankedPairs.get(key) ?? []).filter((t) => now - t < RANKED_REPEAT_WINDOW_MS);
+      weight = repeatWeight(times.length);
+      times.push(now);
+      recentRankedPairs.set(key, times);
+    }
     const rating =
       legit && loser
-        ? recordRankedResult(winner.playerId, winner.name, loser.playerId, loser.name)
+        ? recordRankedResult(winner.playerId, winner.name, loser.playerId, loser.name, now, weight)
         : null;
     room.state = 'voting'; // reuse the shot-freeze guard; no actual map vote for ranked
     room.vote = null;
@@ -1285,6 +1296,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       winnerFrags: winner.frags,
       loserFrags: loser?.frags ?? 0,
       fragLimit: RANKED_DUEL_FRAG_LIMIT,
+      reduced: weight < 1, // rating change was damped (repeat opponent) — UI hint
       rating, // { winner: { rating, delta, rank }, loser: {...} } | null (guests/missing)
     };
     broadcastRoom(room, payload);
@@ -1469,21 +1481,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket, req?: { headers?: Record<string, string | string[] | undefined>; socket?: { remoteAddress?: string } }) => {
+  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
     const id = genId();
     const now = Date.now();
     // The progression identity (the logged-in account behind the httpOnly
     // `igsession` cookie) rides the WS upgrade on the same origin — we use it to
     // ownership-check cosmetic equips. Guests resolve to '' (defaults only).
-    const playerId = accountIdFromCookieHeader(
-      typeof req?.headers?.cookie === 'string' ? req.headers.cookie : undefined,
-    );
-    // Best-effort client IP (proxy-forwarded first hop). Used ONLY for ranked
-    // anti-collusion (don't auto-match two sockets from the same network — the
-    // "open another tab + alt account" self-match). Never shown to players.
-    const xff = req?.headers?.['x-forwarded-for'];
-    const fwd = Array.isArray(xff) ? xff[0] : xff;
-    const ip = (fwd ? String(fwd).split(',')[0] : req?.socket?.remoteAddress ?? '').trim() || 'unknown';
+    const playerId = accountIdFromCookieHeader(req?.headers?.cookie);
     // The display name is SERVER-AUTHORITATIVE — never taken from the client.
     // A logged-in player gets their account username (moderated at registration,
     // see server/profanity.ts); a guest starts as "Guest" and is renumbered to a
@@ -1530,7 +1534,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
       crosshair: '',
       card: null,
       playerId,
-      ip,
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
       history: [],
@@ -2205,17 +2208,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   // Ranked matchmaking: pair the closest-rated waiters (oldest waiter first), the
   // acceptable rating gap widening the longer they've waited so a lone outlier
-  // still gets a game. ANTI MATCH-FIXING: never auto-pair two sockets of the same
-  // account or the same IP (the "open another tab + alt account, queue against
-  // yourself" exploit), and don't immediately re-pair the same two accounts
-  // (win-trading). Pairs spawn a private ranked room — both clients are 'matched'
-  // into it (same handoff as quickmatch).
+  // still gets a game. The ONLY hard block is same-account (you can't be matched
+  // against your own second tab); everything else — including two accounts on one
+  // office IP — is allowed to match freely. Match-fixing is neutralized by the
+  // diminishing-Elo-vs-repeat-opponent rule in endRankedMatch, not by blocking
+  // matches. Pairs spawn a private ranked room — both clients are 'matched' in.
   const rankedTimer = setInterval(() => {
     const now = Date.now();
-    // Forget pair cooldowns that have lapsed (keeps the map bounded).
-    for (const [k, t] of recentRankedPairs) {
-      if (now - t > RANKED_REMATCH_COOLDOWN_MS) recentRankedPairs.delete(k);
-    }
     // Prune stale entries (socket gone, or the client moved into a match/spectate).
     for (const [id] of rankedQueue) {
       const c = clients.get(id);
@@ -2228,9 +2227,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     while (progressed && rankedQueue.size >= 2 && guard++ < 64) {
       progressed = false;
       const waiting = [...rankedQueue.entries()].sort((a, b) => a[1].joinedAt - b[1].joinedAt);
-      // Find the first waiter that has an ELIGIBLE partner (skipping same-account /
-      // same-IP / recently-played pairs). Pairing the oldest first keeps it fair;
-      // an ineligible oldest waiter just waits while others can still match.
+      // Pair the oldest waiter that has an eligible partner (only same-account is
+      // skipped). An oldest waiter with no eligible partner just waits while
+      // others can still match.
       for (let wi = 0; wi < waiting.length && !progressed; wi++) {
         const [aId, a] = waiting[wi];
         const ca = clients.get(aId);
@@ -2246,10 +2245,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           const [cid, cv] = waiting[j];
           const cc = clients.get(cid);
           if (!cc) continue;
-          if (cc.playerId === ca.playerId) continue; // same account (two tabs)
-          if (cc.ip !== 'unknown' && cc.ip === ca.ip) continue; // same network / device
-          const last = recentRankedPairs.get(pairKey(ca.playerId, cc.playerId));
-          if (last != null && now - last < RANKED_REMATCH_COOLDOWN_MS) continue; // anti win-trade
+          if (cc.playerId === ca.playerId) continue; // same account (two tabs) — never self-match
           const gap = Math.abs(cv.rating - a.rating);
           if (gap < bestGap) {
             bestGap = gap;
@@ -2264,7 +2260,6 @@ export function attachInstagibWs(wss: WebSocketServer) {
         rankedQueue.delete(bestId);
         progressed = true;
         if (!cb) break;
-        recentRankedPairs.set(pairKey(ca.playerId, cb.playerId), now);
         const pool = mapPoolForMode('duel');
         const mapId = pool[Math.floor(Math.random() * pool.length)] ?? DEFAULT_ARENA_ID;
         const room = createRoom({
