@@ -234,8 +234,8 @@ export type HatCosmetic = {
 
 export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.none',       name: 'Bare Head',      blurb: 'No hat — classic.',                      rarity: 'common', source: { type: 'default' },             model: null },
-  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: `${HAT_DIR}/cap.glb`, fit: 0.92, sink: -0.07, yaw: Math.PI / 2 },
-  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb`, fit: 1.05, sink: -0.01, yaw: Math.PI },
+  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: `${HAT_DIR}/cap.glb`, fit: 0.92, sink: 0.05, yaw: Math.PI / 2 },
+  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb`, fit: 1.05, sink: 0.08, yaw: Math.PI },
   { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'credits', price: 400 }, model: `${HAT_DIR}/hard-hat.glb`, fit: 0.94, sink: -0.04 },
   { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 5 },     model: `${HAT_DIR}/graduation-cap.glb`, fit: 0.86, sink: 0.03 },
   { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'credits', price: 1000 }, model: `${HAT_DIR}/top-hat.glb`, fit: 0.86, sink: 0.03, stretch: 1.45 },
