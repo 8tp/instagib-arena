@@ -18,6 +18,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { statsRouter } from './stats';
 import { leaderboardRouter } from './leaderboard';
 import { rankedRouter } from './ranked';
+import { challengeRouter } from './challenge';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminRouter } from './admin';
 import { syncAdminsFromEnv } from './db';
@@ -140,6 +141,7 @@ app.use('/api', authRouter);
 app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
 app.use('/api', rankedRouter);
+app.use('/api', challengeRouter);
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;

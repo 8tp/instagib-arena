@@ -56,6 +56,7 @@ import {
   TOAST_FADE_SEC,
   rankedTier,
   rankedTierName,
+  WEEKLY_CHALLENGE_MAP,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
@@ -278,6 +279,8 @@ export type MatchConfig =
       botCount: number;
       difficulty: BotDifficulty;
       training?: boolean; // endless practice — no frag-limit match end
+      gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
+      challenge?: boolean; // weekly-challenge run (1v1 vs hard bot → weekly leaderboard, not career)
     }
   | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
@@ -721,6 +724,7 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
     game.setBotDifficulty(config.difficulty);
     game.setBotCount(config.botCount);
     game.setBotsEnabled(true);
+    game.setBotMode(config.gameMode ?? 'ffa'); // after the bots exist (sets teams in TDM)
   }
 }
 
@@ -1001,12 +1005,17 @@ function GameView({
   const [joinError, setJoinError] = useState<string | null>(null);
   // Ranked Duel end-of-match result (rating delta) → full-screen overlay.
   const [rankedResult, setRankedResult] = useState<RankedResult | null>(null);
+  // Weekly-challenge end-of-run standing (rank/best) → small result banner.
+  const [challengeResult, setChallengeResult] = useState<WeeklyChallengeMe | null>(null);
   // Online: the results podium is shown briefly at match-end BEFORE the map vote.
   // We freeze the final standings here so a late snapshot can't change the podium.
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
   const hudRef = useRef<HudState>(INITIAL_HUD);
   const offlineMatch = config.mode !== 'multiplayer';
+  // Weekly-challenge run: submits kills/time to the weekly board, NOT career K/D.
+  const isChallenge = config.mode === 'local' && config.challenge === true;
+  const matchStartRef = useRef(0);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1020,15 +1029,24 @@ function GameView({
     // the results podium, then continues to the server-driven map vote.
     const game = new Game(canvas, listener, (result) => {
       setEndResult(result);
-      void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
-        if (p) setEndProgression(p);
-      });
+      if (isChallenge) {
+        // Weekly challenge: log kills + (if you beat the bot) the win time to the
+        // weekly board. Never touches career K/D.
+        void submitChallengeStats(result, Date.now() - matchStartRef.current).then((me) => {
+          if (me) setChallengeResult(me);
+        });
+      } else {
+        void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
+          if (p) setEndProgression(p);
+        });
+      }
       if (config.mode === 'multiplayer') {
         setPodiumScores(hudRef.current.scores);
         setOnlineResults(true);
       }
     });
     gameRef.current = game;
+    matchStartRef.current = Date.now(); // for the challenge win-time
     // Toggle the net-debug overlay. F3 (often Mission Control on macOS) OR the
     // backtick/tilde key (`) which has no OS conflict. Works locked or not.
     const onDebugKey = (e: KeyboardEvent) => {
@@ -1117,9 +1135,13 @@ function GameView({
     exitFullscreen();
     const game = gameRef.current;
     const r = game?.getStats() ?? null;
-    if (r && game?.hasRecordableStats()) void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
+    // A weekly-challenge run only counts when it FINISHES (match-end); leaving
+    // mid-run abandons it. Other matches submit the partial run to career stats.
+    if (!isChallenge && r && game?.hasRecordableStats()) {
+      void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
+    }
     onExit(r);
-  }, [onExit, offlineMatch]);
+  }, [onExit, offlineMatch, isChallenge]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck
@@ -1230,6 +1252,17 @@ function GameView({
             onExit(endResult);
           }}
         />
+      )}
+      {isChallenge && challengeResult && hud.matchOver && (
+        <div className='pointer-events-none absolute left-1/2 top-6 z-[55] -translate-x-1/2 rounded-lg border border-amber-400/40 bg-zinc-950/90 px-5 py-2.5 text-center font-mono shadow-lg'>
+          <div className='text-[10px] uppercase tracking-[0.2em] text-amber-300'>Weekly Challenge</div>
+          <div className='mt-1 text-sm text-white'>
+            {challengeResult.won
+              ? `Beat the bot — ${fmtChallengeTime(challengeResult.timeMs)}`
+              : `${challengeResult.kills} kills`}
+            <span className='text-white/50'> · best #{challengeResult.rank}</span>
+          </div>
+        </div>
       )}
       {!rankedResult && hud.matchOver && !hud.pom && (
         <MatchOverOverlay
@@ -4047,6 +4080,49 @@ async function submitMatchStats(
   }
 }
 
+// ── Weekly Challenge ─────────────────────────────────────────────────────────
+type WeeklyChallengeEntry = {
+  id: string;
+  userName: string;
+  kills: number;
+  timeMs: number; // best winning time (0 = never beat the bot)
+  won: boolean;
+  runs: number;
+  admin: boolean;
+  verified: boolean;
+};
+type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
+
+// mm:ss.s from a millisecond duration (for the challenge win time).
+function fmtChallengeTime(ms: number): string {
+  if (ms <= 0) return '—';
+  const s = ms / 1000;
+  const m = Math.floor(s / 60);
+  const rem = (s - m * 60).toFixed(1);
+  return m > 0 ? `${m}:${rem.padStart(4, '0')}` : `${rem}s`;
+}
+
+// Submit a finished weekly-challenge run. Records to the weekly board only — never
+// career K/D. Returns the player's updated standing (rank/best), or null.
+async function submitChallengeStats(
+  result: MatchResult,
+  timeMs: number,
+): Promise<WeeklyChallengeMe | null> {
+  try {
+    const res = await fetch('/api/challenge/weekly', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ kills: result.kills, won: result.won, timeMs }),
+    });
+    if (!res.ok) return null;
+    const d = (await res.json()) as { me?: WeeklyChallengeMe | null };
+    return d.me ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Menu chat caps. CLIENT_LEN mirrors the server's CHAT_MAX_LEN (the server is
 // authoritative; this is just so the input + counter agree). LOG_MAX bounds the
 // in-memory log (the server already trims replayed history to 50).
@@ -4374,6 +4450,105 @@ function RankedModal({
   );
 }
 
+// Weekly Challenge: play a 1v1 vs a hard bot + the weekly board. Anyone can play;
+// only logged-in runs are recorded (consistent with career/ranked).
+function WeeklyChallengeModal({
+  account,
+  onPlay,
+  onClose,
+}: {
+  account: Account;
+  onPlay: () => void;
+  onClose: () => void;
+}) {
+  const [entries, setEntries] = useState<WeeklyChallengeEntry[]>([]);
+  const [me, setMe] = useState<WeeklyChallengeMe | null>(null);
+  const [info, setInfo] = useState<{ map: string; fragLimit: number } | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { entries?: WeeklyChallengeEntry[]; me?: WeeklyChallengeMe | null; map?: string; fragLimit?: number } | null) => {
+        if (!active || !d) return;
+        setEntries(d.entries ?? []);
+        setMe(d.me ?? null);
+        setInfo({ map: d.map ?? WEEKLY_CHALLENGE_MAP, fragLimit: d.fragLimit ?? 15 });
+        setReady(true);
+      })
+      .catch(() => active && setReady(true));
+    return () => {
+      active = false;
+    };
+  }, []);
+  const mapName = info ? (mapById(info.map)?.name ?? info.map) : '';
+  return (
+    <ModalShell title='Weekly Challenge' onClose={onClose}>
+      <div className='flex flex-col gap-4 font-mono'>
+        <p className='text-[13px] leading-relaxed text-white/65'>
+          1v1 a <span className='text-rose-300'>HARD bot</span>
+          {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Most kills tops the week; ties go
+          to the <span className='text-amber-200'>fastest win</span>. This is its own board — it never
+          touches your K/D.
+        </p>
+
+        <div className='flex items-center justify-between rounded-lg border border-white/12 bg-black/30 px-4 py-3'>
+          <div>
+            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>Your week</div>
+            {me ? (
+              <div className='mt-0.5 text-[13px] text-white/85'>
+                {me.won ? `Best win ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
+                <span className='text-white/45'> · rank #{me.rank}</span>
+              </div>
+            ) : (
+              <div className='mt-0.5 text-[12px] text-white/45'>
+                {account ? 'No run yet this week.' : 'Log in to save your score.'}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={onPlay}
+            className='rounded-lg bg-rose-400 px-5 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-rose-300'
+          >
+            Play challenge
+          </button>
+        </div>
+
+        <div className='rounded-lg border border-white/12 bg-black/30 p-4'>
+          <div className='mb-2 text-[10px] uppercase tracking-[0.2em] text-white/45'>This week</div>
+          {!ready ? (
+            <div className='py-4 text-center text-[12px] text-white/35'>Loading…</div>
+          ) : entries.length === 0 ? (
+            <div className='py-4 text-center text-[12px] text-white/35'>No runs yet — be the first.</div>
+          ) : (
+            <div className='max-h-[300px] overflow-y-auto'>
+              <table className='w-full text-left text-[12px]'>
+                <tbody>
+                  {entries.map((e, i) => (
+                    <tr key={e.id} className={`border-t border-white/8 ${e.id === me?.id ? 'bg-rose-400/10' : ''}`}>
+                      <td className='py-1.5 pr-2 tabular-nums text-white/40'>{i + 1}</td>
+                      <td className='py-1.5 pr-2 text-white/85'>
+                        <span className='flex items-center gap-1'>
+                          {e.userName}
+                          {e.verified && <span className='text-cyan-300'>✓</span>}
+                        </span>
+                      </td>
+                      <td className='py-1.5 pr-2 text-right tabular-nums text-white/80'>{e.kills} K</td>
+                      <td className='py-1.5 text-right tabular-nums text-amber-200/80'>
+                        {e.won ? fmtChallengeTime(e.timeMs) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function Lobby({
   settings,
   onChangeSettings,
@@ -4410,6 +4585,7 @@ function Lobby({
   const [rankedOpen, setRankedOpen] = useState(false);
   const [rankedStatus, setRankedStatus] = useState<RankedStatus | null>(null);
   const [rankedRooms, setRankedRooms] = useState<RankedRoom[]>([]);
+  const [weeklyOpen, setWeeklyOpen] = useState(false);
   // Selected online game mode for Quick Match + Create Match (FFA / Duel / TDM).
   const [selectedMode, setSelectedMode] = useState<GameMode>(DEFAULT_GAME_MODE);
   // Live menu presence + global chat (pushed over the lobby socket).
@@ -4697,6 +4873,16 @@ function Lobby({
                 </DeckButton>
               </div>
               <div className='col-span-2'>
+                <DeckButton onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' full>
+                  <span className='inline-flex items-center gap-2'>
+                    🗓 Weekly Challenge
+                    <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
+                      1v1 vs hard bot
+                    </span>
+                  </span>
+                </DeckButton>
+              </div>
+              <div className='col-span-2'>
                 <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled} full>
                   ◭ Solo vs Bots
                 </DeckButton>
@@ -4827,6 +5013,22 @@ function Lobby({
             if (rankedStatus?.state === 'searching') lobbyRef.current?.rankedCancel();
             setRankedOpen(false);
           }}
+        />
+      )}
+      {weeklyOpen && (
+        <WeeklyChallengeModal
+          account={account}
+          onPlay={() =>
+            onStart({
+              mode: 'local',
+              mapId: WEEKLY_CHALLENGE_MAP,
+              botCount: 1,
+              difficulty: 'hard',
+              gameMode: 'duel',
+              challenge: true,
+            })
+          }
+          onClose={() => setWeeklyOpen(false)}
         />
       )}
       {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} />}
@@ -5473,20 +5675,51 @@ function CreateMatchModal({
   const [players, setPlayers] = useState(MAX_PLAYERS);
   const [mapId, setMapId] = useState(settings.mapId);
   const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
+  const [gameMode, setGameMode] = useState<GameMode>('ffa');
+
+  // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
+  const effPlayers = gameMode === 'duel' ? 2 : players;
 
   const start = () => {
     onChangeSettings({ ...settings, mapId, difficulty });
-    onStart({ mode: 'local', mapId, botCount: Math.max(0, players - 1), difficulty });
+    onStart({
+      mode: 'local',
+      mapId,
+      botCount: Math.max(1, effPlayers - 1),
+      difficulty,
+      gameMode,
+    });
   };
 
   return (
     <ModalShell title='Solo vs Bots' onClose={onClose}>
       <SelectField label='Arena' value={mapId} options={MAPS} onChange={setMapId} />
-      <label className='flex flex-col gap-1.5'>
+      <div className='flex flex-col gap-1.5'>
+        <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Mode</span>
+        <div className='grid grid-cols-3 gap-2'>
+          {GAME_MODES.map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setGameMode(m.id)}
+              title={m.blurb}
+              className={`rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
+                gameMode === m.id
+                  ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
+                  : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
+              }`}
+            >
+              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : 'Duel'}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className={`flex flex-col gap-1.5 ${gameMode === 'duel' ? 'opacity-40' : ''}`}>
         <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
           <span>Players</span>
           <span className='tabular-nums text-white/85'>
-            {players} ({players - 1} {players - 1 === 1 ? 'bot' : 'bots'})
+            {gameMode === 'duel'
+              ? '2 (1 bot · 1v1)'
+              : `${effPlayers} (${effPlayers - 1} ${effPlayers - 1 === 1 ? 'bot' : 'bots'}${gameMode === 'tdm' ? ' · 2 teams' : ''})`}
           </span>
         </div>
         <input
@@ -5494,7 +5727,8 @@ function CreateMatchModal({
           min={2}
           max={MAX_PLAYERS}
           step={1}
-          value={players}
+          value={effPlayers}
+          disabled={gameMode === 'duel'}
           onChange={(e) => setPlayers(Number(e.target.value))}
           className='w-full accent-emerald-400'
         />

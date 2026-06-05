@@ -1648,3 +1648,157 @@ export function getRankedLeaderboard(limit: number): RankedLeaderEntry[] {
   }
   return base;
 }
+
+// ── Weekly Challenge ─────────────────────────────────────────────────────────
+// A weekly leaderboard for the "1v1 vs a hard bot" challenge mode. Ranked by most
+// kills, then fastest WIN (best_time_ms, only set on a run that reached the cap).
+// Account-only and SEPARATE from career stats — it never touches K/D. The match
+// is offline (vs a bot) so scores are client-reported + clamped (best-effort,
+// like career stats); the stakes are a cosmetic weekly board.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_weekly_challenge (
+  player_id    TEXT NOT NULL,
+  week_key     TEXT NOT NULL,
+  user_name    TEXT NOT NULL,
+  best_kills   INTEGER NOT NULL DEFAULT 0,
+  best_time_ms INTEGER NOT NULL DEFAULT 0,  -- fastest winning run (0 = never won)
+  runs         INTEGER NOT NULL DEFAULT 0,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (player_id, week_key)
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_challenge ON instagib_weekly_challenge(week_key, best_kills);
+`);
+
+const wcRowStmt = sqlite.prepare(
+  `SELECT * FROM instagib_weekly_challenge WHERE player_id = ? AND week_key = ?`,
+);
+const wcEnsureStmt = sqlite.prepare(`
+  INSERT OR IGNORE INTO instagib_weekly_challenge (player_id, week_key, user_name, updated_at)
+  VALUES (@playerId, @weekKey, @userName, @now)`);
+const wcUpdateStmt = sqlite.prepare(`
+  UPDATE instagib_weekly_challenge
+     SET user_name = @userName, best_kills = @bestKills, best_time_ms = @bestTimeMs,
+         runs = runs + 1, updated_at = @now
+   WHERE player_id = @playerId AND week_key = @weekKey`);
+// Order: most kills first; among equal kills, a recorded win (best_time_ms > 0)
+// beats no-win, and faster wins rank higher. No-win rows sort after by recency.
+const WC_ORDER = `ORDER BY best_kills DESC,
+  (CASE WHEN best_time_ms > 0 THEN best_time_ms ELSE 9.0e18 END) ASC, updated_at ASC`;
+const wcLeaderboardStmt = sqlite.prepare(
+  `SELECT * FROM instagib_weekly_challenge WHERE week_key = ? ${WC_ORDER} LIMIT ?`,
+);
+const wcRankStmt = sqlite.prepare(`
+  SELECT COUNT(*) AS n FROM instagib_weekly_challenge
+   WHERE week_key = @weekKey AND (
+     best_kills > @kills OR
+     (best_kills = @kills AND @timeMs > 0 AND best_time_ms > 0 AND best_time_ms < @timeMs)
+   )`);
+
+type WcRow = {
+  player_id: string;
+  week_key: string;
+  user_name: string;
+  best_kills: number;
+  best_time_ms: number;
+  runs: number;
+  updated_at: number;
+};
+
+export type WeeklyChallengeEntry = {
+  id: string;
+  userName: string;
+  kills: number;
+  timeMs: number; // best winning time, 0 = never beat the bot
+  won: boolean;
+  runs: number;
+  admin: boolean;
+  verified: boolean;
+};
+export type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
+
+// Record a challenge run, keeping the player's BEST for the week: most kills, and
+// (if this run beat the bot) the fastest winning time. Account-only.
+export function recordWeeklyChallenge(
+  playerId: string,
+  userName: string,
+  kills: number,
+  won: boolean,
+  timeMs: number,
+  now: number = Date.now(),
+): WeeklyChallengeMe | null {
+  if (!playerId) return null;
+  const wk = weekKey(now);
+  wcEnsureStmt.run({ playerId, weekKey: wk, userName, now });
+  const cur = wcRowStmt.get(playerId, wk) as WcRow;
+  const bestKills = Math.max(cur.best_kills, kills);
+  const bestTimeMs =
+    won && timeMs > 0
+      ? cur.best_time_ms > 0
+        ? Math.min(cur.best_time_ms, timeMs)
+        : timeMs
+      : cur.best_time_ms;
+  wcUpdateStmt.run({ playerId, weekKey: wk, userName, bestKills, bestTimeMs, now });
+  const rank =
+    num(wcRankStmt.get({ weekKey: wk, kills: bestKills, timeMs: bestTimeMs })) + 1;
+  return {
+    id: playerId,
+    userName,
+    kills: bestKills,
+    timeMs: bestTimeMs,
+    won: bestTimeMs > 0,
+    runs: cur.runs + 1,
+    rank,
+    admin: false,
+    verified: false,
+  };
+}
+
+function toWcEntry(r: WcRow): WeeklyChallengeEntry {
+  return {
+    id: r.player_id,
+    userName: r.user_name,
+    kills: r.best_kills,
+    timeMs: r.best_time_ms,
+    won: r.best_time_ms > 0,
+    runs: r.runs,
+    admin: false,
+    verified: false,
+  };
+}
+
+export function getWeeklyChallengeLeaderboard(
+  limit: number,
+  now: number = Date.now(),
+): WeeklyChallengeEntry[] {
+  const n = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = wcLeaderboardStmt.all(weekKey(now), n) as WcRow[];
+  const base = rows.map(toWcEntry);
+  if (base.length) {
+    const ph = base.map(() => '?').join(',');
+    const flags = sqlite
+      .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
+      .all(...base.map((e) => e.id)) as { id: string; is_admin: number; is_verified: number }[];
+    const byId = new Map(flags.map((f) => [f.id, f]));
+    for (const e of base) {
+      const f = byId.get(e.id);
+      if (f) {
+        e.admin = !!f.is_admin;
+        e.verified = !!f.is_verified;
+      }
+    }
+  }
+  return base;
+}
+
+export function getWeeklyChallengeMe(
+  playerId: string,
+  now: number = Date.now(),
+): WeeklyChallengeMe | null {
+  if (!playerId) return null;
+  const wk = weekKey(now);
+  const r = wcRowStmt.get(playerId, wk) as WcRow | undefined;
+  if (!r) return null;
+  const rank =
+    num(wcRankStmt.get({ weekKey: wk, kills: r.best_kills, timeMs: r.best_time_ms })) + 1;
+  return { ...toWcEntry(r), rank };
+}

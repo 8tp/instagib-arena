@@ -240,6 +240,7 @@ export class Game {
   // Match config + state
   private botCount = NUM_BOTS;
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
+  private botMode: GameMode = 'ffa'; // offline game mode (ffa/duel/tdm) for Solo vs Bots
   private matchOver = false;
   private matchWon = false;
   // Match "drama" cues, evaluated from the scoreboard in emitHud. One-shot per
@@ -627,6 +628,36 @@ export class Game {
     this.rebuildBots();
   }
 
+  // Offline game mode for Solo vs Bots (ffa/duel/tdm). Drives the win condition,
+  // the HUD, and — in TDM — bot team assignment + friendly fire + team colors.
+  setBotMode(mode: GameMode) {
+    this.botMode = mode;
+    this.applyBotTeams();
+    this.emitHud();
+  }
+
+  // Assign offline teams from the current bot mode. TDM splits the player (team 0)
+  // + bots across two balanced teams and tints bot nameplates (ally green / foe
+  // team color) since friendly fire is off; FFA/Duel clear teams. Online is
+  // server-driven, so this is a no-op there. Re-run after any bot (re)build.
+  private applyBotTeams() {
+    if (this.net) return;
+    this.netMode = this.botMode;
+    if (this.botMode === 'tdm' && this.bots) {
+      this.localTeam = 0;
+      const list = this.bots.bots;
+      const total = list.length + 1; // bots + the human
+      const team0Bots = Math.max(0, Math.ceil(total / 2) - 1); // human takes one team-0 slot
+      list.forEach((b, i) => {
+        const team = i < team0Bots ? 0 : 1;
+        b.setTeam(team, this.teamColorHex(team) ?? '#ffd1d8');
+      });
+    } else {
+      this.localTeam = null;
+      if (this.bots) for (const b of this.bots.bots) b.setTeam(null);
+    }
+  }
+
   private rebuildBots() {
     if (!this.bots) return; // not spawned yet — applyBotsState() will use the new values
     this.bots.dispose(this.scene);
@@ -989,6 +1020,7 @@ export class Game {
         this.botFrags.set(b.state.id, 0);
       }
       this.applyEnemyStyle();
+      this.applyBotTeams(); // re-apply TDM teams after a (re)build
       // A real (non-training) offline match opens with a short warmup: a
       // countdown during which neither side can frag, plus first-spawn grace so
       // the cold open isn't a free kill for whoever the bots target first.
@@ -1677,9 +1709,9 @@ export class Game {
       // Targetable entities: the local player (only while alive) + all live
       // bots. Each bot skips itself. Resolve any shots they decide to take.
       const enemies: BotTarget[] = [];
-      if (!dead) enemies.push({ id: 'player', pos: this.player.pos });
+      if (!dead) enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam });
       for (const b of this.bots.bots) {
-        if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos });
+        if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam() });
       }
       const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
       // During the countdown bots are frozen (no intents); afterwards they frag.
@@ -1810,6 +1842,8 @@ export class Game {
     const bots = this.bots?.bots ?? [];
     for (const b of bots) {
       if (!b.state.alive) continue;
+      // TDM: can't hit teammates (friendly fire off) — leave them off the raycast.
+      if (this.localTeam != null && b.getTeam() === this.localTeam) continue;
       targets.push({
         kind: 'bot',
         id: b.state.id,
@@ -2022,7 +2056,10 @@ export class Game {
     let victimName = '';
     let victimPos: { x: number; y: number; z: number } | null = null;
     let bestT = wallT;
-    if (this.killcam === null && this.localRespawnInvuln <= 0) {
+    // TDM: a bot never hits its own team — skip the player (if same team) and any
+    // same-team bot when resolving the shot (friendly fire is off).
+    const playerIsTeammate = intent.team != null && this.localTeam === intent.team;
+    if (this.killcam === null && this.localRespawnInvuln <= 0 && !playerIsTeammate) {
       const t = rayAabb(o, d, this.playerBounds());
       if (t !== null && t > 0 && t < bestT) {
         bestT = t;
@@ -2035,6 +2072,7 @@ export class Game {
     if (this.bots) {
       for (const b of this.bots.bots) {
         if (!b.state.alive || b.state.id === intent.botId) continue;
+        if (intent.team != null && b.getTeam() === intent.team) continue; // teammate — friendly fire off
         const t = rayAabb(o, d, b.bounds());
         if (t !== null && t > 0 && t < bestT) {
           bestT = t;
@@ -2148,18 +2186,43 @@ export class Game {
     });
   }
 
+  // Offline TDM team frag totals [team0, team1] = each team's members' frags.
+  private teamFragTotals(): [number, number] {
+    const totals: [number, number] = [0, 0];
+    if (this.localTeam === 0) totals[0] += this.playerFrags;
+    else if (this.localTeam === 1) totals[1] += this.playerFrags;
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        const t = b.getTeam();
+        if (t === 0 || t === 1) totals[t] += this.botFrags.get(b.state.id) ?? 0;
+      }
+    }
+    return totals;
+  }
+
   private checkMatchEnd() {
     // Multiplayer match-end is server-authoritative (it triggers the map vote),
     // training is endless — only local/bot matches end client-side.
     if (this.matchOver || this.training || this.net) return;
+    // TDM: first TEAM to the team frag limit wins.
+    if (this.botMode === 'tdm' && this.localTeam != null) {
+      const [t0, t1] = this.teamFragTotals();
+      if (Math.max(t0, t1) >= TDM_FRAG_LIMIT) {
+        const mine = this.localTeam === 0 ? t0 : t1;
+        const other = this.localTeam === 0 ? t1 : t0;
+        this.endMatch(mine >= other);
+      }
+      return;
+    }
+    // FFA / Duel: first PLAYER to the frag limit wins (duel is a 1v1 race).
+    const limit = this.botMode === 'duel' ? DUEL_FRAG_LIMIT : MATCH_FRAG_LIMIT;
     const counts = [this.playerFrags];
     if (this.bots) {
       for (const b of this.bots.bots) counts.push(this.botFrags.get(b.state.id) ?? 0);
     }
     counts.sort((a, b) => b - a);
     const top = counts[0];
-    // End only when someone reaches the frag limit — matches play to the limit.
-    if (top >= MATCH_FRAG_LIMIT) {
+    if (top >= limit) {
       this.endMatch(this.playerFrags >= top); // you win iff you (co-)lead
     }
   }
@@ -2619,6 +2682,7 @@ export class Game {
             this.botShotsHit.get(b.state.id) ?? 0,
             this.botShotsFired.get(b.state.id) ?? 0,
           ),
+          team: b.getTeam(), // TDM team (null in FFA/Duel) → drives team score + colors
         });
       }
     }

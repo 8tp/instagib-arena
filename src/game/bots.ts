@@ -80,9 +80,9 @@ const BOT_MOVE: Record<BotDifficulty, BotMove> = {
 };
 
 // An enemy a bot can target (the local player or another bot).
-export type BotTarget = { id: string; pos: Vec3 };
+export type BotTarget = { id: string; pos: Vec3; team?: number | null };
 // A bot's decision to fire this tick — resolved by Game against the world.
-export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3 };
+export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3; team: number | null };
 const MODEL_SCALE = 1.0;
 // Soldier.glb actually faces -Z at identity (confirmed: when camera is at
 // +Z we see the model's back). Movement direction comes back as
@@ -196,7 +196,7 @@ export function pickFreeSpot(
   return { x: map.spawn.x, y: 0.05, z: map.spawn.z };
 }
 
-function makeNameSprite(name: string): THREE.Sprite {
+function makeNameSprite(name: string, color = '#ffd1d8'): THREE.Sprite {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 64;
@@ -213,10 +213,12 @@ function makeNameSprite(name: string): THREE.Sprite {
     ctx.fillStyle = 'rgba(8,10,14,0.7)';
     roundRect(ctx, (canvas.width - boxW) / 2, (canvas.height - boxH) / 2, boxW, boxH, 8);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,209,216,0.35)';
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.4;
     ctx.lineWidth = 1.5;
     ctx.stroke();
-    ctx.fillStyle = '#ffd1d8';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
     ctx.fillText(name, canvas.width / 2, canvas.height / 2 + 1);
   }
   const tex = new THREE.CanvasTexture(canvas);
@@ -310,6 +312,9 @@ export class Bot {
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
   private target: Vec3;
+  private roamStuckTimer = 0; // accrues while a roaming bot makes no progress → forces an unstick
+  private team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
+  private nameColor = '#ffd1d8'; // current nameplate color (team-tinted in TDM)
   private facing = 0;
   private dyingTimer = 0;
   // Vertical physics so bots obey gravity (fall off ledges) and auto-step up
@@ -441,6 +446,8 @@ export class Bot {
     let bestDist = Infinity;
     for (const e of enemies) {
       if (e.id === this.state.id) continue;
+      // TDM: never acquire a teammate (friendly fire is off).
+      if (this.team != null && e.team != null && e.team === this.team) continue;
       const d = Math.hypot(e.pos.x - this.state.pos.x, e.pos.z - this.state.pos.z);
       if (d > this.diff.sightRange || d >= bestDist) continue;
       if (this.hasLineOfSight(eye, e.pos, map)) {
@@ -875,20 +882,39 @@ export class Bot {
       // Maybe hop/boost to clear a gap or mount higher ground before moving.
       this.decideRoamMove(dx, dz);
       const step = Math.min(dist, this.diff.moveSpeed * 0.7 * dt);
+      const beforeX = this.state.pos.x;
+      const beforeZ = this.state.pos.z;
       const { blocked } = this.integrate(dt, map, { x: (dx / dist) * step, z: (dz / dist) * step });
       const desiredFacing = Math.atan2(dx, dz);
       const lerpT = 1 - Math.exp(-BOT_FACING_LERP * dt);
       this.facing = lerpAngle(this.facing, desiredFacing, lerpT);
       this.applyFacing();
-      // Only re-pick the wander point if we're stuck on the GROUND — an airborne
-      // bot is "blocked" mid-arc against geometry it'll clear, so don't bail.
-      if (blocked && this.onGround) this.target = pickFreeSpot(map, null);
+      // Stuck recovery (anti stand-still glitch): if we INTENDED to move but barely
+      // did (wedged on geometry, or aiming at an unreachable spot), accrue stuck
+      // time; once it crosses the threshold, hop to clear the lip and pick a brand-
+      // new target far from where we're jammed. Picking from `this.state.pos` (not
+      // null) guarantees the new point is ≥5m away, so a bot can never re-pick its
+      // own position and freeze. Re-picking only on `blocked` (old behavior) missed
+      // the oscillate-in-place case, which is what left bots standing still.
+      const moved = Math.hypot(this.state.pos.x - beforeX, this.state.pos.z - beforeZ);
+      if (moved < step * 0.3) this.roamStuckTimer += dt;
+      else this.roamStuckTimer = 0;
+      if (this.roamStuckTimer > 0.5) {
+        this.roamStuckTimer = 0;
+        this.target = pickFreeSpot(map, this.state.pos);
+        if (this.onGround) this.doJump(); // pop over whatever's blocking us
+      } else if (blocked && this.onGround) {
+        this.target = pickFreeSpot(map, this.state.pos);
+      }
     } else {
-      // Standing still: still integrate (gravity) so a bot left on a ledge settles.
+      // Reached the wander point: settle briefly (gravity still applies so a bot on
+      // a ledge falls), then pick the next one. The pause is short (see
+      // BOT_MOVE_INTERVAL_*) so bots keep roaming instead of looking frozen.
       this.integrate(dt, map, { x: 0, z: 0 });
+      this.roamStuckTimer = 0;
       this.state.moveTimer -= dt;
       if (this.state.moveTimer <= 0) {
-        this.target = pickFreeSpot(map, null);
+        this.target = pickFreeSpot(map, this.state.pos);
         this.state.moveTimer = rand(BOT_MOVE_INTERVAL_MIN, BOT_MOVE_INTERVAL_MAX);
       }
     }
@@ -917,7 +943,27 @@ export class Bot {
       botName: this.state.name,
       origin: { ...eye },
       dir: { x: dx / l2, y: dy / l2, z: dz / l2 },
+      team: this.team,
     };
+  }
+
+  // TDM team assignment (null = FFA/Duel). `color` tints the nameplate so the
+  // player can tell allies (green) from foes (team color) — required since
+  // friendly fire is off. Rebuilds the name sprite with the new color.
+  setTeam(team: number | null, color = '#ffd1d8') {
+    this.team = team;
+    if (color === this.nameColor) return;
+    this.nameColor = color;
+    const next = makeNameSprite(this.state.name, color);
+    next.position.copy(this.nameSprite.position);
+    this.group.remove(this.nameSprite);
+    this.nameSprite.material.map?.dispose();
+    this.nameSprite.material.dispose();
+    this.nameSprite = next;
+    this.group.add(this.nameSprite);
+  }
+  getTeam(): number | null {
+    return this.team;
   }
 
   kill() {
