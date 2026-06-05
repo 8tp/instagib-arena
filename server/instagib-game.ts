@@ -28,6 +28,7 @@ import {
   TDM_FRAG_LIMIT,
   TEAM_COUNT,
   modeCapacity,
+  rankedTierName,
   type GameMode,
 } from '../src/game/constants';
 import {
@@ -59,7 +60,13 @@ import {
   titleById,
 } from '../src/game/cosmetics';
 import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
-import { findUserById, getRankedRating, recordRankedResult, unlockedSetFor } from './db';
+import {
+  findUserById,
+  getRankedProfile,
+  getRankedRating,
+  recordRankedResult,
+  unlockedSetFor,
+} from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
 
@@ -383,6 +390,22 @@ function sanitizeCard(
   // title), never the client payload, so a modified client can't fake a blue
   // check, staff badge, or a title it hasn't earned on its killcard.
   return { name, level, style, stats, title: flags.title, verified: flags.verified, admin: flags.admin };
+}
+
+// The flair text shown under a player's name / on their killcard for their
+// equipped title. Static titles use their manifest text; the live 'ranked' title
+// resolves to the player's CURRENT standing — top-10 → "#N", otherwise their tier
+// name, and '' if they've never played ranked. Resolved server-side so the badge
+// is authoritative (a client can't fake "#1") and stays live as ratings move.
+function resolveTitleText(playerId: string, titleId: string): string {
+  const t = titleById(titleId);
+  if (t.dynamic === 'ranked') {
+    if (!playerId) return '';
+    const p = getRankedProfile(playerId);
+    if (!p || p.games === 0) return '';
+    return p.rank >= 1 && p.rank <= 10 ? `#${p.rank}` : rankedTierName(p.rating);
+  }
+  return t.text;
 }
 
 function genId(len = 8): ClientId {
@@ -1067,6 +1090,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     nameColor: c.nameColor,
     spawnEffect: c.spawnEffect,
     title: c.title,
+    // Live-resolved flair text (dynamic ranked title → "#N"/tier). The client
+    // prefers this over the static manifest text for the id.
+    titleText: resolveTitleText(c.playerId, c.title),
     railColor: c.railColor,
     railgunFinish: c.railgunFinish,
     crosshair: c.crosshair,
@@ -1428,7 +1454,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
       firstBlood,
       victimPos: { ...victim.pos },
       respawnPos,
-      killerCard: shooter.card, // the killer's playercard → victim's killcam
+      // The killer's playercard → victim's killcam. Re-resolve the title here so a
+      // live ranked title (#N) on the card reflects the killer's CURRENT standing,
+      // not whatever it was when they last equipped the card.
+      killerCard: shooter.card
+        ? { ...shooter.card, title: resolveTitleText(shooter.playerId, shooter.title) }
+        : shooter.card,
       t: now,
     });
     victim.pos = { ...respawnPos };
@@ -1990,7 +2021,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId), {
             admin: record.admin,
             verified: record.verified,
-            title: titleById(record.title).text,
+            title: resolveTitleText(record.playerId, record.title),
           });
           break;
 

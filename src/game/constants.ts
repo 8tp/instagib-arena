@@ -172,6 +172,27 @@ export const GAME_MODES: ReadonlyArray<{
 export const DUEL_FRAG_LIMIT = 15; // casual 1v1 target
 export const RANKED_DUEL_FRAG_LIMIT = 15; // ranked 1v1 target (login-only)
 
+// Ranked Elo tiers (purely cosmetic — there is NO rating gate to play ranked).
+// Shared client+server so the ladder, the playercard, and the dynamic rank title
+// all label a rating the same way. Ordered high→low; the first whose `min` you
+// meet is your tier. Base rating is 1000 (see server RANKED_BASE_RATING).
+export type RankedTier = { name: string; min: number; color: string };
+export const RANKED_TIERS: ReadonlyArray<RankedTier> = [
+  { name: 'Grandmaster', min: 2000, color: '#f0abfc' },
+  { name: 'Master', min: 1800, color: '#c4b5fd' },
+  { name: 'Diamond', min: 1600, color: '#67e8f9' },
+  { name: 'Platinum', min: 1400, color: '#5eead4' },
+  { name: 'Gold', min: 1200, color: '#fbbf24' },
+  { name: 'Silver', min: 1000, color: '#cbd5e1' },
+  { name: 'Bronze', min: 0, color: '#d6a06a' },
+];
+export function rankedTier(rating: number): RankedTier {
+  return RANKED_TIERS.find((t) => rating >= t.min) ?? RANKED_TIERS[RANKED_TIERS.length - 1];
+}
+export function rankedTierName(rating: number): string {
+  return rankedTier(rating).name;
+}
+
 // TDM: two teams; first team to TDM_FRAG_LIMIT total frags wins.
 export const TDM_FRAG_LIMIT = 40;
 export const TEAM_COUNT = 2;

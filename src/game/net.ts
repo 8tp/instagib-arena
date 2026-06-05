@@ -20,6 +20,7 @@ export type RemotePlayerSnapshot = {
   nameColor: string; // equipped nameplate-color cosmetic id
   spawnEffect: string; // equipped spawn-in-effect cosmetic id
   title: string; // equipped title cosmetic id (resolved to flair text client-side)
+  titleText?: string; // server-resolved flair text (dynamic ranked title → "#N"/tier); overrides the id
   railColor: string; // equipped rail-beam color id (used for this player's beam + spectator viewmodel)
   railgunFinish: string; // equipped railgun finish id (3rd-person gun skin + spectator viewmodel)
   crosshair: string; // equipped crosshair share-code string ('' = default); rendered when spectating
@@ -39,6 +40,7 @@ export type RosterEntry = {
   hat: string;
   emote: string;
   title: string;
+  titleText?: string; // server-resolved flair (dynamic ranked title → "#N"/tier)
   admin: boolean;
   verified: boolean;
   frags: number;
@@ -88,6 +90,7 @@ type PlayerMeta = {
   nameColor: string;
   spawnEffect: string;
   title: string;
+  titleText?: string; // server-resolved flair (dynamic ranked title)
   railColor: string;
   railgunFinish: string;
   crosshair: string;
@@ -329,6 +332,7 @@ export class NetClient {
   localNameColor = 'name.default'; // equipped nameplate-color id (seen by others)
   localSpawnEffect = 'spawn.beam'; // equipped spawn-in-effect id (seen by others)
   localTitle = 'title.none'; // equipped title id (flair shown under the name, seen by others)
+  localTitleText = ''; // server-resolved flair for our own title (dynamic ranked → "#N"/tier)
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
   localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
   localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
@@ -741,6 +745,7 @@ export class NetClient {
     s.nameColor = m?.nameColor ?? 'name.default';
     s.spawnEffect = m?.spawnEffect ?? 'spawn.beam';
     s.title = m?.title ?? 'title.none';
+    s.titleText = m?.titleText;
     s.railColor = m?.railColor ?? 'rail.cyan';
     s.railgunFinish = m?.railgunFinish ?? 'gun.stock';
     s.crosshair = m?.crosshair ?? '';
@@ -874,6 +879,7 @@ export class NetClient {
           this.localAdmin = !!p.admin;
           this.localVerified = !!p.verified;
           this.localTeam = p.team ?? null;
+          this.localTitleText = p.titleText ?? ''; // live #N/tier for our own scoreboard row
         }
       }
       for (const id of this.metaById.keys()) {
@@ -1043,6 +1049,7 @@ export class NetClient {
         hat: m.hat,
         emote: m.emote,
         title: m.title,
+        titleText: m.titleText,
         admin: m.admin,
         verified: m.verified,
         frags: s?.frags ?? 0,

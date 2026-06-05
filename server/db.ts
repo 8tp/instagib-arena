@@ -588,12 +588,16 @@ export type Profile = {
   unlocked: string[];
   equipped: Record<string, string>;
   stats: PublicStats;
+  // Ranked Duel standing (null = never played ranked) — drives the rating card
+  // stat + the live rank title. `getRankedProfile` is declared below (hoisted).
+  ranked: { rating: number; rank: number; provisional: boolean } | null;
 };
 
 export function getProfile(playerId: string): Profile {
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
   const totalXp = prog?.total_xp ?? 0;
   const lp = levelProgress(totalXp);
+  const rp = getRankedProfile(playerId);
   return {
     level: lp.level,
     totalXp,
@@ -603,6 +607,7 @@ export function getProfile(playerId: string): Profile {
     unlocked: [...ownedSet(prog, playerId)],
     equipped: parseEquipped(prog?.equipped),
     stats: getStats(playerId),
+    ranked: rp ? { rating: rp.rating, rank: rp.rank, provisional: rp.provisional } : null,
   };
 }
 

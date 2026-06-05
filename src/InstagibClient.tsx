@@ -54,6 +54,8 @@ import {
   TEAM_COLORS,
   TEAM_NAMES,
   TOAST_FADE_SEC,
+  rankedTier,
+  rankedTierName,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
@@ -365,20 +367,25 @@ const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
 const CARD_STAT_DEFS: ReadonlyArray<{
   key: string;
   label: string;
-  from: (s: InstagibStats) => string;
+  from: (p: InstagibProfile) => string;
 }> = [
-  { key: 'kills', label: 'KILLS', from: (s) => String(s.totalKills) },
-  { key: 'deaths', label: 'DEATHS', from: (s) => String(s.totalDeaths) },
-  { key: 'wins', label: 'WINS', from: (s) => String(s.totalWins) },
-  { key: 'games', label: 'GAMES', from: (s) => String(s.totalGames) },
+  { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
+  { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
+  { key: 'wins', label: 'WINS', from: (p) => String(p.stats.totalWins) },
+  { key: 'games', label: 'GAMES', from: (p) => String(p.stats.totalGames) },
   {
     key: 'kd',
     label: 'K/D',
-    from: (s) => (s.totalDeaths > 0 ? (s.totalKills / s.totalDeaths).toFixed(2) : String(s.totalKills)),
+    from: (p) =>
+      p.stats.totalDeaths > 0
+        ? (p.stats.totalKills / p.stats.totalDeaths).toFixed(2)
+        : String(p.stats.totalKills),
   },
-  { key: 'streak', label: 'BEST STREAK', from: (s) => String(s.bestKillStreak) },
-  { key: 'headshots', label: 'HEADSHOTS', from: (s) => String(s.headshots) },
-  { key: 'accuracy', label: 'ACCURACY', from: (s) => `${Math.round(s.bestAccuracy)}%` },
+  { key: 'streak', label: 'BEST STREAK', from: (p) => String(p.stats.bestKillStreak) },
+  { key: 'headshots', label: 'HEADSHOTS', from: (p) => String(p.stats.headshots) },
+  { key: 'accuracy', label: 'ACCURACY', from: (p) => `${Math.round(p.stats.bestAccuracy)}%` },
+  // Ranked Elo — "Unranked" until you've played a ranked match.
+  { key: 'rating', label: 'RANKED', from: (p) => (p.ranked ? String(p.ranked.rating) : 'Unranked') },
 ];
 
 const MAX_CARD_STATS = 3;
@@ -392,7 +399,12 @@ function buildCardPayload(
     .map((k) => CARD_STAT_DEFS.find((d) => d.key === k))
     .filter((d): d is (typeof CARD_STAT_DEFS)[number] => !!d)
     .slice(0, MAX_CARD_STATS)
-    .map((d) => ({ label: d.label, value: d.from(profile.stats) }));
+    .map((d) => ({ label: d.label, value: d.from(profile) }));
+  // A dynamic ranked title resolves to the live standing locally for the preview +
+  // the player's own kill-confirm card; the server re-forces it on the killcard
+  // others see, so this can't be faked.
+  const titleDef = titleById(settings.title);
+  const title = titleDef.dynamic === 'ranked' ? rankedStandingText(profile.ranked) : titleDef.text;
   // Badges mirror the account (server overrides them on the killcard others see,
   // so this only drives the local Locker preview). Guests carry neither.
   return {
@@ -400,7 +412,7 @@ function buildCardPayload(
     level: profile.level,
     style: settings.card,
     stats,
-    title: titleById(settings.title).text,
+    title,
     verified: !!account?.isVerified,
     admin: !!account?.isAdmin,
   };
@@ -4069,18 +4081,11 @@ type RankedLeaderEntry = {
 
 // Starting Elo for a brand-new ranked player (mirrors server RANKED_BASE_RATING).
 const RANKED_BASE = 1000;
-// Visual tier from an Elo rating (cosmetic — there is no rating gate to play).
-const RANKED_TIERS = [
-  { name: 'Grandmaster', min: 2000, color: '#f0abfc' },
-  { name: 'Master', min: 1800, color: '#c4b5fd' },
-  { name: 'Diamond', min: 1600, color: '#67e8f9' },
-  { name: 'Platinum', min: 1400, color: '#5eead4' },
-  { name: 'Gold', min: 1200, color: '#fbbf24' },
-  { name: 'Silver', min: 1000, color: '#cbd5e1' },
-  { name: 'Bronze', min: 0, color: '#d6a06a' },
-] as const;
-function rankedTier(rating: number): { name: string; color: string } {
-  return RANKED_TIERS.find((t) => rating >= t.min) ?? RANKED_TIERS[RANKED_TIERS.length - 1];
+// The live flair text for the dynamic ranked title from a profile's standing:
+// top-10 → "#N", otherwise the tier name; '' if the player has no ranked games.
+function rankedStandingText(ranked: InstagibProfile['ranked']): string {
+  if (!ranked) return '';
+  return ranked.rank >= 1 && ranked.rank <= 10 ? `#${ranked.rank}` : rankedTierName(ranked.rating);
 }
 
 // Full-screen ranked end-of-match overlay: VICTORY/DEFEAT + the rating delta.
@@ -5544,6 +5549,7 @@ type InstagibProfile = {
   unlocked: string[];
   equipped: Record<string, string>;
   stats: InstagibStats;
+  ranked: { rating: number; rank: number; provisional: boolean } | null;
 };
 
 function StatsModal({ onClose }: { onClose: () => void }) {
@@ -5800,11 +5806,12 @@ const LEADERBOARD_SORTS: ReadonlyArray<{ id: LeaderboardSort; label: string }> =
   { id: 'accuracy', label: 'Accuracy' },
 ];
 
-type LeaderboardWindow = 'all' | 'weekly' | 'daily';
+type LeaderboardWindow = 'all' | 'weekly' | 'daily' | 'ranked';
 const LEADERBOARD_WINDOWS: ReadonlyArray<{ id: LeaderboardWindow; label: string }> = [
   { id: 'all', label: 'All-time' },
   { id: 'weekly', label: 'This week' },
   { id: 'daily', label: 'Today' },
+  { id: 'ranked', label: 'Ranked' },
 ];
 
 function LeaderboardModal({ onClose }: { onClose: () => void }) {
@@ -5812,11 +5819,30 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const [window, setWindow] = useState<LeaderboardWindow>('all');
   const [rows, setRows] = useState<LeaderboardEntry[]>([]);
   const [you, setYou] = useState<LeaderboardYou>(null);
+  const [rankedRows, setRankedRows] = useState<RankedLeaderEntry[]>([]);
+  const [rankedMe, setRankedMe] = useState<RankedProfile | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const isRanked = window === 'ranked';
 
   useEffect(() => {
     let active = true;
     setState('loading');
+    if (window === 'ranked') {
+      fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ranked unavailable'))))
+        .then((d: { entries?: RankedLeaderEntry[]; me?: RankedProfile | null }) => {
+          if (!active) return;
+          setRankedRows(Array.isArray(d.entries) ? d.entries : []);
+          setRankedMe(d.me ?? null);
+          setState('ready');
+        })
+        .catch(() => {
+          if (active) setState('error');
+        });
+      return () => {
+        active = false;
+      };
+    }
     fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25`, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
@@ -5836,24 +5862,62 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const youId = you?.entry.id;
   // Is the local player already visible in the top-N? If not, we pin them below.
   const youInTop = youId != null && rows.some((r) => r.id === youId);
+  const rankedMeInTop = rankedMe != null && rankedRows.some((r) => r.id === rankedMe.id);
 
   return (
     <ModalShell title='Leaderboard' onClose={onClose}>
       <ButtonGroup label='Window' value={window} options={LEADERBOARD_WINDOWS} onChange={setWindow} />
-      <ButtonGroup
-        label='Sort by'
-        value={sort}
-        options={LEADERBOARD_SORTS}
-        onChange={setSort}
-      />
+      {!isRanked && (
+        <ButtonGroup label='Sort by' value={sort} options={LEADERBOARD_SORTS} onChange={setSort} />
+      )}
       {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
-      {state === 'error' && (
+      {state === 'error' && isRanked && (
+        <div className='text-sm text-white/55'>Couldn&apos;t load the ranked ladder.</div>
+      )}
+      {state === 'ready' && isRanked && rankedRows.length === 0 && (
+        <div className='text-sm text-white/55'>No ranked players yet — queue a Ranked Duel to appear here.</div>
+      )}
+      {state === 'ready' && isRanked && rankedRows.length > 0 && (
+        <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
+          <div className='grid grid-cols-[1.75rem_1fr_4.5rem_3.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
+            <Th align='right'>#</Th>
+            <Th>Player</Th>
+            <Th align='right'>Rating</Th>
+            <Th>Tier</Th>
+            <Th align='right'>W-L</Th>
+            {rankedRows.map((row, i) => (
+              <RankedLeaderRow key={row.id} rank={i + 1} row={row} you={row.id === rankedMe?.id} />
+            ))}
+            {rankedMe && rankedMe.rank > 0 && !rankedMeInTop && (
+              <>
+                <div className='col-span-5 my-1 border-t border-dashed border-white/15' />
+                <RankedLeaderRow
+                  rank={rankedMe.rank}
+                  row={{
+                    id: rankedMe.id,
+                    userName: rankedMe.userName,
+                    rating: rankedMe.rating,
+                    games: rankedMe.games,
+                    wins: rankedMe.wins,
+                    losses: rankedMe.losses,
+                    streak: rankedMe.streak,
+                    admin: false,
+                    verified: false,
+                  }}
+                  you
+                />
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {state === 'error' && !isRanked && (
         <div className='text-sm text-white/55'>Couldn&apos;t load the leaderboard. Try again later.</div>
       )}
-      {state === 'ready' && rows.length === 0 && (
+      {state === 'ready' && !isRanked && rows.length === 0 && (
         <div className='text-sm text-white/55'>No ranked players yet — finish a match to appear here.</div>
       )}
-      {state === 'ready' && rows.length > 0 && (
+      {state === 'ready' && !isRanked && rows.length > 0 && (
         <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
           <div className='grid grid-cols-[1.75rem_1fr_2.75rem_2.75rem_2.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
             <Th align='right'>#</Th>
@@ -5905,6 +5969,29 @@ function LeaderboardRow({ rank, row, you = false }: { rank: number; row: Leaderb
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.kd.toFixed(2)}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.totalWins}</div>
       <div className='py-1.5 text-right tabular-nums text-cyan-200/80'>{row.bestAccuracy.toFixed(1)}%</div>
+    </>
+  );
+}
+
+// A row on the Ranked (Elo) ladder: rank, player, rating, tier, W-L.
+function RankedLeaderRow({ rank, row, you = false }: { rank: number; row: RankedLeaderEntry; you?: boolean }) {
+  const medal =
+    rank === 1 ? 'text-amber-300' : rank === 2 ? 'text-zinc-300' : rank === 3 ? 'text-orange-300' : 'text-white/45';
+  const tint = you ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/90';
+  const tier = rankedTier(row.rating);
+  return (
+    <>
+      <div className={`py-1.5 text-right tabular-nums font-bold ${you ? 'text-cyan-200' : medal}`}>{rank}</div>
+      <div className={`flex min-w-0 items-center gap-1 py-1.5 ${tint}`}>
+        <span className='truncate'>{row.userName}</span>
+        <NameBadges admin={row.admin} verified={row.verified} size={12} />
+        {you && <span className='ml-1 shrink-0 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
+      </div>
+      <div className='py-1.5 text-right font-bold tabular-nums' style={{ color: tier.color }}>{row.rating}</div>
+      <div className='py-1.5 text-[11px] uppercase tracking-[0.08em]' style={{ color: tier.color }}>{tier.name}</div>
+      <div className='py-1.5 text-right tabular-nums text-white/55'>
+        {row.wins}-{row.losses}
+      </div>
     </>
   );
 }

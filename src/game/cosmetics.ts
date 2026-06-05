@@ -389,6 +389,10 @@ export type TitleCosmetic = {
   rarity: Rarity;
   source: CosmeticSource;
   text: string; // the flair text actually displayed ('' = no title)
+  // Live-resolved titles: `text` is a placeholder and the real flair is computed
+  // at display time (server for the nameplate/scoreboard/killcard, client for the
+  // local preview). 'ranked' → your current ladder standing (#1–#10, else tier).
+  dynamic?: 'ranked';
 };
 
 export const TITLES: readonly TitleCosmetic[] = [
@@ -401,6 +405,9 @@ export const TITLES: readonly TitleCosmetic[] = [
   { id: 'title.untouchable',  name: 'Untouchable',  blurb: 'Reach a 20-frag streak.',                       rarity: 'rare',   source: { type: 'achievement', stat: 'bestStreak', min: 20 },              text: 'Untouchable' },
   { id: 'title.sharpshooter', name: 'Sharpshooter', blurb: 'Finish a match at 50%+ accuracy (20+ games).',  rarity: 'rare',   source: { type: 'achievement', stat: 'accuracy', min: 50, minGames: 20 },  text: 'Sharpshooter' },
   { id: 'title.veteran',      name: 'Veteran',      blurb: 'Play 200 matches.',                             rarity: 'common', source: { type: 'achievement', stat: 'games', min: 200 },                  text: 'Veteran' },
+  // Live ranked standing — owned by everyone; the flair is resolved at display
+  // time (top-10 → "#N", otherwise your tier) and updates as your rating moves.
+  { id: 'title.ranked',       name: 'Ranked Standing', blurb: 'Show your live ladder rank — #1–#10 at the top, else your tier.', rarity: 'rare', source: { type: 'default' },                       text: '', dynamic: 'ranked' },
   { id: 'title.sovereign',    name: 'Sovereign',    blurb: 'Staff only.',                                   rarity: 'epic',   source: { type: 'admin' },                                                text: 'Sovereign' },
 ];
 

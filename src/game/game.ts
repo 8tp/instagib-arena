@@ -2638,6 +2638,8 @@ export class Game {
       if (this.net.localName) scores[0].name = this.net.localName;
       scores[0].admin = this.net.localAdmin;
       scores[0].verified = this.net.localVerified;
+      // Server-resolved title flair (so a dynamic ranked title shows our live #N).
+      scores[0].title = this.net.localTitleText || titleById(this.localTitle).text;
       // Local player's accuracy is tracked client-side from confirmed kills.
       scores[0].accuracy = pct(this.playerShotsHit, this.playerShotsFired);
       scores[0].ping = Math.round(this.net.rttMs);
@@ -2658,7 +2660,7 @@ export class Game {
           team: r.team,
           hat: r.hat,
           emote: r.emote,
-          title: titleById(r.title).text,
+          title: r.titleText ?? titleById(r.title).text,
           ping: r.ping,
           admin: r.admin,
           verified: r.verified,
