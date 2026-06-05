@@ -174,24 +174,35 @@ export function attachRailgunToSoldier(root: THREE.Object3D, height = 1.8): THRE
 // tuned against, so the barrel keeps pointing forward — and the LEFT arm was
 // solved (numeric IK) to bring the support hand onto the gun's foregrip. Skip
 // this while the death clip is playing so the ragdoll-ish death still flails.
-const HOLD_POSE: Record<string, [number, number, number]> = {
-  mixamorigRightShoulder: [0.031, 0.125, 1.679],
-  mixamorigRightArm: [-0.392, -0.069, 1.103],
-  mixamorigRightForeArm: [0.746, 0.042, 0.121],
-  mixamorigRightHand: [0.197, -0.071, 0.241],
+const HOLD_POSE: ReadonlyArray<{
+  names: readonly string[];
+  e: [number, number, number];
+}> = [
+  { names: ['mixamorigRightShoulder', 'mixamorig:RightShoulder', 'RightShoulder', 'Shoulder.R'], e: [0.031, 0.125, 1.679] },
+  { names: ['mixamorigRightArm', 'mixamorig:RightArm', 'RightArm', 'Arm.R'], e: [-0.392, -0.069, 1.103] },
+  { names: ['mixamorigRightForeArm', 'mixamorig:RightForeArm', 'RightForeArm', 'ForeArm.R'], e: [0.746, 0.042, 0.121] },
+  { names: ['mixamorigRightHand', 'mixamorig:RightHand', 'RightHand', 'Hand.R'], e: [0.197, -0.071, 0.241] },
   // Left arm: support hand on the foregrip (solved IK, residual ~3 mm).
-  mixamorigLeftShoulder: [-3.113, -0.025, -0.198],
-  mixamorigLeftArm: [0.263, -0.796, 1.428],
-  mixamorigLeftForeArm: [-0.022, 0.123, 0.045],
-  mixamorigLeftHand: [0.005, 0.273, -0.202],
-};
+  { names: ['mixamorigLeftShoulder', 'mixamorig:LeftShoulder', 'LeftShoulder', 'Shoulder.L'], e: [-3.113, -0.025, -0.198] },
+  { names: ['mixamorigLeftArm', 'mixamorig:LeftArm', 'LeftArm', 'Arm.L'], e: [0.263, -0.796, 1.428] },
+  { names: ['mixamorigLeftForeArm', 'mixamorig:LeftForeArm', 'LeftForeArm', 'ForeArm.L'], e: [-0.022, 0.123, 0.045] },
+  { names: ['mixamorigLeftHand', 'mixamorig:LeftHand', 'LeftHand', 'Hand.L'], e: [0.005, 0.273, -0.202] },
+];
+
+function findBone(root: THREE.Object3D, names: readonly string[]): THREE.Object3D | null {
+  for (const name of names) {
+    const obj = root.getObjectByName(name);
+    if (obj) return obj;
+  }
+  return null;
+}
 
 export class WeaponHold {
   private readonly bones: Array<{ obj: THREE.Object3D; e: [number, number, number] }> = [];
 
   constructor(root: THREE.Object3D) {
-    for (const [name, e] of Object.entries(HOLD_POSE)) {
-      const obj = root.getObjectByName(name);
+    for (const { names, e } of HOLD_POSE) {
+      const obj = findBone(root, names);
       if (obj) this.bones.push({ obj, e });
     }
   }
