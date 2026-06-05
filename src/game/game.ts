@@ -126,6 +126,7 @@ import type {
   Medal,
   PlayerScore,
   PomState,
+  SpectatorHud,
   ToastEntry,
 } from './types';
 import { Railgun, type RailTarget } from './weapon';
@@ -147,7 +148,9 @@ export type MatchEndListener = (result: MatchResult) => void;
 // Multiplayer-only lifecycle signals the client surfaces outside the HUD
 // (e.g. "couldn't join — lobby is gone/full" → bounce back to the menu). Map
 // changes are shown in-game via a HUD banner, not through this channel.
-export type NetMatchEvent = { type: 'join-failed'; reason: string };
+export type NetMatchEvent =
+  | { type: 'join-failed'; reason: string }
+  | { type: 'spectate-ended' }; // the watched match ended / room reaped → leave to lobby
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
@@ -263,6 +266,13 @@ export class Game {
   private wantMultiplayer = false;
   private multiplayerUrl = '';
   private multiplayerRoomId = '';
+  // Spectator mode: this client WATCHES the room (no local player sim, no fire,
+  // no pos upload). The camera rides `spectatedId`'s first-person POV.
+  private spectator = false;
+  private spectatedId: string | null = null;
+  // When set, buildViewmodel() uses this finish (the watched player's gun skin)
+  // instead of the local player's; cleared outside spectator mode.
+  private viewmodelFinishOverride: string | null = null;
   private posSendAccumMs = 0;
   // The local player's sim position at the start of the most recent sim step, so
   // render() can interpolate the camera between the last two 64Hz sim states by
@@ -666,20 +676,32 @@ export class Game {
     this.killEffectStyle = isKillEffectStyle(id) ? id : DEFAULT_KILL_EFFECT;
   }
 
-  // Equipped rail-beam color cosmetic — recolors only the local player's beam.
+  // Equipped rail-beam color cosmetic — recolors the local player's beam, and is
+  // echoed to the server so other players + spectators see it on this beam too.
   setRailColor(id: string) {
-    const c = railColorById(isRailColor(id) ? id : DEFAULT_RAIL_COLOR);
+    const safe = isRailColor(id) ? id : DEFAULT_RAIL_COLOR;
+    const c = railColorById(safe);
     this.weapon.setBeamColors(c.data.core, c.data.helix);
+    this.net?.setLocalRailColor(safe);
+  }
+
+  // Crosshair (a share-code string) — echoed so a spectator can render the same
+  // reticle. Cosmetic-only on this client (the React HUD draws the local one).
+  setCrosshairCode(code: string) {
+    this.net?.setLocalCrosshair(typeof code === 'string' ? code : '');
   }
 
   // (Re)build the first-person railgun viewmodel with the equipped finish. Called
-  // from the constructor and whenever the finish changes (Locker equip).
+  // from the constructor and whenever the finish changes (Locker equip / a
+  // spectator switching to a player whose gun skin differs).
   private buildViewmodel() {
     if (this.viewmodel) {
       this.camera.remove(this.viewmodel);
       disposeGroup(this.viewmodel);
     }
-    const finish = railgunFinishById(this.localRailgunFinish).data;
+    // Spectators show the WATCHED player's finish; normal play shows the local one.
+    const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
+    const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
     const vm = buildRailgun(finish);
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
@@ -688,12 +710,14 @@ export class Game {
     this.camera.add(this.viewmodel);
   }
 
-  // Equipped railgun finish (gun skin) — recolors the local viewmodel only.
+  // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
+  // echoed so the 3rd-person gun on this player uses the same skin for others.
   setRailgunFinish(id: string) {
     const next = isRailgunFinish(id) ? id : DEFAULT_RAILGUN_FINISH;
+    this.net?.setLocalRailgunFinish(next);
     if (next === this.localRailgunFinish) return;
     this.localRailgunFinish = next;
-    this.buildViewmodel();
+    if (!this.viewmodelFinishOverride) this.buildViewmodel();
   }
 
   // Equipped hat — worn on the local player's model (seen by others online + in
@@ -798,11 +822,86 @@ export class Game {
     this.emitHud();
   }
 
-  setMultiplayer(opts: { enabled: boolean; url: string; roomId?: string }) {
+  setMultiplayer(opts: { enabled: boolean; url: string; roomId?: string; spectate?: boolean }) {
     this.wantMultiplayer = opts.enabled;
     this.multiplayerUrl = opts.url;
     this.multiplayerRoomId = opts.roomId ?? '';
+    this.spectator = opts.enabled && !!opts.spectate;
+    if (this.spectator) {
+      this.matchOver = false;
+      this.killcam = null;
+    } else {
+      this.spectatedId = null;
+      this.viewmodelFinishOverride = null;
+    }
     this.applyMultiplayerState();
+  }
+
+  // ── Spectator controls (no-ops outside spectator mode) ──────────────────
+  isSpectator(): boolean {
+    return this.spectator;
+  }
+
+  // The ordered list of players a spectator can watch (stable: by id), built from
+  // the authoritative meta roster so a player hidden mid-killcam keeps their slot.
+  private spectateList(): { id: string; name: string }[] {
+    if (!this.net) return [];
+    return this.net
+      .roster()
+      .map((r) => ({ id: r.id, name: r.name }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  // Switch the watched player by a signed step (next/prev), wrapping around.
+  private cycleSpectated(dir: number) {
+    const list = this.spectateList();
+    if (list.length === 0) { this.setSpectated(null); return; }
+    const cur = list.findIndex((p) => p.id === this.spectatedId);
+    const next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+    this.setSpectated(list[next].id);
+  }
+
+  spectateNext() { this.cycleSpectated(1); }
+  spectatePrev() { this.cycleSpectated(-1); }
+
+  // Jump to the Nth watchable player (0-based); ignored if out of range.
+  spectateByIndex(i: number) {
+    const list = this.spectateList();
+    if (i >= 0 && i < list.length) this.setSpectated(list[i].id);
+  }
+
+  // Adopt a new watched player: remember it + rebuild the viewmodel with their
+  // railgun finish so the first-person gun matches who you're watching.
+  private setSpectated(id: string | null) {
+    if (id === this.spectatedId) return;
+    this.spectatedId = id;
+    const finish = id ? this.net?.cosmeticsOf(id)?.railgunFinish ?? null : null;
+    if (finish !== this.viewmodelFinishOverride) {
+      this.viewmodelFinishOverride = finish;
+      this.buildViewmodel();
+    }
+    this.emitHud();
+  }
+
+  // Keep the watched player valid: auto-pick the first one when none is selected
+  // or the current target left the match. Also re-sync the viewmodel finish if
+  // the watched player swapped their gun skin mid-match.
+  private updateSpectatedTarget() {
+    const list = this.spectateList();
+    if (list.length === 0) {
+      if (this.spectatedId !== null) this.setSpectated(null);
+      return;
+    }
+    if (!this.spectatedId || !list.some((p) => p.id === this.spectatedId)) {
+      this.setSpectated(list[0].id);
+      return;
+    }
+    // Same target, but their finish may have changed (Locker equip mid-match).
+    const finish = this.net?.cosmeticsOf(this.spectatedId)?.railgunFinish ?? null;
+    if (finish !== this.viewmodelFinishOverride) {
+      this.viewmodelFinishOverride = finish;
+      this.buildViewmodel();
+    }
   }
 
   // Surface multiplayer lifecycle events (join failure, map change) to the
@@ -933,10 +1032,13 @@ export class Game {
         url: this.multiplayerUrl,
         name: this.playerName,
         roomId: this.multiplayerRoomId,
+        spectate: this.spectator,
         events: {
           onKill: (ev) => this.handleNetKill(ev),
           onJoined: (info) => this.handleNetJoined(info),
           onJoinFailed: (reason) => this.onNetEvent({ type: 'join-failed', reason }),
+          onSpectating: (info) => this.handleNetSpectating(info),
+          onSpectateEnded: () => this.onNetEvent({ type: 'spectate-ended' }),
           onRespawn: (pos) => this.handleNetRespawn(pos),
           onVoteStart: (v) => this.handleVoteStart(v),
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
@@ -1003,6 +1105,29 @@ export class Game {
     this.emitHud();
   }
 
+  // Server confirmed we're WATCHING a room → adopt its map/mode. No spawn, team,
+  // or score: a spectator never plays. The POV camera rides a chosen remote.
+  private handleNetSpectating(info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) {
+    this.netMode = info.mode;
+    this.localTeam = null;
+    this.duel = null;
+    const desired = mapById(info.mapId);
+    if (desired !== this.map) this.setMap(desired);
+    this.killcam = null;
+    this.matchOver = false;
+    this.recolorRemotes();
+    if (info.state !== 'voting') this.vote = null;
+    this.banner = {
+      id: this.nextEventId++,
+      tier: 'special',
+      title: desired.name,
+      subtitle: 'Spectating',
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
+    this.emitHud();
+  }
+
   // Server forced a respawn (we fell out of the world) — snap to the new spot.
   private handleNetRespawn(pos: { x: number; y: number; z: number }) {
     this.player.pos = { x: pos.x, y: pos.y, z: pos.z };
@@ -1011,18 +1136,35 @@ export class Game {
   }
 
   // Another player's rail beam (server-broadcast on every shot): draw the trail
-  // and play the fire SFX, attenuated by distance so you hear who's shooting near
-  // you. Without this, remote shots were silent + invisible unless they killed.
-  private handleNetBeam(b: { ox: number; oy: number; oz: number; ex: number; ey: number; ez: number }) {
+  // in the SHOOTER's equipped rail color (from the meta roster), and play the
+  // fire SFX, attenuated by distance so you hear who's shooting near you.
+  private handleNetBeam(b: { id?: string; ox: number; oy: number; oz: number; ex: number; ey: number; ez: number }) {
     const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
-    this.weapon.spawnBeam(origin, end, this.scene);
+    const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
+    const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix);
     // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
     // the audio listener, so you can hear which direction a shot came from.
     this.audio.playAt('fire', b.ox, b.oy, b.oz, 0.5);
   }
 
   private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null; winnerTeam: number | null }) {
+    // Spectators don't vote, submit stats, or run the local Play-of-the-Match
+    // cinematic (no recorded POV) — they keep watching live through the breather
+    // and adopt the new map when the vote resolves.
+    if (this.spectator) {
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: 'Match over',
+        subtitle: 'Voting on next map',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.emitHud();
+      return;
+    }
     // The vote opening IS the end of the online match — this is the moment to
     // latch win/loss and submit stats exactly once, BEFORE handleVoteResult
     // resets the counters for the next map (#4). In TDM the winner is a team.
@@ -1065,6 +1207,21 @@ export class Game {
 
   private handleVoteResult(r: { mapId: string; resumeAtClient: number; spawn?: { x: number; y: number; z: number } }) {
     this.vote = null;
+    // Spectators just follow the new map — no local respawn, stat reset, or lock.
+    if (this.spectator) {
+      const desiredSpec = mapById(r.mapId);
+      if (desiredSpec !== this.map) this.setMap(desiredSpec);
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: desiredSpec.name,
+        subtitle: 'Next map',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.emitHud();
+      return;
+    }
     // The clip is normally done by the time the vote resolves; finish it
     // defensively (no-op if not playing) so a fresh match starts clean.
     this.finishPlayOfMatch();
@@ -1125,6 +1282,19 @@ export class Game {
     resumeAtClient: number;
     spawn?: { x: number; y: number; z: number };
   }) {
+    // Spectators just track the round counter for the banner; no respawn/lock.
+    if (this.spectator) {
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: `Round ${r.roundNum}`,
+        subtitle: 'Spectating',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+      this.emitHud();
+      return;
+    }
     const myId = this.net?.clientId ?? '';
     const myWins = r.roundWins[myId] ?? 0;
     let oppWins = 0;
@@ -1256,7 +1426,8 @@ export class Game {
       } else {
         this.syncRemotePlayers(dt);
         // Record the match for Play of the Match (downsampled; live play only).
-        if (!this.matchOver && !this.vote && !this.training) {
+        // Spectators never play a PoM, so skip the per-frame sampling entirely.
+        if (!this.spectator && !this.matchOver && !this.vote && !this.training) {
           this.recorder.tick(dt, () => this.sampleReplayFrame());
         }
       }
@@ -1361,6 +1532,9 @@ export class Game {
         this.effects.spawnInBurst(this.scene, rp.group.position, spawnEffectById(rp.equippedSpawnEffect).style);
       }
       rp.setInvuln(snap.invulnMs);
+      // First-person spectating: hide the watched player's own avatar so we're
+      // not inside our own mesh. Composes with the death-hide (see RemotePlayer).
+      rp.setFirstPersonHidden(this.spectator && id === this.spectatedId);
     }
   }
 
@@ -1492,6 +1666,16 @@ export class Game {
   }
 
   private simStep(dt: number) {
+    // Spectators have no local player and never pointer-lock: just age the
+    // weapon beams + effects so the watched match's visuals decay normally, and
+    // keep the watched-player selection valid.
+    if (this.spectator) {
+      this.elapsed += dt;
+      this.weapon.step(dt, this.scene);
+      this.effects.step(dt, this.scene);
+      this.updateSpectatedTarget();
+      return;
+    }
     if (!this.locked || this.matchOver) return;
     this.elapsed += dt;
 
@@ -2522,7 +2706,10 @@ export class Game {
         });
       }
     }
-    scores.sort(
+    // A spectator isn't a player: drop the placeholder local ("you") row so the
+    // scoreboard shows only the real combatants.
+    const board = this.spectator ? scores.filter((s) => !s.isLocal) : scores;
+    board.sort(
       (a, b) =>
         b.frags - a.frags ||
         a.deaths - b.deaths ||
@@ -2533,14 +2720,31 @@ export class Game {
     let teamScores: [number, number] | null = null;
     if (this.netMode === 'tdm') {
       const totals: [number, number] = [0, 0];
-      for (const s of scores) {
+      for (const s of board) {
         if (s.team === 0) totals[0] += s.frags;
         else if (s.team === 1) totals[1] += s.frags;
       }
       teamScores = totals;
     }
 
-    this.updateMatchDrama(scores, teamScores);
+    // Match-drama cues read the local player's standing — skip while spectating.
+    if (!this.spectator) this.updateMatchDrama(board, teamScores);
+
+    // Spectator HUD: who's in view + the switch list + their crosshair share-code.
+    let spectatorHud: SpectatorHud | null = null;
+    if (this.spectator) {
+      const list = this.spectateList();
+      const idx = this.spectatedId ? list.findIndex((p) => p.id === this.spectatedId) : -1;
+      const watched = idx >= 0 ? list[idx] : null;
+      spectatorHud = {
+        watchingId: watched?.id ?? null,
+        watchingName: watched?.name ?? '',
+        index: idx >= 0 ? idx + 1 : 0,
+        count: list.length,
+        players: list,
+        crosshairCode: watched ? this.net?.cosmeticsOf(watched.id)?.crosshair ?? '' : '',
+      };
+    }
 
     this.onHud({
       frags: this.playerFrags,
@@ -2553,7 +2757,7 @@ export class Game {
       currentStreak: this.medals.currentStreak,
       bestStreak: this.medals.bestStreak,
       fps: this.fps,
-      scores,
+      scores: board,
       killfeed: this.killfeed.map((k) => ({ ...k })),
       toasts: this.toasts.map((t) => ({ ...t })),
       banner: this.banner ? { ...this.banner } : null,
@@ -2582,6 +2786,7 @@ export class Game {
       pom: this.pom ? { ...this.pom } : null,
       chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
       netDebug: this.netDebugOn && this.net ? this.net.getDebugStats() : null,
+      spectator: spectatorHud,
     });
   }
 
@@ -2664,6 +2869,17 @@ export class Game {
     if (this.replay) {
       // Play of the Match: the ReplayPlayer owns the camera (positioned in its
       // update() earlier this frame), so leave it untouched here.
+    } else if (this.spectator) {
+      // First-person spectator: ride the watched player's eyes + aim. Their pose
+      // comes from the interpolated remote snapshot (pitch is transmitted), so we
+      // see exactly what they see — their viewmodel + crosshair sell the POV.
+      // (The watched player's 3rd-person body is hidden in syncRemotePlayers so
+      // we're not staring at the inside of our own mesh.)
+      const snap = this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
+      if (snap) {
+        this.camera.position.set(snap.pos.x, snap.pos.y + EYE_HEIGHT, snap.pos.z);
+        this.camera.rotation.set(snap.pitch, snap.yaw, 0, 'YXZ');
+      }
     } else if (this.killcam) {
       // Killcam: track the killer's center (smoothed so them running around
       // doesn't jitter the shot), then park the camera a FIXED distance from
@@ -2779,11 +2995,13 @@ export class Game {
       const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
       this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * g;
     }
-    // Viewmodel: show only while actively playing in first person; apply recoil
-    // (kicks back toward the camera + muzzle tilts up, easing back to rest).
+    // Viewmodel: show while actively playing in first person, OR while watching a
+    // player in first-person spectator POV (so you see THEIR gun skin). Apply
+    // recoil (kicks back toward the camera + muzzle tilts up, easing back to rest).
     if (this.viewmodel) {
+      const specPov = this.spectator && !!this.spectatedId && !!this.net?.remotes.get(this.spectatedId);
       this.viewmodel.visible =
-        !this.hideViewmodel && this.locked && !this.killcam && !this.replay;
+        !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay;
       const r = this.recoil;
       this.viewmodel.position.set(
         VIEWMODEL_BASE.x + this.viewmodelOffset.x,

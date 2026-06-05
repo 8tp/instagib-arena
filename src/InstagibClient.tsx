@@ -274,7 +274,10 @@ export type MatchConfig =
       difficulty: BotDifficulty;
       training?: boolean; // endless practice — no frag-limit match end
     }
-  | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string };
+  | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
+  // Watch a live match read-only (first-person POV). mapId is a placeholder until
+  // the server confirms which room/map we're spectating (Game adopts it then).
+  | { mode: 'spectator'; mapId: string; serverUrl: string; roomId: string };
 
 // The game server is served on the same origin as the web client (the Node
 // server hosts both the static build and the /ws/instagib socket), so the
@@ -674,6 +677,9 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setKillEffect?.(s.killEffect);
   game.setRailColor?.(s.railColor);
   game.setRailgunFinish?.(s.railgunFinish);
+  // Echo the crosshair (as a share-code) so a spectator can render the same
+  // reticle we use; the local HUD still draws it from settings.crosshair.
+  game.setCrosshairCode?.(encodeCrosshair(s.crosshair));
   game.setHat?.(s.hat);
   game.setUnusual?.(s.unusual);
   game.setEmote?.(s.emote);
@@ -688,7 +694,10 @@ function applySettingsToGame(game: Game, s: Settings) {
 // Configures a freshly-created Game for a match before start().
 function applyMatchConfig(game: Game, config: MatchConfig) {
   game.setMap(mapById(config.mapId));
-  if (config.mode === 'multiplayer') {
+  if (config.mode === 'spectator') {
+    game.setBotsEnabled(false);
+    game.setMultiplayer({ enabled: true, url: config.serverUrl, roomId: config.roomId, spectate: true });
+  } else if (config.mode === 'multiplayer') {
     game.setBotsEnabled(false);
     game.setMultiplayer({ enabled: true, url: config.serverUrl, roomId: config.roomId });
   } else {
@@ -736,6 +745,7 @@ const INITIAL_HUD: HudState = {
   pom: null,
   chat: { open: false, lines: [] },
   netDebug: null,
+  spectator: null,
 };
 
 export default function InstagibClient() {
@@ -834,6 +844,17 @@ export default function InstagibClient() {
   }, [startMatch]);
 
   if (view === 'playing' && config) {
+    if (config.mode === 'spectator') {
+      return (
+        <SpectatorView
+          key={playId}
+          config={config}
+          settings={settings}
+          onChangeSettings={setSettings}
+          onExit={() => exitToLobby(null)}
+        />
+      );
+    }
     return (
       <GameView
         key={playId}
@@ -1199,6 +1220,224 @@ function GameView({
           }}
         />
       )}
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          onChange={onChangeSettings}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Read-only spectator. Mounts the same Game engine in spectator mode (no local
+// player, no fire, no pointer lock) and rides a chosen player's first-person POV
+// — so you see THEIR viewmodel, beam color, and crosshair. Cycle players with
+// the arrows / A·D / number keys, or by clicking the view.
+function SpectatorView({
+  config,
+  settings,
+  onChangeSettings,
+  onExit,
+}: {
+  config: Extract<MatchConfig, { mode: 'spectator' }>;
+  settings: Settings;
+  onChangeSettings: (s: Settings) => void;
+  onExit: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const gameRef = useRef<Game | null>(null);
+  const [hud, setHud] = useState<HudState>(INITIAL_HUD);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showScores, setShowScores] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const listener: HudListener = (state) => setHud(state);
+    // matchEnd never fires in spectator mode (no local frag limit / stats).
+    const game = new Game(canvas, listener, () => {});
+    gameRef.current = game;
+    game.setNetEventListener((ev: NetMatchEvent) => {
+      if (ev.type === 'spectate-ended') onExit();
+      else if (ev.type === 'join-failed') {
+        setError(ev.reason === 'full' ? 'That match is no longer available.' : 'That match no longer exists.');
+      }
+    });
+    applySettingsToGame(game, settings);
+    applyMatchConfig(game, config);
+    void game.start();
+    return () => {
+      gameRef.current?.dispose();
+      gameRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once; settings re-applied below
+  }, []);
+
+  // Live preference changes (sensitivity is irrelevant here, but FOV / volume /
+  // quality still apply to the spectated view).
+  useEffect(() => {
+    const game = gameRef.current;
+    if (game) applySettingsToGame(game, settings);
+  }, [settings]);
+
+  // Spectator controls. The chat composer stops propagation while focused, so
+  // these never fire mid-message.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (chatOpen) return;
+      const game = gameRef.current;
+      if (!game) return;
+      if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === ']') {
+        game.spectateNext();
+      } else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === '[') {
+        game.spectatePrev();
+      } else if (e.key >= '1' && e.key <= '9') {
+        game.spectateByIndex(Number(e.key) - 1);
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        setShowScores((v) => !v);
+      } else if (e.key === 'Enter') {
+        // Don't open a composer that isn't rendered (hideChat) — that would set
+        // chatOpen with no input to focus/escape and soft-lock these controls.
+        if (!settings.hideChat) {
+          e.preventDefault();
+          setChatOpen(true);
+        }
+      } else if (e.key === 'Escape') {
+        setShowScores(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [chatOpen, settings.hideChat]);
+
+  const spec = hud.spectator;
+  const crosshairCfg = (spec && decodeCrosshair(spec.crosshairCode)) || settings.crosshair;
+  const leave = () => {
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+    }
+    onExit();
+  };
+
+  return (
+    <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
+      <canvas
+        ref={canvasRef}
+        onClick={() => gameRef.current?.spectateNext()}
+        className='block h-full w-full cursor-pointer'
+      />
+      {/* The watched player's crosshair (their reticle, centered). */}
+      {spec?.watchingId && (
+        <div className='pointer-events-none absolute inset-0 flex items-center justify-center'>
+          <CrosshairGraphic cfg={crosshairCfg} />
+        </div>
+      )}
+      <Killfeed entries={hud.killfeed} />
+      <BannerOverlay banner={hud.banner} />
+      {hud.netStatus !== 'off' && (
+        <NetStatusPill status={hud.netStatus} peers={hud.netPeers} rttMs={hud.netRttMs} />
+      )}
+
+      {/* Top banner: who you're watching + how to switch. */}
+      <div className='pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center p-4'>
+        <div className='clip-deck flex items-center gap-3 border border-cyan-300/25 bg-black/60 px-4 py-2 backdrop-blur-sm'>
+          <span className='font-mono text-[10px] uppercase tracking-[0.24em] text-cyan-300/80'>👁 Spectating</span>
+          {spec && spec.watchingId ? (
+            <>
+              <span className='font-display text-sm font-bold text-white'>{spec.watchingName}</span>
+              <span className='font-mono text-[11px] tabular-nums text-white/45'>
+                {spec.index}/{spec.count}
+              </span>
+            </>
+          ) : (
+            <span className='font-display text-sm text-white/60'>Waiting for players…</span>
+          )}
+        </div>
+      </div>
+
+      {/* Player switcher + leave. */}
+      <div className='absolute inset-x-0 bottom-0 z-20 flex flex-wrap items-center justify-center gap-2 p-4'>
+        <button
+          onClick={() => gameRef.current?.spectatePrev()}
+          disabled={!spec || spec.count === 0}
+          className='clip-deck-sm bg-white/10 px-3 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-white/20 disabled:opacity-30'
+        >
+          ◄ Prev
+        </button>
+        <div className='flex max-w-[60vw] flex-wrap items-center justify-center gap-1.5'>
+          {spec?.players.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => gameRef.current?.spectateByIndex(spec.players.findIndex((q) => q.id === p.id))}
+              className={`clip-deck-sm px-2.5 py-1.5 font-mono text-[11px] tracking-[0.08em] transition ${
+                p.id === spec.watchingId
+                  ? 'bg-cyan-400 text-zinc-950'
+                  : 'bg-white/8 text-white/70 hover:bg-white/16'
+              }`}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => gameRef.current?.spectateNext()}
+          disabled={!spec || spec.count === 0}
+          className='clip-deck-sm bg-white/10 px-3 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-white/20 disabled:opacity-30'
+        >
+          Next ►
+        </button>
+        <div className='mx-2 h-6 w-px bg-white/15' />
+        <button
+          onClick={() => setShowScores((v) => !v)}
+          className='clip-deck-sm bg-white/10 px-3 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-white/20'
+        >
+          Scores
+        </button>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className='clip-deck-sm bg-white/10 px-3 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-white/20'
+        >
+          Settings
+        </button>
+        <button
+          onClick={leave}
+          className='clip-deck-sm bg-rose-500/90 px-4 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-rose-400'
+        >
+          Leave
+        </button>
+      </div>
+
+      {/* Read + send match chat (server tags our lines as spectator). */}
+      {!settings.hideChat && (
+        <InGameChat
+          chat={{ open: chatOpen, lines: hud.chat.lines }}
+          onSend={(t) => {
+            gameRef.current?.sendChat(t);
+            setChatOpen(false);
+          }}
+          onCancel={() => setChatOpen(false)}
+        />
+      )}
+
+      {showScores && (
+        <FullScoreboard
+          scores={hud.scores}
+          netStatus={hud.netStatus}
+          mode={hud.mode}
+          showPing={settings.showPing && hud.netStatus !== 'off'}
+        />
+      )}
+
+      {error && (
+        <JoinErrorOverlay message={error} onLeave={onExit} />
+      )}
+
       {settingsOpen && (
         <SettingsModal
           settings={settings}
@@ -3902,6 +4141,12 @@ function Lobby({
     [onStart, serverUrl],
   );
 
+  const startSpectate = useCallback(
+    (roomId: string, mapId: string) =>
+      onStart({ mode: 'spectator', mapId, serverUrl, roomId }),
+    [onStart, serverUrl],
+  );
+
   // Connect the lobby browser once: it lists public rooms and runs the
   // quick-match / create handshakes. Resolved rooms start a multiplayer match.
   useEffect(() => {
@@ -4163,6 +4408,7 @@ function Lobby({
                 rooms={rooms}
                 online={online}
                 onJoin={(r) => startOnline(r.id, r.mapId)}
+                onSpectate={(r) => startSpectate(r.id, r.mapId)}
                 onRefresh={() => lobbyRef.current?.refresh()}
               />
             </div>
@@ -4367,11 +4613,13 @@ function OpenLobbies({
   rooms,
   online,
   onJoin,
+  onSpectate,
   onRefresh,
 }: {
   rooms: LobbyRoom[];
   online: boolean;
   onJoin: (r: LobbyRoom) => void;
+  onSpectate: (r: LobbyRoom) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -4419,15 +4667,31 @@ function OpenLobbies({
                     {r.state === 'voting' && (
                       <span className='rounded-sm bg-cyan-300/20 px-1.5 py-0.5 text-cyan-200'>voting</span>
                     )}
+                    {r.spectators > 0 && (
+                      <span className='rounded-sm bg-white/10 px-1.5 py-0.5 text-white/60'>
+                        👁 {r.spectators}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <button
-                  onClick={() => onJoin(r)}
-                  disabled={!r.joinable}
-                  className='clip-deck-sm shrink-0 bg-emerald-400 px-4 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/40'
-                >
-                  {r.joinable ? 'Join' : 'Full'}
-                </button>
+                <div className='flex shrink-0 items-center gap-1.5'>
+                  {/* Watch is always available for live matches — the whole point
+                      is that a FULL match is still watchable. */}
+                  <button
+                    onClick={() => onSpectate(r)}
+                    title='Spectate this match'
+                    className='clip-deck-sm bg-white/10 px-3 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-100 transition hover:bg-white/20'
+                  >
+                    👁 Watch
+                  </button>
+                  <button
+                    onClick={() => onJoin(r)}
+                    disabled={!r.joinable}
+                    className='clip-deck-sm bg-emerald-400 px-4 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/40'
+                  >
+                    {r.joinable ? 'Join' : 'Full'}
+                  </button>
+                </div>
               </div>
             ))}
           </div>

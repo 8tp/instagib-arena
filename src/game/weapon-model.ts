@@ -136,8 +136,12 @@ export function buildRailgun(finish?: RailgunFinish): RailgunModel {
 // back to a fixed body offset if the rig has no recognisable hand bone.
 const HAND_BONE_CANDIDATES = ['mixamorig:RightHand', 'RightHand', 'Hand.R', 'mixamorigRightHand'];
 
-export function attachRailgunToSoldier(root: THREE.Object3D, height = 1.8): THREE.Group {
-  const { group } = buildRailgun();
+export function attachRailgunToSoldier(
+  root: THREE.Object3D,
+  height = 1.8,
+  finish?: RailgunFinish,
+): THREE.Group {
+  const { group } = buildRailgun(finish);
 
   let hand: THREE.Object3D | null = null;
   for (const name of HAND_BONE_CANDIDATES) {

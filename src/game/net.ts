@@ -20,6 +20,9 @@ export type RemotePlayerSnapshot = {
   nameColor: string; // equipped nameplate-color cosmetic id
   spawnEffect: string; // equipped spawn-in-effect cosmetic id
   title: string; // equipped title cosmetic id (resolved to flair text client-side)
+  railColor: string; // equipped rail-beam color id (used for this player's beam + spectator viewmodel)
+  railgunFinish: string; // equipped railgun finish id (3rd-person gun skin + spectator viewmodel)
+  crosshair: string; // equipped crosshair share-code string ('' = default); rendered when spectating
   ping: number; // this player's reported round-trip ping (ms)
   admin: boolean; // staff badge
   verified: boolean; // verified blue check
@@ -85,6 +88,9 @@ type PlayerMeta = {
   nameColor: string;
   spawnEffect: string;
   title: string;
+  railColor: string;
+  railgunFinish: string;
+  crosshair: string;
   admin: boolean;
   verified: boolean;
 };
@@ -116,6 +122,15 @@ type JoinedMessage = {
   fragLimit: number;
   roundsToWin?: number;
   resumeAt?: number; // warmup/breather end (server clock)
+};
+// Confirmation that this connection is now watching a room (read-only). No spawn
+// or team — a spectator never plays. The client adopts the room's map + mode.
+type SpectatingMessage = {
+  type: 'spectating';
+  roomId: string;
+  mode?: GameMode;
+  mapId: string;
+  state: 'active' | 'voting';
 };
 type VoteStartMessage = {
   type: 'vote-start';
@@ -151,6 +166,7 @@ type ServerMessage =
   | MetaMessage
   | KillBroadcast
   | JoinedMessage
+  | SpectatingMessage
   | VoteStartMessage
   | VoteUpdateMessage
   | VoteResultMessage
@@ -159,6 +175,8 @@ type ServerMessage =
   | BeamMessage
   | ChatBroadcastMessage
   | { type: 'join-failed'; reason: string }
+  | { type: 'spectate-failed'; reason: string }
+  | { type: 'spectate-ended' }
   | { type: 'peer-joined'; clientId: string; name: string }
   | { type: 'peer-left'; clientId: string }
   | { type: 'pong'; ts: number; serverTime: number }
@@ -186,6 +204,10 @@ export type NetEvents = {
     roundsToWin: number | null;
   }) => void;
   onJoinFailed?: (reason: string) => void;
+  // Spectating confirmed: adopt the watched room's map/mode (no spawn — read-only).
+  onSpectating?: (info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) => void;
+  // The watched match ended / the room was reaped → return to the lobby.
+  onSpectateEnded?: () => void;
   onRespawn?: (pos: Vec3, reason: string) => void;
   onVoteStart?: (v: {
     options: string[];
@@ -258,6 +280,9 @@ export class NetClient {
   private url: string;
   private name: string;
   private roomId: string;
+  // When true this connection WATCHES the room (sends `spectate`, never `pos`/
+  // `shoot`/`join`) and renders every player as a remote (no local player).
+  private spectate: boolean;
   private listener: NetListener;
   private events: NetEvents;
   clientId: string | null = null;
@@ -283,6 +308,9 @@ export class NetClient {
   localNameColor = 'name.default'; // equipped nameplate-color id (seen by others)
   localSpawnEffect = 'spawn.beam'; // equipped spawn-in-effect id (seen by others)
   localTitle = 'title.none'; // equipped title id (flair shown under the name, seen by others)
+  localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
+  localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
+  localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
@@ -333,10 +361,18 @@ export class NetClient {
   // our in-match slot + score instead of re-joining fresh (zeroed).
   private resumeToken: string | null = null;
 
-  constructor(opts: { url: string; name: string; roomId: string; listener?: NetListener; events: NetEvents }) {
+  constructor(opts: {
+    url: string;
+    name: string;
+    roomId: string;
+    spectate?: boolean;
+    listener?: NetListener;
+    events: NetEvents;
+  }) {
     this.url = opts.url;
     this.name = opts.name;
     this.roomId = opts.roomId;
+    this.spectate = opts.spectate ?? false;
     this.listener = opts.listener ?? (() => {});
     this.events = opts.events;
   }
@@ -358,9 +394,12 @@ export class NetClient {
     }
     this.ws.onopen = () => {
       this.setStatus('open');
-      // A held resume token means this is a RECONNECT — try to reclaim our slot;
-      // the server falls back to a fresh join if the grace window has lapsed.
-      if (this.resumeToken) {
+      if (this.spectate) {
+        // Read-only observer: ask to watch the room (no slot, no score, no resume).
+        this.send({ type: 'spectate', roomId: this.roomId, name: this.name });
+      } else if (this.resumeToken) {
+        // A held resume token means this is a RECONNECT — try to reclaim our slot;
+        // the server falls back to a fresh join if the grace window has lapsed.
         this.send({ type: 'resume', token: this.resumeToken, roomId: this.roomId, name: this.name });
       } else {
         this.send({ type: 'join', name: this.name, roomId: this.roomId });
@@ -416,6 +455,7 @@ export class NetClient {
   }
 
   sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
+    if (this.spectate) return; // observers have no position
     // The hottest client→server message (64Hz) — send it as a compact binary
     // frame instead of JSON. The server decodes it back to a `pos` message.
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -438,6 +478,7 @@ export class NetClient {
   // distance cap (so the server needn't own the geometry) + the server-clock
   // render time we were displaying others at, so the server rewinds to match.
   sendShot(origin: Vec3, dir: Vec3, maxDist: number) {
+    if (this.spectate) return; // observers can't fire
     this.send({
       type: 'shoot',
       ox: origin.x,
@@ -502,6 +543,31 @@ export class NetClient {
   setLocalTitle(id: string): void {
     this.localTitle = id;
     this.send({ type: 'title', id });
+  }
+
+  // Rail-beam color / railgun finish / crosshair: echoed to the server so other
+  // players + spectators render this player's weapon loadout (previously local).
+  setLocalRailColor(id: string): void {
+    this.localRailColor = id;
+    this.send({ type: 'railColor', id });
+  }
+
+  setLocalRailgunFinish(id: string): void {
+    this.localRailgunFinish = id;
+    this.send({ type: 'railgunFinish', id });
+  }
+
+  setLocalCrosshair(code: string): void {
+    this.localCrosshair = code;
+    this.send({ type: 'crosshair', code });
+  }
+
+  // The weapon cosmetics a remote player has equipped (from the meta roster), so
+  // the renderer can color their beam / build their gun. Null if unknown yet.
+  cosmeticsOf(id: string): { railColor: string; railgunFinish: string; crosshair: string } | null {
+    const m = this.metaById.get(id);
+    if (!m) return null;
+    return { railColor: m.railColor, railgunFinish: m.railgunFinish, crosshair: m.crosshair };
   }
 
   setLocalCard(card: CardPayload): void {
@@ -630,6 +696,7 @@ export class NetClient {
       s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
         frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
+        railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '',
         ping: 0, admin: false, verified: false, receivedAt: now };
       this.remotes.set(b.id, s);
     }
@@ -652,6 +719,9 @@ export class NetClient {
     s.nameColor = m?.nameColor ?? 'name.default';
     s.spawnEffect = m?.spawnEffect ?? 'spawn.beam';
     s.title = m?.title ?? 'title.none';
+    s.railColor = m?.railColor ?? 'rail.cyan';
+    s.railgunFinish = m?.railgunFinish ?? 'gun.stock';
+    s.crosshair = m?.crosshair ?? '';
     s.admin = m?.admin ?? false;
     s.verified = m?.verified ?? false;
     s.receivedAt = now;
@@ -696,6 +766,9 @@ export class NetClient {
       this.send({ type: 'nameColor', id: this.localNameColor });
       this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
       this.send({ type: 'title', id: this.localTitle });
+      this.send({ type: 'railColor', id: this.localRailColor });
+      this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
+      this.send({ type: 'crosshair', code: this.localCrosshair });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       // Keyed off performance.now() to match estimatedServerNow().
@@ -824,6 +897,19 @@ export class NetClient {
       this.events.onJoinFailed?.(msg.reason);
       return;
     }
+    if (msg.type === 'spectating') {
+      this.mode = msg.mode ?? 'ffa';
+      this.events.onSpectating?.({ mapId: msg.mapId, mode: this.mode, state: msg.state });
+      return;
+    }
+    if (msg.type === 'spectate-failed') {
+      this.events.onJoinFailed?.(msg.reason); // surfaced by the same overlay
+      return;
+    }
+    if (msg.type === 'spectate-ended') {
+      this.events.onSpectateEnded?.();
+      return;
+    }
     if (msg.type === 'respawn') {
       this.events.onRespawn?.({ x: msg.x, y: msg.y, z: msg.z }, msg.reason ?? 'void');
       return;
@@ -879,6 +965,7 @@ export class NetClient {
         admin: msg.admin,
         verified: msg.verified,
         guest: msg.guest,
+        spectator: msg.spectator,
       });
       return;
     }
@@ -970,6 +1057,7 @@ export type LobbyRoom = {
   mapId: string;
   players: number;
   capacity: number;
+  spectators: number; // how many are currently watching this room
   state: 'active' | 'voting';
   joinable: boolean;
 };
@@ -987,6 +1075,7 @@ export type ChatMessage = {
   admin: boolean;
   verified: boolean;
   guest: boolean;
+  spectator?: boolean; // sender is watching the match, not playing
 };
 export type ChatRejectReason = 'rate' | 'blocked' | 'account';
 

@@ -4,7 +4,13 @@ import { applyHighlight, type BotModel } from './bots';
 import { LocomotionBlender } from './locomotion';
 import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
 import { WornHat } from './hats';
-import { nameColorById, titleById } from './cosmetics';
+import {
+  DEFAULT_RAILGUN_FINISH,
+  isRailgunFinish,
+  nameColorById,
+  railgunFinishById,
+  titleById,
+} from './cosmetics';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
@@ -118,7 +124,14 @@ export class RemotePlayer {
   // When > 0, the model is hidden and visually "dead" until it ticks down.
   // Set by Game on receiving a server `kill` broadcast for this player.
   deadTimer = 0;
+  // group.visible is the AND of these two independent reasons to hide the avatar:
+  // dead (killcam window) and first-person-spectated (the local viewer is riding
+  // this player's eyes). Kept separate so neither clobbers the other.
+  private deadHidden = false;
+  private firstPersonHidden = false;
   private modelRoot: THREE.Object3D | null = null;
+  private weaponGroup: THREE.Group | null = null; // the attached 3rd-person railgun (rebuilt on finish change)
+  private railgunFinishId = DEFAULT_RAILGUN_FINISH;
   private hat: WornHat | null = null;
   private hatId = 'hat.none';
   private unusualId = 'unusual.none';
@@ -180,7 +193,20 @@ export class RemotePlayer {
 
   markDead() {
     this.deadTimer = DEAD_HIDE_DURATION_SEC;
-    this.group.visible = false;
+    this.deadHidden = true;
+    this.applyVisibility();
+  }
+
+  // Hide this avatar because the local viewer is spectating it in first person
+  // (riding its eyes) — independent of the death-hide. Idempotent.
+  setFirstPersonHidden(hidden: boolean) {
+    if (hidden === this.firstPersonHidden) return;
+    this.firstPersonHidden = hidden;
+    this.applyVisibility();
+  }
+
+  private applyVisibility() {
+    this.group.visible = !this.deadHidden && !this.firstPersonHidden;
   }
 
   // Bright-enemy highlight (emissive glow only). null = natural.
@@ -201,7 +227,8 @@ export class RemotePlayer {
         // spawn the server picked) and un-hide.
         this.group.position.set(snapshot.pos.x, snapshot.pos.y, snapshot.pos.z);
         this.lastSeenPos.copy(this.group.position);
-        this.group.visible = true;
+        this.deadHidden = false;
+        this.applyVisibility();
         justRespawned = true;
       } else {
         return false; // hidden/dead — skip the mixer + transform work entirely (#26h)
@@ -231,6 +258,12 @@ export class RemotePlayer {
       this.unusualId = snapshot.unusual;
       this.hat?.setUnusual(this.unusualId);
     }
+    // Equipped railgun finish (gun skin, echoed from the server) — rebuild the
+    // 3rd-person gun on change so other players + spectators see the right skin.
+    if (snapshot.railgunFinish !== this.railgunFinishId) {
+      this.railgunFinishId = snapshot.railgunFinish;
+      this.rebuildWeapon();
+    }
     // Equipped name color (echoed from the server) — resolve under any team
     // override. No-ops when unchanged so the sprite isn't rebuilt per frame.
     if (snapshot.nameColor !== this.nameColorId) {
@@ -257,7 +290,8 @@ export class RemotePlayer {
   // (via a single apply()), so we don't touch them here. dt is the replay frame.
   snap(pose: { x: number; y: number; z: number; yaw: number; visible: boolean }, dt: number) {
     this.deadTimer = 0;
-    this.group.visible = pose.visible;
+    this.deadHidden = !pose.visible;
+    this.applyVisibility();
     if (!pose.visible) {
       // Keep lastSeenPos current so reappearing doesn't read as a teleport.
       this.lastSeenPos.set(pose.x, pose.y, pose.z);
@@ -364,6 +398,7 @@ export class RemotePlayer {
 
   dispose(scene: THREE.Scene) {
     this.hat?.dispose();
+    this.disposeWeaponGroup();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -389,7 +424,11 @@ export class RemotePlayer {
     this.modelRoot = cloned;
     this.hat = new WornHat(this.group, cloned);
     void this.hat.setHat(this.hatId);
-    attachRailgunToSoldier(cloned, BOT_HEIGHT);
+    this.weaponGroup = attachRailgunToSoldier(
+      cloned,
+      BOT_HEIGHT,
+      railgunFinishById(this.railgunFinishId).data,
+    );
     this.hold = new WeaponHold(cloned);
     this.mixer = new THREE.AnimationMixer(cloned);
     // Soldier.glb clip order: 0 idle, 1 run, 3 walk (matches the three.js
@@ -404,6 +443,29 @@ export class RemotePlayer {
       walk: walkClip ? this.mixer.clipAction(walkClip) : null,
       run: runClip ? this.mixer.clipAction(runClip) : null,
     });
+  }
+
+  // Swap the 3rd-person railgun for one with the current finish. Disposes the old
+  // gun's procedural geometry/materials (not shared, unlike the cloned soldier).
+  private rebuildWeapon() {
+    if (!this.modelRoot) return; // fallback capsule has no gun
+    this.disposeWeaponGroup();
+    const finishId = isRailgunFinish(this.railgunFinishId) ? this.railgunFinishId : DEFAULT_RAILGUN_FINISH;
+    this.weaponGroup = attachRailgunToSoldier(this.modelRoot, BOT_HEIGHT, railgunFinishById(finishId).data);
+  }
+
+  private disposeWeaponGroup() {
+    if (!this.weaponGroup) return;
+    this.weaponGroup.parent?.remove(this.weaponGroup);
+    this.weaponGroup.traverse((obj) => {
+      const mesh = obj as THREE.Mesh & THREE.Line;
+      const geom = (mesh as unknown as { geometry?: THREE.BufferGeometry }).geometry;
+      if (geom) geom.dispose();
+      const mat = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    });
+    this.weaponGroup = null;
   }
 
   private installFallback() {

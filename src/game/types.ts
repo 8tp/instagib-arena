@@ -271,6 +271,18 @@ export type HudState = {
   chat: { open: boolean; lines: ChatLine[] };
   // Net-debug overlay stats when toggled on (F3); null when hidden.
   netDebug: NetDebugStats | null;
+  // Spectator HUD: who you're watching + the roster you can cycle through, and
+  // the watched player's crosshair (share-code). null when not spectating.
+  spectator: SpectatorHud | null;
+};
+
+export type SpectatorHud = {
+  watchingId: string | null; // the player currently in view (null = none available yet)
+  watchingName: string;
+  index: number; // 1-based position in `players` (0 when none)
+  count: number; // number of watchable players
+  players: { id: string; name: string }[]; // ordered switch list
+  crosshairCode: string; // watched player's crosshair share-code ('' = default)
 };
 
 export type TrainingHud = {
