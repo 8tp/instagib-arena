@@ -46,10 +46,14 @@ import {
 import { randomBytes } from 'node:crypto';
 import type { CardPayload, Vec3 } from '../src/game/types';
 import {
+  DEFAULT_RAIL_COLOR,
+  DEFAULT_RAILGUN_FINISH,
   isCard,
   isEmote,
   isHat,
   isNameColor,
+  isRailColor,
+  isRailgunFinish,
   isSpawnEffect,
   isTitle,
   isUnusual,
@@ -180,7 +184,8 @@ type ClientRecord = {
   id: ClientId;
   socket: WebSocket;
   name: string;
-  roomId: RoomId | null; // null while browsing the lobby
+  roomId: RoomId | null; // null while browsing the lobby OR spectating
+  spectating: RoomId | null; // room this connection is watching (read-only); null when playing/browsing
   pos: Vec;
   yaw: number;
   pitch: number;
@@ -220,6 +225,9 @@ type ClientRecord = {
   nameColor: string; // equipped nameplate-color cosmetic id (echoed in snapshots)
   spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
   title: string; // equipped title cosmetic id (flair under the name; echoed in snapshots)
+  railColor: string; // equipped rail-beam color cosmetic id (echoed so others/spectators see your beam)
+  railgunFinish: string; // equipped railgun-finish (gun skin) cosmetic id (echoed for the 3rd-person gun)
+  crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
@@ -235,6 +243,7 @@ type Room = {
   capacity: number;
   hostId: ClientId | null;
   members: Set<ClientId>;
+  spectators: Set<ClientId>; // read-only observers; not players (never in snapshots/shots/teams/votes)
   state: 'active' | 'voting';
   vote: {
     options: string[];
@@ -262,6 +271,7 @@ type ClientMessage =
   | { type: 'create'; name?: string; mapId?: string; isPublic?: boolean; capacity?: number; mode?: string }
   | { type: 'quickmatch'; name?: string; mode?: string }
   | { type: 'join'; roomId?: string; name?: string }
+  | { type: 'spectate'; roomId?: string; name?: string }
   | { type: 'resume'; token?: string; roomId?: string; name?: string }
   | { type: 'leave' }
   | { type: 'vote'; mapId?: string }
@@ -271,6 +281,9 @@ type ClientMessage =
   | { type: 'nameColor'; id?: string }
   | { type: 'spawnEffect'; id?: string }
   | { type: 'title'; id?: string }
+  | { type: 'railColor'; id?: string }
+  | { type: 'railgunFinish'; id?: string }
+  | { type: 'crosshair'; code?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'chat'; text?: string }
   | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
@@ -306,6 +319,7 @@ type ChatBroadcast = {
   admin: boolean;
   verified: boolean;
   guest: boolean;
+  spectator?: boolean; // true when the sender is watching, not playing
 };
 
 // Does this connection's progression identity own the given cosmetic id? Read
@@ -507,6 +521,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const c = clients.get(id);
       if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(data);
     }
+    // Spectators receive the same room broadcasts (meta/beam/kill/vote/chat/peer)
+    // so the watched match looks identical to what players see. They never appear
+    // in members, so they're excluded from snapshots, shots, teams, and votes.
+    for (const id of room.spectators) {
+      if (id === exceptId) continue;
+      const c = clients.get(id);
+      if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(data);
+    }
   };
 
   // ── Room lifecycle ────────────────────────────────────────────────────
@@ -552,6 +574,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       capacity,
       hostId: opts.hostId,
       members: new Set(),
+      spectators: new Set(),
       state: 'active',
       vote: null,
       resumeAt: Date.now() + WARMUP_MS, // initial get-ready before the first frag
@@ -823,6 +846,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.nameColor = old.nameColor;
     record.spawnEffect = old.spawnEffect;
     record.title = old.title;
+    record.railColor = old.railColor;
+    record.railgunFinish = old.railgunFinish;
+    record.crosshair = old.crosshair;
     record.card = old.card;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
     record.history.length = 0;
@@ -887,6 +913,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (room.members.size === 0) {
       room.emptySince = Date.now();
       room.hostId = null;
+      // No players left to watch → release any spectators back to the menu (the
+      // room is now empty and will be reaped shortly).
+      endSpectators(room);
     } else if (room.hostId === record.id) {
       room.hostId = room.members.values().next().value ?? null;
     }
@@ -898,6 +927,30 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
     broadcastRoomList();
     schedulePresence(); // this player's inMatch flag just cleared
+  };
+
+  // Stop watching: remove this connection from its room's spectator set. Safe to
+  // call when not spectating (no-op).
+  const leaveSpectate = (record: ClientRecord) => {
+    if (!record.spectating) return;
+    const room = rooms.get(record.spectating);
+    record.spectating = null;
+    room?.spectators.delete(record.id);
+    schedulePresence();
+  };
+
+  // Release every spectator of a room back to the menu (the match ended / the
+  // room is being reaped). Tells each client so its SpectatorView returns to the
+  // lobby instead of freezing on a stale final frame.
+  const endSpectators = (room: Room) => {
+    for (const id of room.spectators) {
+      const c = clients.get(id);
+      if (c) c.spectating = null;
+      if (c && c.socket.readyState === c.socket.OPEN) {
+        c.socket.send(JSON.stringify({ type: 'spectate-ended' }));
+      }
+    }
+    room.spectators.clear();
   };
 
   // Socket dropped: if mid-match, HOLD the slot + score for a reconnect (the
@@ -912,6 +965,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       return;
     }
     leaveRoom(rec);
+    leaveSpectate(rec);
     listers.delete(rec.id);
     clients.delete(rec.id);
     schedulePresence();
@@ -929,6 +983,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         mapId: r.mapId,
         players: r.members.size,
         capacity: r.capacity,
+        spectators: r.spectators.size,
         state: r.state,
         joinable: r.members.size < r.capacity,
       }));
@@ -990,6 +1045,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     nameColor: c.nameColor,
     spawnEffect: c.spawnEffect,
     title: c.title,
+    railColor: c.railColor,
+    railgunFinish: c.railgunFinish,
+    crosshair: c.crosshair,
     admin: c.admin,
     verified: c.verified,
   });
@@ -1407,6 +1465,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       socket,
       name: accountName ?? 'Guest',
       roomId: null,
+      spectating: null,
       pos: { x: 0, y: 0, z: 0 },
       yaw: 0,
       pitch: 0,
@@ -1435,6 +1494,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       nameColor: 'name.default',
       spawnEffect: 'spawn.beam',
       title: 'title.none',
+      railColor: DEFAULT_RAIL_COLOR,
+      railgunFinish: DEFAULT_RAILGUN_FINISH,
+      crosshair: '',
       card: null,
       playerId,
       admin: !!account?.isAdmin,
@@ -1503,19 +1565,22 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
 
         case 'chat': {
-          // Two contexts share this message: a player IN A ROOM → match chat
-          // (everyone in the match, GMod-style); a menu client (lister) → the
-          // global lobby chat. Identity is server-authoritative; content is
-          // sanitized, length-capped, profanity-filtered, and rate-limited for
-          // both. In-room takes priority (joining a room drops you from listers).
+          // Three contexts share this message: a player IN A ROOM → match chat
+          // (everyone in the match, GMod-style); a SPECTATOR → the watched room's
+          // match chat (tagged so players can tell it's an observer); a menu
+          // client (lister) → the global lobby chat. Identity is server-
+          // authoritative; content is sanitized, length-capped, profanity-
+          // filtered, and rate-limited for all. In-room/spectating take priority.
           const inRoom = !!record.roomId;
-          const inLobby = listers.has(record.id);
-          if (!inRoom && !inLobby) break;
+          const isSpectator = !inRoom && !!record.spectating;
+          const inLobby = !inRoom && !isSpectator && listers.has(record.id);
+          if (!inRoom && !isSpectator && !inLobby) break;
           const text = sanitizeChat(msg.text);
           if (!text) break;
           // Global lobby chat is accounts-only — anonymous broadcast is the abuse
-          // vector. Match chat allows everyone (guests show as their room name).
-          if (!inRoom && !record.playerId) {
+          // vector. Match chat (playing OR spectating) allows everyone (guests
+          // show as their room/"Guest N" name).
+          if (!inRoom && !isSpectator && !record.playerId) {
             sendRaw(socket, { type: 'chat-rejected', reason: 'account' });
             break;
           }
@@ -1541,10 +1606,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
             admin: record.admin,
             verified: record.verified,
             guest: !record.playerId,
+            spectator: isSpectator, // UI shows a "spec" tag on observer lines
           };
-          if (inRoom) {
-            const room = rooms.get(record.roomId!);
-            if (room) broadcastRoom(room, out); // sender included → sees own line
+          if (inRoom || isSpectator) {
+            const room = rooms.get((record.roomId ?? record.spectating)!);
+            if (room) broadcastRoom(room, out); // sender included (member or spectator) → sees own line
           } else {
             chatHistory.push(out);
             if (chatHistory.length > CHAT_HISTORY_MAX) chatHistory.shift();
@@ -1640,6 +1706,44 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
         }
 
+        case 'spectate': {
+          // Watch a live match read-only. No capacity check — full matches are
+          // exactly what you can't join but should be able to watch. Spectators
+          // never enter members, so they're excluded from snapshots, shots,
+          // teams, and votes; they only receive the room's broadcasts + state.
+          const room = msg.roomId ? rooms.get(msg.roomId) : undefined;
+          if (!room) {
+            sendRaw(socket, { type: 'spectate-failed', reason: 'gone' });
+            break;
+          }
+          leaveRoom(record); // can't be a player and a spectator at once
+          leaveSpectate(record); // single-spectate invariant
+          listers.delete(record.id);
+          record.spectating = room.id;
+          room.spectators.add(record.id);
+          sendRaw(socket, {
+            type: 'spectating',
+            roomId: room.id,
+            mode: room.mode,
+            mapId: room.mapId,
+            state: room.state,
+          });
+          // Ship the current roster immediately so names/cosmetics resolve before
+          // the first state frame, and replay an in-progress vote (mirrors join).
+          sendRaw(socket, roomMeta(room));
+          if (room.state === 'voting' && room.vote) {
+            sendRaw(socket, {
+              type: 'vote-start',
+              options: room.vote.options,
+              endsAt: room.vote.endsAt,
+              durationMs: MAP_VOTE_DURATION_SEC * 1000,
+            });
+          }
+          broadcastRoomList(); // spectator count changed
+          schedulePresence();
+          break;
+        }
+
         case 'resume': {
           // A reconnecting client presents its previous resume token to reclaim
           // its in-match slot + score. On miss/expiry, fall back to a fresh join.
@@ -1672,6 +1776,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
         case 'leave':
           leaveRoom(record);
+          leaveSpectate(record); // also covers a spectator stopping watching
+          broadcastRoomList(); // refresh players/spectator counts in the lobby
           break;
 
         case 'vote': {
@@ -1749,6 +1855,37 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (record.card) record.card.title = titleById(next).text;
             bumpMeta(record);
           }
+          break;
+        }
+
+        case 'railColor': {
+          // Rail-beam color — echoed so other players + spectators render this
+          // player's beam in their chosen color (was previously local-only).
+          const next =
+            typeof msg.id === 'string' && isRailColor(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : DEFAULT_RAIL_COLOR;
+          if (next !== record.railColor) { record.railColor = next; bumpMeta(record); }
+          break;
+        }
+
+        case 'railgunFinish': {
+          // Railgun finish (gun skin) — echoed so the 3rd-person gun on this
+          // player + the spectator viewmodel use the right skin.
+          const next =
+            typeof msg.id === 'string' && isRailgunFinish(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : DEFAULT_RAILGUN_FINISH;
+          if (next !== record.railgunFinish) { record.railgunFinish = next; bumpMeta(record); }
+          break;
+        }
+
+        case 'crosshair': {
+          // Crosshair as an opaque share-code string (the client encodes/decodes
+          // it). Not an unlockable, so no ownership check — just length-cap it.
+          // Echoed via meta so a spectator can render the watched player's reticle.
+          const next = typeof msg.code === 'string' ? msg.code.slice(0, 200) : '';
+          if (next !== record.crosshair) { record.crosshair = next; bumpMeta(record); }
           break;
         }
 
@@ -1930,6 +2067,15 @@ export function attachInstagibWs(wss: WebSocketServer) {
           c.socket.send(buf);
         }
       }
+      // Spectators get the same state frames (they observe but don't appear in
+      // the snapshot, since they're not in members).
+      for (const id of room.spectators) {
+        const c = clients.get(id);
+        if (c && c.socket.readyState === c.socket.OPEN) {
+          if (c.socket.bufferedAmount > MAX_SNAPSHOT_BUFFERED_BYTES) continue;
+          c.socket.send(buf);
+        }
+      }
     }
     if (NETCODE_DIAG && now - snapshotDiagStarted >= NETCODE_DIAG_INTERVAL_MS) {
       console.log('[netcode-diag]', JSON.stringify({
@@ -2003,7 +2149,10 @@ export function attachInstagibWs(wss: WebSocketServer) {
       // phantoms — reap them on the short window so spam can't pile them up.
       const grace =
         !room.wasEverOccupied && !room.isPublic ? FRESH_ROOM_GRACE_MS : EMPTY_ROOM_GRACE_MS;
-      if (now - room.emptySince > grace) rooms.delete(rid);
+      if (now - room.emptySince > grace) {
+        if (room.spectators.size > 0) endSpectators(room); // release stragglers before delete
+        rooms.delete(rid);
+      }
     }
     // Catch-all so the menu's online list reflects in-match joins/leaves and any
     // reaped sockets even on paths that don't call schedulePresence() directly.
