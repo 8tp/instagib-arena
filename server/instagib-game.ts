@@ -1228,6 +1228,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
         spawn: { ...c.pos },
       });
     }
+    // Spectators follow the rotation too (no spawn — they don't play). Without
+    // this they'd keep rendering the old arena while players move on the new one.
+    for (const id of room.spectators) {
+      const c = clients.get(id);
+      if (c) sendRaw(c.socket, { type: 'vote-result', mapId: winner, resumeAt: room.resumeAt });
+    }
     broadcastRoomList();
   };
 
@@ -1263,6 +1269,20 @@ export function attachInstagibWs(wss: WebSocketServer) {
         resumeAt: room.resumeAt,
         spawn: { ...c.pos },
       });
+    }
+    // Spectators get the round bump too (no spawn) so their "Round N" banner +
+    // map stay in sync with the duel they're watching.
+    for (const id of room.spectators) {
+      const c = clients.get(id);
+      if (c) {
+        sendRaw(c.socket, {
+          type: 'round',
+          roundNum: room.roundNum,
+          roundWins,
+          winnerId: lastWinnerId,
+          resumeAt: room.resumeAt,
+        });
+      }
     }
   };
 
@@ -1718,6 +1738,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
           }
           leaveRoom(record); // can't be a player and a spectator at once
           leaveSpectate(record); // single-spectate invariant
+          // If THIS connection was the room's last member, leaveRoom just emptied
+          // it (and released any other spectators) — there's nothing live to
+          // watch, so refuse rather than freeze on a 0-member room until reap.
+          if (room.members.size === 0) {
+            sendRaw(socket, { type: 'spectate-failed', reason: 'gone' });
+            break;
+          }
           listers.delete(record.id);
           record.spectating = room.id;
           room.spectators.add(record.id);
@@ -2120,6 +2147,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (c.disconnectedAt > 0) {
         if (now - c.disconnectedAt > RESUME_GRACE_MS) {
           leaveRoom(c);
+          leaveSpectate(c);
           listers.delete(id);
           clients.delete(id);
         }
@@ -2135,6 +2163,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           // ignore
         }
         leaveRoom(c);
+        leaveSpectate(c); // a stale spectator socket must also leave room.spectators
         listers.delete(id);
         clients.delete(id);
       }

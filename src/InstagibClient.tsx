@@ -1302,15 +1302,19 @@ function SpectatorView({
         e.preventDefault();
         setShowScores((v) => !v);
       } else if (e.key === 'Enter') {
-        e.preventDefault();
-        setChatOpen(true);
+        // Don't open a composer that isn't rendered (hideChat) — that would set
+        // chatOpen with no input to focus/escape and soft-lock these controls.
+        if (!settings.hideChat) {
+          e.preventDefault();
+          setChatOpen(true);
+        }
       } else if (e.key === 'Escape') {
         setShowScores(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [chatOpen]);
+  }, [chatOpen, settings.hideChat]);
 
   const spec = hud.spectator;
   const crosshairCfg = (spec && decodeCrosshair(spec.crosshairCode)) || settings.crosshair;

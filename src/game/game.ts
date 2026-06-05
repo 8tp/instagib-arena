@@ -1426,7 +1426,8 @@ export class Game {
       } else {
         this.syncRemotePlayers(dt);
         // Record the match for Play of the Match (downsampled; live play only).
-        if (!this.matchOver && !this.vote && !this.training) {
+        // Spectators never play a PoM, so skip the per-frame sampling entirely.
+        if (!this.spectator && !this.matchOver && !this.vote && !this.training) {
           this.recorder.tick(dt, () => this.sampleReplayFrame());
         }
       }
