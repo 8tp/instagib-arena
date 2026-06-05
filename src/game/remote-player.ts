@@ -278,13 +278,13 @@ export class RemotePlayer {
   // ground speed, orient the model to `facing`, and tick hat physics. The
   // caller must have already positioned the group + set `this.facing`.
   private drive(dt: number, moveSpeed: number) {
+    const k = dt > 0 ? 1 - Math.exp(-MOVESPEED_SMOOTH_HZ * dt) : 1;
+    this.lastMoveSpeed += (moveSpeed - this.lastMoveSpeed) * k;
+    this.loco?.update(this.lastMoveSpeed, dt);
     if (this.mixer) this.mixer.update(dt);
     // Pin the gun-carry pose over the animated arms.
     this.hold?.apply();
     this.lastSeenPos.copy(this.group.position);
-    const k = dt > 0 ? 1 - Math.exp(-MOVESPEED_SMOOTH_HZ * dt) : 1;
-    this.lastMoveSpeed += (moveSpeed - this.lastMoveSpeed) * k;
-    this.loco?.update(this.lastMoveSpeed, dt);
     if (this.modelRoot) {
       this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
     }

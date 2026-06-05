@@ -308,10 +308,9 @@ export class CharacterPreview {
         else mat?.dispose?.();
       });
     }
-    // Release the WebGL context itself — the Locker preview remounts on every
-    // tab open, and browsers cap live contexts (~16), after which it renders
-    // blank. forceContextLoss frees this context + all its GPU uploads.
-    this.renderer.forceContextLoss();
+    // The Locker remounts the preview on the same canvas when switching tabs.
+    // renderer.dispose() releases this preview's GPU resources without leaving
+    // that canvas in a forced context-lost state for the next preview instance.
     this.renderer.dispose();
   }
 }

@@ -127,10 +127,10 @@ export function applyEmote(
       // Double-biceps: upper arms out to the sides, forearms curled beside the
       // head, and a slow show-off turn.
       group.rotation.y = baseYaw + Math.sin(t * 0.9) * 0.5;
-      arm(rig, 'right', 1, 0.08, 0);
-      arm(rig, 'left', -1, 0.08, 0);
-      foreArm(rig, 'right', 0.12, 1, 0);
-      foreArm(rig, 'left', -0.12, 1, 0);
+      arm(rig, 'right', 0.95, 0.28, 0);
+      arm(rig, 'left', -0.95, 0.28, 0);
+      foreArm(rig, 'right', -0.28, 0.96, 0.04);
+      foreArm(rig, 'left', 0.28, 0.96, 0.04);
       break;
     }
     case 'spin': {
@@ -144,18 +144,16 @@ export function applyEmote(
       break;
     }
     case 'dance': {
-      // Hip sway + bob + alternating arm pumps (disco point).
+      // Hip sway + bob + disco point: one hand high, the other low for a
+      // silhouette that stays distinct from cheer even at a single frame.
       const sway = Math.sin(t * 5 + p);
       group.rotation.z = sway * 0.1;
       group.rotation.y = baseYaw + sway * 0.22;
       group.position.y = bob(0.07, 5, p);
-      const pump = (sway + 1) * 0.5; // 0..1
-      const rightY = 0.25 + pump * 0.75;
-      const leftY = 0.25 + (1 - pump) * 0.75;
-      arm(rig, 'right', 0.72, rightY, 0);
-      arm(rig, 'left', -0.72, leftY, 0);
-      foreArm(rig, 'right', 0.72, rightY, 0);
-      foreArm(rig, 'left', -0.72, leftY, 0);
+      arm(rig, 'right', 0.6 + sway * 0.08, 0.82, 0.02);
+      arm(rig, 'left', -0.95, 0.14 + Math.abs(sway) * 0.08, 0);
+      foreArm(rig, 'right', 0.18 + sway * 0.22, 0.98, 0);
+      foreArm(rig, 'left', -0.98, 0.08, 0);
       break;
     }
     case 'idle':
