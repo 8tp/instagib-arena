@@ -260,6 +260,12 @@ export class Game {
   private trainingRange: TrainingRange | null = null; // target-practice range (training mode)
   private localRespawnInvuln = 0; // seconds of post-respawn grace vs bots
   private localWarmupUntil = 0; // perf.now() ms; offline pre-match no-fire window
+  // Offline only: true once beginLocalWarmup has run (bots spawned, the match has
+  // truly opened). Before this — during the async bot-model load at start() —
+  // localWarmupUntil is 0 so inCountdown is false; gating the recorder/clock on
+  // this flag keeps the run from recording bot-less load frames or starting the
+  // timer early (the replay + run timer begin exactly at the gun-go).
+  private localWarmupArmed = false;
   private shake = 0; // camera screen-shake amount, decays each render frame
 
   // Visual customization
@@ -1051,6 +1057,7 @@ export class Game {
   }
 
   private beginLocalWarmup() {
+    this.localWarmupArmed = true; // the match has opened — recording may start at gun-go
     this.localWarmupUntil = performance.now() + LOCAL_WARMUP_SEC * 1000;
     // Invuln spans the warmup AND a beat past it (ticks down each frame), so the
     // first live moment still has the normal respawn grace.
@@ -1428,8 +1435,18 @@ export class Game {
         // (downsampled; live play only). Skip the pre-match countdown so the
         // recorder clock starts at the gun-go — that makes it the authoritative
         // run time for the speedrun challenge and keeps warmup out of the replay.
-        // Spectators never record (no PoM, no challenge).
-        if (!this.spectator && !this.matchOver && !this.vote && !this.training && !this.inCountdown) {
+        // Offline also requires the warmup to be ARMED (beginLocalWarmup has run):
+        // before that, during the async bot-model load, inCountdown is false but
+        // bots don't exist yet — recording then would capture glitchy bot-less
+        // frames and start the run clock early. Spectators never record.
+        if (
+          !this.spectator &&
+          !this.matchOver &&
+          !this.vote &&
+          !this.training &&
+          !this.inCountdown &&
+          (this.net || this.localWarmupArmed)
+        ) {
           this.recorder.tick(dt, () => this.sampleReplayFrame());
         }
       }
