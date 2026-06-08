@@ -4168,7 +4168,10 @@ function ChallengeTimer({ gameRef }: { gameRef: { current: Game | null } }) {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [gameRef]);
-  const s = Math.max(0, ms) / 1000;
+  // Stay hidden until gameplay actually begins (the recorder clock starts at the
+  // gun-go, so ms only leaves 0 once you can frag — never during load/countdown).
+  if (ms <= 0) return null;
+  const s = ms / 1000;
   const m = Math.floor(s / 60);
   const clock = `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`;
   return (
@@ -4658,6 +4661,7 @@ function ReplayViewerOverlay({
   const [state, setState] = useState<ReplayViewerState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isFs, setIsFs] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
   // Snapshot the graphics settings once so the viewer matches the game's look
   // without re-creating on every settings change mid-watch.
   const gfxRef = useRef({
@@ -4665,6 +4669,12 @@ function ReplayViewerOverlay({
     resolutionScale: settings.resolutionScale,
     lowSpec: settings.lowSpec,
   });
+  // onClose changes identity on every parent (Lobby) re-render — keep it in a ref
+  // so the viewer effect can depend only on playerId. Otherwise the Lobby's
+  // polling re-renders would tear down + recreate the viewer mid-watch, snapping
+  // playback back to 0.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     let cancelled = false;
@@ -4693,7 +4703,7 @@ function ReplayViewerOverlay({
           gfxRef.current,
         );
         viewerRef.current = viewer;
-        await viewer.start();
+        await viewer.start(); // starts paused on the first frame
       } catch {
         if (!cancelled) setError('This run could not be loaded.');
       }
@@ -4702,7 +4712,7 @@ function ReplayViewerOverlay({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (document.fullscreenElement) return; // browser handles fullscreen exit
-        onClose();
+        onCloseRef.current();
       } else if (e.code === 'Space') {
         e.preventDefault();
         viewerRef.current?.togglePlay();
@@ -4719,7 +4729,30 @@ function ReplayViewerOverlay({
       viewer?.dispose();
       viewerRef.current = null;
     };
-  }, [playerId, onClose]);
+  }, [playerId]);
+
+  // Once the scene is loaded + the first frame is rendering (behind the black
+  // cover), run a short 3-2-1 countdown, then auto-play. The cover masks the
+  // initial load/first-frame warm-up so the rewatch never flashes a blank frame.
+  const ready = state?.ready ?? false;
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || error || startedRef.current) return;
+    startedRef.current = true;
+    let n = 3;
+    setCountdown(n);
+    const id = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(id);
+        setCountdown(null);
+        viewerRef.current?.play();
+      } else {
+        setCountdown(n);
+      }
+    }, 700);
+    return () => clearInterval(id);
+  }, [ready, error]);
 
   const toggleFullscreen = useCallback(() => {
     const el = rootRef.current;
@@ -4731,13 +4764,40 @@ function ReplayViewerOverlay({
   const duration = state?.duration ?? 0;
   const t = state?.t ?? 0;
   const playing = state?.playing ?? false;
-  const ready = state?.ready ?? false;
+  // Cover the canvas (black) until the scene is loaded AND the intro countdown has
+  // finished — masks the initial load + first-frame warm-up so it never flashes.
+  const showCover = !!error || !ready || countdown !== null;
 
   // Portal to <body> so the overlay escapes the modal's clip-path / transform
   // (which otherwise traps a position:fixed child into a tiny clipped square).
   return createPortal(
     <div ref={rootRef} className='fixed inset-0 z-[200] flex flex-col bg-black font-mono'>
       <canvas ref={canvasRef} className='absolute inset-0 block h-full w-full' />
+
+      {/* Loading / countdown cover */}
+      {showCover && (
+        <div
+          className={`absolute inset-0 z-[5] flex flex-col items-center justify-center ${
+            countdown !== null ? 'bg-black/55' : 'bg-black'
+          }`}
+        >
+          {error ? (
+            <div className='text-[13px] text-rose-300'>{error}</div>
+          ) : countdown !== null ? (
+            <>
+              <div className='text-[10px] uppercase tracking-[0.3em] text-cyan-300/80'>Starting run</div>
+              <div className='mt-1 font-display text-7xl font-bold tabular-nums text-white drop-shadow-[0_0_24px_rgba(34,211,238,0.5)]'>
+                {countdown}
+              </div>
+            </>
+          ) : (
+            <div className='flex flex-col items-center gap-3'>
+              <div className='h-7 w-7 animate-spin rounded-full border-2 border-cyan-300/30 border-t-cyan-300' />
+              <div className='text-[12px] uppercase tracking-[0.2em] text-white/55'>Loading replay…</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Top bar */}
       <div className='relative z-10 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent px-5 py-3'>

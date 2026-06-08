@@ -177,9 +177,15 @@ export class ReplayViewer {
     const dt = this.prevNow ? Math.min(0.1, (now - this.prevNow) / 1000) : 1 / 60;
     this.prevNow = now;
 
-    this.player?.update(dt);
-    this.effects.step(dt, this.scene);
-    this.stepBeams(dt);
+    // A single bad frame (e.g. an actor mid-spawn) must never kill the loop and
+    // leave a white canvas — advance defensively, then ALWAYS render.
+    try {
+      this.player?.update(dt);
+      this.effects.step(dt, this.scene);
+      this.stepBeams(dt);
+    } catch {
+      /* keep rendering the last good state */
+    }
     this.renderer.render(this.scene, this.camera);
 
     // Throttle the progress callback so React isn't re-rendered every frame.
