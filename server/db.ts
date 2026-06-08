@@ -1794,6 +1794,47 @@ function weeklyReplayPlayerIds(weekKeyStr: string): Set<string> {
   return new Set(rows.map((r) => r.player_id));
 }
 
+// Headline weekly-challenge participation for the metrics/analytics API.
+const wcStatsStmt = sqlite.prepare(`
+  SELECT COUNT(*) AS participants,
+         COALESCE(SUM(runs), 0) AS runs,
+         COALESCE(SUM(CASE WHEN best_time_ms > 0 THEN 1 ELSE 0 END), 0) AS winners,
+         MIN(CASE WHEN best_time_ms > 0 THEN best_time_ms END) AS best_time_ms,
+         COALESCE(MAX(best_kills), 0) AS top_kills
+    FROM instagib_weekly_challenge WHERE week_key = ?`);
+const wrStatsStmt = sqlite.prepare(
+  `SELECT COUNT(*) AS n, COALESCE(SUM(raw_bytes), 0) AS bytes FROM instagib_weekly_replay WHERE week_key = ?`,
+);
+
+export type WeeklyChallengeStats = {
+  week: string;
+  participants: number;
+  runs: number;
+  winners: number;
+  bestTimeMs: number; // fastest winning clear this week (0 = no winner yet)
+  topKills: number;
+  replaysStored: number;
+  replayBytes: number; // total uncompressed replay bytes recorded this week
+};
+
+export function getWeeklyChallengeStats(now: number = Date.now()): WeeklyChallengeStats {
+  const wk = weekKey(now);
+  const s = wcStatsStmt.get(wk) as {
+    participants: number; runs: number; winners: number; best_time_ms: number | null; top_kills: number;
+  };
+  const r = wrStatsStmt.get(wk) as { n: number; bytes: number };
+  return {
+    week: wk,
+    participants: s.participants,
+    runs: s.runs,
+    winners: s.winners,
+    bestTimeMs: s.best_time_ms ?? 0,
+    topKills: s.top_kills,
+    replaysStored: r.n,
+    replayBytes: r.bytes,
+  };
+}
+
 type WcRow = {
   player_id: string;
   week_key: string;

@@ -20,7 +20,7 @@ import { leaderboardRouter } from './leaderboard';
 import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
 import { authRouter, adminUsernamesFromEnv } from './auth';
-import { adminRouter } from './admin';
+import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachInstagibWs } from './instagib-game';
 
@@ -209,6 +209,8 @@ const instagibWss = new WebSocketServer({
   perMessageDeflate: false,
 });
 ({ liveCounts } = attachInstagibWs(instagibWss));
+// Let the token-gated metrics API report live concurrency too (one-call /report).
+setLiveCountsSource(liveCounts);
 instagibWss.on('error', (err) => console.error('[ws] server error', err));
 
 // Connection caps so a flood can't exhaust slots/memory on a public alpha.
@@ -287,6 +289,10 @@ server.listen(port, host, () => {
   console.log(`> Instagib Arena server ready on http://${host}:${port}`);
   console.log(`>   game socket:  ws://${host}:${port}${INSTAGIB_WS_PATH}`);
   console.log(`>   stats api:    http://${host}:${port}/api/stats`);
+  console.log(
+    `>   metrics api:  http://${host}:${port}/api/admin/metrics/report ` +
+      `(token auth ${adminApiTokenEnabled ? 'ENABLED' : 'disabled — set ADMIN_API_TOKEN'})`,
+  );
   if (!hasBuild && dev) {
     console.log('>   dev mode: run `npm run dev:web` (Vite) for the client.');
   }
