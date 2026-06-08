@@ -29,6 +29,13 @@ export type ReplayViewerState = {
   ready: boolean;
 };
 
+// Mirror the player's own graphics settings so the replay looks like the game.
+export type ReplayViewerOptions = {
+  fov?: number;
+  resolutionScale?: number;
+  lowSpec?: boolean;
+};
+
 type Beam = { mesh: THREE.Mesh; life: number };
 
 export class ReplayViewer {
@@ -59,12 +66,28 @@ export class ReplayViewer {
     private canvas: HTMLCanvasElement,
     private data: ReplayData,
     private onState?: (s: ReplayViewerState) => void,
+    opts: ReplayViewerOptions = {},
   ) {
     this.renderer = createRenderer(canvas);
     this.scene = createScene(this.renderer);
     this.camera = createCamera(canvas);
+    // Match the player's own FOV + render quality so the rewatch looks like the game.
+    if (typeof opts.fov === 'number' && Number.isFinite(opts.fov)) {
+      this.camera.fov = Math.max(60, Math.min(130, opts.fov));
+      this.camera.updateProjectionMatrix();
+    }
+    this.applyQuality(opts.resolutionScale ?? 1, opts.lowSpec ?? false);
     this.resizeHandler = () => this.handleResize();
     window.addEventListener('resize', this.resizeHandler);
+  }
+
+  // Render-resolution pixel ratio, mirroring Game.setQuality/applyPixelRatio.
+  private applyQuality(resolutionScale: number, lowSpec: boolean) {
+    const scale = Number.isFinite(resolutionScale) ? Math.max(0.4, Math.min(2, resolutionScale)) : 1;
+    const dpr = window.devicePixelRatio || 1;
+    const cap = lowSpec ? 1 : 2;
+    this.renderer.setPixelRatio(Math.min(Math.min(dpr, cap) * scale, lowSpec ? 1.5 : 3));
+    this.effects.setQuality(lowSpec ? 0.5 : 1);
   }
 
   // Async because the bot GLB loads over the network. Safe to call once.

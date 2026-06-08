@@ -2432,6 +2432,13 @@ export class Game {
     return { kills: this.playerFrags, won, timeMs, replay: encodeReplay(data) };
   }
 
+  // Live elapsed run time (ms) for the weekly-challenge HUD count-up timer. This is
+  // the recorder clock, which starts at the gun-go (warmup excluded) and freezes at
+  // match end — the exact value getChallengeRun() submits. 0 during the countdown.
+  getChallengeElapsedMs(): number {
+    return Math.round(this.recorder.durationSec * 1000);
+  }
+
   // The active match's mode tag for the stats POST: 'ranked' for a ranked Duel,
   // else the joined room's game mode (offline is always 'ffa'). Powers the admin
   // dashboard's mode breakdown. Cosmetic metadata only.
