@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { useAuth, LoginModal, type Account } from './auth';
 import { CONTROLS } from './controls';
@@ -1265,6 +1266,9 @@ function GameView({
           }}
         />
       )}
+      {/* Weekly challenge: live count-up run timer at top-center (hidden once the
+          match ends — the result banner below takes over). */}
+      {isChallenge && !hud.matchOver && !hud.pom && <ChallengeTimer gameRef={gameRef} />}
       {isChallenge && challengeResult && hud.matchOver && (
         <div className='pointer-events-none absolute left-1/2 top-6 z-[55] -translate-x-1/2 rounded-lg border border-amber-400/40 bg-zinc-950/90 px-5 py-2.5 text-center font-mono shadow-lg'>
           <div className='text-[10px] uppercase tracking-[0.2em] text-amber-300'>Weekly Challenge</div>
@@ -4148,6 +4152,33 @@ async function submitChallengeRun(
   }
 }
 
+// Top-center count-up run timer for the weekly challenge. Shows the live run time
+// (the engine's recorder clock — starts at the gun-go, freezes at match end), so
+// it matches the time that gets submitted exactly. rAF-polls the engine for a
+// smooth count without coupling to the throttled HUD stream.
+function ChallengeTimer({ gameRef }: { gameRef: { current: Game | null } }) {
+  const [ms, setMs] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const g = gameRef.current;
+      if (g) setMs(g.getChallengeElapsedMs());
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [gameRef]);
+  const s = Math.max(0, ms) / 1000;
+  const m = Math.floor(s / 60);
+  const clock = `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`;
+  return (
+    <div className='pointer-events-none absolute left-1/2 top-3 z-[60] -translate-x-1/2 rounded-lg border border-cyan-400/30 bg-zinc-950/80 px-4 py-1.5 text-center font-mono shadow-lg backdrop-blur-sm'>
+      <div className='text-[9px] uppercase tracking-[0.22em] text-cyan-300/80'>Run time</div>
+      <div className='mt-0.5 text-xl font-bold tabular-nums tracking-wide text-white'>{clock}</div>
+    </div>
+  );
+}
+
 // Menu chat caps. CLIENT_LEN mirrors the server's CHAT_MAX_LEN (the server is
 // authoritative; this is just so the input + counter agree). LOG_MAX bounds the
 // in-memory log (the server already trims replayed history to 50).
@@ -4482,10 +4513,12 @@ function RankedModal({
 // are recorded (consistent with career/ranked).
 function WeeklyChallengeModal({
   account,
+  settings,
   onPlay,
   onClose,
 }: {
   account: Account;
+  settings: Settings;
   onPlay: () => void;
   onClose: () => void;
 }) {
@@ -4595,6 +4628,7 @@ function WeeklyChallengeModal({
         <ReplayViewerOverlay
           playerId={watch.id}
           playerName={watch.name}
+          settings={settings}
           onClose={() => setWatch(null)}
         />
       )}
@@ -4610,16 +4644,27 @@ const REPLAY_SPEEDS = [0.5, 1, 2] as const;
 function ReplayViewerOverlay({
   playerId,
   playerName,
+  settings,
   onClose,
 }: {
   playerId: string;
   playerName: string;
+  settings: Settings;
   onClose: () => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewerRef = useRef<ReplayViewer | null>(null);
   const [state, setState] = useState<ReplayViewerState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isFs, setIsFs] = useState(false);
+  // Snapshot the graphics settings once so the viewer matches the game's look
+  // without re-creating on every settings change mid-watch.
+  const gfxRef = useRef({
+    fov: settings.fov,
+    resolutionScale: settings.resolutionScale,
+    lowSpec: settings.lowSpec,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -4639,39 +4684,59 @@ function ReplayViewerOverlay({
           throw new Error('corrupt');
         }
         if (cancelled || !canvasRef.current) return;
-        viewer = new ReplayViewer(canvasRef.current, data, (s) => {
-          if (!cancelled) setState(s);
-        });
+        viewer = new ReplayViewer(
+          canvasRef.current,
+          data,
+          (s) => {
+            if (!cancelled) setState(s);
+          },
+          gfxRef.current,
+        );
         viewerRef.current = viewer;
         await viewer.start();
       } catch {
         if (!cancelled) setError('This run could not be loaded.');
       }
     })();
-    // Esc closes the viewer.
+    // Esc closes (or exits fullscreen first); Space toggles play.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      else if (e.code === 'Space') {
+      if (e.key === 'Escape') {
+        if (document.fullscreenElement) return; // browser handles fullscreen exit
+        onClose();
+      } else if (e.code === 'Space') {
         e.preventDefault();
         viewerRef.current?.togglePlay();
       }
     };
+    const onFsChange = () => setIsFs(!!document.fullscreenElement);
     window.addEventListener('keydown', onKey);
+    document.addEventListener('fullscreenchange', onFsChange);
     return () => {
       cancelled = true;
       window.removeEventListener('keydown', onKey);
+      document.removeEventListener('fullscreenchange', onFsChange);
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
       viewer?.dispose();
       viewerRef.current = null;
     };
   }, [playerId, onClose]);
+
+  const toggleFullscreen = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void el.requestFullscreen?.().catch(() => {});
+  }, []);
 
   const duration = state?.duration ?? 0;
   const t = state?.t ?? 0;
   const playing = state?.playing ?? false;
   const ready = state?.ready ?? false;
 
-  return (
-    <div className='fixed inset-0 z-[120] flex flex-col bg-black font-mono'>
+  // Portal to <body> so the overlay escapes the modal's clip-path / transform
+  // (which otherwise traps a position:fixed child into a tiny clipped square).
+  return createPortal(
+    <div ref={rootRef} className='fixed inset-0 z-[200] flex flex-col bg-black font-mono'>
       <canvas ref={canvasRef} className='absolute inset-0 block h-full w-full' />
 
       {/* Top bar */}
@@ -4680,12 +4745,20 @@ function ReplayViewerOverlay({
           <span className='text-[10px] uppercase tracking-[0.2em] text-cyan-300'>Replay</span>
           <span className='text-sm text-white/90'>{playerName}&apos;s run</span>
         </div>
-        <button
-          onClick={onClose}
-          className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-white/70 transition hover:bg-white/10 hover:text-white'
-        >
-          Close ✕
-        </button>
+        <div className='flex items-center gap-2'>
+          <button
+            onClick={toggleFullscreen}
+            className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-white/70 transition hover:bg-white/10 hover:text-white'
+          >
+            {isFs ? '⤢ Windowed' : '⛶ Fullscreen'}
+          </button>
+          <button
+            onClick={onClose}
+            className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-white/70 transition hover:bg-white/10 hover:text-white'
+          >
+            Close ✕
+          </button>
+        </div>
       </div>
 
       <div className='flex-1' />
@@ -4737,7 +4810,8 @@ function ReplayViewerOverlay({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -5210,6 +5284,7 @@ function Lobby({
       {weeklyOpen && (
         <WeeklyChallengeModal
           account={account}
+          settings={settings}
           onPlay={() =>
             onStart({
               mode: 'local',
