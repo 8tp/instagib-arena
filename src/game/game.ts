@@ -202,6 +202,11 @@ const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
 // banner that flickers to whichever medal happened to be last, we pick ONE
 // "headline" — the most significant — to drive the banner + the announcer voice;
 // the rest still show as stacked toasts. Higher number = more headline-worthy.
+// Deploy/encouragement announcer line on respawn: min seconds between lines + the
+// chance one fires when off cooldown (kept sparse — you respawn a lot in instagib).
+const SPAWN_LINE_COOLDOWN_SEC = 18;
+const SPAWN_LINE_CHANCE = 0.55;
+
 const MEDAL_PRIORITY: Record<Medal, number> = {
   'godlike':       95,
   'unstoppable':   85,
@@ -248,6 +253,7 @@ export class Game {
   private disposed = false;
   private resizeHandler: () => void;
   private elapsed = 0;
+  private lastSpawnLine = -999; // elapsed-seconds of the last deploy/encouragement line
 
   private playerName = PLAYER_NAME_DEFAULT;
   private playerFrags = 0;
@@ -2705,6 +2711,7 @@ export class Game {
       if (this.killcam.remaining <= 0) {
         this.killcam = null;
         this.playLocalSpawnEffect(); // you materialize at your new spawn
+        this.maybeAnnounceSpawn(); // occasional deploy/encouragement line
       }
     }
     // Play-of-the-Match countdown mirrors the replay clock (single source of
@@ -2730,6 +2737,17 @@ export class Game {
 
   // Play the local player's spawn-in effect at their feet. Suppressed under
   // reduced-effects (it's a particle burst). Called when you (re)materialize.
+  // Occasional deploy/encouragement announcer line on respawn — cooldown + chance
+  // gated so it's flair, not spam (you respawn often in instagib). Only packs that
+  // define spawn lines voice it; the legacy pack stays silent.
+  private maybeAnnounceSpawn() {
+    if (this.matchOver) return;
+    if (this.elapsed - this.lastSpawnLine < SPAWN_LINE_COOLDOWN_SEC) return;
+    if (Math.random() > SPAWN_LINE_CHANCE) return;
+    this.lastSpawnLine = this.elapsed;
+    this.audio.play('spawn', 1);
+  }
+
   private playLocalSpawnEffect() {
     if (this.reducedEffects) return;
     const p = this.player.pos;
