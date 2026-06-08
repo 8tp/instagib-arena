@@ -1,3 +1,5 @@
+import { announcerVariantCount } from './announcer-lines';
+
 export type SoundClipName =
   | 'fire'
   | 'hit'
@@ -16,7 +18,23 @@ export type SoundClipName =
   | 'headshot'
   | 'humiliation'
   | 'comeback'
-  | 'match-point';
+  | 'match-point'
+  | 'victory'
+  | 'defeat'
+  | 'spawn';
+
+// Announcer voice packs. The default ('legacy') uses the flat SOUND_URLS files
+// below + the procedural/TTS fallback — unchanged behavior. Other packs are sets
+// of generated clips under /sounds/instagib/announcer/<id>/<clip>.mp3 (see
+// scripts/gen-announcers.mjs). Only ANNOUNCER_CLIPS are pack-swappable; weapon SFX
+// (fire/hit/kill/reload-ready) always use SOUND_URLS.
+export type AnnouncerPackId = 'legacy' | 'kuon';
+export type AnnouncerPack = { id: AnnouncerPackId; name: string; blurb: string };
+export const ANNOUNCER_PACKS: ReadonlyArray<AnnouncerPack> = [
+  { id: 'legacy', name: 'Classic', blurb: 'Original deep-voice announcer' },
+  { id: 'kuon', name: 'Kuon (Anime)', blurb: 'Cheerful Japanese anime VO' },
+];
+export const DEFAULT_ANNOUNCER_PACK: AnnouncerPackId = 'legacy';
 
 // User-supplied .ogg files override the procedural / TTS fallback when present.
 // Drop CC-licensed clips at these public/ paths. See plan §6.
@@ -39,6 +57,9 @@ export const SOUND_URLS: Record<SoundClipName, string> = {
   'humiliation':   '/sounds/instagib/humiliation.ogg',
   'comeback':      '/sounds/instagib/comeback.ogg',
   'match-point':   '/sounds/instagib/match-point.ogg',
+  'victory':       '/sounds/instagib/victory.ogg',
+  'defeat':        '/sounds/instagib/defeat.ogg',
+  'spawn':         '', // deploy/encouragement — pack-only (no legacy file or TTS)
 };
 
 const SPOKEN_TEXT: Record<SoundClipName, string> = {
@@ -60,6 +81,9 @@ const SPOKEN_TEXT: Record<SoundClipName, string> = {
   'humiliation':   'Humiliation',
   'comeback':      'Comeback',
   'match-point':   'Match point',
+  'victory':       'Victory',
+  'defeat':        'Defeat',
+  'spawn':         '', // no TTS fallback — only voiced by packs that define spawn lines
 };
 
 // Which clips are announcer voice lines (vs. weapon SFX). Drives the
@@ -79,6 +103,9 @@ const ANNOUNCER_CLIPS: ReadonlySet<SoundClipName> = new Set<SoundClipName>([
   'humiliation',
   'comeback',
   'match-point',
+  'victory',
+  'defeat',
+  'spawn',
 ]);
 
 export class SoundManager {
@@ -86,12 +113,20 @@ export class SoundManager {
   private master: GainNode | null = null;
   private sfxBus: GainNode | null = null;
   private announcerBus: GainNode | null = null;
-  private buffers = new Map<SoundClipName, AudioBuffer>();
+  private buffers = new Map<string, AudioBuffer>(); // keyed by resolved URL (pack-aware)
+  private loading = new Set<string>(); // URLs with an in-flight fetch (dedupe)
+  private missing = new Set<string>(); // URLs that 404'd — don't refetch (use fallback)
   private voice: SpeechSynthesisVoice | null = null;
   private volume = 0.7;
   private sfxVolume = 1;
   private announcerVolume = 1;
   private announcerEnabled = true;
+  private pack: AnnouncerPackId = DEFAULT_ANNOUNCER_PACK;
+  private lastVariant = new Map<SoundClipName, number>(); // avoid repeating a line back-to-back
+  // The currently-playing announcer voice source — only ONE announcer line plays
+  // at a time (a new line cuts the previous), so multi-kill + headshot + spree
+  // never pile up into a garble.
+  private announcerSrc: AudioBufferSourceNode | null = null;
 
   async init() {
     if (this.ctx) return;
@@ -115,13 +150,58 @@ export class SoundManager {
       this.announcerBus.connect(this.master);
       // Best-effort preload of any real audio files dropped in public/. Missing
       // files fall back to the procedural SFX / TTS announcer.
-      for (const [name, url] of Object.entries(SOUND_URLS) as [SoundClipName, string][]) {
-        void this.loadClip(name, url).catch(() => {});
+      for (const url of Object.values(SOUND_URLS)) {
+        if (url) void this.loadClip(url).catch(() => {});
       }
+      this.preloadPack(); // + the active announcer pack's clips, if not legacy
     } catch {
       // No audio context available — manager becomes a no-op
     }
     this.initVoice();
+  }
+
+  // URL of one announcer line variant (1-indexed) for the active pack.
+  private announcerVariantUrl(name: SoundClipName, idx: number): string {
+    return `/sounds/instagib/announcer/${this.pack}/${name}_${idx}.mp3`;
+  }
+
+  // Pick a variant index (1..count) for a clip, avoiding an immediate repeat so
+  // the same line doesn't fire twice in a row.
+  private pickVariant(name: SoundClipName, count: number): number {
+    if (count <= 1) return 1;
+    let idx = 1 + Math.floor(Math.random() * count);
+    if (idx === this.lastVariant.get(name)) idx = (idx % count) + 1;
+    this.lastVariant.set(name, idx);
+    return idx;
+  }
+
+  // Switch announcer voice pack (Settings → Audio). Preloads the new pack's clips
+  // so the first line of a match isn't a fallback miss.
+  setAnnouncerPack(id: AnnouncerPackId) {
+    if (id === this.pack) return;
+    this.pack = id;
+    this.lastVariant.clear();
+    this.preloadPack();
+  }
+
+  private preloadPack() {
+    if (!this.ctx || this.pack === 'legacy') return;
+    for (const name of ANNOUNCER_CLIPS) {
+      const count = announcerVariantCount(this.pack, name);
+      for (let i = 1; i <= count; i++) void this.loadClip(this.announcerVariantUrl(name, i)).catch(() => {});
+    }
+  }
+
+  // Cut any announcer line currently playing (buffered clip OR browser TTS) so a
+  // new one never overlaps it.
+  private stopAnnouncer() {
+    if (this.announcerSrc) {
+      try { this.announcerSrc.stop(); } catch { /* already stopped */ }
+      this.announcerSrc = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+    }
   }
 
   resume() {
@@ -136,17 +216,35 @@ export class SoundManager {
     const isAnnouncer = ANNOUNCER_CLIPS.has(name);
     if (isAnnouncer && !this.announcerEnabled) return;
     const bus = (isAnnouncer ? this.announcerBus : this.sfxBus) ?? this.master;
-    const buf = this.buffers.get(name);
+    // Pack announcer clips have N line variants → pick one (no immediate repeat);
+    // everything else (legacy announcer, SFX) uses the flat SOUND_URLS file.
+    const variants = isAnnouncer ? announcerVariantCount(this.pack, name) : 0;
+    const url = variants > 0 ? this.announcerVariantUrl(name, this.pickVariant(name, variants)) : SOUND_URLS[name];
+    const buf = url ? this.buffers.get(url) : undefined;
     if (buf) {
+      if (isAnnouncer) this.stopAnnouncer(); // one announcer line at a time
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
       const g = this.ctx.createGain();
       g.gain.value = clamp01(volume);
       src.connect(g).connect(bus);
+      if (isAnnouncer) {
+        this.announcerSrc = src;
+        src.onended = () => { if (this.announcerSrc === src) this.announcerSrc = null; };
+      }
       src.start(0);
       return;
     }
-    // No real file present → procedural SFX / TTS announcer fallback.
+    // Not cached yet. For a pack variant, kick off a load so the next play is the
+    // real voice (covers the race right after switching packs). Legacy SFX +
+    // announcer files are preloaded at init, so a miss there is genuinely absent
+    // (e.g. victory/defeat have no .ogg) → straight to the procedural/TTS fallback.
+    if (variants > 0 && url && !this.loading.has(url) && !this.missing.has(url)) {
+      this.loading.add(url);
+      void this.loadClip(url)
+        .catch(() => { this.missing.add(url); })
+        .finally(() => this.loading.delete(url));
+    }
     switch (name) {
       case 'fire':
         playProcRail(this.ctx, bus, volume);
@@ -161,7 +259,9 @@ export class SoundManager {
         playProcReady(this.ctx, bus, volume);
         return;
       default:
-        this.speak(SPOKEN_TEXT[name] || name, volume);
+        // Announcer TTS fallback — but only if this clip HAS fallback text. A
+        // pack-only clip (e.g. 'spawn') stays silent on the legacy pack.
+        if (SPOKEN_TEXT[name]) this.speak(SPOKEN_TEXT[name], volume);
     }
   }
 
@@ -211,7 +311,7 @@ export class SoundManager {
     const bus = this.sfxBus ?? this.master;
     const panner = this.makePanner(x, y, z);
     panner.connect(bus);
-    const buf = this.buffers.get(name);
+    const buf = this.buffers.get(SOUND_URLS[name]); // playAt handles SFX only (announcer routed to play above)
     if (buf) {
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
@@ -263,7 +363,7 @@ export class SoundManager {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     if (!text) return;
     try {
-      window.speechSynthesis.cancel();
+      this.stopAnnouncer(); // cut any prior announcer line (TTS or buffered)
       const u = new SpeechSynthesisUtterance(text);
       u.rate = 0.92;
       u.pitch = 0.55;
@@ -304,12 +404,16 @@ export class SoundManager {
   }
 
   dispose() {
+    this.announcerSrc = null;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
       this.master = null;
     }
     this.buffers.clear();
+    this.loading.clear();
+    this.missing.clear();
+    this.lastVariant.clear();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
@@ -319,13 +423,13 @@ export class SoundManager {
     }
   }
 
-  private async loadClip(name: SoundClipName, url: string) {
-    if (!this.ctx) return;
+  private async loadClip(url: string) {
+    if (!this.ctx || !url || this.buffers.has(url)) return;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`${url}: ${res.status}`);
     const arr = await res.arrayBuffer();
     const buf = await this.ctx.decodeAudioData(arr);
-    this.buffers.set(name, buf);
+    this.buffers.set(url, buf);
   }
 
   private initVoice() {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SoundManager, type SoundClipName } from './audio';
+import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
 import {
   BotManager,
   loadBotModel,
@@ -197,6 +197,32 @@ const MEDAL_VOICE: Partial<Record<Medal, SoundClipName>> = {
   'comeback':      'comeback',
 };
 
+// A single kill can earn several medals at once (e.g. a headshot that's also a
+// double kill and a killing spree). To avoid overlapping announcer lines + a
+// banner that flickers to whichever medal happened to be last, we pick ONE
+// "headline" — the most significant — to drive the banner + the announcer voice;
+// the rest still show as stacked toasts. Higher number = more headline-worthy.
+// Deploy/encouragement announcer line on respawn: min seconds between lines + the
+// chance one fires when off cooldown (kept sparse — you respawn a lot in instagib).
+const SPAWN_LINE_COOLDOWN_SEC = 18;
+const SPAWN_LINE_CHANCE = 0.55;
+
+const MEDAL_PRIORITY: Record<Medal, number> = {
+  'godlike':       95,
+  'unstoppable':   85,
+  'monster-kill':  80,
+  'dominating':    75,
+  'ultra-kill':    70,
+  'rampage':       65,
+  'multi-kill':    60,
+  'comeback':      55,
+  'killing-spree': 50,
+  'double-kill':   40,
+  'first-blood':   30,
+  'headshot':      20,
+  'mid-air':       15,
+};
+
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -227,6 +253,7 @@ export class Game {
   private disposed = false;
   private resizeHandler: () => void;
   private elapsed = 0;
+  private lastSpawnLine = -999; // elapsed-seconds of the last deploy/encouragement line
 
   private playerName = PLAYER_NAME_DEFAULT;
   private playerFrags = 0;
@@ -612,6 +639,10 @@ export class Game {
 
   setAnnouncerEnabled(on: boolean) {
     this.audio.setAnnouncerEnabled(on);
+  }
+
+  setAnnouncerPack(id: AnnouncerPackId) {
+    this.audio.setAnnouncerPack(id);
   }
 
   setPlayerName(name: string) {
@@ -2044,7 +2075,7 @@ export class Game {
         headshot: hit.headshot,
         firstBlood: this.claimFirstBlood(),
       });
-      for (const m of medals) this.awardMedal(m);
+      this.awardMedals(medals);
     }
 
     if (anyHit) {
@@ -2281,7 +2312,7 @@ export class Game {
     if (this.startPlayOfMatch(reveal, won)) {
       this.emitHud(); // surface the cinematic now; reveal() fires when it ends
     } else {
-      this.audio.speak(won ? 'Victory' : 'Defeat', 1); // no clip → call it now
+      this.audio.play(won ? 'victory' : 'defeat', 1); // pack clip, or TTS fallback
       reveal();
       this.emitHud();
     }
@@ -2520,7 +2551,7 @@ export class Game {
         headshot: ev.headshot,
         firstBlood: ev.firstBlood,
       });
-      for (const m of medals) this.awardMedal(m);
+      this.awardMedals(medals);
     } else if (iAmVictim) {
       // Capture deathPos for the killcam BEFORE teleporting to respawn.
       const deathPos = { ...this.player.pos };
@@ -2606,7 +2637,24 @@ export class Game {
     }
   }
 
-  private awardMedal(medal: Medal) {
+  // Award all medals earned on one kill: every medal becomes a stacked toast, but
+  // only the single most significant ("headline") drives the center banner AND the
+  // announcer voice line. This stops headshot + double-kill + spree from blaring
+  // over each other, and keeps the banner showing the same thing that's announced.
+  private awardMedals(medals: Medal[]) {
+    if (medals.length === 0) return;
+    for (const m of medals) this.addMedalToast(m);
+
+    let headline = medals[0];
+    for (const m of medals) {
+      if (MEDAL_PRIORITY[m] > MEDAL_PRIORITY[headline]) headline = m;
+    }
+    if (BANNER_MEDALS.has(headline)) this.showMedalBanner(headline);
+    const voice = MEDAL_VOICE[headline];
+    if (voice) this.audio.play(voice, 1); // audio layer also enforces one-at-a-time
+  }
+
+  private addMedalToast(medal: Medal) {
     const meta = MEDAL_LABELS[medal];
     this.toasts.unshift({
       id: this.nextEventId++,
@@ -2618,20 +2666,18 @@ export class Game {
       total: TOAST_DURATION_SEC,
     });
     if (this.toasts.length > MAX_TOASTS) this.toasts.length = MAX_TOASTS;
+  }
 
-    if (BANNER_MEDALS.has(medal)) {
-      this.banner = {
-        id: this.nextEventId++,
-        tier: meta.tier,
-        title: meta.title,
-        subtitle: meta.subtitle,
-        remaining: BANNER_DURATION_SEC,
-        total: BANNER_DURATION_SEC,
-      };
-    }
-
-    const voice = MEDAL_VOICE[medal];
-    if (voice) this.audio.play(voice, 1);
+  private showMedalBanner(medal: Medal) {
+    const meta = MEDAL_LABELS[medal];
+    this.banner = {
+      id: this.nextEventId++,
+      tier: meta.tier,
+      title: meta.title,
+      subtitle: meta.subtitle,
+      remaining: BANNER_DURATION_SEC,
+      total: BANNER_DURATION_SEC,
+    };
   }
 
   private tickHudTimers(dt: number) {
@@ -2665,6 +2711,7 @@ export class Game {
       if (this.killcam.remaining <= 0) {
         this.killcam = null;
         this.playLocalSpawnEffect(); // you materialize at your new spawn
+        this.maybeAnnounceSpawn(); // occasional deploy/encouragement line
       }
     }
     // Play-of-the-Match countdown mirrors the replay clock (single source of
@@ -2681,7 +2728,7 @@ export class Game {
         this.pom.phase = 'verdict';
         if (!this.verdictSpoken) {
           this.verdictSpoken = true;
-          this.audio.speak(this.endWon ? 'Victory' : 'Defeat', 1);
+          this.audio.play(this.endWon ? 'victory' : 'defeat', 1);
         }
         this.emitHud();
       }
@@ -2690,6 +2737,17 @@ export class Game {
 
   // Play the local player's spawn-in effect at their feet. Suppressed under
   // reduced-effects (it's a particle burst). Called when you (re)materialize.
+  // Occasional deploy/encouragement announcer line on respawn — cooldown + chance
+  // gated so it's flair, not spam (you respawn often in instagib). Only packs that
+  // define spawn lines voice it; the legacy pack stays silent.
+  private maybeAnnounceSpawn() {
+    if (this.matchOver) return;
+    if (this.elapsed - this.lastSpawnLine < SPAWN_LINE_COOLDOWN_SEC) return;
+    if (Math.random() > SPAWN_LINE_CHANCE) return;
+    this.lastSpawnLine = this.elapsed;
+    this.audio.play('spawn', 1);
+  }
+
   private playLocalSpawnEffect() {
     if (this.reducedEffects) return;
     const p = this.player.pos;
@@ -2949,7 +3007,7 @@ export class Game {
       mine > 0
     ) {
       this.comebackAwarded = true;
-      this.awardMedal('comeback');
+      this.awardMedals(['comeback']);
     }
   }
 

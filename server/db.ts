@@ -458,7 +458,15 @@ export function isAdminId(playerId: string): boolean {
 // cosmetics become equippable — non-admins can never have them in their set.
 function ownedSet(prog: ProgRow | undefined, playerId: string): Set<string> {
   if (isAdminId(playerId)) return new Set(ALL_COSMETIC_IDS);
-  return new Set([...defaultUnlockedIds(), ...parseIdList(prog?.unlocked)]);
+  // Default freebies ∪ stored (bought/granted) ∪ everything their CURRENT level
+  // entitles them to. Recomputing level grants from the level (vs only persisting
+  // them on level-up) means a newly-added level cosmetic is owned immediately by
+  // anyone already past its level — "level = unlocked by reaching that level".
+  return new Set([
+    ...defaultUnlockedIds(),
+    ...levelGrantsAt(prog?.level ?? 1),
+    ...parseIdList(prog?.unlocked),
+  ]);
 }
 
 // The unlocked-cosmetic set for an account id (from the igsession cookie),

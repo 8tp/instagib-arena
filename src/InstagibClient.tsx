@@ -4,6 +4,7 @@ import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './
 import { useAuth, LoginModal, type Account } from './auth';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
+import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, type AnnouncerPackId } from './game/audio';
 import { ReplayViewer, type ReplayViewerState } from './game/replay-viewer';
 import { decodeReplay, type ReplayData } from './game/replay-codec';
 import {
@@ -108,6 +109,7 @@ import {
   DEFAULT_NAME_COLOR,
   DEFAULT_SPAWN_EFFECT,
   DEFAULT_TITLE,
+  announcerPackCosmeticId,
   cardById,
   cosmeticById,
   HAT_CASE_COST,
@@ -236,6 +238,7 @@ type Settings = {
   sfxVolume: number;
   announcerVolume: number;
   announcerEnabled: boolean;
+  announcerPack: AnnouncerPackId; // which announcer voice pack (legacy = default procedural)
   captions: boolean; // a11y: show announcer/medal/match callouts as on-screen text
   showFps: boolean;
   showPing: boolean; // show each player's ping in the Tab scoreboard (online)
@@ -331,6 +334,7 @@ const DEFAULT_SETTINGS: Settings = {
   sfxVolume: 1,
   announcerVolume: 1,
   announcerEnabled: true,
+  announcerPack: DEFAULT_ANNOUNCER_PACK,
   captions: false,
   showFps: false,
   showPing: true,
@@ -696,6 +700,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setSfxVolume?.(s.sfxVolume);
   game.setAnnouncerVolume?.(s.announcerVolume);
   game.setAnnouncerEnabled?.(s.announcerEnabled);
+  game.setAnnouncerPack?.(s.announcerPack);
   game.setPlayerName?.(s.playerName);
   game.setWorldStyle?.(s.worldColor, s.worldBrightness);
   game.setEnemyStyle?.(s.enemyBright ? s.enemyColor : null);
@@ -7050,15 +7055,21 @@ function SettingsModal({
               onChange={(v) => onChange({ ...settings, announcerEnabled: v })}
             />
             {settings.announcerEnabled && (
-              <SliderField
-                label='Announcer volume'
-                value={settings.announcerVolume}
-                min={0}
-                max={1}
-                step={0.01}
-                format={(v) => `${Math.round(v * 100)}%`}
-                onChange={(v) => onChange({ ...settings, announcerVolume: v })}
-              />
+              <>
+                <SliderField
+                  label='Announcer volume'
+                  value={settings.announcerVolume}
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, announcerVolume: v })}
+                />
+                <AnnouncerPackField
+                  value={settings.announcerPack}
+                  onChange={(v) => onChange({ ...settings, announcerPack: v })}
+                />
+              </>
             )}
             <ToggleField
               label='Announcer captions'
@@ -7245,6 +7256,73 @@ function SliderField({
         onChange={(e) => onChange(Number(e.target.value))}
         className='w-full accent-emerald-400'
       />
+    </label>
+  );
+}
+
+// Announcer-pack picker, gated by ownership. Packs are registered as cosmetics
+// (see cosmetics.ts) so the server's `unlocked` list already reflects admin-all +
+// level/credit grants — we just fetch the profile and lock the rest. The default
+// pack is always free; admins get everything. A locked pack that's somehow active
+// (persisted, then lost) is reset to default.
+function AnnouncerPackField({
+  value,
+  onChange,
+}: {
+  value: AnnouncerPackId;
+  onChange: (v: AnnouncerPackId) => void;
+}) {
+  const [unlocked, setUnlocked] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/profile', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { profile?: { unlocked?: string[] } } | null) => {
+        if (active) setUnlocked(new Set(d?.profile?.unlocked ?? [])); // empty (e.g. guest) → only default
+      })
+      .catch(() => active && setUnlocked(new Set()));
+    return () => {
+      active = false;
+    };
+  }, []);
+  const isUnlocked = useCallback(
+    (packId: string): boolean => {
+      const cos = cosmeticById(announcerPackCosmeticId(packId));
+      if (!cos || cos.source.type === 'default') return true; // default pack is always free
+      return unlocked?.has(cos.id) ?? false;
+    },
+    [unlocked],
+  );
+  // If the active pack isn't owned (locked / persisted from a prior unlock), drop to default.
+  useEffect(() => {
+    if (unlocked && value !== DEFAULT_ANNOUNCER_PACK && !isUnlocked(value)) onChange(DEFAULT_ANNOUNCER_PACK);
+  }, [unlocked, value, isUnlocked, onChange]);
+  return (
+    <label className='flex flex-col gap-1.5'>
+      <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Announcer pack</span>
+      <select
+        value={value}
+        onChange={(e) => {
+          const v = e.target.value as AnnouncerPackId;
+          if (isUnlocked(v)) onChange(v);
+        }}
+        className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white outline-none transition focus:border-emerald-400/70'
+      >
+        {ANNOUNCER_PACKS.map((p) => {
+          const ok = isUnlocked(p.id);
+          const cos = cosmeticById(announcerPackCosmeticId(p.id));
+          const lock = !ok && cos ? ` 🔒 ${sourceLabel(cos.source)}` : '';
+          return (
+            <option key={p.id} value={p.id} disabled={!ok} className='bg-zinc-900 text-white'>
+              {p.name}
+              {lock}
+            </option>
+          );
+        })}
+      </select>
+      <span className='text-[10px] text-white/35'>
+        Premium packs unlock by level (or are staff-granted). Admins have all of them.
+      </span>
     </label>
   );
 }
