@@ -10,29 +10,64 @@
     <meta name="color-scheme" content="dark" />
     <meta
       name="description"
-      content="Quake-style instagib in the browser. One shot, one kill. Movement is the skill ceiling."
+      content="Play Instagib Arena free in your browser — a Quake-style instagib FPS. One railgun, one shot, one kill. No download. FFA, team deathmatch, ranked 1v1 duels, and last-man-standing."
     />
-    <title>Instagib Arena</title>
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <title>Instagib Arena — Free Browser FPS, One Shot One Kill</title>
+    <link rel="canonical" href="https://instagib.win/" />
 
     <!-- Social link previews: a pasted invite / share link renders as a game,
-         not a naked URL. og-image.png lives in /public (1200x630). -->
+         not a naked URL. og-image.png lives in /public (1200x630).
+         OG image MUST be an absolute URL — relative paths fail in several
+         scrapers (Facebook, Slack, some Discord cases). -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Instagib Arena" />
+    <meta property="og:url" content="https://instagib.win/" />
     <meta property="og:title" content="Instagib Arena — one shot, one kill" />
     <meta
       property="og:description"
       content="Quake-style instagib in the browser. The railgun always kills — so the whole game is aim and movement. Strafe, dash, double-jump, wall-jump. Play free, no download."
     />
-    <meta property="og:image" content="/og-image.png" />
+    <meta property="og:image" content="https://instagib.win/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Instagib Arena — a browser-based Quake-style instagib FPS" />
     <meta name="twitter:card" content="summary_large_image" />
+    <!-- TODO: add your X handle so the card is attributed to you and feeds your following:
+         <meta name="twitter:site" content="@yourhandle" />
+         <meta name="twitter:creator" content="@yourhandle" /> -->
     <meta name="twitter:title" content="Instagib Arena — one shot, one kill" />
     <meta
       name="twitter:description"
       content="Browser FPS. One railgun, one shot, pure aim + movement. Play free in your browser."
     />
-    <meta name="twitter:image" content="/og-image.png" />
+    <meta name="twitter:image" content="https://instagib.win/og-image.png" />
+
+    <!-- Structured data: lets Google show a VideoGame rich result and helps
+         AI/search crawlers understand the page even without running JS. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "VideoGame",
+        "name": "Instagib Arena",
+        "url": "https://instagib.win/",
+        "image": "https://instagib.win/og-image.png",
+        "description": "A free, browser-based, server-authoritative Quake-style instagib FPS. One railgun, one shot, one kill — the whole game is aim and movement. Free-for-all, team deathmatch, ranked 1v1 duels, and last-man-standing.",
+        "genre": ["First-person shooter", "Arena shooter", "Instagib"],
+        "gamePlatform": ["Web browser"],
+        "operatingSystem": "Any (web browser)",
+        "applicationCategory": "Game",
+        "playMode": ["MultiPlayer", "SinglePlayer"],
+        "inLanguage": "en",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
+        }
+      }
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -42,6 +77,31 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Crawlable fallback: the app is a React SPA, so without this a crawler
+         that doesn't run JS (most social/AI scrapers) sees an empty page.
+         This gives search engines real, indexable text. -->
+    <noscript>
+      <main style="max-width: 720px; margin: 0 auto; padding: 2rem; font-family: system-ui, sans-serif; color: #eee; background: #0a0a0a;">
+        <h1>Instagib Arena — free browser instagib FPS</h1>
+        <p>
+          Instagib Arena is a free, server-authoritative, Quake-style instagib
+          first-person shooter you play instantly in your browser — no download,
+          no install. Every shot from the railgun is a one-shot kill, so the
+          entire game comes down to aim and movement: strafe-jump, dash,
+          double-jump, and wall-jump.
+        </p>
+        <h2>Game modes</h2>
+        <ul>
+          <li>Free-for-all deathmatch</li>
+          <li>Team deathmatch</li>
+          <li>Ranked 1v1 duels with an Elo ladder</li>
+          <li>Last-man-standing</li>
+          <li>Solo practice and offline matches against bots</li>
+        </ul>
+        <p><a href="/play">Play Instagib Arena free in your browser</a>.</p>
+        <p>This game requires JavaScript to play. Please enable JavaScript.</p>
+      </main>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,0 +1,7 @@
+# Instagib Arena — https://instagib.win
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+
+Sitemap: https://instagib.win/sitemap.xml
