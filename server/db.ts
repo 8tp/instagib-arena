@@ -52,6 +52,12 @@ const databasePath = process.env.DATABASE_PATH
 const sqlite = new Database(databasePath);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('busy_timeout = 5000');
+// WAL + NORMAL: fsync only at checkpoint instead of on every commit. Still crash-
+// safe (only an OS/power loss in the small WAL window can lose the last few
+// transactions — acceptable for game stats), and it removes a synchronous fsync
+// from the shared event loop on every write. Match-end stat writes and logins no
+// longer risk stalling the 64Hz game tick on a slow (e.g. network-backed) disk.
+sqlite.pragma('synchronous = NORMAL');
 
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS instagib_stats (

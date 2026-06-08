@@ -84,6 +84,20 @@ app.disable('x-powered-by');
 // `req.ip` is the real client IP (used as the rate-limit fallback for
 // cookie-less callers), not the proxy's socket address.
 app.set('trust proxy', 1);
+// When Cloudflare proxies the origin, `CF-Connecting-IP` is the authoritative
+// visitor IP (CF sets it and overwrites any client-supplied value). Normalize
+// X-Forwarded-For to it so express `req.ip` — used for auth rate-limiting
+// (auth.ts) and audit logging (stats/admin) — resolves to the real visitor
+// instead of collapsing every request onto a single Cloudflare edge IP, which
+// would let a handful of logins rate-limit everyone behind that edge. No-op when
+// the header is absent (not proxied). NOTE: to make this unspoofable, also lock
+// the origin to accept traffic only from Cloudflare (Authenticated Origin Pulls
+// or an IP allowlist) so a client can't reach Railway directly with a forged header.
+app.use((req, _res, next) => {
+  const cf = req.headers['cf-connecting-ip'];
+  if (typeof cf === 'string' && cf.length > 0) req.headers['x-forwarded-for'] = cf;
+  next();
+});
 
 // Security headers on every response. The app is a single same-origin bundle —
 // Vite-built JS/CSS under /assets, game assets (.glb/.ogg) and the /ws/instagib
@@ -131,10 +145,18 @@ app.get('/api/health', (_req, res) => {
 });
 // Live concurrency for the lobby/landing "N playing now" readout (set after the
 // game WS is attached below).
-let liveCounts: () => { online: number; inMatch: number; rooms: number } = () => ({
+let liveCounts: () => {
+  online: number;
+  inMatch: number;
+  rooms: number;
+  loopLagMs: number;
+  loopLagMaxMs: number;
+} = () => ({
   online: 0,
   inMatch: 0,
   rooms: 0,
+  loopLagMs: 0,
+  loopLagMaxMs: 0,
 });
 app.get('/api/live', (_req, res) => res.json(liveCounts()));
 app.use('/api', authRouter);
@@ -162,7 +184,18 @@ if (hasBuild) {
         if (filePath.endsWith('.html')) {
           res.setHeader('Cache-Control', 'no-cache');
         } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          // Vite fingerprints these (content-hashed filenames) → safe forever.
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          // Stable-named public files: models/*.glb, sounds/**/*.{ogg,mp3},
+          // og-image.png, fonts. Previously sent with NO Cache-Control, so every
+          // visit revalidated (304 round-trips) or cold-downloaded multi-MB files
+          // through the Node origin — which shares its egress with the realtime
+          // game socket. A player surge cold-loading these (soldier.glb is 2.1MB)
+          // is what starved the WS traffic and spiked everyone's ping. Cache them:
+          // a day fresh + a week serving stale while revalidating. Names don't
+          // change, so NOT immutable — bust by renaming or a ?v= query if needed.
+          res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
         }
       },
     }),
@@ -214,11 +247,20 @@ setLiveCountsSource(liveCounts);
 instagibWss.on('error', (err) => console.error('[ws] server error', err));
 
 // Connection caps so a flood can't exhaust slots/memory on a public alpha.
-const MAX_WS_TOTAL = 600;
-const MAX_WS_PER_IP = 12;
+// Env-overridable so load/stress tests can raise them from a single host (and so
+// ops can retune without a code change); the defaults are the production values.
+const MAX_WS_TOTAL = parseInt(process.env.MAX_WS_TOTAL || '600', 10);
+const MAX_WS_PER_IP = parseInt(process.env.MAX_WS_PER_IP || '12', 10);
 let wsTotal = 0;
 const wsPerIp = new Map<string, number>();
 function clientIp(req: http.IncomingMessage): string {
+  // Prefer Cloudflare's authoritative client IP when proxied. The WS upgrade path
+  // bypasses the express middleware that normalizes this for HTTP routes, so the
+  // per-IP connection cap below must read CF-Connecting-IP itself — otherwise all
+  // players behind one CF edge share an IP and trip MAX_WS_PER_IP during a surge.
+  const cf = req.headers['cf-connecting-ip'];
+  const cfIp = Array.isArray(cf) ? cf[0] : cf;
+  if (cfIp && cfIp.trim()) return cfIp.trim();
   const xff = req.headers['x-forwarded-for'];
   const fwd = Array.isArray(xff) ? xff[0] : xff;
   return (fwd ? fwd.split(',')[0] : req.socket.remoteAddress || '').trim() || 'unknown';

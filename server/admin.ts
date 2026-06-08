@@ -37,8 +37,20 @@ type AdminRequest = Request & { admin: AccountInfo; adminVia: AdminVia };
 // Live concurrency source. The WS layer owns the real counts; index.ts injects
 // them via setLiveCountsSource after attaching the socket. Default zeros so the
 // report is well-formed even before the socket attaches.
-type LiveCounts = { online: number; inMatch: number; rooms: number };
-let liveSource: () => LiveCounts = () => ({ online: 0, inMatch: 0, rooms: 0 });
+type LiveCounts = {
+  online: number;
+  inMatch: number;
+  rooms: number;
+  loopLagMs: number;
+  loopLagMaxMs: number;
+};
+let liveSource: () => LiveCounts = () => ({
+  online: 0,
+  inMatch: 0,
+  rooms: 0,
+  loopLagMs: 0,
+  loopLagMaxMs: 0,
+});
 export function setLiveCountsSource(fn: () => LiveCounts): void {
   liveSource = fn;
 }

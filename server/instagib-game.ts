@@ -2129,8 +2129,38 @@ export function attachInstagibWs(wss: WebSocketServer) {
   let snapshotDiagBufferedMax = 0;
   let snapshotDiagSkipped = 0;
 
+  // Always-on event-loop health gauge (vs NETCODE_DIAG which is opt-in + log-only).
+  // The 64Hz tick is the canary: ANY synchronous stall on the shared event loop —
+  // a slow better-sqlite3 query, a GC pause, host CPU steal/throttling on the
+  // platform — delays the NEXT tick, and with it every player's pong, which is
+  // exactly the "all players' ping spiked at once" symptom. Measuring how late
+  // each tick fires surfaces that class of problem regardless of its source.
+  // Surfaced via liveCounts() → /api/live so it can be read without a redeploy.
+  const TICK_INTERVAL_MS = 1000 / SNAPSHOT_HZ;
+  let lastTickAt = 0;
+  let loopLagEmaMs = 0; // smoothed recent lag (~150ms time constant)
+  let loopLagMaxMs = 0; // peak lag over a rolling ≤30s window
+  let loopLagMaxResetAt = 0;
+  let loopLagWarnAt = 0;
+
   const snapshotTimer = setInterval(() => {
     const now = Date.now();
+    if (lastTickAt > 0) {
+      const lag = Math.max(0, now - lastTickAt - TICK_INTERVAL_MS);
+      loopLagEmaMs += (lag - loopLagEmaMs) * 0.1;
+      if (now - loopLagMaxResetAt > 30_000) {
+        loopLagMaxMs = 0;
+        loopLagMaxResetAt = now;
+      }
+      if (lag > loopLagMaxMs) loopLagMaxMs = lag;
+      if (lag >= 50 && now - loopLagWarnAt > 2_000) {
+        loopLagWarnAt = now;
+        console.warn(
+          `[loop-lag] tick fired ${Math.round(lag)}ms late (event loop stalled) — clients:${clients.size} rooms:${rooms.size}`,
+        );
+      }
+    }
+    lastTickAt = now;
     if (NETCODE_DIAG) {
       if (snapshotDiagLastTick > 0) {
         const gap = now - snapshotDiagLastTick;
@@ -2372,7 +2402,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
       for (const c of clients.values()) if (c.roomId) inMatch++;
       let activeRooms = 0;
       for (const r of rooms.values()) if (r.members.size > 0) activeRooms++;
-      return { online: clients.size, inMatch, rooms: activeRooms };
+      return {
+        online: clients.size,
+        inMatch,
+        rooms: activeRooms,
+        loopLagMs: Math.round(loopLagEmaMs), // smoothed event-loop lag
+        loopLagMaxMs: Math.round(loopLagMaxMs), // peak lag, rolling ≤30s window
+      };
     },
   };
 }
