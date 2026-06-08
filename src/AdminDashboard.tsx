@@ -76,6 +76,16 @@ async function getJSON<T>(url: string): Promise<T | null> {
 // ── Formatting helpers ───────────────────────────────────────────────────────
 const fmt = (n: number): string => n.toLocaleString('en-US');
 const pct = (n: number): string => `${Math.round(n * 100)}%`;
+// mm:ss.s clear time for the weekly speedrun (0 = no winning run).
+const fmtClear = (ms: number): string => {
+  if (ms <= 0) return '—';
+  const s = ms / 1000;
+  const m = Math.floor(s / 60);
+  const rem = (s - m * 60).toFixed(1);
+  return m > 0 ? `${m}:${rem.padStart(4, '0')}` : `${rem}s`;
+};
+const fmtBytes = (b: number): string =>
+  b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${Math.round(b / 1e3)} KB` : `${b} B`;
 function ago(ts: number): string {
   const s = Math.max(0, (Date.now() - ts) / 1000);
   if (s < 60) return 'just now';
@@ -308,7 +318,55 @@ function OverviewTab({ overview, live }: { overview: Overview | null; live: Live
           </table>
         </div>
       </Panel>
+
+      <WeeklyChallengePanel />
     </div>
+  );
+}
+
+// This week's weekly-challenge participation (the solo FFA speedrun). Self-fetches
+// /api/admin/metrics/weekly; renders nothing until it loads (overview stays clean).
+type WeeklyChallengeStats = {
+  week: string;
+  participants: number;
+  runs: number;
+  winners: number;
+  bestTimeMs: number;
+  topKills: number;
+  replaysStored: number;
+  replayBytes: number;
+  map: string;
+  fragLimit: number;
+};
+
+function WeeklyChallengePanel() {
+  const [w, setW] = useState<WeeklyChallengeStats | null>(null);
+  useEffect(() => {
+    let active = true;
+    void getJSON<{ weekly: WeeklyChallengeStats }>('/api/admin/metrics/weekly').then((d) => {
+      if (active && d?.weekly) setW(d.weekly);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  if (!w) return null;
+  return (
+    <Panel
+      title="Weekly Challenge"
+      right={<span className="text-[11px] text-white/40">{w.map} · first to {w.fragLimit}</span>}
+    >
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatTile label="Participants" value={fmt(w.participants)} sub={`${fmt(w.runs)} runs`} />
+        <StatTile label="Winners" value={fmt(w.winners)} sub="beat the bots" />
+        <StatTile
+          label="Fastest clear"
+          value={fmtClear(w.bestTimeMs)}
+          sub={w.winners ? 'this week' : 'no winner yet'}
+        />
+        <StatTile label="Replays stored" value={fmt(w.replaysStored)} sub={fmtBytes(w.replayBytes)} />
+      </div>
+    </Panel>
   );
 }
 

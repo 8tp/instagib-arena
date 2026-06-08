@@ -351,6 +351,17 @@ function weekKey(now: number): string {
   return `w:${ymd(monday.getTime())}`;
 }
 
+// Week key for the WEEKLY CHALLENGE (board + replays). The challenge changed
+// format (1v1-vs-hard-bot → 8p-FFA speedrun), so it gets its own key namespace:
+// the new board starts clean instead of mixing with the old-format rows already
+// stored for the current week (those `w:` rows are simply never queried again).
+// Bump CHALLENGE_FORMAT whenever the challenge rules change enough to invalidate
+// comparisons across the change.
+const CHALLENGE_FORMAT = 's2';
+function challengeWeekKey(now: number): string {
+  return `${CHALLENGE_FORMAT}:${weekKey(now)}`;
+}
+
 export type MatchDelta = {
   playerId: string;
   userName: string;
@@ -1750,7 +1761,7 @@ export function storeWeeklyReplay(
   now: number = Date.now(),
 ): void {
   if (!playerId || raw.length === 0) return;
-  const wk = weekKey(now);
+  const wk = challengeWeekKey(now);
   const gz = zlib.gzipSync(Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength));
   wrUpsertStmt.run({
     playerId,
@@ -1765,20 +1776,21 @@ export function storeWeeklyReplay(
   wrPruneStmt.run(wk);
 }
 
-// Fetch + gunzip a player's stored run for the week. Returns the raw replay-codec
-// bytes (ready to decode) or null.
-export function getWeeklyReplay(
+// Fetch a player's stored run for the week as the on-disk GZIP blob (no server
+// gunzip — the endpoint serves it with Content-Encoding: gzip and the client
+// inflates, or gunzips it itself for a non-gzip client). Returns null if absent.
+export function getWeeklyReplayGz(
   playerId: string,
   now: number = Date.now(),
-): { data: Buffer; durationMs: number; kills: number; won: boolean } | null {
+): { gz: Buffer; durationMs: number; kills: number; won: boolean } | null {
   if (!playerId) return null;
-  const row = wrGetStmt.get(playerId, weekKey(now)) as
+  const row = wrGetStmt.get(playerId, challengeWeekKey(now)) as
     | { data: Buffer; raw_bytes: number; duration_ms: number; kills: number; won: number }
     | undefined;
   if (!row) return null;
   try {
     return {
-      data: zlib.gunzipSync(row.data),
+      gz: row.data,
       durationMs: row.duration_ms,
       kills: row.kills,
       won: !!row.won,
@@ -1818,7 +1830,7 @@ export type WeeklyChallengeStats = {
 };
 
 export function getWeeklyChallengeStats(now: number = Date.now()): WeeklyChallengeStats {
-  const wk = weekKey(now);
+  const wk = challengeWeekKey(now);
   const s = wcStatsStmt.get(wk) as {
     participants: number; runs: number; winners: number; best_time_ms: number | null; top_kills: number;
   };
@@ -1872,7 +1884,7 @@ export function recordWeeklyChallenge(
   now: number = Date.now(),
 ): { me: WeeklyChallengeMe; acceptReplay: boolean } | null {
   if (!playerId) return null;
-  const wk = weekKey(now);
+  const wk = challengeWeekKey(now);
   wcEnsureStmt.run({ playerId, weekKey: wk, userName, now });
   const cur = wcRowStmt.get(playerId, wk) as WcRow;
   const isWin = won && timeMs > 0;
@@ -1928,7 +1940,7 @@ export function getWeeklyChallengeLeaderboard(
   now: number = Date.now(),
 ): WeeklyChallengeEntry[] {
   const n = Math.max(1, Math.min(100, Math.floor(limit)));
-  const wk = weekKey(now);
+  const wk = challengeWeekKey(now);
   const rows = wcLeaderboardStmt.all(wk, n) as WcRow[];
   const base = rows.map(toWcEntry);
   if (base.length) {
@@ -1955,7 +1967,7 @@ export function getWeeklyChallengeMe(
   now: number = Date.now(),
 ): WeeklyChallengeMe | null {
   if (!playerId) return null;
-  const wk = weekKey(now);
+  const wk = challengeWeekKey(now);
   const r = wcRowStmt.get(playerId, wk) as WcRow | undefined;
   if (!r) return null;
   const rank =

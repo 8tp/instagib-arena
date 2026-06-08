@@ -6,12 +6,13 @@
 // (transparency / anti-cheat) and which the server cross-checks against the
 // reported score before storing.
 
+import zlib from 'node:zlib';
 import express, { Router, type Request } from 'express';
 import {
   findUserById,
   getWeeklyChallengeLeaderboard,
   getWeeklyChallengeMe,
-  getWeeklyReplay,
+  getWeeklyReplayGz,
   recordWeeklyChallenge,
   storeWeeklyReplay,
 } from './db';
@@ -132,14 +133,26 @@ challengeRouter.get('/challenge/weekly/replay', (req: Request, res) => {
     res.status(400).json({ error: 'player_required' });
     return;
   }
-  const rec = getWeeklyReplay(player);
+  const rec = getWeeklyReplayGz(player);
   if (!rec) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Cache-Control', 'no-store');
-  res.send(rec.data);
+  // The blob only changes when the player sets a new board-defining run; a short
+  // cache cuts bandwidth on repeated/concurrent watches without serving a beaten
+  // run for long.
+  res.setHeader('Cache-Control', 'public, max-age=60');
+  // The blob is stored gzipped. Serve it as-is with Content-Encoding: gzip so the
+  // client inflates it (browsers + Node undici do this transparently) — ~3-5×
+  // less bandwidth and no server-side gunzip. Fall back to gunzipping for a rare
+  // client that can't take gzip.
+  if (req.acceptsEncodings('gzip')) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.send(rec.gz);
+  } else {
+    res.send(zlib.gunzipSync(rec.gz));
+  }
 });
 
 // The current week's board + the caller's standing + the run parameters.
