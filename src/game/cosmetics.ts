@@ -453,6 +453,27 @@ export function titleGrantsFrom(stats: TitleStats): string[] {
   }).map((t) => t.id);
 }
 
+// ── Announcer-pack slot ──────────────────────────────────────────────────────
+// Announcer voice packs (the actual audio + selection live in game/audio.ts +
+// Settings → Audio). They're registered here ONLY for ownership/unlock gating, so
+// they ride the same machinery as every other cosmetic: admins auto-own all of
+// them, and non-admins unlock by level (or credits). The default 'legacy' pack is
+// free; 'kuon' is level-gated. Cosmetic id = `announcer.<packId>`.
+export type AnnouncerPackCosmetic = {
+  id: string;
+  name: string;
+  blurb: string;
+  rarity: Rarity;
+  source: CosmeticSource;
+};
+export const ANNOUNCER_PACK_COSMETICS: readonly AnnouncerPackCosmetic[] = [
+  { id: 'announcer.legacy', name: 'Classic',      blurb: 'The original deep-voice announcer.',                                  rarity: 'common', source: { type: 'default' } },
+  { id: 'announcer.kuon',   name: 'Kuon (Anime)', blurb: 'A cheerful Japanese-anime announcer — hype, variety, encouragement.', rarity: 'epic',   source: { type: 'level', level: 5 } },
+];
+export function announcerPackCosmeticId(packId: string): string {
+  return `announcer.${packId}`;
+}
+
 // ── Cross-slot helpers (the seam the progression backend reads) ──────────────
 export type CosmeticSlot =
   | 'killEffect'
@@ -464,7 +485,8 @@ export type CosmeticSlot =
   | 'emote'
   | 'nameColor'
   | 'spawnEffect'
-  | 'title';
+  | 'title'
+  | 'announcer';
 
 // Each catalog entry tagged with its slot, so a single id-keyed lookup works
 // across all slots. Future slots (name color…) concat here.
@@ -478,7 +500,8 @@ export type CatalogEntry =
   | (EmoteCosmetic & { slot: 'emote' })
   | (NameColorCosmetic & { slot: 'nameColor' })
   | (SpawnEffectCosmetic & { slot: 'spawnEffect' })
-  | (TitleCosmetic & { slot: 'title' });
+  | (TitleCosmetic & { slot: 'title' })
+  | (AnnouncerPackCosmetic & { slot: 'announcer' });
 
 export const ALL_COSMETICS: readonly CatalogEntry[] = [
   ...KILL_EFFECTS.map((c) => ({ ...c, slot: 'killEffect' as const })),
@@ -491,6 +514,7 @@ export const ALL_COSMETICS: readonly CatalogEntry[] = [
   ...NAME_COLORS.map((c) => ({ ...c, slot: 'nameColor' as const })),
   ...SPAWN_EFFECTS.map((c) => ({ ...c, slot: 'spawnEffect' as const })),
   ...TITLES.map((c) => ({ ...c, slot: 'title' as const })),
+  ...ANNOUNCER_PACK_COSMETICS.map((c) => ({ ...c, slot: 'announcer' as const })),
 ];
 
 export function cosmeticById(id: string): CatalogEntry | undefined {
