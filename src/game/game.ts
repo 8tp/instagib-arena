@@ -33,6 +33,8 @@ import {
   MAX_PLAYERS,
   MAX_TOASTS,
   NUM_BOTS,
+  WEEKLY_CHALLENGE_FRAG_LIMIT,
+  WEEKLY_CHALLENGE_MAP,
   PITCH_LIMIT,
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
@@ -94,6 +96,7 @@ import {
   type HighlightClip,
   type ReplayOptions,
 } from './replay';
+import { encodeReplay } from './replay-codec';
 
 // End-of-match cinematic: how the final-blow slow-mo is paced before the PotG.
 const FINALE_TIME_SCALE = 0.5; // play the final blow at half speed
@@ -241,6 +244,10 @@ export class Game {
   private botCount = NUM_BOTS;
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private botMode: GameMode = 'ffa'; // offline game mode (ffa/duel/tdm) for Solo vs Bots
+  // Weekly-challenge run: an 8p FFA speedrun vs easy bots. Uses a dedicated frag
+  // cap and exports the whole run as a rewatchable replay (see getChallengeRun).
+  private challenge = false;
+  private challengeMapId = WEEKLY_CHALLENGE_MAP;
   private matchOver = false;
   private matchWon = false;
   // Match "drama" cues, evaluated from the scoreboard in emitHud. One-shot per
@@ -634,6 +641,14 @@ export class Game {
     this.botMode = mode;
     this.applyBotTeams();
     this.emitHud();
+  }
+
+  // Mark this offline run as the weekly challenge: a fixed-map FFA speedrun whose
+  // whole run is exported to a replay. `mapId` must match the MAPS registry so the
+  // rewatch viewer can rebuild the same arena.
+  setChallenge(mapId: string) {
+    this.challenge = true;
+    this.challengeMapId = mapId || WEEKLY_CHALLENGE_MAP;
   }
 
   // Assign offline teams from the current bot mode. TDM splits the player (team 0)
@@ -1409,9 +1424,12 @@ export class Game {
         if (this.replay.done) this.advanceReplay();
       } else {
         this.syncRemotePlayers(dt);
-        // Record the match for Play of the Match (downsampled; live play only).
-        // Spectators never play a PoM, so skip the per-frame sampling entirely.
-        if (!this.spectator && !this.matchOver && !this.vote && !this.training) {
+        // Record the match for Play of the Match + the weekly-challenge replay
+        // (downsampled; live play only). Skip the pre-match countdown so the
+        // recorder clock starts at the gun-go — that makes it the authoritative
+        // run time for the speedrun challenge and keeps warmup out of the replay.
+        // Spectators never record (no PoM, no challenge).
+        if (!this.spectator && !this.matchOver && !this.vote && !this.training && !this.inCountdown) {
           this.recorder.tick(dt, () => this.sampleReplayFrame());
         }
       }
@@ -2214,8 +2232,13 @@ export class Game {
       }
       return;
     }
-    // FFA / Duel: first PLAYER to the frag limit wins (duel is a 1v1 race).
-    const limit = this.botMode === 'duel' ? DUEL_FRAG_LIMIT : MATCH_FRAG_LIMIT;
+    // FFA / Duel: first PLAYER to the frag limit wins (duel is a 1v1 race; the
+    // weekly challenge is an FFA race to its own dedicated cap).
+    const limit = this.botMode === 'duel'
+      ? DUEL_FRAG_LIMIT
+      : this.challenge
+        ? WEEKLY_CHALLENGE_FRAG_LIMIT
+        : MATCH_FRAG_LIMIT;
     const counts = [this.playerFrags];
     if (this.bots) {
       for (const b of this.bots.bots) counts.push(this.botFrags.get(b.state.id) ?? 0);
@@ -2395,6 +2418,18 @@ export class Game {
   // would inflate totalGames and pollute win-rate / K-D-per-game (#4).
   hasRecordableStats(): boolean {
     return this.playerFrags > 0 || this.playerDeaths > 0 || this.playerShotsFired > 0;
+  }
+
+  // Weekly-challenge result for the client to submit: the score (won → run time;
+  // lost → total kills) plus the WHOLE run encoded as a replay blob. The recorder
+  // clock starts at the gun-go (warmup excluded), so it IS the run time. Returns
+  // null unless this was a finished challenge run. Called once at match end.
+  getChallengeRun(): { kills: number; won: boolean; timeMs: number; replay: Uint8Array } | null {
+    if (!this.challenge || !this.matchOver) return null;
+    const won = this.matchWon;
+    const timeMs = Math.round(this.recorder.durationSec * 1000);
+    const data = this.recorder.export('you', this.challengeMapId, won);
+    return { kills: this.playerFrags, won, timeMs, replay: encodeReplay(data) };
   }
 
   // The active match's mode tag for the stats POST: 'ranked' for a ranked Duel,

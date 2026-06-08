@@ -177,10 +177,18 @@ export const GAME_MODES: ReadonlyArray<{
 export const DUEL_FRAG_LIMIT = 15; // casual 1v1 target
 export const RANKED_DUEL_FRAG_LIMIT = 15; // ranked 1v1 target (login-only)
 
-// Weekly Challenge: a 1v1 race to DUEL_FRAG_LIMIT vs a single HARD bot on a fixed
-// arena. Its own weekly leaderboard (most kills, then fastest win); never touches
-// career K/D. Fixed map so every run is comparable.
-export const WEEKLY_CHALLENGE_MAP = 'derrick';
+// Weekly Challenge: a solo SPEEDRUN — an 8-player FFA (you + 7 EASY bots) race to
+// WEEKLY_CHALLENGE_FRAG_LIMIT on a fixed arena. You "win" by reaching the cap
+// before any bot; your score is then how FAST you did it. If a bot beats you to
+// the cap you "lose" and your score is your total kills instead. Its own weekly
+// leaderboard (fastest win first, then most kills among non-winners); never
+// touches career K/D. Every run is the same map/bots/cap so they're comparable,
+// and the whole run is recorded to a rewatchable replay (anti-cheat + flexing).
+export const WEEKLY_CHALLENGE_MAP = 'causeway';
+export const WEEKLY_CHALLENGE_BOTS = 7; // you + 7 bots = 8-player FFA
+export const WEEKLY_CHALLENGE_DIFFICULTY: BotDifficulty = 'easy';
+export const WEEKLY_CHALLENGE_MODE: GameMode = 'ffa';
+export const WEEKLY_CHALLENGE_FRAG_LIMIT = 20; // first to this many frags ends the run
 
 // Ranked Elo tiers (purely cosmetic — there is NO rating gate to play ranked).
 // Shared client+server so the ladder, the playercard, and the dynamic rank title

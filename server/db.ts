@@ -4,6 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import Database from 'better-sqlite3';
 import {
   baseMatchXp,
@@ -1680,19 +1681,116 @@ const wcUpdateStmt = sqlite.prepare(`
      SET user_name = @userName, best_kills = @bestKills, best_time_ms = @bestTimeMs,
          runs = runs + 1, updated_at = @now
    WHERE player_id = @playerId AND week_key = @weekKey`);
-// Order: most kills first; among equal kills, a recorded win (best_time_ms > 0)
-// beats no-win, and faster wins rank higher. No-win rows sort after by recency.
-const WC_ORDER = `ORDER BY best_kills DESC,
-  (CASE WHEN best_time_ms > 0 THEN best_time_ms ELSE 9.0e18 END) ASC, updated_at ASC`;
+// SPEEDRUN order: anyone who beat the bots (best_time_ms > 0) ranks above anyone
+// who didn't, fastest win first; non-winners then rank by most kills. Recency
+// breaks any remaining tie.
+const WC_ORDER = `ORDER BY
+  (CASE WHEN best_time_ms > 0 THEN 0 ELSE 1 END) ASC,
+  (CASE WHEN best_time_ms > 0 THEN best_time_ms ELSE 9.0e18 END) ASC,
+  best_kills DESC,
+  updated_at ASC`;
 const wcLeaderboardStmt = sqlite.prepare(
   `SELECT * FROM instagib_weekly_challenge WHERE week_key = ? ${WC_ORDER} LIMIT ?`,
 );
+// Count entries strictly ahead of (@timeMs, @kills): every winner beats a
+// non-winner; among winners the faster one beats; among non-winners more kills
+// beats. @timeMs <= 0 means the caller is a non-winner.
 const wcRankStmt = sqlite.prepare(`
   SELECT COUNT(*) AS n FROM instagib_weekly_challenge
    WHERE week_key = @weekKey AND (
-     best_kills > @kills OR
-     (best_kills = @kills AND @timeMs > 0 AND best_time_ms > 0 AND best_time_ms < @timeMs)
+     (best_time_ms > 0 AND (@timeMs <= 0 OR best_time_ms < @timeMs))
+     OR
+     (best_time_ms = 0 AND @timeMs <= 0 AND best_kills > @kills)
    )`);
+
+// ── Weekly-challenge REPLAYS ─────────────────────────────────────────────────
+// The full recorded run for a player's board-defining run, so anyone can rewatch
+// it (transparency / anti-cheat). One row per (player, week); overwritten when a
+// player sets a new board-defining run. The blob is the gzipped replay-codec
+// binary. Storage is bounded by pruning every week but the current one on write.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_weekly_replay (
+  player_id   TEXT NOT NULL,
+  week_key    TEXT NOT NULL,
+  data        BLOB NOT NULL,       -- gzipped replay-codec binary
+  raw_bytes   INTEGER NOT NULL,    -- uncompressed size
+  duration_ms INTEGER NOT NULL,
+  kills       INTEGER NOT NULL,
+  won         INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (player_id, week_key)
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_replay_week ON instagib_weekly_replay(week_key);
+`);
+
+const wrUpsertStmt = sqlite.prepare(`
+  INSERT INTO instagib_weekly_replay
+    (player_id, week_key, data, raw_bytes, duration_ms, kills, won, created_at)
+  VALUES (@playerId, @weekKey, @data, @rawBytes, @durationMs, @kills, @won, @createdAt)
+  ON CONFLICT(player_id, week_key) DO UPDATE SET
+    data = @data, raw_bytes = @rawBytes, duration_ms = @durationMs,
+    kills = @kills, won = @won, created_at = @createdAt`);
+const wrGetStmt = sqlite.prepare(
+  `SELECT data, raw_bytes, duration_ms, kills, won FROM instagib_weekly_replay
+    WHERE player_id = ? AND week_key = ?`,
+);
+const wrPruneStmt = sqlite.prepare(`DELETE FROM instagib_weekly_replay WHERE week_key != ?`);
+const wrWeekPlayersStmt = sqlite.prepare(
+  `SELECT player_id FROM instagib_weekly_replay WHERE week_key = ?`,
+);
+
+// Store (gzip) a player's board-defining run for the week, overwriting any prior
+// one, and prune replays from previous weeks (keeps the table ~one week deep).
+export function storeWeeklyReplay(
+  playerId: string,
+  raw: Uint8Array,
+  meta: { durationMs: number; kills: number; won: boolean },
+  now: number = Date.now(),
+): void {
+  if (!playerId || raw.length === 0) return;
+  const wk = weekKey(now);
+  const gz = zlib.gzipSync(Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength));
+  wrUpsertStmt.run({
+    playerId,
+    weekKey: wk,
+    data: gz,
+    rawBytes: raw.length,
+    durationMs: Math.max(0, Math.floor(meta.durationMs)),
+    kills: Math.max(0, Math.floor(meta.kills)),
+    won: meta.won ? 1 : 0,
+    createdAt: now,
+  });
+  wrPruneStmt.run(wk);
+}
+
+// Fetch + gunzip a player's stored run for the week. Returns the raw replay-codec
+// bytes (ready to decode) or null.
+export function getWeeklyReplay(
+  playerId: string,
+  now: number = Date.now(),
+): { data: Buffer; durationMs: number; kills: number; won: boolean } | null {
+  if (!playerId) return null;
+  const row = wrGetStmt.get(playerId, weekKey(now)) as
+    | { data: Buffer; raw_bytes: number; duration_ms: number; kills: number; won: number }
+    | undefined;
+  if (!row) return null;
+  try {
+    return {
+      data: zlib.gunzipSync(row.data),
+      durationMs: row.duration_ms,
+      kills: row.kills,
+      won: !!row.won,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Player ids with a stored replay this week (for the leaderboard's Watch flag).
+function weeklyReplayPlayerIds(weekKeyStr: string): Set<string> {
+  const rows = wrWeekPlayersStmt.all(weekKeyStr) as { player_id: string }[];
+  return new Set(rows.map((r) => r.player_id));
+}
 
 type WcRow = {
   player_id: string;
@@ -1708,16 +1806,20 @@ export type WeeklyChallengeEntry = {
   id: string;
   userName: string;
   kills: number;
-  timeMs: number; // best winning time, 0 = never beat the bot
+  timeMs: number; // best winning time, 0 = never beat the bots
   won: boolean;
   runs: number;
   admin: boolean;
   verified: boolean;
+  hasReplay: boolean; // a rewatchable run is stored for this player this week
 };
 export type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
 
-// Record a challenge run, keeping the player's BEST for the week: most kills, and
-// (if this run beat the bot) the fastest winning time. Account-only.
+// Record a challenge run, keeping the player's BEST for the week: the fastest
+// WINNING time (the speedrun), plus most kills (the fallback for runs that never
+// beat the bots). Account-only. Also reports whether THIS run is now the player's
+// board-defining run — if so the caller should store its replay (so the stored
+// replay always matches the row shown on the leaderboard).
 export function recordWeeklyChallenge(
   playerId: string,
   userName: string,
@@ -1725,31 +1827,42 @@ export function recordWeeklyChallenge(
   won: boolean,
   timeMs: number,
   now: number = Date.now(),
-): WeeklyChallengeMe | null {
+): { me: WeeklyChallengeMe; acceptReplay: boolean } | null {
   if (!playerId) return null;
   const wk = weekKey(now);
   wcEnsureStmt.run({ playerId, weekKey: wk, userName, now });
   const cur = wcRowStmt.get(playerId, wk) as WcRow;
+  const isWin = won && timeMs > 0;
   const bestKills = Math.max(cur.best_kills, kills);
-  const bestTimeMs =
-    won && timeMs > 0
-      ? cur.best_time_ms > 0
-        ? Math.min(cur.best_time_ms, timeMs)
-        : timeMs
-      : cur.best_time_ms;
+  const bestTimeMs = isWin
+    ? cur.best_time_ms > 0
+      ? Math.min(cur.best_time_ms, timeMs)
+      : timeMs
+    : cur.best_time_ms;
   wcUpdateStmt.run({ playerId, weekKey: wk, userName, bestKills, bestTimeMs, now });
   const rank =
     num(wcRankStmt.get({ weekKey: wk, kills: bestKills, timeMs: bestTimeMs })) + 1;
+  // The board shows a player's fastest win if they've ever won, else their
+  // most-kills loss. This run becomes the defining run when it's a new best win,
+  // or — for a player who has never won — a new best-kills loss.
+  const neverWonBefore = cur.best_time_ms === 0;
+  const isNewBestWin = isWin && (cur.best_time_ms === 0 || timeMs < cur.best_time_ms);
+  const isNewBestKillsLoss = !isWin && neverWonBefore && kills > cur.best_kills;
+  const acceptReplay = isNewBestWin || isNewBestKillsLoss;
   return {
-    id: playerId,
-    userName,
-    kills: bestKills,
-    timeMs: bestTimeMs,
-    won: bestTimeMs > 0,
-    runs: cur.runs + 1,
-    rank,
-    admin: false,
-    verified: false,
+    me: {
+      id: playerId,
+      userName,
+      kills: bestKills,
+      timeMs: bestTimeMs,
+      won: bestTimeMs > 0,
+      runs: cur.runs + 1,
+      rank,
+      admin: false,
+      verified: false,
+      hasReplay: false,
+    },
+    acceptReplay,
   };
 }
 
@@ -1763,6 +1876,7 @@ function toWcEntry(r: WcRow): WeeklyChallengeEntry {
     runs: r.runs,
     admin: false,
     verified: false,
+    hasReplay: false,
   };
 }
 
@@ -1771,7 +1885,8 @@ export function getWeeklyChallengeLeaderboard(
   now: number = Date.now(),
 ): WeeklyChallengeEntry[] {
   const n = Math.max(1, Math.min(100, Math.floor(limit)));
-  const rows = wcLeaderboardStmt.all(weekKey(now), n) as WcRow[];
+  const wk = weekKey(now);
+  const rows = wcLeaderboardStmt.all(wk, n) as WcRow[];
   const base = rows.map(toWcEntry);
   if (base.length) {
     const ph = base.map(() => '?').join(',');
@@ -1779,12 +1894,14 @@ export function getWeeklyChallengeLeaderboard(
       .prepare(`SELECT id, is_admin, is_verified FROM instagib_users WHERE id IN (${ph})`)
       .all(...base.map((e) => e.id)) as { id: string; is_admin: number; is_verified: number }[];
     const byId = new Map(flags.map((f) => [f.id, f]));
+    const withReplay = weeklyReplayPlayerIds(wk);
     for (const e of base) {
       const f = byId.get(e.id);
       if (f) {
         e.admin = !!f.is_admin;
         e.verified = !!f.is_verified;
       }
+      e.hasReplay = withReplay.has(e.id);
     }
   }
   return base;
@@ -1800,5 +1917,7 @@ export function getWeeklyChallengeMe(
   if (!r) return null;
   const rank =
     num(wcRankStmt.get({ weekKey: wk, kills: r.best_kills, timeMs: r.best_time_ms })) + 1;
-  return { ...toWcEntry(r), rank };
+  const entry = toWcEntry(r);
+  entry.hasReplay = weeklyReplayPlayerIds(wk).has(playerId);
+  return { ...entry, rank };
 }
