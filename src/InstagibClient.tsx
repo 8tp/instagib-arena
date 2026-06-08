@@ -3,6 +3,8 @@ import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './
 import { useAuth, LoginModal, type Account } from './auth';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
+import { ReplayViewer, type ReplayViewerState } from './game/replay-viewer';
+import { decodeReplay, type ReplayData } from './game/replay-codec';
 import {
   LobbyClient,
   type LobbyRoom,
@@ -57,6 +59,10 @@ import {
   rankedTier,
   rankedTierName,
   WEEKLY_CHALLENGE_MAP,
+  WEEKLY_CHALLENGE_BOTS,
+  WEEKLY_CHALLENGE_DIFFICULTY,
+  WEEKLY_CHALLENGE_MODE,
+  WEEKLY_CHALLENGE_FRAG_LIMIT,
   type BotDifficulty,
   type GameMode,
   type KeybindAction,
@@ -280,7 +286,7 @@ export type MatchConfig =
       difficulty: BotDifficulty;
       training?: boolean; // endless practice — no frag-limit match end
       gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
-      challenge?: boolean; // weekly-challenge run (1v1 vs hard bot → weekly leaderboard, not career)
+      challenge?: boolean; // weekly-challenge run (8p FFA speedrun vs easy bots → weekly board, not career)
     }
   | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
@@ -725,6 +731,9 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
     game.setBotCount(config.botCount);
     game.setBotsEnabled(true);
     game.setBotMode(config.gameMode ?? 'ffa'); // after the bots exist (sets teams in TDM)
+    // Weekly challenge: a fixed-map FFA speedrun whose whole run is recorded for a
+    // rewatchable replay (and a dedicated frag cap). Marks the run on the engine.
+    if (config.challenge) game.setChallenge(config.mapId);
   }
 }
 
@@ -1013,9 +1022,9 @@ function GameView({
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
   const hudRef = useRef<HudState>(INITIAL_HUD);
   const offlineMatch = config.mode !== 'multiplayer';
-  // Weekly-challenge run: submits kills/time to the weekly board, NOT career K/D.
+  // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
+  // weekly board, NOT career K/D. The engine owns the authoritative run time.
   const isChallenge = config.mode === 'local' && config.challenge === true;
-  const matchStartRef = useRef(0);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1030,11 +1039,15 @@ function GameView({
     const game = new Game(canvas, listener, (result) => {
       setEndResult(result);
       if (isChallenge) {
-        // Weekly challenge: log kills + (if you beat the bot) the win time to the
-        // weekly board. Never touches career K/D.
-        void submitChallengeStats(result, Date.now() - matchStartRef.current).then((me) => {
-          if (me) setChallengeResult(me);
-        });
+        // Weekly challenge: submit the speedrun (win time, or kills on a loss) to
+        // the weekly board + upload the full run's replay. Never touches career
+        // K/D. The engine owns the authoritative run time + the recorded replay.
+        const run = game.getChallengeRun();
+        if (run) {
+          void submitChallengeRun(run).then((me) => {
+            if (me) setChallengeResult(me);
+          });
+        }
       } else {
         void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
           if (p) setEndProgression(p);
@@ -1046,7 +1059,6 @@ function GameView({
       }
     });
     gameRef.current = game;
-    matchStartRef.current = Date.now(); // for the challenge win-time
     // Toggle the net-debug overlay. F3 (often Mission Control on macOS) OR the
     // backtick/tilde key (`) which has no OS conflict. Works locked or not.
     const onDebugKey = (e: KeyboardEvent) => {
@@ -1258,7 +1270,7 @@ function GameView({
           <div className='text-[10px] uppercase tracking-[0.2em] text-amber-300'>Weekly Challenge</div>
           <div className='mt-1 text-sm text-white'>
             {challengeResult.won
-              ? `Beat the bot — ${fmtChallengeTime(challengeResult.timeMs)}`
+              ? `Cleared in ${fmtChallengeTime(challengeResult.timeMs)}`
               : `${challengeResult.kills} kills`}
             <span className='text-white/50'> · best #{challengeResult.rank}</span>
           </div>
@@ -4085,11 +4097,12 @@ type WeeklyChallengeEntry = {
   id: string;
   userName: string;
   kills: number;
-  timeMs: number; // best winning time (0 = never beat the bot)
+  timeMs: number; // best winning time (0 = never beat the bots)
   won: boolean;
   runs: number;
   admin: boolean;
   verified: boolean;
+  hasReplay: boolean; // a rewatchable run is stored this week
 };
 type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
 
@@ -4102,21 +4115,33 @@ function fmtChallengeTime(ms: number): string {
   return m > 0 ? `${m}:${rem.padStart(4, '0')}` : `${rem}s`;
 }
 
-// Submit a finished weekly-challenge run. Records to the weekly board only — never
-// career K/D. Returns the player's updated standing (rank/best), or null.
-async function submitChallengeStats(
-  result: MatchResult,
-  timeMs: number,
+// Submit a finished weekly-challenge run + (if it's the new board-defining run)
+// upload its full replay so anyone can rewatch it. Records to the weekly board
+// only — never career K/D. Returns the player's updated standing, or null.
+async function submitChallengeRun(
+  run: { kills: number; won: boolean; timeMs: number; replay: Uint8Array },
 ): Promise<WeeklyChallengeMe | null> {
   try {
     const res = await fetch('/api/challenge/weekly', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ kills: result.kills, won: result.won, timeMs }),
+      body: JSON.stringify({ kills: run.kills, won: run.won, timeMs: run.timeMs }),
     });
     if (!res.ok) return null;
-    const d = (await res.json()) as { me?: WeeklyChallengeMe | null };
+    const d = (await res.json()) as { me?: WeeklyChallengeMe | null; acceptReplay?: boolean };
+    // Upload the replay only when the server says this run now defines the board
+    // row (best-effort — a failed upload just leaves the row without a replay).
+    if (d.acceptReplay && run.replay.length) {
+      void fetch('/api/challenge/weekly/replay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        credentials: 'same-origin',
+        // Copy into a standalone ArrayBuffer so the typed-array view's offset
+        // doesn't ship extra bytes.
+        body: run.replay.slice().buffer,
+      }).catch(() => {});
+    }
     return d.me ?? null;
   } catch {
     return null;
@@ -4450,8 +4475,11 @@ function RankedModal({
   );
 }
 
-// Weekly Challenge: play a 1v1 vs a hard bot + the weekly board. Anyone can play;
-// only logged-in runs are recorded (consistent with career/ranked).
+// Weekly Challenge: a solo SPEEDRUN — an 8-player FFA (you + 7 easy bots) race to
+// the frag cap on a fixed map. Beat the bots to the cap and your TIME tops the
+// week; lose the race and your kills count instead. Every board-defining run is
+// recorded, and anyone can rewatch it (▶). Anyone can play; only logged-in runs
+// are recorded (consistent with career/ranked).
 function WeeklyChallengeModal({
   account,
   onPlay,
@@ -4465,6 +4493,8 @@ function WeeklyChallengeModal({
   const [me, setMe] = useState<WeeklyChallengeMe | null>(null);
   const [info, setInfo] = useState<{ map: string; fragLimit: number } | null>(null);
   const [ready, setReady] = useState(false);
+  // The board entry whose run we're rewatching (null = no viewer open).
+  const [watch, setWatch] = useState<{ id: string; name: string } | null>(null);
   useEffect(() => {
     let active = true;
     fetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
@@ -4473,7 +4503,7 @@ function WeeklyChallengeModal({
         if (!active || !d) return;
         setEntries(d.entries ?? []);
         setMe(d.me ?? null);
-        setInfo({ map: d.map ?? WEEKLY_CHALLENGE_MAP, fragLimit: d.fragLimit ?? 15 });
+        setInfo({ map: d.map ?? WEEKLY_CHALLENGE_MAP, fragLimit: d.fragLimit ?? WEEKLY_CHALLENGE_FRAG_LIMIT });
         setReady(true);
       })
       .catch(() => active && setReady(true));
@@ -4486,10 +4516,11 @@ function WeeklyChallengeModal({
     <ModalShell title='Weekly Challenge' onClose={onClose}>
       <div className='flex flex-col gap-4 font-mono'>
         <p className='text-[13px] leading-relaxed text-white/65'>
-          1v1 a <span className='text-rose-300'>HARD bot</span>
-          {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Most kills tops the week; ties go
-          to the <span className='text-amber-200'>fastest win</span>. This is its own board — it never
-          touches your K/D.
+          Solo <span className='text-rose-300'>8-player FFA</span> vs 7 easy bots
+          {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Beat them to the cap and your{' '}
+          <span className='text-amber-200'>clear time</span> tops the week; lose the race and your kills
+          count instead. Every best run is recorded — hit <span className='text-cyan-300'>▶</span> to
+          rewatch anyone&apos;s. Its own board — never touches your K/D.
         </p>
 
         <div className='flex items-center justify-between rounded-lg border border-white/12 bg-black/30 px-4 py-3'>
@@ -4497,7 +4528,7 @@ function WeeklyChallengeModal({
             <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>Your week</div>
             {me ? (
               <div className='mt-0.5 text-[13px] text-white/85'>
-                {me.won ? `Best win ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
+                {me.won ? `Best clear ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
                 <span className='text-white/45'> · rank #{me.rank}</span>
               </div>
             ) : (
@@ -4515,7 +4546,10 @@ function WeeklyChallengeModal({
         </div>
 
         <div className='rounded-lg border border-white/12 bg-black/30 p-4'>
-          <div className='mb-2 text-[10px] uppercase tracking-[0.2em] text-white/45'>This week</div>
+          <div className='mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-white/45'>
+            <span>This week</span>
+            <span className='normal-case tracking-normal text-white/30'>clear time · then kills</span>
+          </div>
           {!ready ? (
             <div className='py-4 text-center text-[12px] text-white/35'>Loading…</div>
           ) : entries.length === 0 ? (
@@ -4533,9 +4567,21 @@ function WeeklyChallengeModal({
                           {e.verified && <span className='text-cyan-300'>✓</span>}
                         </span>
                       </td>
-                      <td className='py-1.5 pr-2 text-right tabular-nums text-white/80'>{e.kills} K</td>
-                      <td className='py-1.5 text-right tabular-nums text-amber-200/80'>
-                        {e.won ? fmtChallengeTime(e.timeMs) : '—'}
+                      <td className='w-8 py-1.5 pr-1 text-center'>
+                        {e.hasReplay && (
+                          <button
+                            onClick={() => setWatch({ id: e.id, name: e.userName })}
+                            title={`Rewatch ${e.userName}'s run`}
+                            className='rounded px-1.5 py-0.5 text-[11px] text-cyan-300 transition hover:bg-cyan-400/15 hover:text-cyan-200'
+                          >
+                            ▶
+                          </button>
+                        )}
+                      </td>
+                      <td
+                        className={`py-1.5 text-right tabular-nums ${e.won ? 'text-amber-200/90' : 'text-white/55'}`}
+                      >
+                        {e.won ? fmtChallengeTime(e.timeMs) : `${e.kills} K`}
                       </td>
                     </tr>
                   ))}
@@ -4545,7 +4591,153 @@ function WeeklyChallengeModal({
           )}
         </div>
       </div>
+      {watch && (
+        <ReplayViewerOverlay
+          playerId={watch.id}
+          playerName={watch.name}
+          onClose={() => setWatch(null)}
+        />
+      )}
     </ModalShell>
+  );
+}
+
+// Full-screen rewatch of a recorded weekly-challenge run: fetches the replay
+// blob, decodes it, and drives a standalone ReplayViewer (first-person through
+// the runner's eyes) with play/pause/scrub/speed controls.
+const REPLAY_SPEEDS = [0.5, 1, 2] as const;
+
+function ReplayViewerOverlay({
+  playerId,
+  playerName,
+  onClose,
+}: {
+  playerId: string;
+  playerName: string;
+  onClose: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewerRef = useRef<ReplayViewer | null>(null);
+  const [state, setState] = useState<ReplayViewerState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let viewer: ReplayViewer | null = null;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
+          { credentials: 'same-origin' },
+        );
+        if (!res.ok) throw new Error('unavailable');
+        const buf = await res.arrayBuffer();
+        let data: ReplayData;
+        try {
+          data = decodeReplay(buf);
+        } catch {
+          throw new Error('corrupt');
+        }
+        if (cancelled || !canvasRef.current) return;
+        viewer = new ReplayViewer(canvasRef.current, data, (s) => {
+          if (!cancelled) setState(s);
+        });
+        viewerRef.current = viewer;
+        await viewer.start();
+      } catch {
+        if (!cancelled) setError('This run could not be loaded.');
+      }
+    })();
+    // Esc closes the viewer.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.code === 'Space') {
+        e.preventDefault();
+        viewerRef.current?.togglePlay();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('keydown', onKey);
+      viewer?.dispose();
+      viewerRef.current = null;
+    };
+  }, [playerId, onClose]);
+
+  const duration = state?.duration ?? 0;
+  const t = state?.t ?? 0;
+  const playing = state?.playing ?? false;
+  const ready = state?.ready ?? false;
+
+  return (
+    <div className='fixed inset-0 z-[120] flex flex-col bg-black font-mono'>
+      <canvas ref={canvasRef} className='absolute inset-0 block h-full w-full' />
+
+      {/* Top bar */}
+      <div className='relative z-10 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent px-5 py-3'>
+        <div className='flex items-baseline gap-2'>
+          <span className='text-[10px] uppercase tracking-[0.2em] text-cyan-300'>Replay</span>
+          <span className='text-sm text-white/90'>{playerName}&apos;s run</span>
+        </div>
+        <button
+          onClick={onClose}
+          className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-white/70 transition hover:bg-white/10 hover:text-white'
+        >
+          Close ✕
+        </button>
+      </div>
+
+      <div className='flex-1' />
+
+      {/* Bottom controls */}
+      <div className='relative z-10 bg-gradient-to-t from-black/85 to-transparent px-5 pb-5 pt-8'>
+        {error ? (
+          <div className='text-center text-[13px] text-rose-300'>{error}</div>
+        ) : !ready ? (
+          <div className='text-center text-[13px] text-white/50'>Loading replay…</div>
+        ) : (
+          <div className='mx-auto flex max-w-3xl items-center gap-3'>
+            <button
+              onClick={() => viewerRef.current?.togglePlay()}
+              className='w-16 rounded-md bg-cyan-400 px-3 py-2 text-sm font-bold text-zinc-950 transition hover:bg-cyan-300'
+            >
+              {playing ? '❚❚' : '▶'}
+            </button>
+            <span className='w-12 shrink-0 text-right text-[11px] tabular-nums text-white/70'>
+              {fmtChallengeTime(t * 1000)}
+            </span>
+            <input
+              type='range'
+              min={0}
+              max={Math.max(0.1, duration)}
+              step={0.05}
+              value={Math.min(t, duration)}
+              onChange={(ev) => viewerRef.current?.seek(parseFloat(ev.target.value))}
+              className='h-1.5 flex-1 cursor-pointer accent-cyan-400'
+            />
+            <span className='w-12 shrink-0 text-[11px] tabular-nums text-white/40'>
+              {fmtChallengeTime(duration * 1000)}
+            </span>
+            <div className='flex items-center gap-1'>
+              {REPLAY_SPEEDS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => viewerRef.current?.setSpeed(s)}
+                  className={`rounded px-2 py-1 text-[11px] tabular-nums transition ${
+                    state?.speed === s
+                      ? 'bg-cyan-400/20 text-cyan-200'
+                      : 'text-white/50 hover:bg-white/10 hover:text-white/80'
+                  }`}
+                >
+                  {s}×
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -4877,7 +5069,7 @@ function Lobby({
                   <span className='inline-flex items-center gap-2'>
                     🗓 Weekly Challenge
                     <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
-                      1v1 vs hard bot
+                      8p FFA speedrun
                     </span>
                   </span>
                 </DeckButton>
@@ -5022,9 +5214,9 @@ function Lobby({
             onStart({
               mode: 'local',
               mapId: WEEKLY_CHALLENGE_MAP,
-              botCount: 1,
-              difficulty: 'hard',
-              gameMode: 'duel',
+              botCount: WEEKLY_CHALLENGE_BOTS,
+              difficulty: WEEKLY_CHALLENGE_DIFFICULTY,
+              gameMode: WEEKLY_CHALLENGE_MODE,
               challenge: true,
             })
           }

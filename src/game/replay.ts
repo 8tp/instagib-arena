@@ -4,6 +4,26 @@ import type { BotModel } from './bots';
 import type { RemotePlayerSnapshot } from './net';
 import type { Vec3 } from './types';
 import { EYE_HEIGHT, MULTIKILL_WINDOW_SEC, TEAM_COLORS } from './constants';
+import {
+  REPLAY_VERSION,
+  type ReplayActorProfile,
+  type ReplayData,
+  type ReplayFrame,
+  type ReplayKill,
+  type ReplayPose,
+  type ReplayShot,
+} from './replay-codec';
+
+// The pure data shapes live in replay-codec (so the server can import them too);
+// re-export here so existing call sites keep importing them from './replay'.
+export type {
+  ReplayActorKind,
+  ReplayActorProfile,
+  ReplayPose,
+  ReplayFrame,
+  ReplayKill,
+  ReplayShot,
+} from './replay-codec';
 
 // ── Play of the Match: record the match, pick the best moment, replay it ──────
 //
@@ -33,40 +53,6 @@ const CLUSTER_GAP_SEC = MULTIKILL_WINDOW_SEC;
 // slow-mo + freeze lands fast and doesn't stall the results screen.
 const FINALE_PREROLL_SEC = 0.9;
 const FINALE_POSTROLL_SEC = 0.7;
-
-export type ReplayActorKind = 'local' | 'remote' | 'bot';
-
-export type ReplayActorProfile = {
-  id: string;
-  name: string;
-  kind: ReplayActorKind;
-  hat: string;
-  unusual: string;
-  nameColor: string;
-  team: number | null;
-};
-
-export type ReplayPose = {
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-  pitch: number; // look pitch (radians) — drives the first-person replay camera
-  visible: boolean;
-};
-
-export type ReplayFrame = { t: number; poses: Record<string, ReplayPose> };
-
-export type ReplayKill = {
-  t: number;
-  killerId: string;
-  victimId: string;
-  headshot: boolean;
-  killerName: string;
-  victimName: string;
-};
-
-export type ReplayShot = { t: number; origin: Vec3; end: Vec3; killerId: string };
 
 export type HighlightClip = {
   starId: string;
@@ -125,6 +111,24 @@ export class MatchRecorder {
     this.shots.length = 0;
     this.clock = 0;
     this.frameAccum = 0;
+  }
+
+  // Snapshot the whole recording into the portable replay shape (for encoding +
+  // upload). `localId` is the actor whose eyes the rewatch rides; `won`/the clock
+  // summarize the run for the leaderboard + the server's score sanity-check.
+  export(localId: string, mapId: string, won: boolean): ReplayData {
+    return {
+      version: REPLAY_VERSION,
+      hz: RECORD_HZ,
+      mapId,
+      durationMs: Math.round(this.clock * 1000),
+      localId,
+      won,
+      profiles: [...this.profiles.values()],
+      frames: this.frames,
+      kills: this.kills,
+      shots: this.shots,
+    };
   }
 
   // Pick the most impressive kill cluster of the match and frame a clip around
@@ -275,13 +279,38 @@ const EYE_LOOK_SMOOTH = 20; // exp smoothing rate for yaw/pitch
 
 // Replay playback options. `timeScale` < 1 plays the clip in slow motion;
 // `freezeSec` holds on the final frame afterwards (the cinematic "pause").
-export type ReplayOptions = { timeScale?: number; freezeSec?: number };
+// `holdAtEnd` (full-run rewatch) pauses on the final frame instead of finishing,
+// so the viewer can scrub back / replay rather than auto-tearing-down.
+export type ReplayOptions = { timeScale?: number; freezeSec?: number; holdAtEnd?: boolean };
+
+// The buffers ReplayPlayer reads. MatchRecorder satisfies this directly; a
+// downloaded+decoded replay is adapted into it (replay-viewer). The fields match
+// MatchRecorder's so either can be passed to start().
+export type ReplaySource = {
+  profiles: Map<string, ReplayActorProfile>;
+  frames: ReplayFrame[];
+  kills: ReplayKill[];
+  shots: ReplayShot[];
+};
 
 function lerpAngle(a: number, b: number, t: number): number {
   let diff = b - a;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
   return a + diff * t;
+}
+
+// First index of a time-sorted event list whose `t >= time` (binary search) —
+// where to point an event cursor after a seek so only forward events still fire.
+function firstAtOrAfter(events: { t: number }[], time: number): number {
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (events[mid].t < time) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 export class ReplayPlayer {
@@ -305,6 +334,11 @@ export class ReplayPlayer {
   private holdRemaining = 0;
   private wallElapsed = 0; // real (wall-clock) seconds since the clip started
   private totalWallSec = 0; // wall-clock length incl. slow-mo + the freeze hold
+  // Full-run rewatch state (unused by the cinematic PoM segments).
+  private holdAtEnd = false;
+  private paused = false;
+  private atEnd = false;
+  private seekSnap = false;
   done = false;
 
   constructor(private deps: ReplayDeps) {}
@@ -323,14 +357,45 @@ export class ReplayPlayer {
     return this.frozen;
   }
 
-  start(clip: HighlightClip, rec: MatchRecorder, opts: ReplayOptions = {}) {
+  // ── Full-run rewatch controls (the standalone ReplayViewer) ──
+  get currentT(): number { return this.t; }
+  get clipStartT(): number { return this.clip?.startT ?? 0; }
+  get clipEndT(): number { return this.clip?.endT ?? 0; }
+  get isPaused(): boolean { return this.paused; }
+  get reachedEnd(): boolean { return this.atEnd; }
+  get speed(): number { return this.timeScale; }
+
+  pause() { this.paused = true; }
+  resume() {
+    // Resuming from the very end restarts the run from the top (replay button).
+    if (this.atEnd) this.seek(this.clip.startT);
+    this.paused = false;
+  }
+  togglePause() { if (this.paused) this.resume(); else this.pause(); }
+  setSpeed(s: number) { this.timeScale = s > 0 ? s : 1; }
+
+  // Jump to an absolute match-time (seconds), clamped to the clip window. Resets
+  // the frame + event cursors so playback resumes cleanly from there, and snaps
+  // the camera (no long slide from the old vantage).
+  seek(time: number) {
+    const t = Math.max(this.clip.startT, Math.min(this.clip.endT, time));
+    this.t = t;
+    this.atEnd = t >= this.clip.endT - 1e-4;
+    this.frameIdx = 0; // sampleAll re-advances forward from 0
+    this.nextShotIdx = firstAtOrAfter(this.shots, t);
+    this.nextKillIdx = firstAtOrAfter(this.kills, t);
+    this.seekSnap = true;
+  }
+
+  start(clip: HighlightClip, src: ReplaySource, opts: ReplayOptions = {}) {
     this.clip = clip;
-    this.frames = rec.frames;
-    this.kills = rec.kills;
-    this.shots = rec.shots;
+    this.frames = src.frames;
+    this.kills = src.kills;
+    this.shots = src.shots;
     this.t = clip.startT;
     this.timeScale = opts.timeScale && opts.timeScale > 0 ? opts.timeScale : 1;
     this.freezeSec = Math.max(0, opts.freezeSec ?? 0);
+    this.holdAtEnd = opts.holdAtEnd === true;
     this.totalWallSec = (clip.endT - clip.startT) / this.timeScale + this.freezeSec;
 
     // Only build actors that actually appear (visible) in the clip window, or
@@ -348,7 +413,7 @@ export class ReplayPlayer {
     }
     present.delete(clip.starId);
 
-    for (const [id, profile] of rec.profiles) {
+    for (const [id, profile] of src.profiles) {
       if (!present.has(id)) continue;
       const actor = new RemotePlayer(id, profile.name, this.deps.scene, this.deps.botModel);
       actor.team = profile.team;
@@ -385,11 +450,16 @@ export class ReplayPlayer {
       // last pose but stop advancing the clock and spawning events.
       this.holdRemaining -= dt;
       if (this.holdRemaining <= 0) this.done = true;
-    } else {
+    } else if (!this.paused) {
       this.t += dt * this.timeScale; // slow motion when timeScale < 1
       if (this.t >= this.clip.endT) {
         this.t = this.clip.endT;
-        if (this.freezeSec > 0) {
+        if (this.holdAtEnd) {
+          // Full-run rewatch: stop at the end and hold so the viewer can scrub
+          // back or replay — never auto-dispose.
+          this.paused = true;
+          this.atEnd = true;
+        } else if (this.freezeSec > 0) {
           this.frozen = true;
           this.holdRemaining = this.freezeSec;
         } else {
@@ -425,9 +495,11 @@ export class ReplayPlayer {
       if (k.killerId === this.clip.starId) this.deps.onStarKill?.(k.headshot);
     }
 
-    // First-person camera riding the star's eyes.
+    // First-person camera riding the star's eyes (snap on the frame after a seek
+    // so the view jumps to the new vantage instead of sliding across the map).
     const star = poses[this.clip.starId] ?? this.poseAt(this.clip.starId, this.t);
-    if (star) this.placeFirstPersonCam(star, false);
+    if (star) this.placeFirstPersonCam(star, this.seekSnap);
+    this.seekSnap = false;
   }
 
   dispose() {
