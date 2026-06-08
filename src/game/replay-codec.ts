@@ -86,6 +86,14 @@ function wrapPi(a: number): number {
   return a;
 }
 
+// Largest length ≤ `max` that ends on a UTF-8 code-point boundary: back off over
+// any continuation bytes (10xxxxxx) so a clamp never splits a multi-byte glyph.
+function utf8BoundaryAtOrBefore(bytes: Uint8Array, max: number): number {
+  let end = max;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return end;
+}
+
 // ── Growable little-endian writer ────────────────────────────────────────────
 class ByteWriter {
   private buf = new Uint8Array(4096);
@@ -109,10 +117,14 @@ class ByteWriter {
   u32(v: number) { this.ensure(4); this.view.setUint32(this.pos, v >>> 0, true); this.pos += 4; }
   str(s: string) {
     const bytes = this.enc.encode(s ?? '');
-    this.u16(bytes.length);
-    this.ensure(bytes.length);
-    this.buf.set(bytes, this.pos);
-    this.pos += bytes.length;
+    // Length is a u16; clamp on a UTF-8 boundary rather than let a pathologically
+    // long string silently wrap the prefix and desync the stream. Names are short
+    // in practice; this just hardens the codec as a reusable module.
+    const len = bytes.length > 0xffff ? utf8BoundaryAtOrBefore(bytes, 0xffff) : bytes.length;
+    this.u16(len);
+    this.ensure(len);
+    this.buf.set(bytes.subarray(0, len), this.pos);
+    this.pos += len;
   }
   bytes(): Uint8Array {
     return this.buf.slice(0, this.pos);

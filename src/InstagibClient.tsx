@@ -286,7 +286,7 @@ export type MatchConfig =
       difficulty: BotDifficulty;
       training?: boolean; // endless practice — no frag-limit match end
       gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
-      challenge?: boolean; // weekly-challenge run (1v1 vs hard bot → weekly leaderboard, not career)
+      challenge?: boolean; // weekly-challenge run (8p FFA speedrun vs easy bots → weekly board, not career)
     }
   | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
@@ -5069,7 +5069,7 @@ function Lobby({
                   <span className='inline-flex items-center gap-2'>
                     🗓 Weekly Challenge
                     <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
-                      1v1 vs hard bot
+                      8p FFA speedrun
                     </span>
                   </span>
                 </DeckButton>

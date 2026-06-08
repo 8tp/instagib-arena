@@ -1651,11 +1651,13 @@ export function getRankedLeaderboard(limit: number): RankedLeaderEntry[] {
 }
 
 // ── Weekly Challenge ─────────────────────────────────────────────────────────
-// A weekly leaderboard for the "1v1 vs a hard bot" challenge mode. Ranked by most
-// kills, then fastest WIN (best_time_ms, only set on a run that reached the cap).
-// Account-only and SEPARATE from career stats — it never touches K/D. The match
-// is offline (vs a bot) so scores are client-reported + clamped (best-effort,
-// like career stats); the stakes are a cosmetic weekly board.
+// A weekly leaderboard for the solo SPEEDRUN challenge (8p FFA vs easy bots).
+// SPEEDRUN order: anyone who beat the bots to the cap (best_time_ms > 0) ranks
+// above anyone who didn't, fastest WIN first; non-winners then rank by most kills
+// (best_kills). Account-only and SEPARATE from career stats — it never touches
+// K/D. The match is offline (vs bots) so scores are client-reported + clamped
+// (best-effort, like career stats); the stakes are a cosmetic weekly board, and
+// each board-defining run also stores a rewatchable replay (instagib_weekly_replay).
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS instagib_weekly_challenge (
   player_id    TEXT NOT NULL,
