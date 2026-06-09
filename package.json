@@ -30,7 +30,7 @@
     "express": "^4.21.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-router-dom": "^7.9.1",
+    "react-router-dom": "^7.17.0",
     "three": "0.184.0",
     "tsx": "^4.20.5",
     "ws": "^8.18.3"
