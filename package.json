@@ -29,7 +29,7 @@
     "cookie-parser": "^1.4.7",
     "express": "^4.21.2",
     "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "react-dom": "19.2.7",
     "react-router-dom": "^7.9.1",
     "three": "0.184.0",
     "tsx": "^4.20.5",
