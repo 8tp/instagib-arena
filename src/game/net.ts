@@ -448,9 +448,9 @@ export class NetClient {
         if (typeof e.data === 'string') {
           this.handle(JSON.parse(e.data) as ServerMessage);
         } else if (e.data instanceof ArrayBuffer) {
-          // The hot state snapshot rides a binary frame; decode → same handler.
-          const dec = decodeState(toView(e.data));
-          if (dec) this.handle({ type: 'state', t: dec.t, players: dec.players, resumeAt: dec.resumeAt });
+          // The hot state snapshot rides a binary frame across the transport
+          // seam (see onUnreliableBytes).
+          this.onUnreliableBytes(e.data);
         }
       } catch {
         // ignore malformed
@@ -493,11 +493,30 @@ export class NetClient {
 
   sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
     if (this.spectate) return; // observers have no position
-    // The hottest client→server message (64Hz) — send it as a compact binary
-    // frame instead of JSON. The server decodes it back to a `pos` message.
+    // The hottest client→server message (64Hz) — a compact binary frame across
+    // the transport seam (the server decodes it back to a `pos` message).
+    this.sendUnreliable(encodePos(x, y, z, yaw, pitch));
+  }
+
+  // ── Transport seam (UDP plan Phase 1 — docs/NETCODE-UDP-PLAN.md §4) ────
+  // The two hot, loss-tolerant message types — `pos` up, `state` down — cross
+  // this seam instead of touching the WebSocket directly. Both are idempotent
+  // absolute state: a lost or stale frame is simply skipped, the next one
+  // fully replaces it. Today the seam is backed by the same WS (TCP), so
+  // behavior is unchanged; Phase 2 routes these through an unreliable datagram
+  // channel (WebTransport) with auto-fallback to the WS, while everything that
+  // must not be lost or reordered (join/meta/kill/vote/chat…) stays on the WS.
+  private sendUnreliable(bytes: Uint8Array) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(encodePos(x, y, z, yaw, pitch));
+      this.ws.send(bytes);
     }
+  }
+
+  // Decode + dispatch one unreliable server→client frame, whatever pipe it
+  // arrived on (today: a WS binary frame; Phase 2: a datagram).
+  private onUnreliableBytes(data: ArrayBuffer) {
+    const dec = decodeState(toView(data));
+    if (dec) this.handle({ type: 'state', t: dec.t, players: dec.players, resumeAt: dec.resumeAt });
   }
 
   sendVote(mapId: string) {
@@ -874,7 +893,14 @@ export class NetClient {
           });
         }
       }
-      // Keep buffer ordered by server time; drop anything older than the window.
+      // Keep buffer ordered by server time. A frame at or behind the newest
+      // buffered one is DROPPED: snapshots are idempotent absolute state, so a
+      // stale frame carries nothing the newer one didn't. Never happens over
+      // the WS (TCP is ordered + the server stamp is monotonic), but the
+      // transport seam allows reordered/duplicated datagram delivery (Phase 2),
+      // and interpolate()'s straddle search requires sorted entries.
+      const newestT = this.snapBuffer.length > 0 ? this.snapBuffer[this.snapBuffer.length - 1].t : -Infinity;
+      if (msg.t <= newestT) return;
       this.snapBuffer.push({ t: msg.t, players });
       const cutoff = msg.t - SNAP_BUFFER_MS;
       while (this.snapBuffer.length > 2 && this.snapBuffer[0].t < cutoff) {
