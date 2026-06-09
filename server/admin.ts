@@ -15,6 +15,7 @@ import { accountId } from './auth';
 import {
   FEEDBACK_STATUSES,
   feedbackCounts,
+  feedbackTypeCounts,
   findAccountByName,
   findUserById,
   getAuditLog,
@@ -256,17 +257,21 @@ adminRouter.get('/metrics/live', (_req, res) => {
 });
 
 // Player-submitted feedback / bug reports, newest first, keyset-paginated by id
-// (?before=<lastId>); optional ?status= filter. Read-only (token or session).
+// (?before=<lastId>); optional ?status= and ?type= (bug/feature/general)
+// filters. Read-only (token or session).
 adminRouter.get('/metrics/feedback', (req, res) => {
   const before = intParam(req.query.before, 0);
   const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
   res.json({
     feedback: listFeedback({
       limit: intParam(req.query.limit, 50),
       beforeId: before > 0 ? before : undefined,
       status,
+      type,
     }),
     counts: feedbackCounts(),
+    typeCounts: feedbackTypeCounts(),
   });
 });
 

@@ -3,5 +3,8 @@ User-agent: *
 Allow: /
 Disallow: /admin
 Disallow: /api/
+# Dev-lab routes (cosmetic preview sandboxes) — not for the index.
+Disallow: /podiumlab
+Disallow: /lockerlab
 
 Sitemap: https://instagib.win/sitemap.xml

@@ -1,8 +1,15 @@
 # Netcode: the UDP-transport ceiling (and how to break it)
 
-> Status: **plan, not built.** This documents the one remaining structural limit
-> on how "Valorant-smooth" the netcode can get, and a concrete migration path if
-> we ever decide to chase it. The current TCP/WebSocket stack — after the 64Hz
+> Status: **Phase 1 (transport seam) shipped; Phase 2 (WebTransport datagram
+> channel) built & locally verified on branch `netcode/udp-webtransport`,
+> deployment gated on UDP ingress.** The seam (`sendUnreliable` /
+> `onUnreliableBytes`, both sides) is in main-line code with zero behavior
+> change. The datagram channel (server `WT_PORT` + `transport-wt.ts`, client
+> `?wt=1` flag, AUTH/AUTH_OK slot binding, WS auto-fallback + starvation
+> watchdog, E2E-proven by `scripts/wt-probe.ts`: 63 Hz state over datagrams,
+> datagram pos uplink, WS fallback <1 s) waits on the §5 host decision —
+> Railway has no UDP ingress.
+> The current TCP/WebSocket stack — after the 64Hz
 > pairing, lean+meta snapshot split, adaptive jitter buffer, and `TCP_NODELAY` —
 > is genuinely good; this is about the *tail* (lossy wifi/mobile), not the median.
 
@@ -116,11 +123,19 @@ This is an ops decision with real cost; it's the main reason this is a *plan*.
 
 - **Phase 0 — prerequisites:** ✅ done (idempotent lean snapshots, reliable meta,
   adaptive buffer, NODELAY, 64Hz). Already shipped on `feat/netcode-smoothness`.
-- **Phase 1 — transport seam:** add `sendUnreliable`/`onUnreliable` to `NetClient`
-  + a matching server hook, both defaulting to the existing WS. No behavior
-  change; pure refactor, independently shippable.
-- **Phase 2 — datagram endpoint:** pick A or B, stand up the endpoint, route only
-  `pos`+`state` over it, behind a feature flag with **auto-fallback to WS**.
+- **Phase 1 — transport seam:** ✅ shipped — `sendUnreliable`/`onUnreliableBytes`
+  on `NetClient`, `decodeUnreliable`/`sendUnreliable` server-side, both
+  defaulting to the existing WS, plus a stale/duplicate-frame guard on the
+  client snapshot buffer (inert over TCP, required once datagrams can reorder).
+  Verified zero behavior change against the load-harness baselines.
+- **Phase 2 — datagram endpoint:** ✅ built (Option A, WebTransport) on branch
+  `netcode/udp-webtransport`: server `WT_PORT` + `server/transport-wt.ts`
+  (self-signed dev cert or `WT_CERT_FILE`/`WT_KEY_FILE`, discovery via
+  `/api/wt-info`), client `src/game/transport-wt.ts` behind `?wt=1`, slot
+  binding by clientId+resumeToken over the datagram pipe, 1.5 s connect
+  timeout, 2 s starvation watchdog, auto-fallback to WS. E2E:
+  `scripts/wt-probe.ts`. **Merging it waits on UDP ingress** (§5) — Railway
+  has none, so the endpoint needs a UDP-capable host (`PUBLIC_WT_URL`).
 - **Phase 3 — measure & default:** collect real loss/jitter/RTT; tune the adaptive
   buffer's floor down further when on datagrams (no HoL → smaller buffer is safe);
   make datagrams the default where the channel establishes.

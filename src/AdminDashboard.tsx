@@ -706,6 +706,7 @@ type FeedbackRow = {
 };
 const FB_STATUSES = ['open', 'ack', 'resolved', 'spam'] as const;
 const FB_STATUS_LABEL: Record<string, string> = { open: 'Open', ack: 'Ack', resolved: 'Resolved', spam: 'Spam' };
+const FB_TYPES = ['bug', 'feature', 'general'] as const;
 const FB_TYPE_LABEL: Record<string, string> = { bug: 'Bug', feature: 'Feature', general: 'General' };
 const FB_TYPE_COLOR: Record<string, string> = { bug: 'text-rose-300', feature: 'text-cyan-300', general: 'text-white/55' };
 const FB_STATUS_COLOR: Record<string, string> = {
@@ -771,31 +772,45 @@ function FeedbackCard({
 function FeedbackTab() {
   const [rows, setRows] = useState<FeedbackRow[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
   const [filter, setFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (status: string, before?: number) => {
+  const load = useCallback(async (status: string, type: string, before?: number) => {
     setLoading(true);
-    const qs = `limit=50${status !== 'all' ? `&status=${status}` : ''}${before ? `&before=${before}` : ''}`;
-    const d = await getJSON<{ feedback: FeedbackRow[]; counts: Record<string, number> }>(
-      `/api/admin/metrics/feedback?${qs}`,
-    );
+    const qs =
+      `limit=50${status !== 'all' ? `&status=${status}` : ''}` +
+      `${type !== 'all' ? `&type=${type}` : ''}${before ? `&before=${before}` : ''}`;
+    const d = await getJSON<{
+      feedback: FeedbackRow[];
+      counts: Record<string, number>;
+      typeCounts: Record<string, number>;
+    }>(`/api/admin/metrics/feedback?${qs}`);
     const list = d?.feedback ?? [];
     setRows((prev) => (before ? [...prev, ...list] : list));
     if (d?.counts) setCounts(d.counts);
+    if (d?.typeCounts) setTypeCounts(d.typeCounts);
     setDone(list.length < 50);
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    void load(filter);
-  }, [filter, load]);
+    void load(filter, typeFilter);
+  }, [filter, typeFilter, load]);
 
   const updateStatus = useCallback(
     async (id: number, status: FeedbackRow['status']) => {
       const ok = await postJSON<{ ok: boolean }>(`/api/admin/feedback/${id}/status`, { status });
-      if (!ok) return;
+      if (!ok) {
+        // Surface the failure (likely a token-auth session: status mutations
+        // need a real admin session) instead of silently doing nothing.
+        setError('Status update failed — moderation needs an admin session login.');
+        window.setTimeout(() => setError(null), 5000);
+        return;
+      }
       setRows((prev) =>
         prev
           .map((r) => (r.id === id ? { ...r, status } : r))
@@ -811,27 +826,52 @@ function FeedbackTab() {
 
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const chips = (
-    <div className="flex flex-wrap gap-1">
-      {(['all', ...FB_STATUSES] as const).map((s) => {
-        const n = s === 'all' ? total : counts[s] ?? 0;
-        return (
-          <button
-            key={s}
-            onClick={() => setFilter(s)}
-            className={`rounded px-2 py-1 text-[10px] uppercase tracking-[0.14em] transition ${
-              filter === s ? 'bg-cyan-400/15 text-cyan-300' : 'text-white/40 hover:text-white/70'
-            }`}
-          >
-            {s === 'all' ? 'All' : FB_STATUS_LABEL[s]}
-            {n > 0 && <span className="ml-1 tabular-nums opacity-70">{n}</span>}
-          </button>
-        );
-      })}
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-wrap gap-1">
+        {(['all', ...FB_STATUSES] as const).map((s) => {
+          const n = s === 'all' ? total : counts[s] ?? 0;
+          return (
+            <button
+              key={s}
+              onClick={() => setFilter(s)}
+              className={`rounded px-2 py-1 text-[10px] uppercase tracking-[0.14em] transition ${
+                filter === s ? 'bg-cyan-400/15 text-cyan-300' : 'text-white/40 hover:text-white/70'
+              }`}
+            >
+              {s === 'all' ? 'All' : FB_STATUS_LABEL[s]}
+              {n > 0 && <span className="ml-1 tabular-nums opacity-70">{n}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {/* Second axis: what KIND of report — bug / feature request / general. */}
+      <div className="flex flex-wrap gap-1">
+        {(['all', ...FB_TYPES] as const).map((t) => {
+          const n = t === 'all' ? total : typeCounts[t] ?? 0;
+          return (
+            <button
+              key={t}
+              onClick={() => setTypeFilter(t)}
+              className={`rounded px-2 py-1 text-[10px] uppercase tracking-[0.14em] transition ${
+                typeFilter === t ? 'bg-fuchsia-400/15 text-fuchsia-300' : 'text-white/40 hover:text-white/70'
+              }`}
+            >
+              {t === 'all' ? 'All types' : FB_TYPE_LABEL[t]}
+              {n > 0 && <span className="ml-1 tabular-nums opacity-70">{n}</span>}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 
   return (
     <Panel title="Feedback & bug reports" right={chips}>
+      {error && (
+        <div className="mb-2 rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-[11px] text-rose-200">
+          {error}
+        </div>
+      )}
       {rows.length === 0 && !loading ? (
         <Empty label="No feedback yet." />
       ) : rows.length === 0 ? (
@@ -846,7 +886,7 @@ function FeedbackTab() {
       <div className="mt-3 flex justify-center">
         {!done && rows.length > 0 && (
           <button
-            onClick={() => load(filter, rows[rows.length - 1]?.id)}
+            onClick={() => load(filter, typeFilter, rows[rows.length - 1]?.id)}
             disabled={loading}
             className="rounded-md border border-white/15 px-4 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-40"
           >

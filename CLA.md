@@ -63,5 +63,5 @@ grants licenses to the Maintainer; it does not transfer ownership.
 
 ---
 
-Agreement is recorded by the CLA bot when you sign on your first pull request. If
+Agreement is recorded by checking the CLA box in the pull request template on your first pull request. If
 you are signing on behalf of an entity, ensure you are authorized to do so.

@@ -1,6 +1,6 @@
 # Instagib Arena — Distribution & Launch Kit
 
-Everything you need to list the game on portals and seed communities. I (Claude)
+Everything you need to list the game on portals and seed communities. Automation
 can't create accounts or submit on your behalf — those are identity-bound and
 need your login/ToS acceptance — so this kit makes each one ~10 min of copy-paste.
 
@@ -15,8 +15,8 @@ on every response (`server/index.ts`). Portals that embed the game in an `<ifram
 (CrazyGames, Poki) **cannot load it** until we allowlist their origin.
 
 **Do not submit to CrazyGames/Poki until this is fixed.** When you have your
-CrazyGames dev account + their embed origin, ask Claude to "do the frame-ancestors
-allowlist" — it's a ~15 min surgical change (allow portal origins on game routes,
+CrazyGames dev account + their embed origin, apply the frame-ancestors allowlist
+— it is a ~15 min surgical change (allow portal origins on game routes,
 keep DENY on /admin + auth). Directories that just link to your URL (itch link,
 .io lists) are unaffected — do those now.
 
@@ -78,7 +78,7 @@ win but gated behind the iframe fix + review. Poki is a long shot.
 
 ---
 
-## Assets you need to capture (I can't generate these)
+## Assets you need to capture (gameplay captures need a human at the controls)
 
 - **Cover / thumbnail — 16:9, ≥1280×720.** Clean gameplay shot, minimal text,
   readable at small size. CrazyGames leans on this hard for click-through.
@@ -112,7 +112,7 @@ Pure backlinks — low effort, compounding SEO + trickle of the exact audience.
 ### CrazyGames (after the iframe fix)
 1. developer.crazygames.com → register as a developer.
 2. Submit a new game → provide your hosted URL (https://instagib.win) — they iframe it.
-3. **Get their embed origin**, then have Claude add it to the CSP allowlist + deploy.
+3. **Get their embed origin**, then add it to the CSP allowlist (server/index.ts) + deploy.
 4. Integrate the CrazyGames SDK if you want ads/featuring (optional for first submit).
 5. Fill name/desc/controls/tags from this kit. Upload thumbnail + screenshots.
 6. Submit for QA. They test gameplay, loading, mobile/responsive behavior.
@@ -161,7 +161,7 @@ Two mitigations:
 ## Launch sequence (suggested)
 
 1. ✅ Technical SEO (done): OG cards absolute, canonical, JSON-LD, robots, sitemap, noscript.
-2. Add your X handle to `index.html` twitter:site/creator (one edit — give Claude the handle).
+2. Add your X handle to `index.html` twitter:site/creator (one edit).
 3. Capture assets (cover, screenshots, 20s trailer from a replay).
 4. List on itch.io + .io directories (no code needed).
 5. Do the iframe-allowlist fix → submit to CrazyGames.

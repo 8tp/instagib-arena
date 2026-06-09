@@ -12,7 +12,7 @@ Thanks for your interest — bug reports, ideas, and pull requests are all welco
 
 ## Development setup
 
-Requires **Node ≥ 20.19**. See the [README](README.md#quick-start-development):
+Requires **Node ≥ 20.19**. See the [README](README.md#quick-start):
 
 ```bash
 npm install

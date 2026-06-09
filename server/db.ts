@@ -301,6 +301,16 @@ export type FeedbackInput = {
   now?: number;
 };
 
+// Global table-growth backstop. The per-identity rate limit (6/10min) bounds
+// honest traffic; this bounds a distributed/scripted flood so the table can't
+// grow without limit. Oldest rows fall off first — at human feedback volumes
+// 20k is years of headroom.
+const FEEDBACK_MAX_ROWS = 20_000;
+const trimFeedbackStmt = sqlite.prepare(
+  `DELETE FROM instagib_feedback
+   WHERE id NOT IN (SELECT id FROM instagib_feedback ORDER BY id DESC LIMIT ?)`,
+);
+
 // Store a player feedback/bug report. Returns the new row id (0 on failure —
 // never throws into the request path).
 export function submitFeedback(f: FeedbackInput): number {
@@ -316,6 +326,7 @@ export function submitFeedback(f: FeedbackInput): number {
       ip: (f.ip ?? '').slice(0, 64),
       userAgent: (f.userAgent ?? '').slice(0, 256),
     });
+    trimFeedbackStmt.run(FEEDBACK_MAX_ROWS);
     return Number(r.lastInsertRowid) || 0;
   } catch (err) {
     console.error('[feedback] submit failed', err);
@@ -339,33 +350,44 @@ function mapFeedbackRow(r: FeedbackDbRow): FeedbackRow {
   };
 }
 
-const mFeedbackAll = sqlite.prepare(`SELECT * FROM instagib_feedback ORDER BY id DESC LIMIT ?`);
-const mFeedbackBefore = sqlite.prepare(
-  `SELECT * FROM instagib_feedback WHERE id < ? ORDER BY id DESC LIMIT ?`,
-);
-const mFeedbackByStatus = sqlite.prepare(
-  `SELECT * FROM instagib_feedback WHERE status = ? ORDER BY id DESC LIMIT ?`,
-);
-const mFeedbackByStatusBefore = sqlite.prepare(
-  `SELECT * FROM instagib_feedback WHERE status = ? AND id < ? ORDER BY id DESC LIMIT ?`,
-);
+// The feedback list is a small filter matrix (status? × type? × before?), so
+// statements are built on demand and cached by shape — every variant is still
+// a prepared, fully parameterized statement (filters arrive as bind values).
+const feedbackListStmts = new Map<string, ReturnType<typeof sqlite.prepare>>();
+function feedbackListStmt(hasStatus: boolean, hasType: boolean, hasBefore: boolean) {
+  const key = `${hasStatus}|${hasType}|${hasBefore}`;
+  let stmt = feedbackListStmts.get(key);
+  if (!stmt) {
+    const where: string[] = [];
+    if (hasStatus) where.push('status = @status');
+    if (hasType) where.push('type = @type');
+    if (hasBefore) where.push('id < @before');
+    stmt = sqlite.prepare(
+      `SELECT * FROM instagib_feedback${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT @limit`,
+    );
+    feedbackListStmts.set(key, stmt);
+  }
+  return stmt;
+}
 
 // Recent feedback, newest first, keyset-paginated by id (pass the last id you saw
-// as `beforeId`). Optional status filter ('all'/'' = every status).
+// as `beforeId`). Optional status / type filters ('all'/'' = unfiltered).
 export function listFeedback(opts: {
   limit?: number;
   beforeId?: number;
   status?: string;
+  type?: string;
 }): FeedbackRow[] {
   const n = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
   const before = opts.beforeId && opts.beforeId > 0 ? opts.beforeId : 0;
   const status = opts.status && opts.status !== 'all' ? opts.status : '';
-  let rows: unknown[];
-  if (status) {
-    rows = before ? mFeedbackByStatusBefore.all(status, before, n) : mFeedbackByStatus.all(status, n);
-  } else {
-    rows = before ? mFeedbackBefore.all(before, n) : mFeedbackAll.all(n);
-  }
+  const type = opts.type && opts.type !== 'all' ? opts.type : '';
+  const rows = feedbackListStmt(!!status, !!type, !!before).all({
+    ...(status ? { status } : {}),
+    ...(type ? { type } : {}),
+    ...(before ? { before } : {}),
+    limit: n,
+  });
   return (rows as FeedbackDbRow[]).map(mapFeedbackRow);
 }
 
@@ -384,6 +406,16 @@ const mFeedbackCounts = sqlite.prepare(
 export function feedbackCounts(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const r of mFeedbackCounts.all() as { status: string; n: number }[]) out[r.status] = r.n;
+  return out;
+}
+
+// …and by type (bug / feature / general) — the admin tab's second chip row.
+const mFeedbackTypeCounts = sqlite.prepare(
+  `SELECT type, COUNT(*) AS n FROM instagib_feedback GROUP BY type`,
+);
+export function feedbackTypeCounts(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of mFeedbackTypeCounts.all() as { type: string; n: number }[]) out[r.type] = r.n;
   return out;
 }
 
