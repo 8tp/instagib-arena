@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { createPortal } from 'react-dom';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { useAuth, LoginModal, type Account } from './auth';
+import { FeedbackModal } from './FeedbackModal';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, type AnnouncerPackId } from './game/audio';
@@ -6787,6 +6788,7 @@ function SettingsModal({
   // read-only. Guests can't pick a name; in matches they appear as "Guest N".
   const isGuestName = !settings.playerName || settings.playerName === 'Guest';
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [search, setSearch] = useState('');
   const visibleTabs = filterTabs(search);
   const onSearch = (q: string) => {
@@ -6811,13 +6813,27 @@ function SettingsModal({
           <div className='text-base font-semibold uppercase tracking-[0.18em]'>
             Settings
           </div>
-          <button
-            onClick={onClose}
-            className='text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-white'
-          >
-            Close
-          </button>
+          <div className='flex items-center gap-4'>
+            <button
+              onClick={() => setFeedbackOpen(true)}
+              className='text-[11px] uppercase tracking-[0.18em] text-cyan-300/70 transition hover:text-cyan-200'
+            >
+              Feedback
+            </button>
+            <button
+              onClick={onClose}
+              className='text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-white'
+            >
+              Close
+            </button>
+          </div>
         </div>
+        {feedbackOpen && (
+          <FeedbackModal
+            onClose={() => setFeedbackOpen(false)}
+            playerName={isGuestName ? undefined : settings.playerName}
+          />
+        )}
         <input
           type='search'
           value={search}

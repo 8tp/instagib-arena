@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CONTROLS } from '../controls';
 import { useLiveCount } from '../live';
-
-// Set this to your server invite once you have one. Empty → the Discord button
-// is hidden (so it never points at a dead link in the alpha).
-const DISCORD_URL = '';
+import { FeedbackModal } from '../FeedbackModal';
+import { DISCORD_URL, GITHUB_URL } from '../links';
 
 // Coarse pointer (phone/tablet) → this is a keyboard+mouse FPS; warn before the
 // player taps into the lobby, downloads the 3D chunk, and hits disabled buttons.
@@ -31,6 +29,7 @@ const MODES: Array<[string, string]> = [
 export default function Landing() {
   const coarse = useCoarsePointer();
   const live = useLiveCount();
+  const [showFeedback, setShowFeedback] = useState(false);
   return (
     <div className="h-full overflow-y-auto bg-[#0a0a0b] text-neutral-100">
       {/* glow backdrop */}
@@ -132,10 +131,29 @@ export default function Landing() {
           </div>
         </section>
 
-        <footer className="text-xs text-neutral-600">
-          Desktop + mouse &amp; keyboard. Best in Chrome / Edge with pointer lock.
+        <footer className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-neutral-600">
+          <span>Desktop + mouse &amp; keyboard. Best in Chrome / Edge with pointer lock.</span>
+          <span className="flex items-center gap-4">
+            <a
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="text-neutral-400 transition hover:text-cyan-300"
+            >
+              View source ↗
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowFeedback(true)}
+              className="text-neutral-400 transition hover:text-cyan-300"
+            >
+              Send feedback
+            </button>
+          </span>
         </footer>
       </main>
+
+      {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
     </div>
   );
 }

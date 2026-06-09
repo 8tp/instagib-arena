@@ -230,6 +230,163 @@ export function getAuditLog(limit: number, event?: string): AuditRow[] {
   return (event ? auditByEventStmt.all(event, n) : auditAllStmt.all(n)) as AuditRow[];
 }
 
+// ── Feedback / bug reports ───────────────────────────────────────────────────
+// Player-submitted feedback (the in-game form → POST /api/feedback). Its own
+// table — not the audit log — because it has a moderation status workflow. `ip`
+// and `user_agent` are best-effort, for spam triage only. Surfaced in the /admin
+// "Feedback" tab; never shown to other players.
+sqlite.exec(`
+CREATE TABLE IF NOT EXISTS instagib_feedback (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          INTEGER NOT NULL,
+  player_id   TEXT NOT NULL DEFAULT '',
+  player_name TEXT NOT NULL DEFAULT '',
+  type        TEXT NOT NULL DEFAULT 'general',
+  title       TEXT NOT NULL DEFAULT '',
+  body        TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'open',
+  ip          TEXT NOT NULL DEFAULT '',
+  user_agent  TEXT NOT NULL DEFAULT '',
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_ts ON instagib_feedback(ts);
+CREATE INDEX IF NOT EXISTS idx_feedback_status ON instagib_feedback(status, id);
+`);
+
+export type FeedbackType = 'bug' | 'feature' | 'general';
+export type FeedbackStatus = 'open' | 'ack' | 'resolved' | 'spam';
+export const FEEDBACK_TYPES: readonly FeedbackType[] = ['bug', 'feature', 'general'];
+export const FEEDBACK_STATUSES: readonly FeedbackStatus[] = ['open', 'ack', 'resolved', 'spam'];
+
+export type FeedbackRow = {
+  id: number;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  type: FeedbackType;
+  title: string;
+  body: string;
+  status: FeedbackStatus;
+  ip: string;
+  userAgent: string;
+  updatedAt: number;
+};
+
+type FeedbackDbRow = {
+  id: number;
+  ts: number;
+  player_id: string;
+  player_name: string;
+  type: string;
+  title: string;
+  body: string;
+  status: string;
+  ip: string;
+  user_agent: string;
+  updated_at: number;
+};
+
+const insertFeedbackStmt = sqlite.prepare(`
+  INSERT INTO instagib_feedback (ts, player_id, player_name, type, title, body, status, ip, user_agent, updated_at)
+  VALUES (@ts, @playerId, @playerName, @type, @title, @body, 'open', @ip, @userAgent, @ts)`);
+
+export type FeedbackInput = {
+  playerId?: string;
+  playerName?: string;
+  type: FeedbackType;
+  title: string;
+  body: string;
+  ip?: string;
+  userAgent?: string;
+  now?: number;
+};
+
+// Store a player feedback/bug report. Returns the new row id (0 on failure —
+// never throws into the request path).
+export function submitFeedback(f: FeedbackInput): number {
+  try {
+    const now = f.now ?? Date.now();
+    const r = insertFeedbackStmt.run({
+      ts: now,
+      playerId: (f.playerId ?? '').slice(0, 64),
+      playerName: (f.playerName ?? '').slice(0, 32) || 'Guest',
+      type: f.type,
+      title: f.title.slice(0, 200),
+      body: f.body.slice(0, 5000),
+      ip: (f.ip ?? '').slice(0, 64),
+      userAgent: (f.userAgent ?? '').slice(0, 256),
+    });
+    return Number(r.lastInsertRowid) || 0;
+  } catch (err) {
+    console.error('[feedback] submit failed', err);
+    return 0;
+  }
+}
+
+function mapFeedbackRow(r: FeedbackDbRow): FeedbackRow {
+  return {
+    id: r.id,
+    ts: r.ts,
+    playerId: r.player_id,
+    playerName: r.player_name || 'Guest',
+    type: r.type as FeedbackType,
+    title: r.title,
+    body: r.body,
+    status: r.status as FeedbackStatus,
+    ip: r.ip,
+    userAgent: r.user_agent,
+    updatedAt: r.updated_at,
+  };
+}
+
+const mFeedbackAll = sqlite.prepare(`SELECT * FROM instagib_feedback ORDER BY id DESC LIMIT ?`);
+const mFeedbackBefore = sqlite.prepare(
+  `SELECT * FROM instagib_feedback WHERE id < ? ORDER BY id DESC LIMIT ?`,
+);
+const mFeedbackByStatus = sqlite.prepare(
+  `SELECT * FROM instagib_feedback WHERE status = ? ORDER BY id DESC LIMIT ?`,
+);
+const mFeedbackByStatusBefore = sqlite.prepare(
+  `SELECT * FROM instagib_feedback WHERE status = ? AND id < ? ORDER BY id DESC LIMIT ?`,
+);
+
+// Recent feedback, newest first, keyset-paginated by id (pass the last id you saw
+// as `beforeId`). Optional status filter ('all'/'' = every status).
+export function listFeedback(opts: {
+  limit?: number;
+  beforeId?: number;
+  status?: string;
+}): FeedbackRow[] {
+  const n = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+  const before = opts.beforeId && opts.beforeId > 0 ? opts.beforeId : 0;
+  const status = opts.status && opts.status !== 'all' ? opts.status : '';
+  let rows: unknown[];
+  if (status) {
+    rows = before ? mFeedbackByStatusBefore.all(status, before, n) : mFeedbackByStatus.all(status, n);
+  } else {
+    rows = before ? mFeedbackBefore.all(before, n) : mFeedbackAll.all(n);
+  }
+  return (rows as FeedbackDbRow[]).map(mapFeedbackRow);
+}
+
+const mSetFeedbackStatus = sqlite.prepare(
+  `UPDATE instagib_feedback SET status = @status, updated_at = @now WHERE id = @id`,
+);
+// Update a feedback row's moderation status. Returns true if a row changed.
+export function setFeedbackStatus(id: number, status: FeedbackStatus, now?: number): boolean {
+  return mSetFeedbackStatus.run({ id, status, now: now ?? Date.now() }).changes > 0;
+}
+
+// Feedback row counts by status — for the admin tab badge + filter chips.
+const mFeedbackCounts = sqlite.prepare(
+  `SELECT status, COUNT(*) AS n FROM instagib_feedback GROUP BY status`,
+);
+export function feedbackCounts(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of mFeedbackCounts.all() as { status: string; n: number }[]) out[r.status] = r.n;
+  return out;
+}
+
 // Per-player challenge progress (Phase 2). Definitions live in code
 // (src/game/challenges.ts); this only stores progress + claim state, keyed by
 // (player, challenge, period) so each daily/weekly instance is independent.
