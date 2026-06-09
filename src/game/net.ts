@@ -1,6 +1,7 @@
 import type { GameMode } from './constants';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, toView } from './netcodec';
+import { WtChannel } from './transport-wt';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -304,6 +305,24 @@ const SNAP_BUFFER_MS = 1200;
 // second). Small ongoing corrections slew imperceptibly; a big gap snaps once.
 const CLOCK_SLEW_HZ = 3;
 const CLOCK_SLEW_SNAP_MS = 250;
+// WebTransport datagram channel (UDP plan Phase 2): opt-in while experimental.
+// Enable with ?wt=1 (one session) or localStorage 'instagib.wt' = '1' (sticky).
+// The server must also expose an endpoint (/api/wt-info) or this is a no-op.
+const wtFlagEnabled = (): boolean => {
+  try {
+    if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('wt') === '1') return true;
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('instagib.wt') === '1') return true;
+  } catch {
+    // privacy modes can throw on localStorage access
+  }
+  return false;
+};
+// If the datagram channel goes silent this long while the WS is still up and
+// we're in a room (state should flow at 64Hz), assume the UDP path silently
+// blackholed and close the channel — closing makes the SERVER unbind and
+// resume sending state over the WS (the server picks the downlink, so client-
+// side fallback must go through teardown, not just a local flag).
+const WT_STARVATION_MS = 2000;
 
 type BufferedSnapshot = { t: number; players: Map<string, StatePlayer> };
 
@@ -397,6 +416,10 @@ export class NetClient {
   // Resume token from the last welcome — kept across reconnects so we can reclaim
   // our in-match slot + score instead of re-joining fresh (zeroed).
   private resumeToken: string | null = null;
+  // Optional WebTransport datagram channel (UDP plan Phase 2). Null = WS-only.
+  // Started after `welcome` (needs clientId + resumeToken to bind); torn down
+  // with the WS so a reconnect re-establishes it against the fresh slot.
+  private wt: WtChannel | null = null;
 
   constructor(opts: {
     url: string;
@@ -463,6 +486,10 @@ export class NetClient {
       this.metaById.clear();
       this.lastStatsById.clear();
       this.snapBuffer.length = 0;
+      // The datagram channel is bound to this WS slot's identity — tear it
+      // down with the socket; the reconnect's welcome re-establishes it.
+      this.wt?.close();
+      this.wt = null;
       this.stopPing();
       this.setStatus('closed');
       this.scheduleReconnect();
@@ -476,6 +503,8 @@ export class NetClient {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.wt?.close();
+    this.wt = null;
     this.stopPing();
     if (this.ws) {
       this.ws.onopen = null;
@@ -507,16 +536,54 @@ export class NetClient {
   // channel (WebTransport) with auto-fallback to the WS, while everything that
   // must not be lost or reordered (join/meta/kill/vote/chat…) stays on the WS.
   private sendUnreliable(bytes: Uint8Array) {
+    if (this.wt?.active) {
+      this.wt.send(bytes);
+      return;
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(bytes);
     }
   }
 
   // Decode + dispatch one unreliable server→client frame, whatever pipe it
-  // arrived on (today: a WS binary frame; Phase 2: a datagram).
-  private onUnreliableBytes(data: ArrayBuffer) {
+  // arrived on (a WS binary frame, or a WT datagram once the channel is up).
+  private onUnreliableBytes(data: ArrayBuffer | Uint8Array) {
     const dec = decodeState(toView(data));
     if (dec) this.handle({ type: 'state', t: dec.t, players: dec.players, resumeAt: dec.resumeAt });
+  }
+
+  // Bring up the WebTransport datagram channel if the flag is on, the browser
+  // supports it, and the server advertises an endpoint. Resolves quietly on
+  // any failure — the WS path is always the fallback (and remains the pipe for
+  // everything reliable either way).
+  private async maybeStartWt(): Promise<void> {
+    if (!wtFlagEnabled() || this.wt || this.disposed || !WtChannel.available()) return;
+    if (!this.clientId || !this.resumeToken) return;
+    const clientId = this.clientId;
+    const token = this.resumeToken;
+    let info: { enabled: boolean; url: string | null; certHash: string | null };
+    try {
+      info = await (await fetch('/api/wt-info')).json();
+    } catch {
+      return;
+    }
+    if (!info?.enabled || !info.url || this.wt || this.disposed) return;
+    const ch = new WtChannel({
+      onFrame: (data) => this.onUnreliableBytes(data),
+      onDead: () => {
+        // Dropping the reference reverts the hot path to the WS; the server
+        // does the same on its side when the session's `closed` fires.
+        if (this.wt === ch) this.wt = null;
+      },
+    });
+    this.wt = ch; // reserve the slot before awaiting so a second welcome can't double-start
+    const ok = await ch.connect(info.url, info.certHash, clientId, token);
+    if (ok && !this.disposed && this.clientId === clientId) {
+      console.info('[instagib-net] WebTransport datagram channel ACTIVE (pos/state now ride QUIC)');
+    } else {
+      ch.close();
+      if (this.wt === ch) this.wt = null;
+    }
   }
 
   sendVote(mapId: string) {
@@ -564,7 +631,7 @@ export class NetClient {
       extrapPct: Math.round(this.dbgExtrapEma * 100),
       bufferMs: Math.round(this.dbgBufferMs),
       clockDriftMs: Math.round(this.dbgClockDriftMs),
-      transport: 'ws',
+      transport: this.wt?.active ? 'wt' : 'ws',
       peers: this.remotes.size,
     };
   }
@@ -663,6 +730,14 @@ export class NetClient {
       const step = INTERP_DELAY_SLEW_MS_PER_S * dt;
       const gap = this.interpDelayTargetMs - this.interpDelayMs;
       this.interpDelayMs += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
+    }
+    // Datagram starvation watchdog: state should arrive at 64Hz while we're in
+    // a match, so a silent WT channel means the UDP path died without closing.
+    // Close it — that unbinds us server-side and state resumes over the WS.
+    if (this.wt?.active && performance.now() - this.wt.lastFrameMs > WT_STARVATION_MS) {
+      console.warn('[instagib-net] WebTransport channel starved — falling back to WebSocket');
+      this.wt.close();
+      this.wt = null;
     }
     // Read-only diagnostics for the net-debug overlay (no behavior impact):
     // clock-offset stability + how often we extrapolate (the TCP-stall tell).
@@ -843,6 +918,9 @@ export class NetClient {
         this.clockOffsetTarget = this.clockOffset;
         this.clockSeeded = true;
       }
+      // With identity in hand (clientId + resumeToken), try to bring up the
+      // optional datagram channel. Fire-and-forget: failure = stay on the WS.
+      void this.maybeStartWt();
       this.emit();
       return;
     }

@@ -56,5 +56,9 @@
     "typescript": "5.9.3",
     "typescript-eslint": "^8.18.1",
     "vite": "^6.0.7"
+  },
+  "optionalDependencies": {
+    "@fails-components/webtransport": "^1.6.3",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.6.3"
   }
 }

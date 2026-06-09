@@ -23,6 +23,7 @@ import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachInstagibWs } from './instagib-game';
+import { startWtEndpoint } from './transport-wt';
 
 const INSTAGIB_WS_PATH = '/ws/instagib';
 
@@ -159,6 +160,15 @@ let liveCounts: () => {
   loopLagMaxMs: 0,
 });
 app.get('/api/live', (_req, res) => res.json(liveCounts()));
+// WebTransport datagram-channel discovery (UDP plan Phase 2). Disabled unless
+// WT_PORT is set (populated after the game WS is attached below). The client
+// treats {enabled:false} as "stay on the WebSocket".
+let wtInfo: { enabled: boolean; url: string | null; certHash: string | null } = {
+  enabled: false,
+  url: null,
+  certHash: null,
+};
+app.get('/api/wt-info', (_req, res) => res.json(wtInfo));
 app.use('/api', authRouter);
 app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
@@ -241,10 +251,40 @@ const instagibWss = new WebSocketServer({
   maxPayload: 16 * 1024,
   perMessageDeflate: false,
 });
-({ liveCounts } = attachInstagibWs(instagibWss));
+const game = attachInstagibWs(instagibWss);
+({ liveCounts } = game);
 // Let the token-gated metrics API report live concurrency too (one-call /report).
 setLiveCountsSource(liveCounts);
 instagibWss.on('error', (err) => console.error('[ws] server error', err));
+
+// ── WebTransport datagram endpoint (UDP plan Phase 2 — off by default) ──
+// WT_PORT enables a QUIC/UDP listener that carries only the two hot message
+// types (pos up, state down); the WS above stays the reliable control channel
+// and the client auto-falls back to it whenever the datagram channel can't
+// connect. Railway has no UDP ingress, so in production this endpoint lives on
+// a UDP-capable host (Fly.io / VPS) and PUBLIC_WT_URL points clients there;
+// local dev needs only WT_PORT (a self-signed cert is minted automatically and
+// pinned via /api/wt-info). WT_CERT_FILE/WT_KEY_FILE mount a CA-issued cert.
+const WT_PORT = parseInt(process.env.WT_PORT || '0', 10);
+if (WT_PORT > 0) {
+  const certFile = process.env.WT_CERT_FILE;
+  const keyFile = process.env.WT_KEY_FILE;
+  startWtEndpoint({
+    port: WT_PORT,
+    certPem: certFile ? fs.readFileSync(certFile, 'utf8') : undefined,
+    keyPem: keyFile ? fs.readFileSync(keyFile, 'utf8') : undefined,
+    game: game.wt,
+  })
+    .then((ep) => {
+      if (!ep) return; // QUIC stack unavailable on this host — WS-only
+      wtInfo = {
+        enabled: true,
+        url: process.env.PUBLIC_WT_URL || `https://127.0.0.1:${WT_PORT}/wt`,
+        certHash: ep.certHashBase64,
+      };
+    })
+    .catch((err) => console.warn('[wt] endpoint failed to start:', err));
+}
 
 // Connection caps so a flood can't exhaust slots/memory on a public alpha.
 // Env-overridable so load/stress tests can raise them from a single host (and so

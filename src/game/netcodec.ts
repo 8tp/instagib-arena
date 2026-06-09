@@ -14,6 +14,12 @@
 const BIN_STATE_F32 = 1; // legacy server → client state snapshot
 export const BIN_POS = 2; // client → server: a position update
 export const BIN_STATE = 3; // quantized server → client state snapshot
+// WebTransport datagram-channel handshake (UDP plan Phase 2). Sent over the
+// datagram pipe itself, not the WS: the client proves it owns a live WS slot
+// (clientId + resumeToken from `welcome`), the server binds the session and
+// acks. Datagrams can be lost, so the client repeats AUTH until it sees OK.
+export const BIN_WT_AUTH = 16; // client → server: bind this session to my slot
+export const BIN_WT_AUTH_OK = 17; // server → client: bound — switch hot traffic here
 
 export type BinStatePlayer = {
   id: string;
@@ -142,4 +148,38 @@ export function decodePos(
     yaw: dv.getFloat32(13, true),
     pitch: dv.getFloat32(17, true),
   };
+}
+
+// WT auth handshake: [tag u8][idLen u8][id…][tokenLen u8][token…]. Ids and
+// resume tokens are server-generated ASCII (same alphabet as state-row ids),
+// so the byte-per-char scheme above is lossless for them.
+export function encodeWtAuth(clientId: string, token: string): Uint8Array {
+  const idLen = Math.min(clientId.length, 255);
+  const tokenLen = Math.min(token.length, 255);
+  const dv = new DataView(new ArrayBuffer(1 + 1 + idLen + 1 + tokenLen));
+  let o = 0;
+  dv.setUint8(o, BIN_WT_AUTH); o += 1;
+  dv.setUint8(o, idLen); o += 1;
+  for (let j = 0; j < idLen; j++) { dv.setUint8(o, clientId.charCodeAt(j) & 0xff); o += 1; }
+  dv.setUint8(o, tokenLen); o += 1;
+  for (let j = 0; j < tokenLen; j++) { dv.setUint8(o, token.charCodeAt(j) & 0xff); o += 1; }
+  return new Uint8Array(dv.buffer);
+}
+
+export function decodeWtAuth(dv: DataView): { clientId: string; token: string } | null {
+  if (dv.byteLength < 3 || dv.getUint8(0) !== BIN_WT_AUTH) return null;
+  let o = 1;
+  const idLen = dv.getUint8(o); o += 1;
+  if (o + idLen + 1 > dv.byteLength) return null;
+  let clientId = '';
+  for (let j = 0; j < idLen; j++) { clientId += String.fromCharCode(dv.getUint8(o)); o += 1; }
+  const tokenLen = dv.getUint8(o); o += 1;
+  if (o + tokenLen > dv.byteLength) return null;
+  let token = '';
+  for (let j = 0; j < tokenLen; j++) { token += String.fromCharCode(dv.getUint8(o)); o += 1; }
+  return { clientId, token };
+}
+
+export function encodeWtAuthOk(): Uint8Array {
+  return new Uint8Array([BIN_WT_AUTH_OK]);
 }

@@ -238,6 +238,11 @@ type ClientRecord = {
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
   verified: boolean; // account is_verified — drives the blue check (echoed in snapshots)
+  // Bound WebTransport datagram downlink (UDP plan Phase 2). When set, the
+  // transport seam sends this client's state frames here instead of the WS;
+  // cleared when the session dies, falling traffic back to the WS. Bound by
+  // the wt.bind() API after the session proves it owns this slot's resumeToken.
+  wtSend: ((buf: Uint8Array) => void) | null;
 };
 
 type Room = {
@@ -593,9 +598,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // or reordered (join/meta/kill/vote/chat…) stays on the WS.
 
   // Decode one unreliable client→server frame, whatever pipe it arrived on
-  // (today: the 64Hz binary pos riding the WS as a binary frame).
-  const decodeUnreliable = (raw: RawData): ClientMessage | null => {
-    const data = Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer);
+  // (the 64Hz binary pos — riding the WS as a binary frame, or a WT datagram).
+  const decodeUnreliable = (raw: RawData | Uint8Array): ClientMessage | null => {
+    const data = Array.isArray(raw) ? Buffer.concat(raw) : raw;
     const p = decodePos(toView(data));
     if (!p) return null; // unknown/garbage binary → ignore
     return { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
@@ -607,6 +612,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // Diag counters live here so player and spectator sends are tallied alike;
   // they're initialized before the snapshot timer ever fires.
   const sendUnreliable = (c: ClientRecord, buf: Uint8Array): void => {
+    if (c.wtSend) {
+      // Bound datagram downlink (Phase 2): state rides QUIC datagrams — no TCP
+      // head-of-line. Its sender applies its own drop-on-backlog policy; the
+      // session's death clears wtSend, so the WS path below resumes seamlessly.
+      c.wtSend(buf);
+      return;
+    }
     if (c.socket.readyState !== c.socket.OPEN) return;
     if (NETCODE_DIAG) snapshotDiagBufferedMax = Math.max(snapshotDiagBufferedMax, c.socket.bufferedAmount);
     if (c.socket.bufferedAmount > MAX_SNAPSHOT_BUFFERED_BYTES) {
@@ -1545,6 +1557,77 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   // ── Connection ────────────────────────────────────────────────────────
+  // Apply one position update (the hot 64Hz uplink), whatever pipe it arrived
+  // on — a WS binary frame or a WT datagram (both funnel through the transport
+  // seam). Speed-clamped, AFK/invuln-aware; feeds the resample buffer that the
+  // snapshot tick + lag-comp history read from.
+  const handlePos = (
+    record: ClientRecord,
+    msg: Extract<ClientMessage, { type: 'pos' }>,
+    ts: number,
+  ): void => {
+    if (
+      record.roomId &&
+      Number.isFinite(msg.x) &&
+      Number.isFinite(msg.y) &&
+      Number.isFinite(msg.z) &&
+      Number.isFinite(msg.yaw)
+    ) {
+      // Speed clamp (#3): reject implausible teleports/speedhacks — these
+      // positions feed both the snapshot broadcast and lag-comp rewind, so
+      // a spoof would poison what every other player sees + shoots. Skip
+      // the first packet after a teleport (history cleared by a server
+      // respawn/vote) so legitimate repositions aren't flagged.
+      const prevPosMs = record.lastPosMs;
+      record.lastPosMs = ts;
+      if (record.history.length > 0 && prevPosMs > 0) {
+        const dtSec = (ts - prevPosMs) / 1000;
+        const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
+        const vert = Math.abs(msg.y - record.pos.y);
+        // Clamp BOTH axes — vertical was previously untrusted, letting a
+        // client fly/noclip straight up (moving its hitbox + snapshot).
+        if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
+          return; // drop, keep last good pos
+        }
+      }
+      // Count real movement as activity (resets the AFK timer; pings don't),
+      // and break spawn invuln — protection lasts only while you hold still.
+      const moved = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
+      if (moved > 0.1) {
+        record.lastActiveMs = ts;
+        if (record.invulnUntilMs > ts) record.invulnUntilMs = 0;
+        // Track this sender's arrival cadence ONLY while moving (idle-dedup
+        // heartbeats would otherwise inflate the gap). Drives their adaptive
+        // resample lag at snapshot time. prevPosMs = the prior receive time.
+        if (prevPosMs > 0) {
+          const gap = ts - prevPosMs;
+          if (gap > 0 && gap < 500) {
+            record.posGapEma =
+              record.posGapEma === 0 ? gap : record.posGapEma + (gap - record.posGapEma) * 0.1;
+            record.posGapJitterEma += (Math.abs(gap - record.posGapEma) - record.posGapJitterEma) * 0.1;
+          }
+        }
+      }
+      record.pos.x = msg.x;
+      record.pos.y = msg.y;
+      record.pos.z = msg.z;
+      record.yaw = msg.yaw;
+      if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
+        record.pitch = msg.pitch;
+      }
+      // Buffer the receive-time-stamped sample so the snapshot tick can
+      // resample to a consistent instant (anti-alias — see POS_LAG_MS).
+      record.posSamples.push({ t: ts, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
+      const sCut = ts - POS_SAMPLE_WINDOW_MS;
+      while (record.posSamples.length > 2 && record.posSamples[0].t < sCut) {
+        record.posSamples.shift();
+      }
+      // (Lag-comp history is sampled — from the RESAMPLED pos — on the snapshot tick.)
+      const room = rooms.get(record.roomId);
+      if (room) recoverIfOob(record, room, ts);
+    }
+  };
+
   wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
     const id = genId();
     const now = Date.now();
@@ -1600,6 +1683,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       playerId,
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
+      wtSend: null,
       history: [],
       posSamples: [],
       renderPos: { x: 0, y: 0, z: 0, yaw: 0 },
@@ -2059,66 +2143,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
 
         case 'pos':
-          if (
-            record.roomId &&
-            Number.isFinite(msg.x) &&
-            Number.isFinite(msg.y) &&
-            Number.isFinite(msg.z) &&
-            Number.isFinite(msg.yaw)
-          ) {
-            // Speed clamp (#3): reject implausible teleports/speedhacks — these
-            // positions feed both the snapshot broadcast and lag-comp rewind, so
-            // a spoof would poison what every other player sees + shoots. Skip
-            // the first packet after a teleport (history cleared by a server
-            // respawn/vote) so legitimate repositions aren't flagged.
-            const prevPosMs = record.lastPosMs;
-            record.lastPosMs = ts;
-            if (record.history.length > 0 && prevPosMs > 0) {
-              const dtSec = (ts - prevPosMs) / 1000;
-              const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
-              const vert = Math.abs(msg.y - record.pos.y);
-              // Clamp BOTH axes — vertical was previously untrusted, letting a
-              // client fly/noclip straight up (moving its hitbox + snapshot).
-              if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
-                break; // drop, keep last good pos
-              }
-            }
-            // Count real movement as activity (resets the AFK timer; pings don't),
-            // and break spawn invuln — protection lasts only while you hold still.
-            const moved = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
-            if (moved > 0.1) {
-              record.lastActiveMs = ts;
-              if (record.invulnUntilMs > ts) record.invulnUntilMs = 0;
-              // Track this sender's arrival cadence ONLY while moving (idle-dedup
-              // heartbeats would otherwise inflate the gap). Drives their adaptive
-              // resample lag at snapshot time. prevPosMs = the prior receive time.
-              if (prevPosMs > 0) {
-                const gap = ts - prevPosMs;
-                if (gap > 0 && gap < 500) {
-                  record.posGapEma =
-                    record.posGapEma === 0 ? gap : record.posGapEma + (gap - record.posGapEma) * 0.1;
-                  record.posGapJitterEma += (Math.abs(gap - record.posGapEma) - record.posGapJitterEma) * 0.1;
-                }
-              }
-            }
-            record.pos.x = msg.x;
-            record.pos.y = msg.y;
-            record.pos.z = msg.z;
-            record.yaw = msg.yaw;
-            if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
-              record.pitch = msg.pitch;
-            }
-            // Buffer the receive-time-stamped sample so the snapshot tick can
-            // resample to a consistent instant (anti-alias — see POS_LAG_MS).
-            record.posSamples.push({ t: ts, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
-            const sCut = ts - POS_SAMPLE_WINDOW_MS;
-            while (record.posSamples.length > 2 && record.posSamples[0].t < sCut) {
-              record.posSamples.shift();
-            }
-            // (Lag-comp history is sampled — from the RESAMPLED pos — on the snapshot tick.)
-            const room = rooms.get(record.roomId);
-            if (room) recoverIfOob(record, room, ts);
-          }
+          handlePos(record, msg, ts);
           break;
 
         case 'ping':
@@ -2432,6 +2457,55 @@ export function attachInstagibWs(wss: WebSocketServer) {
         loopLagMs: Math.round(loopLagEmaMs), // smoothed event-loop lag
         loopLagMaxMs: Math.round(loopLagMaxMs), // peak lag, rolling ≤30s window
       };
+    },
+
+    // ── WebTransport datagram binding (UDP plan Phase 2) ──────────────────
+    // server/transport-wt.ts calls these to attach a QUIC datagram session to
+    // a live WS slot. The WS stays the reliable control channel; only the two
+    // hot messages (pos up, state down) move onto the datagrams.
+    wt: {
+      // A session claims a slot by presenting its clientId + resumeToken (both
+      // private to that client, from `welcome`). On success the session becomes
+      // the slot's unreliable downlink and this returns an ingest function for
+      // its uplink datagrams; null = unknown/stale claim → reject.
+      bind(
+        clientId: string,
+        token: string,
+        send: (buf: Uint8Array) => void,
+        close: () => void,
+      ): ((bytes: Uint8Array) => void) | null {
+        const record = clients.get(clientId);
+        if (!record || !token || record.resumeToken !== token) return null;
+        record.wtSend = send;
+        return (bytes: Uint8Array): void => {
+          // The slot this session bound to is gone (socket closed + reaped) —
+          // tear the session down rather than feeding a ghost.
+          if (clients.get(clientId) !== record) {
+            close();
+            return;
+          }
+          const ts = Date.now();
+          // Same flood cap as the WS path, SHARED counters (one client, one
+          // cap across both pipes) — but a datagram flood is dropped, not
+          // socket-closed: datagrams are connectionless-ish and loss-tolerant.
+          if (ts - record.msgWindowStart >= MSG_RATE_WINDOW_MS) {
+            record.msgWindowStart = ts;
+            record.msgCount = 0;
+          }
+          record.msgCount += 1;
+          if (record.msgCount > MSG_RATE_LIMIT) return;
+          const msg = decodeUnreliable(bytes);
+          if (!msg || msg.type !== 'pos') return;
+          record.lastSeen = ts;
+          handlePos(record, msg, ts);
+        };
+      },
+      // Clear the downlink when the session dies — only if it's still THIS
+      // session's sender (a newer session may have already rebound the slot).
+      unbind(clientId: string, send: (buf: Uint8Array) => void): void {
+        const record = clients.get(clientId);
+        if (record && record.wtSend === send) record.wtSend = null;
+      },
     },
   };
 }
