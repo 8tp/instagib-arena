@@ -109,18 +109,42 @@ interpolation, lag-comp rewind) is expressed in server-clock milliseconds.
 
 ### Snapshots & interpolation
 
-The server broadcasts a `state` snapshot at **32 Hz** to every occupied room:
-each player's position, yaw/pitch, frags/deaths, and remaining spawn-invuln. The
-client buffers snapshots and **renders remote players in the past** (interpolated
-between the two snapshots straddling a delayed render time), which hides jitter
-and packet timing. The local player is **not** interpolated — it's simulated
-immediately for responsiveness.
+The server broadcasts a `state` snapshot at **64 Hz** to every occupied room as
+a **binary frame** (`src/game/netcodec.ts`): positions/angles quantized to i16
+(3.9 mm / ~0.005° steps), frags/deaths/invuln/ping as u16 — ~30–35 bytes per
+player per tick, no `JSON.parse` on the hot path. Slow-changing identity
+(name, team, cosmetics, badges) rides a separate **`meta` channel** sent only
+on change, so the per-tick row is all numbers.
+
+The client buffers snapshots and **renders remote players in the past** — at a
+**fixed** interpolation delay (110 ms at 2 players, scaling to 170 ms at 8,
+because bigger rooms push more bytes through a constrained link). Fixed is the
+key word: a delay derived from arrival timing wobbles under TCP burst delivery
+and becomes jitter itself. Roster changes **slew** the delay at a bounded
+120 ms/s rather than snapping, so a join/leave doesn't hitch every remote. On
+buffer underrun (loss / a stall) remotes **dead-reckon** from their last
+velocity for up to 120 ms instead of freezing. The local player is **not**
+interpolated — it's simulated immediately for responsiveness.
+
+Both hot messages cross a **transport seam** (`sendUnreliable` /
+`onUnreliableBytes`) rather than touching the WebSocket directly. Today the
+seam is backed by the same WS; it exists so an unreliable datagram transport
+(WebTransport/QUIC — see `docs/NETCODE-UDP-PLAN.md`) can carry them without
+touching game code. Snapshots are idempotent absolute state, so a lost or
+reordered frame is simply skipped.
 
 ### Position updates
 
-The client sends `pos { x, y, z, yaw, pitch }` at ~32 Hz. The server stores a
-short **position history** per player (~1 s) so it can rewind them for lag
-compensation.
+The client uploads `pos` at **64 Hz** as a 21-byte binary frame. The server
+does NOT snapshot the last-received position directly — independent client and
+server clocks would make that sample 0–16 ms stale by a *varying* amount,
+which renders as wobble at rocket-jump speeds. Instead it keeps a short
+received-pos buffer per player and **resamples everyone to a single consistent
+instant** (`now − lag`, where lag adapts per sender: clean 64 Hz senders get
+the 20 ms floor, bursty/high-ping senders are buffered up to 180 ms so they
+stay smoothly interpolated). The resampled-and-quantized pose is what goes
+into BOTH the snapshot and the lag-comp **position history** — so what a
+shooter renders and what the server rewinds to are equal *by construction*.
 
 ---
 

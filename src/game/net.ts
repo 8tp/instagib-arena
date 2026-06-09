@@ -291,6 +291,14 @@ const interpDelayForPlayerCount = (players: number): number => {
   return INTERP_DELAY_MIN_MS +
     (extraPlayers / (INTERP_DELAY_MAX_PLAYERS - 2)) * (INTERP_DELAY_MAX_MS - INTERP_DELAY_MIN_MS);
 };
+// How fast the APPLIED interp delay moves toward the roster-scaled target
+// (ms per second). A roster change used to snap the delay, which shifts renderT
+// by up to 60ms in one frame — every remote visibly hitched on join/leave.
+// Slewing instead bends playback speed by at most ~12% for under half a second,
+// which is imperceptible. Still roster-driven (never arrival-timing-driven —
+// see the FIXED-delay rationale above), and the shot renderTime always reports
+// the applied value, so server rewind matches what was rendered mid-slew too.
+const INTERP_DELAY_SLEW_MS_PER_S = 120;
 const SNAP_BUFFER_MS = 1200;
 // How fast the applied clock offset eases toward the ping-refined target (per
 // second). Small ongoing corrections slew imperceptibly; a big gap snaps once.
@@ -362,8 +370,11 @@ export class NetClient {
   private clockOffsetTarget = 0;
   private clockSeeded = false;
   // Fixed interpolation delay (see interpDelayForPlayerCount). Also reported as the shot
-  // renderTime so the server rewinds to exactly what we rendered.
+  // renderTime so the server rewinds to exactly what we rendered. The applied
+  // value slews toward the roster-scaled target in interpolate() (see
+  // INTERP_DELAY_SLEW_MS_PER_S); only the first roster of a connection snaps.
   private interpDelayMs = INTERP_DELAY_MIN_MS;
+  private interpDelayTargetMs = INTERP_DELAY_MIN_MS;
   // True when the last interpolate() pass had to EXTRAPOLATE (buffer underrun):
   // the rendered remotes are then ahead of the server's truth, so the Game skips
   // predicted hitmarkers that frame (they'd "hit" something the server won't).
@@ -437,9 +448,9 @@ export class NetClient {
         if (typeof e.data === 'string') {
           this.handle(JSON.parse(e.data) as ServerMessage);
         } else if (e.data instanceof ArrayBuffer) {
-          // The hot state snapshot rides a binary frame; decode → same handler.
-          const dec = decodeState(toView(e.data));
-          if (dec) this.handle({ type: 'state', t: dec.t, players: dec.players, resumeAt: dec.resumeAt });
+          // The hot state snapshot rides a binary frame across the transport
+          // seam (see onUnreliableBytes).
+          this.onUnreliableBytes(e.data);
         }
       } catch {
         // ignore malformed
@@ -482,11 +493,30 @@ export class NetClient {
 
   sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
     if (this.spectate) return; // observers have no position
-    // The hottest client→server message (64Hz) — send it as a compact binary
-    // frame instead of JSON. The server decodes it back to a `pos` message.
+    // The hottest client→server message (64Hz) — a compact binary frame across
+    // the transport seam (the server decodes it back to a `pos` message).
+    this.sendUnreliable(encodePos(x, y, z, yaw, pitch));
+  }
+
+  // ── Transport seam (UDP plan Phase 1 — docs/NETCODE-UDP-PLAN.md §4) ────
+  // The two hot, loss-tolerant message types — `pos` up, `state` down — cross
+  // this seam instead of touching the WebSocket directly. Both are idempotent
+  // absolute state: a lost or stale frame is simply skipped, the next one
+  // fully replaces it. Today the seam is backed by the same WS (TCP), so
+  // behavior is unchanged; Phase 2 routes these through an unreliable datagram
+  // channel (WebTransport) with auto-fallback to the WS, while everything that
+  // must not be lost or reordered (join/meta/kill/vote/chat…) stays on the WS.
+  private sendUnreliable(bytes: Uint8Array) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(encodePos(x, y, z, yaw, pitch));
+      this.ws.send(bytes);
     }
+  }
+
+  // Decode + dispatch one unreliable server→client frame, whatever pipe it
+  // arrived on (today: a WS binary frame; Phase 2: a datagram).
+  private onUnreliableBytes(data: ArrayBuffer) {
+    const dec = decodeState(toView(data));
+    if (dec) this.handle({ type: 'state', t: dec.t, players: dec.players, resumeAt: dec.resumeAt });
   }
 
   sendVote(mapId: string) {
@@ -624,6 +654,15 @@ export class NetClient {
       this.clockOffset = this.clockOffsetTarget;
     } else if (dt > 0) {
       this.clockOffset += (this.clockOffsetTarget - this.clockOffset) * (1 - Math.exp(-CLOCK_SLEW_HZ * dt));
+    }
+    // Ease the applied interp delay toward the roster-scaled target at a bounded
+    // rate, so a join/leave bends playback speed briefly instead of teleporting
+    // every remote by the delay delta (a constant-rate ramp caps the time-
+    // dilation, unlike an exponential ease whose first frame carries most of it).
+    if (dt > 0 && this.interpDelayMs !== this.interpDelayTargetMs) {
+      const step = INTERP_DELAY_SLEW_MS_PER_S * dt;
+      const gap = this.interpDelayTargetMs - this.interpDelayMs;
+      this.interpDelayMs += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
     }
     // Read-only diagnostics for the net-debug overlay (no behavior impact):
     // clock-offset stability + how often we extrapolate (the TCP-stall tell).
@@ -854,7 +893,14 @@ export class NetClient {
           });
         }
       }
-      // Keep buffer ordered by server time; drop anything older than the window.
+      // Keep buffer ordered by server time. A frame at or behind the newest
+      // buffered one is DROPPED: snapshots are idempotent absolute state, so a
+      // stale frame carries nothing the newer one didn't. Never happens over
+      // the WS (TCP is ordered + the server stamp is monotonic), but the
+      // transport seam allows reordered/duplicated datagram delivery (Phase 2),
+      // and interpolate()'s straddle search requires sorted entries.
+      const newestT = this.snapBuffer.length > 0 ? this.snapBuffer[this.snapBuffer.length - 1].t : -Infinity;
+      if (msg.t <= newestT) return;
       this.snapBuffer.push({ t: msg.t, players });
       const cutoff = msg.t - SNAP_BUFFER_MS;
       while (this.snapBuffer.length > 2 && this.snapBuffer[0].t < cutoff) {
@@ -868,8 +914,13 @@ export class NetClient {
       // Cold path (only on join/leave/equip), so a local set is fine here.
       // This is also the stable source for the player-count-scaled FIXED
       // interpolation delay: unlike state snapshots, the roster does not wobble
-      // when a dead player is temporarily hidden during their killcam.
-      this.interpDelayMs = interpDelayForPlayerCount(msg.players.length);
+      // when a dead player is temporarily hidden during their killcam. Set the
+      // TARGET; interpolate() slews the applied delay toward it. The first
+      // roster of a connection snaps — nothing has been rendered yet, and
+      // metaById is empty both on a fresh join and after a reconnect (onclose
+      // clears it), so a stale carried-over delay can't survive into a new room.
+      this.interpDelayTargetMs = interpDelayForPlayerCount(msg.players.length);
+      if (this.metaById.size === 0) this.interpDelayMs = this.interpDelayTargetMs;
       const seen = new Set<string>();
       for (const p of msg.players) {
         seen.add(p.id);

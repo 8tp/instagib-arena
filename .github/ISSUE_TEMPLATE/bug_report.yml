@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible problem in Instagib Arena.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. If this is a security issue or a working cheat/exploit, do not file a public issue. Use private vulnerability reporting from the repository Security tab.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One short sentence describing the problem.
+      placeholder: Rail shot sometimes misses at point-blank range.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include mode, map, browser, and anything that made it happen consistently.
+      placeholder: |
+        1. Open ...
+        2. Join ...
+        3. Fire ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: macOS 15, Chrome 126, keyboard/mouse, instagib.win or local main
+  - type: textarea
+    id: media
+    attributes:
+      label: Logs, screenshots, or clips
+      description: Paste console logs or attach screenshots/video if useful.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues first.
+          required: true
+        - label: This is not a public report of a working cheat or security exploit.
+          required: true

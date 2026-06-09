@@ -16,7 +16,7 @@
 // the wall-distance cap (`maxDist`) so the server doesn't need arena geometry.
 // Spawns / out-of-bounds use the THREE-free `arena-data` table.
 
-import type { WebSocketServer, WebSocket } from 'ws';
+import type { WebSocketServer, WebSocket, RawData } from 'ws';
 import {
   MATCH_FRAG_LIMIT,
   RAIL_COOLDOWN,
@@ -581,6 +581,39 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const c = clients.get(id);
       if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(data);
     }
+  };
+
+  // ── Transport seam (UDP plan Phase 1 — docs/NETCODE-UDP-PLAN.md §4) ────
+  // The two hot, loss-tolerant message types — `pos` up, `state` down — cross
+  // this seam instead of touching the WebSocket directly. Both are idempotent
+  // absolute state, so a lost frame needs no recovery: the next one fully
+  // replaces it. Today the seam is backed by the same WS (TCP) and behavior is
+  // unchanged; Phase 2 points these two functions at an unreliable datagram
+  // channel (WebTransport) per client, while everything that must not be lost
+  // or reordered (join/meta/kill/vote/chat…) stays on the WS.
+
+  // Decode one unreliable client→server frame, whatever pipe it arrived on
+  // (today: the 64Hz binary pos riding the WS as a binary frame).
+  const decodeUnreliable = (raw: RawData): ClientMessage | null => {
+    const data = Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer);
+    const p = decodePos(toView(data));
+    if (!p) return null; // unknown/garbage binary → ignore
+    return { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+  };
+
+  // Fan one server→client state frame out to a single client. Backpressure: a
+  // socket already holding a backlog gets this frame SKIPPED rather than queued
+  // behind it (absolute state — the next frame fully replaces this one).
+  // Diag counters live here so player and spectator sends are tallied alike;
+  // they're initialized before the snapshot timer ever fires.
+  const sendUnreliable = (c: ClientRecord, buf: Uint8Array): void => {
+    if (c.socket.readyState !== c.socket.OPEN) return;
+    if (NETCODE_DIAG) snapshotDiagBufferedMax = Math.max(snapshotDiagBufferedMax, c.socket.bufferedAmount);
+    if (c.socket.bufferedAmount > MAX_SNAPSHOT_BUFFERED_BYTES) {
+      if (NETCODE_DIAG) snapshotDiagSkipped += 1;
+      return;
+    }
+    c.socket.send(buf);
   };
 
   // ── Room lifecycle ────────────────────────────────────────────────────
@@ -1601,11 +1634,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
       }
       let msg: ClientMessage;
       if (isBinary) {
-        // The only binary frame a client sends is the hot 64Hz position update.
-        const data = Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer);
-        const p = decodePos(toView(data));
-        if (!p) return; // unknown/garbage binary → ignore
-        msg = { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+        // The only binary frame a client sends is the hot 64Hz position update;
+        // it crosses the transport seam (see decodeUnreliable above).
+        const decoded = decodeUnreliable(raw);
+        if (!decoded) return;
+        msg = decoded;
       } else {
         try {
           msg = JSON.parse(raw.toString()) as ClientMessage;
@@ -2216,23 +2249,13 @@ export function attachInstagibWs(wss: WebSocketServer) {
       }
       for (const id of room.members) {
         const c = clients.get(id);
-        if (c && c.socket.readyState === c.socket.OPEN) {
-          if (NETCODE_DIAG) snapshotDiagBufferedMax = Math.max(snapshotDiagBufferedMax, c.socket.bufferedAmount);
-          if (c.socket.bufferedAmount > MAX_SNAPSHOT_BUFFERED_BYTES) {
-            if (NETCODE_DIAG) snapshotDiagSkipped += 1;
-            continue;
-          }
-          c.socket.send(buf);
-        }
+        if (c) sendUnreliable(c, buf);
       }
       // Spectators get the same state frames (they observe but don't appear in
       // the snapshot, since they're not in members).
       for (const id of room.spectators) {
         const c = clients.get(id);
-        if (c && c.socket.readyState === c.socket.OPEN) {
-          if (c.socket.bufferedAmount > MAX_SNAPSHOT_BUFFERED_BYTES) continue;
-          c.socket.send(buf);
-        }
+        if (c) sendUnreliable(c, buf);
       }
     }
     if (NETCODE_DIAG && now - snapshotDiagStarted >= NETCODE_DIAG_INTERVAL_MS) {

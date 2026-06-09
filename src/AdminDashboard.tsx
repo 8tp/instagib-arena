@@ -257,13 +257,14 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'feedback';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
   { id: 'retention', label: 'Retention' },
   { id: 'matches', label: 'Matches' },
   { id: 'players', label: 'Players' },
+  { id: 'feedback', label: 'Feedback' },
 ];
 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
@@ -689,6 +690,214 @@ function PlayersTab() {
   );
 }
 
+// ── Tab: Feedback ────────────────────────────────────────────────────────────
+type FeedbackRow = {
+  id: number;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  type: 'bug' | 'feature' | 'general';
+  title: string;
+  body: string;
+  status: 'open' | 'ack' | 'resolved' | 'spam';
+  ip: string;
+  userAgent: string;
+  updatedAt: number;
+};
+const FB_STATUSES = ['open', 'ack', 'resolved', 'spam'] as const;
+const FB_STATUS_LABEL: Record<string, string> = { open: 'Open', ack: 'Ack', resolved: 'Resolved', spam: 'Spam' };
+const FB_TYPES = ['bug', 'feature', 'general'] as const;
+const FB_TYPE_LABEL: Record<string, string> = { bug: 'Bug', feature: 'Feature', general: 'General' };
+const FB_TYPE_COLOR: Record<string, string> = { bug: 'text-rose-300', feature: 'text-cyan-300', general: 'text-white/55' };
+const FB_STATUS_COLOR: Record<string, string> = {
+  open: 'text-amber-300',
+  ack: 'text-cyan-300',
+  resolved: 'text-emerald-300',
+  spam: 'text-white/35',
+};
+
+async function postJSON<T>(url: string, body: object): Promise<T | null> {
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function FeedbackCard({
+  f,
+  onStatus,
+}: {
+  f: FeedbackRow;
+  onStatus: (id: number, status: FeedbackRow['status']) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-baseline gap-2 text-[12px]">
+          <span className={`font-bold uppercase tracking-[0.12em] ${FB_TYPE_COLOR[f.type] ?? 'text-white/55'}`}>
+            {FB_TYPE_LABEL[f.type] ?? f.type}
+          </span>
+          <span className="font-medium text-white/85">{f.title}</span>
+        </div>
+        <select
+          value={f.status}
+          onChange={(e) => onStatus(f.id, e.target.value as FeedbackRow['status'])}
+          className={`rounded-md border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] outline-none focus:border-cyan-400/60 ${FB_STATUS_COLOR[f.status] ?? 'text-white/70'}`}
+        >
+          {FB_STATUSES.map((s) => (
+            <option key={s} value={s} className="bg-zinc-900 text-white">
+              {FB_STATUS_LABEL[s]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-white/70">{f.body}</p>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-white/35">
+        <span className="text-white/55">{f.playerName}{f.playerId ? '' : ' · guest'}</span>
+        <span>{ago(f.ts)}</span>
+        {f.ip && <span>{f.ip}</span>}
+      </div>
+    </div>
+  );
+}
+
+function FeedbackTab() {
+  const [rows, setRows] = useState<FeedbackRow[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
+  const [filter, setFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [loading, setLoading] = useState(true);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (status: string, type: string, before?: number) => {
+    setLoading(true);
+    const qs =
+      `limit=50${status !== 'all' ? `&status=${status}` : ''}` +
+      `${type !== 'all' ? `&type=${type}` : ''}${before ? `&before=${before}` : ''}`;
+    const d = await getJSON<{
+      feedback: FeedbackRow[];
+      counts: Record<string, number>;
+      typeCounts: Record<string, number>;
+    }>(`/api/admin/metrics/feedback?${qs}`);
+    const list = d?.feedback ?? [];
+    setRows((prev) => (before ? [...prev, ...list] : list));
+    if (d?.counts) setCounts(d.counts);
+    if (d?.typeCounts) setTypeCounts(d.typeCounts);
+    setDone(list.length < 50);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load(filter, typeFilter);
+  }, [filter, typeFilter, load]);
+
+  const updateStatus = useCallback(
+    async (id: number, status: FeedbackRow['status']) => {
+      const ok = await postJSON<{ ok: boolean }>(`/api/admin/feedback/${id}/status`, { status });
+      if (!ok) {
+        // Surface the failure (likely a token-auth session: status mutations
+        // need a real admin session) instead of silently doing nothing.
+        setError('Status update failed — moderation needs an admin session login.');
+        window.setTimeout(() => setError(null), 5000);
+        return;
+      }
+      setRows((prev) =>
+        prev
+          .map((r) => (r.id === id ? { ...r, status } : r))
+          .filter((r) => filter === 'all' || r.status === filter),
+      );
+      // Refetch just the counts so the filter chips stay live (cheap, limit=1).
+      void getJSON<{ counts: Record<string, number> }>(`/api/admin/metrics/feedback?limit=1`).then(
+        (d) => d?.counts && setCounts(d.counts),
+      );
+    },
+    [filter],
+  );
+
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const chips = (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-wrap gap-1">
+        {(['all', ...FB_STATUSES] as const).map((s) => {
+          const n = s === 'all' ? total : counts[s] ?? 0;
+          return (
+            <button
+              key={s}
+              onClick={() => setFilter(s)}
+              className={`rounded px-2 py-1 text-[10px] uppercase tracking-[0.14em] transition ${
+                filter === s ? 'bg-cyan-400/15 text-cyan-300' : 'text-white/40 hover:text-white/70'
+              }`}
+            >
+              {s === 'all' ? 'All' : FB_STATUS_LABEL[s]}
+              {n > 0 && <span className="ml-1 tabular-nums opacity-70">{n}</span>}
+            </button>
+          );
+        })}
+      </div>
+      {/* Second axis: what KIND of report — bug / feature request / general. */}
+      <div className="flex flex-wrap gap-1">
+        {(['all', ...FB_TYPES] as const).map((t) => {
+          const n = t === 'all' ? total : typeCounts[t] ?? 0;
+          return (
+            <button
+              key={t}
+              onClick={() => setTypeFilter(t)}
+              className={`rounded px-2 py-1 text-[10px] uppercase tracking-[0.14em] transition ${
+                typeFilter === t ? 'bg-fuchsia-400/15 text-fuchsia-300' : 'text-white/40 hover:text-white/70'
+              }`}
+            >
+              {t === 'all' ? 'All types' : FB_TYPE_LABEL[t]}
+              {n > 0 && <span className="ml-1 tabular-nums opacity-70">{n}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <Panel title="Feedback & bug reports" right={chips}>
+      {error && (
+        <div className="mb-2 rounded-md border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-[11px] text-rose-200">
+          {error}
+        </div>
+      )}
+      {rows.length === 0 && !loading ? (
+        <Empty label="No feedback yet." />
+      ) : rows.length === 0 ? (
+        <Loading />
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map((f) => (
+            <FeedbackCard key={f.id} f={f} onStatus={updateStatus} />
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex justify-center">
+        {!done && rows.length > 0 && (
+          <button
+            onClick={() => load(filter, typeFilter, rows[rows.length - 1]?.id)}
+            disabled={loading}
+            className="rounded-md border border-white/15 px-4 py-1.5 text-[11px] uppercase tracking-[0.14em] text-white/60 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-40"
+          >
+            {loading ? 'Loading…' : 'Load more'}
+          </button>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 // ── Shared states ────────────────────────────────────────────────────────────
 function Loading() {
   return <div className="py-10 text-center text-[12px] uppercase tracking-[0.2em] text-white/35">Loading…</div>;
@@ -795,6 +1004,7 @@ export default function AdminDashboard() {
         {tab === 'retention' && <RetentionTab />}
         {tab === 'matches' && <MatchesTab />}
         {tab === 'players' && <PlayersTab />}
+        {tab === 'feedback' && <FeedbackTab />}
       </div>
     </div>
   );

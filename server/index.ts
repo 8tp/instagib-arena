@@ -19,6 +19,7 @@ import { statsRouter } from './stats';
 import { leaderboardRouter } from './leaderboard';
 import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
+import { feedbackRouter } from './feedback';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
@@ -164,6 +165,7 @@ app.use('/api', statsRouter);
 app.use('/api', leaderboardRouter);
 app.use('/api', rankedRouter);
 app.use('/api', challengeRouter);
+app.use('/api', feedbackRouter);
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
@@ -202,10 +204,28 @@ if (hasBuild) {
   );
   // SPA fallback: every non-API GET serves index.html so client routes
   // (e.g. /play) deep-link and reload correctly.
+  //
+  // Per-route canonical: the shell hardcodes `canonical: https://instagib.win/`,
+  // but a page that self-canonicalizes to a DIFFERENT url gets folded into it
+  // by Google ("Alternate page with proper canonical tag") — which conflicts
+  // with the sitemap listing /play as indexable. For the small allowlist of
+  // indexable routes, rewrite the canonical + og:url to the route itself.
+  // Variants are built once per process (the shell only changes on deploy).
+  const CANONICAL_ROUTES = ['/play'];
+  const shellHtml = fs.readFileSync(indexHtml, 'utf8');
+  const shellByRoute = new Map<string, string>();
+  for (const route of CANONICAL_ROUTES) {
+    shellByRoute.set(
+      route,
+      shellHtml
+        .replaceAll('href="https://instagib.win/"', `href="https://instagib.win${route}"`)
+        .replaceAll('content="https://instagib.win/"', `content="https://instagib.win${route}"`),
+    );
+  }
   app.get(/.*/, (req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
     res.setHeader('Cache-Control', 'no-cache');
-    res.sendFile(indexHtml);
+    res.type('html').send(shellByRoute.get(req.path) ?? shellHtml);
   });
 } else if (!dev) {
   console.warn(

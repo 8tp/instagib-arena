@@ -13,6 +13,9 @@ import { timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { accountId } from './auth';
 import {
+  FEEDBACK_STATUSES,
+  feedbackCounts,
+  feedbackTypeCounts,
   findAccountByName,
   findUserById,
   getAuditLog,
@@ -22,10 +25,13 @@ import {
   getRecentMatches,
   getRetention,
   getWeeklyChallengeStats,
+  listFeedback,
   logEvent,
   setAdmin,
+  setFeedbackStatus,
   setVerified,
   type AccountInfo,
+  type FeedbackStatus,
 } from './db';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 
@@ -169,6 +175,37 @@ adminRouter.get('/lookup', (req, res) => {
   res.json({ username: target.username, admin: target.isAdmin, verified: target.isVerified });
 });
 
+// Update a player feedback row's moderation status (open → ack → resolved /
+// spam). Session-only: a read-only token may not mutate. Audit-logged.
+adminRouter.post('/feedback/:id/status', (req, res) => {
+  if (denyToken(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const status = typeof body.status === 'string' ? body.status : '';
+  if (!Number.isFinite(id) || id <= 0) {
+    res.status(400).json({ error: 'bad_id' });
+    return;
+  }
+  if (!(FEEDBACK_STATUSES as readonly string[]).includes(status)) {
+    res.status(400).json({ error: 'bad_status' });
+    return;
+  }
+  if (!setFeedbackStatus(id, status as FeedbackStatus)) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as unknown as AdminRequest).admin;
+  logEvent({
+    event: 'admin.feedback_status',
+    actorId: admin.id,
+    actorName: admin.username,
+    targetId: String(id),
+    detail: { status },
+    ip: req.ip,
+  });
+  res.json({ ok: true, id, status });
+});
+
 // Recent audit events for moderation review / the future metrics dashboard.
 // Optional ?event= filter and ?limit= (clamped server-side).
 adminRouter.get('/audit', (req, res) => {
@@ -217,6 +254,25 @@ adminRouter.get('/metrics/players', (req, res) => {
 // /api/live is the public version; this mirrors it inside the token-gated API.
 adminRouter.get('/metrics/live', (_req, res) => {
   res.json({ live: liveSource() });
+});
+
+// Player-submitted feedback / bug reports, newest first, keyset-paginated by id
+// (?before=<lastId>); optional ?status= and ?type= (bug/feature/general)
+// filters. Read-only (token or session).
+adminRouter.get('/metrics/feedback', (req, res) => {
+  const before = intParam(req.query.before, 0);
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+  res.json({
+    feedback: listFeedback({
+      limit: intParam(req.query.limit, 50),
+      beforeId: before > 0 ? before : undefined,
+      status,
+      type,
+    }),
+    counts: feedbackCounts(),
+    typeCounts: feedbackTypeCounts(),
+  });
 });
 
 // Weekly-challenge participation this week (+ the fixed run params).
