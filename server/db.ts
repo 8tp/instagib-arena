@@ -2287,6 +2287,14 @@ export function listWeeklyChallengeWeeks(
   const rows = wcWeeksStmt.all({ limit: n }) as {
     week_key: string; participants: number; winners: number; best_time_ms: number | null; top_kills: number;
   }[];
+  // The current week is always navigable, even with no runs yet (a fresh board,
+  // e.g. right after a format bump). If the query didn't surface it, synthesize an
+  // empty entry at the front so it's seen first by the dedupe below — that both
+  // lists it as "live" and drops any abandoned old-format board for this same
+  // calendar week (the stray pre-bump row).
+  if (!rows.some((r) => r.week_key === cur)) {
+    rows.unshift({ week_key: cur, participants: 0, winners: 0, best_time_ms: null, top_kills: 0 });
+  }
   // One entry per calendar week. Rows are ordered week_key DESC, so for a week
   // that spans a mid-week format bump the newer format is seen first and wins;
   // the older format's abandoned board is dropped (no duplicate week labels).
