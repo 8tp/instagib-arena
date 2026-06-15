@@ -271,7 +271,7 @@ export class Game {
   private botCount = NUM_BOTS;
   private botDifficulty: BotDifficulty = DEFAULT_BOT_DIFFICULTY;
   private botMode: GameMode = 'ffa'; // offline game mode (ffa/duel/tdm) for Solo vs Bots
-  // Weekly-challenge run: an 8p FFA speedrun vs easy bots. Uses a dedicated frag
+  // Weekly-challenge run: an 8p FFA speedrun vs medium bots. Uses a dedicated frag
   // cap and exports the whole run as a rewatchable replay (see getChallengeRun).
   private challenge = false;
   private challengeMapId = WEEKLY_CHALLENGE_MAP;

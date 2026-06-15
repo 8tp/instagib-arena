@@ -291,7 +291,7 @@ export type MatchConfig =
       difficulty: BotDifficulty;
       training?: boolean; // endless practice — no frag-limit match end
       gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
-      challenge?: boolean; // weekly-challenge run (8p FFA speedrun vs easy bots → weekly board, not career)
+      challenge?: boolean; // weekly-challenge run (8p FFA speedrun vs medium bots → weekly board, not career)
     }
   | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
@@ -4527,7 +4527,7 @@ function RankedModal({
   );
 }
 
-// Weekly Challenge: a solo SPEEDRUN — an 8-player FFA (you + 7 easy bots) race to
+// Weekly Challenge: a solo SPEEDRUN — an 8-player FFA (you + 7 medium bots) race to
 // the frag cap on a fixed map. Beat the bots to the cap and your TIME tops the
 // week; lose the race and your kills count instead. Every board-defining run is
 // recorded, and anyone can rewatch it (▶). Anyone can play; only logged-in runs
@@ -4600,7 +4600,8 @@ function WeeklyChallengeModal({
     <ModalShell title='Weekly Challenge' onClose={onClose}>
       <div className='flex flex-col gap-4 font-mono'>
         <p className='text-[13px] leading-relaxed text-white/65'>
-          Solo <span className='text-rose-300'>8-player FFA</span> vs 7 easy bots
+          Solo <span className='text-rose-300'>8-player FFA</span> vs {WEEKLY_CHALLENGE_BOTS}{' '}
+          {WEEKLY_CHALLENGE_DIFFICULTY} bots
           {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Beat them to the cap and your{' '}
           <span className='text-amber-200'>clear time</span> tops the week; lose the race and your kills
           count instead. Every best run is recorded — hit <span className='text-cyan-300'>▶</span> to

@@ -546,13 +546,16 @@ function weekKey(now: number): string {
   return `w:${ymd(monday.getTime())}`;
 }
 
-// Week key for the WEEKLY CHALLENGE (board + replays). The challenge changed
-// format (1v1-vs-hard-bot → 8p-FFA speedrun), so it gets its own key namespace:
-// the new board starts clean instead of mixing with the old-format rows already
-// stored for the current week (those `w:` rows are simply never queried again).
+// Week key for the WEEKLY CHALLENGE (board + replays). Each ruleset gets its own
+// key namespace so a rules change starts a clean board for the current week
+// instead of mixing with rows already stored under the old rules. History:
+//   (bare `w:`) 1v1-vs-hard-bot   →  s2 8p-FFA speedrun (easy, Causeway, 20)
+//   →  s3 8p-FFA speedrun (medium bots, Reactor, 30-frag marathon).
+// Past-format weeks stay browsable via the history picker (it lists every
+// `<fmt>:w:` week); only same-board comparisons are scoped to one format.
 // Bump CHALLENGE_FORMAT whenever the challenge rules change enough to invalidate
 // comparisons across the change.
-const CHALLENGE_FORMAT = 's2';
+const CHALLENGE_FORMAT = 's3';
 function challengeWeekKey(now: number): string {
   return `${CHALLENGE_FORMAT}:${weekKey(now)}`;
 }
@@ -1884,7 +1887,7 @@ export function getRankedLeaderboard(limit: number): RankedLeaderEntry[] {
 }
 
 // ── Weekly Challenge ─────────────────────────────────────────────────────────
-// A weekly leaderboard for the solo SPEEDRUN challenge (8p FFA vs easy bots).
+// A weekly leaderboard for the solo SPEEDRUN challenge (8p FFA vs medium bots).
 // SPEEDRUN order: anyone who beat the bots to the cap (best_time_ms > 0) ranks
 // above anyone who didn't, fastest WIN first; non-winners then rank by most kills
 // (best_kills). Account-only and SEPARATE from career stats — it never touches
@@ -2238,10 +2241,13 @@ export function getWeeklyChallengeMeFor(
 // deleted — only the heavy replay blobs age out). This lists the weeks that have
 // at least one entry, newest first, with enough headline stats to render a week
 // picker without fetching each board.
-// Only weeks of the CURRENT challenge format — older formats (e.g. the pre-s2
-// 1v1-vs-hard-bot board) use a different key namespace and aren't comparable, so
-// they never appear in the picker (and their keys wouldn't round-trip the API's
-// ?week= validator anyway).
+// Any week whose key has the `<format>:w:YYYYMMDD` shape (the `%:w:%` filter) —
+// every real challenge format, so a format bump (e.g. s2→s3) still leaves earlier
+// weeks browsable. The truly-legacy pre-s2 board used a bare `w:YYYYMMDD` key
+// (no `:w:` infix), so it's excluded — and its key wouldn't pass the API's
+// ?week= validator anyway. Ordered week_key DESC so that when a format bump lands
+// mid-week (two keys share a calendar week), the newer format sorts first and the
+// caller's dedupe-by-week keeps it, dropping the abandoned old-format board.
 const wcWeeksStmt = sqlite.prepare(`
   SELECT week_key,
          COUNT(*)                                            AS participants,
@@ -2249,7 +2255,7 @@ const wcWeeksStmt = sqlite.prepare(`
          MIN(CASE WHEN best_time_ms > 0 THEN best_time_ms END)          AS best_time_ms,
          COALESCE(MAX(best_kills), 0)                        AS top_kills
     FROM instagib_weekly_challenge
-   WHERE week_key LIKE @prefix
+   WHERE week_key LIKE '%:w:%'
    GROUP BY week_key
    ORDER BY week_key DESC
    LIMIT @limit`);
@@ -2278,18 +2284,29 @@ export function listWeeklyChallengeWeeks(
   const withReplays = new Set(
     (wrWeeksWithReplaysStmt.all() as { week_key: string }[]).map((r) => r.week_key),
   );
-  const rows = wcWeeksStmt.all({ prefix: `${CHALLENGE_FORMAT}:%`, limit: n }) as {
+  const rows = wcWeeksStmt.all({ limit: n }) as {
     week_key: string; participants: number; winners: number; best_time_ms: number | null; top_kills: number;
   }[];
-  return rows.map((r) => ({
-    weekKey: r.week_key,
-    label: challengeWeekLabel(r.week_key),
-    startMs: challengeWeekStartMs(r.week_key),
-    isCurrent: r.week_key === cur,
-    participants: r.participants,
-    winners: r.winners,
-    bestTimeMs: r.best_time_ms ?? 0,
-    topKills: r.top_kills,
-    hasReplays: withReplays.has(r.week_key),
-  }));
+  // One entry per calendar week. Rows are ordered week_key DESC, so for a week
+  // that spans a mid-week format bump the newer format is seen first and wins;
+  // the older format's abandoned board is dropped (no duplicate week labels).
+  const seenWeeks = new Set<number>();
+  const out: WeeklyChallengeWeek[] = [];
+  for (const r of rows) {
+    const startMs = challengeWeekStartMs(r.week_key);
+    if (seenWeeks.has(startMs)) continue;
+    seenWeeks.add(startMs);
+    out.push({
+      weekKey: r.week_key,
+      label: challengeWeekLabel(r.week_key),
+      startMs,
+      isCurrent: r.week_key === cur,
+      participants: r.participants,
+      winners: r.winners,
+      bestTimeMs: r.best_time_ms ?? 0,
+      topKills: r.top_kills,
+      hasReplays: withReplays.has(r.week_key),
+    });
+  }
+  return out;
 }

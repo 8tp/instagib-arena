@@ -1,4 +1,4 @@
-// Weekly Challenge API: submit a solo SPEEDRUN run (8p FFA vs easy bots) + read
+// Weekly Challenge API: submit a solo SPEEDRUN run (8p FFA vs medium bots) + read
 // the weekly board, plus upload/serve the full-run REPLAY for each board entry.
 // Account-only and SEPARATE from career stats (it never records K/D). The match
 // is offline (vs bots), so the score is client-reported + clamped — but every
