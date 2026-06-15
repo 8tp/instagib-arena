@@ -4115,6 +4115,18 @@ type WeeklyChallengeEntry = {
   hasReplay: boolean; // a rewatchable run is stored this week
 };
 type WeeklyChallengeMe = WeeklyChallengeEntry & { rank: number };
+// One past (or current) challenge week, for the history picker.
+type WeeklyChallengeWeek = {
+  weekKey: string;
+  label: string;
+  startMs: number;
+  isCurrent: boolean;
+  participants: number;
+  winners: number;
+  bestTimeMs: number;
+  topKills: number;
+  hasReplays: boolean;
+};
 
 // mm:ss.s from a millisecond duration (for the challenge win time).
 function fmtChallengeTime(ms: number): string {
@@ -4535,11 +4547,39 @@ function WeeklyChallengeModal({
   const [me, setMe] = useState<WeeklyChallengeMe | null>(null);
   const [info, setInfo] = useState<{ map: string; fragLimit: number } | null>(null);
   const [ready, setReady] = useState(false);
-  // The board entry whose run we're rewatching (null = no viewer open).
-  const [watch, setWatch] = useState<{ id: string; name: string } | null>(null);
+  // Past weeks (newest first, index 0 = current) + which one we're viewing.
+  const [weeks, setWeeks] = useState<WeeklyChallengeWeek[]>([]);
+  const [sel, setSel] = useState(0);
+  // The board entry whose run we're rewatching (null = no viewer open). Carries
+  // the week so the viewer fetches the right week's replay.
+  const [watch, setWatch] = useState<{ id: string; name: string; week: string } | null>(null);
+  // sel === 0 is the current week (no ?week= param → the live board); any older
+  // week is fetched by its key. Empty string means "current".
+  const weekParam = sel > 0 && weeks[sel] ? weeks[sel].weekKey : '';
+  const isPast = weekParam !== '';
+
+  // The list of weeks with a board — loaded once so we can page back through them.
   useEffect(() => {
     let active = true;
-    fetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
+    fetch('/api/challenge/weekly/weeks', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { weeks?: WeeklyChallengeWeek[] } | null) => {
+        if (active && d?.weeks) setWeeks(d.weeks);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // The board for the selected week (re-fetches when paging between weeks).
+  useEffect(() => {
+    let active = true;
+    setReady(false);
+    const url = weekParam
+      ? `/api/challenge/weekly/leaderboard?week=${encodeURIComponent(weekParam)}`
+      : '/api/challenge/weekly/leaderboard';
+    fetch(url, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: WeeklyChallengeEntry[]; me?: WeeklyChallengeMe | null; map?: string; fragLimit?: number } | null) => {
         if (!active || !d) return;
@@ -4552,8 +4592,10 @@ function WeeklyChallengeModal({
     return () => {
       active = false;
     };
-  }, []);
+  }, [weekParam]);
   const mapName = info ? (mapById(info.map)?.name ?? info.map) : '';
+  // The label for the week being viewed (the picker is the source of truth).
+  const weekLabel = weeks[sel]?.label ?? (isPast ? '' : 'This week');
   return (
     <ModalShell title='Weekly Challenge' onClose={onClose}>
       <div className='flex flex-col gap-4 font-mono'>
@@ -4567,7 +4609,9 @@ function WeeklyChallengeModal({
 
         <div className='flex items-center justify-between rounded-lg border border-white/12 bg-black/30 px-4 py-3'>
           <div>
-            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>Your week</div>
+            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>
+              {isPast ? 'Your result' : 'Your week'}
+            </div>
             {me ? (
               <div className='mt-0.5 text-[13px] text-white/85'>
                 {me.won ? `Best clear ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
@@ -4575,7 +4619,11 @@ function WeeklyChallengeModal({
               </div>
             ) : (
               <div className='mt-0.5 text-[12px] text-white/45'>
-                {account ? 'No run yet this week.' : 'Log in to save your score.'}
+                {!account
+                  ? 'Log in to save your score.'
+                  : isPast
+                    ? 'You sat this week out.'
+                    : 'No run yet this week.'}
               </div>
             )}
           </div>
@@ -4589,13 +4637,40 @@ function WeeklyChallengeModal({
 
         <div className='rounded-lg border border-white/12 bg-black/30 p-4'>
           <div className='mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-white/45'>
-            <span>This week</span>
+            <div className='flex items-center gap-1.5'>
+              {weeks.length > 1 && (
+                <button
+                  onClick={() => setSel((s) => Math.min(weeks.length - 1, s + 1))}
+                  disabled={sel >= weeks.length - 1}
+                  title='Older week'
+                  className='rounded px-1 text-white/50 transition hover:text-white disabled:cursor-default disabled:opacity-25'
+                >
+                  ◀
+                </button>
+              )}
+              <span className='normal-case tracking-normal text-white/70'>
+                {weekLabel}
+                {!isPast && <span className='ml-1.5 text-emerald-300/80'>· live</span>}
+              </span>
+              {weeks.length > 1 && (
+                <button
+                  onClick={() => setSel((s) => Math.max(0, s - 1))}
+                  disabled={sel <= 0}
+                  title='Newer week'
+                  className='rounded px-1 text-white/50 transition hover:text-white disabled:cursor-default disabled:opacity-25'
+                >
+                  ▶
+                </button>
+              )}
+            </div>
             <span className='normal-case tracking-normal text-white/30'>clear time · then kills</span>
           </div>
           {!ready ? (
             <div className='py-4 text-center text-[12px] text-white/35'>Loading…</div>
           ) : entries.length === 0 ? (
-            <div className='py-4 text-center text-[12px] text-white/35'>No runs yet — be the first.</div>
+            <div className='py-4 text-center text-[12px] text-white/35'>
+              {isPast ? 'No runs were recorded this week.' : 'No runs yet — be the first.'}
+            </div>
           ) : (
             <div className='max-h-[300px] overflow-y-auto'>
               <table className='w-full text-left text-[12px]'>
@@ -4612,7 +4687,7 @@ function WeeklyChallengeModal({
                       <td className='w-8 py-1.5 pr-1 text-center'>
                         {e.hasReplay && (
                           <button
-                            onClick={() => setWatch({ id: e.id, name: e.userName })}
+                            onClick={() => setWatch({ id: e.id, name: e.userName, week: weekParam })}
                             title={`Rewatch ${e.userName}'s run`}
                             className='rounded px-1.5 py-0.5 text-[11px] text-cyan-300 transition hover:bg-cyan-400/15 hover:text-cyan-200'
                           >
@@ -4637,6 +4712,7 @@ function WeeklyChallengeModal({
         <ReplayViewerOverlay
           playerId={watch.id}
           playerName={watch.name}
+          week={watch.week}
           settings={settings}
           onClose={() => setWatch(null)}
         />
@@ -4653,11 +4729,13 @@ const REPLAY_SPEEDS = [0.5, 1, 2] as const;
 function ReplayViewerOverlay({
   playerId,
   playerName,
+  week,
   settings,
   onClose,
 }: {
   playerId: string;
   playerName: string;
+  week?: string; // challenge week key; empty/undefined = current week
   settings: Settings;
   onClose: () => void;
 }) {
@@ -4688,7 +4766,9 @@ function ReplayViewerOverlay({
     (async () => {
       try {
         const res = await fetch(
-          `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
+          `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}${
+            week ? `&week=${encodeURIComponent(week)}` : ''
+          }`,
           { credentials: 'same-origin' },
         );
         if (!res.ok) throw new Error('unavailable');
@@ -4735,7 +4815,7 @@ function ReplayViewerOverlay({
       viewer?.dispose();
       viewerRef.current = null;
     };
-  }, [playerId]);
+  }, [playerId, week]);
 
   // Once the scene is loaded + the first frame is rendering (behind the black
   // cover), run a short 3-2-1 countdown, then auto-play. The cover masks the

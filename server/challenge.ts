@@ -9,10 +9,14 @@
 import zlib from 'node:zlib';
 import express, { Router, type Request } from 'express';
 import {
+  challengeWeekLabel,
+  currentChallengeWeekKey,
   findUserById,
-  getWeeklyChallengeLeaderboard,
+  getWeeklyChallengeLeaderboardFor,
   getWeeklyChallengeMe,
-  getWeeklyReplayGz,
+  getWeeklyChallengeMeFor,
+  getWeeklyReplayGzFor,
+  listWeeklyChallengeWeeks,
   recordWeeklyChallenge,
   storeWeeklyReplay,
 } from './db';
@@ -26,6 +30,12 @@ const clampInt = (v: unknown, lo: number, hi: number): number => {
   const n = typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : 0;
   return Math.max(lo, Math.min(hi, n));
 };
+
+// A challenge week key looks like `s2:w:20260608`. History endpoints accept an
+// optional ?week= param; anything malformed falls back to the current week.
+const WEEK_KEY_RE = /^[a-z0-9]+:w:\d{8}$/;
+const resolveWeek = (q: unknown): string =>
+  typeof q === 'string' && WEEK_KEY_RE.test(q) ? q : currentChallengeWeekKey();
 
 // Light per-account submit limiter (a run takes minutes; this only blocks spam).
 const last = new Map<string, number>();
@@ -133,7 +143,7 @@ challengeRouter.get('/challenge/weekly/replay', (req: Request, res) => {
     res.status(400).json({ error: 'player_required' });
     return;
   }
-  const rec = getWeeklyReplayGz(player);
+  const rec = getWeeklyReplayGzFor(player, resolveWeek(req.query.week));
   if (!rec) {
     res.status(404).json({ error: 'not_found' });
     return;
@@ -155,12 +165,24 @@ challengeRouter.get('/challenge/weekly/replay', (req: Request, res) => {
   }
 });
 
-// The current week's board + the caller's standing + the run parameters.
+// A week's board + the caller's standing for that week + the run parameters.
+// Defaults to the current week; pass ?week=<key> (from /challenge/weekly/weeks)
+// to view a past week's board.
 challengeRouter.get('/challenge/weekly/leaderboard', (req: Request, res) => {
+  const wk = resolveWeek(req.query.week);
   res.json({
-    entries: getWeeklyChallengeLeaderboard(50),
-    me: getWeeklyChallengeMe(accountId(req)),
+    week: wk,
+    label: challengeWeekLabel(wk),
+    isCurrent: wk === currentChallengeWeekKey(),
+    entries: getWeeklyChallengeLeaderboardFor(wk, 50),
+    me: getWeeklyChallengeMeFor(accountId(req), wk),
     map: WEEKLY_CHALLENGE_MAP,
     fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT,
   });
+});
+
+// Past weeks that have a board (newest first), for the week picker. Each entry
+// carries headline stats + whether its replays are still retained.
+challengeRouter.get('/challenge/weekly/weeks', (_req: Request, res) => {
+  res.json({ weeks: listWeeklyChallengeWeeks(52), current: currentChallengeWeekKey() });
 });

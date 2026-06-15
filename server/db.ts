@@ -556,6 +556,25 @@ const CHALLENGE_FORMAT = 's2';
 function challengeWeekKey(now: number): string {
   return `${CHALLENGE_FORMAT}:${weekKey(now)}`;
 }
+// The current challenge week key, for callers that browse history (the API needs
+// to flag which listed week is "now").
+export function currentChallengeWeekKey(now: number = Date.now()): string {
+  return challengeWeekKey(now);
+}
+// A challenge week key is `<format>:w:YYYYMMDD` — the UTC Monday of the week.
+// Pull the start-of-week timestamp + a human label out of one.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function challengeWeekStartMs(weekKeyStr: string): number {
+  const m = /(\d{4})(\d{2})(\d{2})$/.exec(weekKeyStr);
+  if (!m) return 0;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+}
+export function challengeWeekLabel(weekKeyStr: string): string {
+  const ms = challengeWeekStartMs(weekKeyStr);
+  if (!ms) return weekKeyStr;
+  const d = new Date(ms);
+  return `Week of ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
 
 export type MatchDelta = {
   playerId: string;
@@ -1923,7 +1942,10 @@ const wcRankStmt = sqlite.prepare(`
 // The full recorded run for a player's board-defining run, so anyone can rewatch
 // it (transparency / anti-cheat). One row per (player, week); overwritten when a
 // player sets a new board-defining run. The blob is the gzipped replay-codec
-// binary. Storage is bounded by pruning every week but the current one on write.
+// binary. Storage is bounded by retaining only the most recent
+// WEEKLY_REPLAY_RETAIN_WEEKS weeks of replays (older runs' BOARD rows survive in
+// instagib_weekly_challenge forever — only the heavy replay blobs age out).
+const WEEKLY_REPLAY_RETAIN_WEEKS = 26;
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS instagib_weekly_replay (
   player_id   TEXT NOT NULL,
@@ -1950,7 +1972,14 @@ const wrGetStmt = sqlite.prepare(
   `SELECT data, raw_bytes, duration_ms, kills, won FROM instagib_weekly_replay
     WHERE player_id = ? AND week_key = ?`,
 );
-const wrPruneStmt = sqlite.prepare(`DELETE FROM instagib_weekly_replay WHERE week_key != ?`);
+// Keep only the most-recent N weeks of replays (by each week's latest activity);
+// drop everything older. The current week is always in the table (the upsert runs
+// first), so it's never pruned.
+const wrPruneStmt = sqlite.prepare(`
+  DELETE FROM instagib_weekly_replay WHERE week_key NOT IN (
+    SELECT week_key FROM (
+      SELECT week_key FROM instagib_weekly_replay
+       GROUP BY week_key ORDER BY MAX(created_at) DESC LIMIT @keep))`);
 const wrWeekPlayersStmt = sqlite.prepare(
   `SELECT player_id FROM instagib_weekly_replay WHERE week_key = ?`,
 );
@@ -1976,7 +2005,7 @@ export function storeWeeklyReplay(
     won: meta.won ? 1 : 0,
     createdAt: now,
   });
-  wrPruneStmt.run(wk);
+  wrPruneStmt.run({ keep: WEEKLY_REPLAY_RETAIN_WEEKS });
 }
 
 // Fetch a player's stored run for the week as the on-disk GZIP blob (no server
@@ -1986,8 +2015,16 @@ export function getWeeklyReplayGz(
   playerId: string,
   now: number = Date.now(),
 ): { gz: Buffer; durationMs: number; kills: number; won: boolean } | null {
+  return getWeeklyReplayGzFor(playerId, challengeWeekKey(now));
+}
+// Same, for an explicit week key (history browsing). Returns null if absent —
+// including for weeks whose replays have aged out past the retention window.
+export function getWeeklyReplayGzFor(
+  playerId: string,
+  weekKeyStr: string,
+): { gz: Buffer; durationMs: number; kills: number; won: boolean } | null {
   if (!playerId) return null;
-  const row = wrGetStmt.get(playerId, challengeWeekKey(now)) as
+  const row = wrGetStmt.get(playerId, weekKeyStr) as
     | { data: Buffer; raw_bytes: number; duration_ms: number; kills: number; won: number }
     | undefined;
   if (!row) return null;
@@ -2142,8 +2179,17 @@ export function getWeeklyChallengeLeaderboard(
   limit: number,
   now: number = Date.now(),
 ): WeeklyChallengeEntry[] {
+  return getWeeklyChallengeLeaderboardFor(challengeWeekKey(now), limit);
+}
+
+// The board for an explicit week key (history browsing). hasReplay reflects what
+// is still retained for THAT week, so the ▶ button only shows when a watchable
+// run actually exists.
+export function getWeeklyChallengeLeaderboardFor(
+  wk: string,
+  limit: number,
+): WeeklyChallengeEntry[] {
   const n = Math.max(1, Math.min(100, Math.floor(limit)));
-  const wk = challengeWeekKey(now);
   const rows = wcLeaderboardStmt.all(wk, n) as WcRow[];
   const base = rows.map(toWcEntry);
   if (base.length) {
@@ -2169,8 +2215,15 @@ export function getWeeklyChallengeMe(
   playerId: string,
   now: number = Date.now(),
 ): WeeklyChallengeMe | null {
+  return getWeeklyChallengeMeFor(playerId, challengeWeekKey(now));
+}
+
+// The caller's standing for an explicit week key (history browsing).
+export function getWeeklyChallengeMeFor(
+  playerId: string,
+  wk: string,
+): WeeklyChallengeMe | null {
   if (!playerId) return null;
-  const wk = challengeWeekKey(now);
   const r = wcRowStmt.get(playerId, wk) as WcRow | undefined;
   if (!r) return null;
   const rank =
@@ -2178,4 +2231,65 @@ export function getWeeklyChallengeMe(
   const entry = toWcEntry(r);
   entry.hasReplay = weeklyReplayPlayerIds(wk).has(playerId);
   return { ...entry, rank };
+}
+
+// ── Weekly-challenge HISTORY ─────────────────────────────────────────────────
+// Every past week's board survives in instagib_weekly_challenge (rows are never
+// deleted — only the heavy replay blobs age out). This lists the weeks that have
+// at least one entry, newest first, with enough headline stats to render a week
+// picker without fetching each board.
+// Only weeks of the CURRENT challenge format — older formats (e.g. the pre-s2
+// 1v1-vs-hard-bot board) use a different key namespace and aren't comparable, so
+// they never appear in the picker (and their keys wouldn't round-trip the API's
+// ?week= validator anyway).
+const wcWeeksStmt = sqlite.prepare(`
+  SELECT week_key,
+         COUNT(*)                                            AS participants,
+         COALESCE(SUM(CASE WHEN best_time_ms > 0 THEN 1 ELSE 0 END), 0) AS winners,
+         MIN(CASE WHEN best_time_ms > 0 THEN best_time_ms END)          AS best_time_ms,
+         COALESCE(MAX(best_kills), 0)                        AS top_kills
+    FROM instagib_weekly_challenge
+   WHERE week_key LIKE @prefix
+   GROUP BY week_key
+   ORDER BY week_key DESC
+   LIMIT @limit`);
+const wrWeeksWithReplaysStmt = sqlite.prepare(
+  `SELECT DISTINCT week_key FROM instagib_weekly_replay`,
+);
+
+export type WeeklyChallengeWeek = {
+  weekKey: string;
+  label: string;
+  startMs: number;
+  isCurrent: boolean;
+  participants: number;
+  winners: number;
+  bestTimeMs: number; // fastest winning clear that week (0 = no winner)
+  topKills: number;
+  hasReplays: boolean; // any rewatchable run still retained for the week
+};
+
+export function listWeeklyChallengeWeeks(
+  limit = 52,
+  now: number = Date.now(),
+): WeeklyChallengeWeek[] {
+  const n = Math.max(1, Math.min(200, Math.floor(limit)));
+  const cur = challengeWeekKey(now);
+  const withReplays = new Set(
+    (wrWeeksWithReplaysStmt.all() as { week_key: string }[]).map((r) => r.week_key),
+  );
+  const rows = wcWeeksStmt.all({ prefix: `${CHALLENGE_FORMAT}:%`, limit: n }) as {
+    week_key: string; participants: number; winners: number; best_time_ms: number | null; top_kills: number;
+  }[];
+  return rows.map((r) => ({
+    weekKey: r.week_key,
+    label: challengeWeekLabel(r.week_key),
+    startMs: challengeWeekStartMs(r.week_key),
+    isCurrent: r.week_key === cur,
+    participants: r.participants,
+    winners: r.winners,
+    bestTimeMs: r.best_time_ms ?? 0,
+    topKills: r.top_kills,
+    hasReplays: withReplays.has(r.week_key),
+  }));
 }
