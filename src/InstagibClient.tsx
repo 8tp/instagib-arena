@@ -5118,7 +5118,7 @@ function Lobby({
                 className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
               >
                 <span className='text-white/45'>Lv {lobbyProfile.level}</span>
-                <span>{lobbyProfile.credits} ⛁</span>
+                <span>{lobbyProfile.credits.toLocaleString()} CR</span>
               </button>
             )}
             <ServerStatusChip status={lobbyStatus} />
@@ -5126,12 +5126,13 @@ function Lobby({
         </header>
         <div className='h-px w-full shrink-0 bg-gradient-to-r from-cyan-400/50 via-white/10 to-transparent' />
 
-        {/* ── Main grid: actions (left) · live feed (right) ──────────── */}
-        <main className='grid min-h-0 flex-1 gap-4 lg:grid-cols-[1.15fr_0.85fr]'>
+        {/* ── Main grid: actions (left) · live feed (right). Scrolls as one
+            page on mobile; splits into two fixed columns on desktop. ─────── */}
+        <main className='grid min-h-0 flex-1 gap-4 overflow-y-auto lg:grid-cols-[1.15fr_0.85fr] lg:overflow-visible'>
           {/* Left — mode + actions */}
-          <section className='deck-scroll flex min-h-0 flex-col gap-3 overflow-y-auto pr-1'>
-            <p className='deck-rise text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>
-              One railgun. One shot. Pure movement — strafe, dash, wall-jump.
+          <section className='deck-scroll flex min-h-0 flex-col gap-3 pr-1 lg:overflow-y-auto'>
+            <p className='deck-rise max-w-md text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>
+              One railgun. One shot. One kill — the whole game is aim and movement.
             </p>
 
             {touchOnly && (
@@ -5157,22 +5158,26 @@ function Lobby({
                 window.setTimeout(() => setSearching(false), 6000);
               }}
               disabled={!online || playDisabled || searching}
-              className='clip-deck deck-rise bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
+              aria-busy={searching}
+              className='clip-deck deck-rise group bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 active:translate-y-px disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
               style={{ animationDelay: '180ms' }}
             >
               <span className='flex items-center gap-3'>
-                <span className='text-2xl leading-none'>▶</span>
                 {searching ? 'Searching…' : 'Play Now'}
+                <span aria-hidden className='transition-transform group-hover:translate-x-1'>→</span>
                 <span className='ml-auto font-mono text-[11px] font-semibold tracking-[0.1em] text-zinc-950/60'>
-                  Any mode · fastest
+                  {searching ? 'Looking for a live lobby' : 'Any mode · fastest'}
                 </span>
               </span>
             </button>
 
-            {/* Secondary actions */}
+            {/* Ways to play — online first, then offline practice. */}
             <div className='deck-rise grid grid-cols-2 gap-3' style={{ animationDelay: '240ms' }}>
               <DeckButton onClick={() => setCreateOnlineOpen(true)} disabled={!online || playDisabled} accent='cyan'>
-                + Create Match
+                Create Match
+              </DeckButton>
+              <DeckButton onClick={() => setRankedOpen(true)} disabled={!online || playDisabled} accent='fuchsia' sub='1v1 · Elo ladder'>
+                Ranked Duel
               </DeckButton>
               <DeckButton
                 onClick={() =>
@@ -5187,61 +5192,39 @@ function Lobby({
                 disabled={playDisabled}
                 accent='amber'
               >
-                ⌖ Training Range
+                Training Range
+              </DeckButton>
+              <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled}>
+                Solo vs Bots
               </DeckButton>
               <div className='col-span-2'>
-                <DeckButton
-                  onClick={() => setRankedOpen(true)}
-                  disabled={!online || playDisabled}
-                  accent='fuchsia'
-                  full
-                >
-                  <span className='inline-flex items-center gap-2'>
-                    🏆 Ranked Duel
-                    <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
-                      1v1 · Elo ladder
+                <DeckButton onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8p FFA speedrun' full>
+                  Weekly Challenge
+                </DeckButton>
+              </div>
+            </div>
+
+            {/* Utility row — meta surfaces kept visually subordinate to the ways
+                to play, so the menu reads top-down: queue → host → practice →
+                profile / settings. */}
+            <div className='deck-rise flex flex-wrap gap-2' style={{ animationDelay: '300ms' }}>
+              <UtilButton onClick={() => setStatsOpen(true)}>Stats</UtilButton>
+              <UtilButton onClick={() => setChallengesOpen(true)}>
+                <span className='inline-flex items-center gap-1.5'>
+                  Challenges
+                  {claimable > 0 && (
+                    <span
+                      title={`${claimable} reward${claimable > 1 ? 's' : ''} ready to claim`}
+                      className='inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-400 px-1 text-[10px] font-bold text-emerald-950'
+                    >
+                      {claimable}
                     </span>
-                  </span>
-                </DeckButton>
-              </div>
-              <div className='col-span-2'>
-                <DeckButton onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' full>
-                  <span className='inline-flex items-center gap-2'>
-                    🗓 Weekly Challenge
-                    <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>
-                      8p FFA speedrun
-                    </span>
-                  </span>
-                </DeckButton>
-              </div>
-              <div className='col-span-2'>
-                <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled} full>
-                  ◭ Solo vs Bots
-                </DeckButton>
-              </div>
-              <div className='col-span-2 grid grid-cols-2 gap-3'>
-                <DeckButton onClick={() => setStatsOpen(true)}>Stats</DeckButton>
-                <DeckButton onClick={() => setChallengesOpen(true)}>
-                  <span className='inline-flex items-center gap-2'>
-                    Challenges
-                    {claimable > 0 && (
-                      <span
-                        title={`${claimable} reward${claimable > 1 ? 's' : ''} ready to claim`}
-                        className='inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-400 px-1 text-[10px] font-bold text-emerald-950'
-                      >
-                        {claimable}
-                      </span>
-                    )}
-                  </span>
-                </DeckButton>
-                <DeckButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</DeckButton>
-                <DeckButton onClick={() => setLockerOpen(true)} accent='fuchsia'>
-                  🎽 Locker
-                </DeckButton>
-                <DeckButton onClick={() => openSettingsAt('controls')} accent='cyan' full>
-                  ⚙ Settings
-                </DeckButton>
-              </div>
+                  )}
+                </span>
+              </UtilButton>
+              <UtilButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</UtilButton>
+              <UtilButton onClick={() => setLockerOpen(true)}>Locker</UtilButton>
+              <UtilButton onClick={() => openSettingsAt('controls')}>Settings</UtilButton>
             </div>
 
             {lastResult && <LastMatchBanner result={lastResult} />}
@@ -5388,24 +5371,23 @@ function Lobby({
   );
 }
 
-// Short badge label for a mode (used in lobby rows + create modal).
-function modeLabel(mode: GameMode): string {
-  return GAME_MODES.find((m) => m.id === mode)?.label ?? mode;
-}
-
 // Angular command-deck action button. Accent tints the hover/border; `full`
-// stretches it. Labels use the squared display face for the FPS-UI feel.
+// stretches it. Labels use the squared display face for the FPS-UI feel. An
+// optional `sub` rides the right edge as a quiet mono qualifier (e.g. the
+// queue format), so the label itself stays clean type — no emoji decoration.
 function DeckButton({
   onClick,
   disabled,
   accent = 'plain',
   full,
+  sub,
   children,
 }: {
   onClick: () => void;
   disabled?: boolean;
   accent?: 'cyan' | 'amber' | 'fuchsia' | 'plain';
   full?: boolean;
+  sub?: string;
   children: ReactNode;
 }) {
   const tone =
@@ -5420,7 +5402,28 @@ function DeckButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`clip-deck-sm border px-5 py-3 text-left font-display text-sm font-semibold uppercase tracking-[0.12em] transition disabled:cursor-not-allowed disabled:opacity-40 ${tone} ${full ? 'w-full' : ''}`}
+      className={`clip-deck-sm border px-5 py-3 text-left font-display text-sm font-semibold uppercase tracking-[0.12em] transition active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 ${tone} ${full ? 'w-full' : ''}`}
+    >
+      <span className='flex items-baseline justify-between gap-3'>
+        <span>{children}</span>
+        {sub && (
+          <span className='shrink-0 font-mono text-[10px] font-medium normal-case tracking-[0.08em] text-white/40'>
+            {sub}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+// Low-emphasis utility action (Stats / Locker / Settings …): quiet chrome at
+// the same hit size. Keeps the accent-tinted DeckButton reserved for the ways
+// to actually play, so the action column reads as one hierarchy.
+function UtilButton({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className='clip-deck-sm border border-white/10 bg-white/[0.03] px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60 transition hover:border-white/25 hover:text-white/90'
     >
       {children}
     </button>
@@ -5463,7 +5466,7 @@ function ModePicker({
               onClick={() => onChange(m.id)}
               className={`clip-deck-sm border px-3 py-2.5 font-display text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
                 active
-                  ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-100 shadow-[0_0_18px_-6px_rgba(34,211,238,0.9)]'
+                  ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-100'
                   : 'border-white/12 bg-white/[0.03] text-white/55 hover:bg-white/10 hover:text-white/80'
               }`}
             >
@@ -5510,7 +5513,7 @@ function OpenLobbies({
   onRefresh: () => void;
 }) {
   return (
-    <div className='clip-deck flex h-full min-h-0 flex-col border border-white/10 bg-black/40 backdrop-blur-sm'>
+    <div className='clip-deck deck-panel flex h-full min-h-0 flex-col'>
       <div className='flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3'>
         <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
           Live Lobbies
@@ -5523,7 +5526,7 @@ function OpenLobbies({
           disabled={!online}
           className='font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
         >
-          ↻ Refresh
+          Refresh
         </button>
       </div>
       <div className='deck-scroll min-h-0 flex-1 overflow-y-auto p-3'>
@@ -5556,7 +5559,7 @@ function OpenLobbies({
                     )}
                     {r.spectators > 0 && (
                       <span className='rounded-sm bg-white/10 px-1.5 py-0.5 text-white/60'>
-                        👁 {r.spectators}
+                        {r.spectators} watching
                       </span>
                     )}
                   </div>
@@ -5569,7 +5572,7 @@ function OpenLobbies({
                     title='Spectate this match'
                     className='clip-deck-sm bg-white/10 px-3 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-100 transition hover:bg-white/20'
                   >
-                    👁 Watch
+                    Watch
                   </button>
                   <button
                     onClick={() => onJoin(r)}
@@ -5603,7 +5606,7 @@ function OnlinePlayersPanel({
   const players: PresencePlayer[] = presence?.players ?? [];
   const guests = presence?.guests ?? 0;
   return (
-    <div className='clip-deck shrink-0 border border-white/10 bg-black/40 backdrop-blur-sm'>
+    <div className='clip-deck deck-panel shrink-0'>
       <button
         onClick={() => setOpen((v) => !v)}
         className='flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03]'
@@ -5693,7 +5696,7 @@ function GlobalChatPanel({
   };
 
   return (
-    <div className='clip-deck flex h-full min-h-0 flex-col border border-white/10 bg-black/40 backdrop-blur-sm'>
+    <div className='clip-deck deck-panel flex h-full min-h-0 flex-col'>
       <div className='flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3'>
         <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
           Global Chat
@@ -5703,7 +5706,7 @@ function GlobalChatPanel({
       <div ref={scrollRef} className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2'>
         {messages.length === 0 ? (
           <div className='flex h-full items-center justify-center px-6 py-8 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.12em] text-white/25'>
-            {online ? 'Say hi 👋' : 'Linking to server…'}
+            {online ? 'No messages yet — say hi.' : 'Linking to server…'}
           </div>
         ) : (
           <div className='flex flex-col gap-1'>
@@ -5907,7 +5910,7 @@ function LastMatchBanner({ result }: { result: MatchResult }) {
   const acc = result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
   return (
     <div
-      className={`mt-5 rounded-lg border px-4 py-3 ${
+      className={`clip-deck-sm mt-2 border px-4 py-3 ${
         result.won ? 'border-emerald-400/40 bg-emerald-400/10' : 'border-white/12 bg-white/5'
       }`}
     >

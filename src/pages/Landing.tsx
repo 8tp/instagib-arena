@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { CONTROLS } from '../controls';
 import { useLiveCount } from '../live';
 import { FeedbackModal } from '../FeedbackModal';
@@ -21,151 +21,223 @@ function useCoarsePointer(): boolean {
 }
 
 const MODES: Array<[string, string]> = [
-  ['Practice', 'Offline range + bots. Warm up your aim and movement.'],
+  ['Practice', 'Offline range + bots. Warm up aim and movement.'],
   ['Quick match', 'Drop into an open public arena instantly.'],
-  ['Custom / private', 'Host a lobby or share an invite code with friends.'],
+  ['Custom / private', 'Host a lobby or share an invite code.'],
 ];
+
+// The brand mark — same crosshair as the favicon, so the launcher, the tab
+// icon, and the in-game reticle read as one identity.
+function CrosshairMark({ size = 22 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 32 32"
+      width={size}
+      height={size}
+      aria-hidden="true"
+      className="shrink-0 text-cyan-300"
+    >
+      <circle cx="16" cy="16" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+      <line x1="16" y1="3" x2="16" y2="11" stroke="currentColor" strokeWidth="2" />
+      <line x1="16" y1="21" x2="16" y2="29" stroke="currentColor" strokeWidth="2" />
+      <line x1="3" y1="16" x2="11" y2="16" stroke="currentColor" strokeWidth="2" />
+      <line x1="21" y1="16" x2="29" y2="16" stroke="currentColor" strokeWidth="2" />
+      <circle cx="16" cy="16" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+// Section heading inside a manual panel: label + a hard rule running to the
+// edge — the command-deck idiom, no card chrome.
+function PanelHeading({ children }: { children: string }) {
+  return (
+    <h2 className="mb-4 flex items-center gap-3 font-display text-[11px] font-bold uppercase tracking-[0.26em] text-cyan-200/90">
+      {children}
+      <span className="h-px flex-1 bg-white/10" aria-hidden="true" />
+    </h2>
+  );
+}
 
 export default function Landing() {
   const coarse = useCoarsePointer();
   const live = useLiveCount();
   const [showFeedback, setShowFeedback] = useState(false);
+  const navigate = useNavigate();
+
+  // Launcher convention: Enter deploys straight into the menu. Never hijack the
+  // key while a dialog is open (explicit state guard — don't rely on focus
+  // location alone) or while focus sits on a link/button/field.
+  useEffect(() => {
+    if (coarse || showFeedback) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.repeat || showFeedback) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('a, button, input, textarea, select, [role="dialog"]')) return;
+      e.preventDefault();
+      navigate('/play');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [coarse, showFeedback, navigate]);
+
   return (
-    <div className="h-full overflow-y-auto bg-[#0a0a0b] text-neutral-100">
-      {/* glow backdrop */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute -top-40 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-cyan-500/10 blur-[120px]" />
-        <div className="absolute bottom-0 right-0 h-[28rem] w-[28rem] translate-x-1/3 translate-y-1/3 rounded-full bg-fuchsia-500/10 blur-[120px]" />
-      </div>
+    <div className="deck-bg relative h-full overflow-hidden text-white">
+      {/* CRT veil: fixed so it stays glued to the viewport while the page
+          scrolls on small screens (the lobby is non-scrolling, so it can use
+          deck-scan directly on its root). */}
+      <div className="deck-scan pointer-events-none fixed inset-0 z-10" aria-hidden="true" />
 
-      {/* GitHub mark — the codebase is open source (AGPL); keep it one click away. */}
-      <a
-        href={GITHUB_URL}
-        target="_blank"
-        rel="noreferrer"
-        aria-label="View the source code on GitHub"
-        title="View source on GitHub"
-        className="fixed right-5 top-5 z-10 text-neutral-500 transition hover:scale-110 hover:text-neutral-100"
-      >
-        <svg viewBox="0 0 16 16" width="26" height="26" fill="currentColor" aria-hidden="true">
-          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
-        </svg>
-      </a>
-
-      <main className="relative mx-auto flex min-h-full max-w-3xl flex-col justify-center gap-10 px-6 py-16">
-        <header className="space-y-4">
-          <p className="font-mono text-xs uppercase tracking-[0.35em] text-cyan-400/80">
-            Browser FPS · Server-authoritative
-          </p>
-          <h1 className="text-5xl font-semibold tracking-tight sm:text-6xl">
-            Instagib&nbsp;Arena
-          </h1>
-          <p className="max-w-xl text-base leading-relaxed text-neutral-400">
-            Quake-style instagib in the browser. One shot, one kill. The railgun
-            always kills — so the whole game is{' '}
-            <span className="text-neutral-200">aim and movement</span>. Strafe,
-            dash, double-jump, wall-jump. Veterans move twice as fast as anyone
-            standing still.
-          </p>
+      <div className="relative h-full overflow-y-auto">
+        {/* ── Utility bar: identity + outbound links ──────────────────── */}
+        <header className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-5 pt-5 sm:px-8">
+          <div className="flex items-center gap-2.5">
+            <CrosshairMark />
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.32em] text-white/50">
+              Instagib Arena
+            </span>
+          </div>
+          <nav
+            aria-label="External links"
+            className="flex items-center gap-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-white/45"
+          >
+            {DISCORD_URL && (
+              <a href={DISCORD_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
+                Discord
+              </a>
+            )}
+            {/* The codebase is open source (AGPL); keep it one click away. */}
+            <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
+              Source ↗
+            </a>
+            <button type="button" onClick={() => setShowFeedback(true)} className="uppercase tracking-[0.18em] transition hover:text-white/90">
+              Feedback
+            </button>
+          </nav>
         </header>
 
-        {coarse ? (
-          <div className="w-fit max-w-xl rounded-lg border border-amber-400/30 bg-amber-400/10 px-5 py-4">
-            <p className="text-sm font-semibold text-amber-200">Best played on a computer</p>
-            <p className="mt-1 text-sm text-neutral-300">
-              Instagib Arena needs a <span className="text-neutral-100">mouse and keyboard</span> —
-              open this link on a desktop to play. You can still look around the menus below.
+        {/* ── Hero (left) · field manual (right) ──────────────────────── */}
+        <main className="mx-auto grid w-full max-w-6xl gap-10 px-5 pb-12 pt-12 sm:px-8 lg:min-h-[calc(100%-3.75rem)] lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14 lg:pt-0">
+          <section className="max-w-xl">
+            <p className="deck-rise font-mono text-[11px] uppercase tracking-[0.32em] text-cyan-300/90">
+              Server-authoritative · browser FPS
             </p>
-            <Link
-              to="/play"
-              className="mt-3 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-amber-200/80 underline-offset-4 hover:underline"
+            <h1
+              className="deck-rise mt-4 font-display text-6xl font-bold uppercase leading-[0.92] tracking-[0.04em] sm:text-7xl"
+              style={{ animationDelay: '60ms' }}
             >
-              Continue anyway →
-            </Link>
-          </div>
-        ) : (
-          <Link
-            to="/play"
-            className="group inline-flex h-14 w-fit items-center gap-3 rounded-lg bg-cyan-400 px-8 text-sm font-semibold uppercase tracking-[0.18em] text-neutral-950 transition hover:bg-cyan-300"
-          >
-            Enter the arena
-            <span className="transition-transform group-hover:translate-x-1">→</span>
-          </Link>
-        )}
-
-        <div className="flex flex-wrap items-center gap-4 font-mono text-xs">
-          {live && live.online > 0 && (
-            <span className="inline-flex items-center gap-2 text-neutral-400">
-              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,.9)]" />
-              <span className="text-neutral-200">{live.online}</span> playing now
-              {live.inMatch > 0 && <span className="text-neutral-500"> · {live.inMatch} in match</span>}
-            </span>
-          )}
-          {DISCORD_URL && (
-            <a
-              href={DISCORD_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 text-[#8c9eff] transition hover:text-[#aab6ff]"
+              Instagib
+              <br />
+              <span className="text-cyan-300">Arena</span>
+            </h1>
+            <p
+              className="deck-rise mt-6 font-display text-sm font-semibold uppercase tracking-[0.24em] text-white/80"
+              style={{ animationDelay: '120ms' }}
             >
-              Join the Discord →
-            </a>
-          )}
-        </div>
+              One railgun. One shot. One kill.
+            </p>
+            <p className="deck-rise mt-3 max-w-md text-[15px] leading-relaxed text-white/55" style={{ animationDelay: '150ms' }}>
+              Quake-style instagib, free in the browser. The railgun always kills —
+              so the whole game is <span className="text-white/85">aim and movement</span>.
+              Strafe, dash, double-jump, wall-jump.
+            </p>
 
-        <section className="grid gap-6 sm:grid-cols-2">
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5">
-            <h2 className="mb-4 font-mono text-[11px] uppercase tracking-[0.2em] text-neutral-500">
-              Controls
-            </h2>
-            <dl className="space-y-2 text-sm">
-              {CONTROLS.map(([key, action]) => (
-                <div key={key} className="flex items-baseline gap-3">
-                  <dt className="w-28 shrink-0 font-mono text-xs text-cyan-300/90">
-                    {key}
-                  </dt>
-                  <dd className="text-neutral-300">{action}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
+            {coarse ? (
+              <div className="deck-rise clip-deck-sm mt-8 max-w-md border border-amber-400/40 bg-amber-400/10 px-5 py-4" style={{ animationDelay: '200ms' }}>
+                <p className="font-display text-sm font-bold uppercase tracking-[0.16em] text-amber-200">
+                  Best played on a computer
+                </p>
+                <p className="mt-1.5 text-sm leading-relaxed text-white/70">
+                  Instagib Arena needs a <span className="text-white">mouse and keyboard</span> —
+                  open this link on a desktop to play. You can still look around below.
+                </p>
+                <Link
+                  to="/play"
+                  className="mt-3 inline-flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-200/90 underline-offset-4 hover:underline"
+                >
+                  Continue anyway →
+                </Link>
+              </div>
+            ) : (
+              <div className="deck-rise mt-9 flex flex-wrap items-center gap-x-5 gap-y-3" style={{ animationDelay: '200ms' }}>
+                <Link
+                  to="/play"
+                  className="clip-deck group inline-flex items-center gap-4 bg-cyan-300 py-4 pl-7 pr-6 font-display text-base font-bold uppercase tracking-[0.2em] text-zinc-950 transition hover:bg-cyan-200 active:translate-y-px"
+                >
+                  Enter the arena
+                  <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">→</span>
+                </Link>
+                <span className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-white/35 sm:block">
+                  or press{' '}
+                  <kbd className="border border-white/20 bg-white/5 px-1.5 py-0.5 text-white/60">Enter</kbd>
+                </span>
+              </div>
+            )}
 
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5">
-            <h2 className="mb-4 font-mono text-[11px] uppercase tracking-[0.2em] text-neutral-500">
-              Modes
-            </h2>
-            <dl className="space-y-3 text-sm">
-              {MODES.map(([name, desc]) => (
-                <div key={name}>
-                  <dt className="font-medium text-neutral-200">{name}</dt>
-                  <dd className="text-neutral-400">{desc}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-        </section>
-
-        <footer className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-neutral-600">
-          <span>Desktop + mouse &amp; keyboard. Best in Chrome / Edge with pointer lock.</span>
-          <span className="flex items-center gap-4">
-            <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="text-neutral-400 transition hover:text-cyan-300"
+            {/* Status strip: live population when there is one, otherwise the
+                zero-friction pitch. Hard rule, mono readouts — no badges. */}
+            <div
+              className="deck-rise mt-9 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4 font-mono text-[11px] uppercase tracking-[0.16em] text-white/40"
+              style={{ animationDelay: '260ms' }}
             >
-              View source ↗
-            </a>
-            <button
-              type="button"
-              onClick={() => setShowFeedback(true)}
-              className="text-neutral-400 transition hover:text-cyan-300"
-            >
-              Send feedback
-            </button>
-          </span>
+              {live && live.online > 0 ? (
+                <span className="inline-flex items-center gap-2 text-white/60">
+                  <span className="deck-pulse inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  <span className="tabular-nums text-white/90">{live.online}</span> online
+                  {live.inMatch > 0 && <span className="text-white/35">· {live.inMatch} in match</span>}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-white/25" />
+                  Free · no download · no account
+                </span>
+              )}
+              <span className="text-white/30">Mouse + keyboard · pointer lock</span>
+            </div>
+          </section>
+
+          {/* Field manual: the two things a new player needs before deploying —
+              how to move, and what to queue for. */}
+          <aside className="deck-rise flex flex-col gap-4 lg:max-w-md lg:justify-self-end" style={{ animationDelay: '240ms' }}>
+            <section className="deck-panel clip-deck p-6">
+              <PanelHeading>Controls</PanelHeading>
+              <dl className="grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2">
+                {CONTROLS.map(([key, action]) => (
+                  <div key={key} className="flex items-baseline gap-2.5">
+                    <dt className="shrink-0 border border-white/15 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wide text-cyan-200">
+                      {key}
+                    </dt>
+                    <dd className="text-[12px] leading-snug text-white/55">{action}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+
+            <section className="deck-panel clip-deck p-6">
+              <PanelHeading>Modes</PanelHeading>
+              <ul className="flex flex-col divide-y divide-white/8">
+                {MODES.map(([name, desc], i) => (
+                  <li key={name} className="flex items-baseline gap-4 py-3 first:pt-0 last:pb-0">
+                    <span className="w-6 shrink-0 font-mono text-[10px] tabular-nums text-white/30">
+                      0{i + 1}
+                    </span>
+                    <div>
+                      <div className="font-display text-[13px] font-semibold uppercase tracking-[0.16em] text-white/90">
+                        {name}
+                      </div>
+                      <div className="mt-0.5 text-[12px] leading-snug text-white/45">{desc}</div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </aside>
+        </main>
+
+        <footer className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-white/10 px-5 py-4 font-mono text-[10px] uppercase tracking-[0.18em] text-white/30 sm:px-8">
+          <span>Desktop · best in Chrome / Edge</span>
+          <span>Open source · AGPL</span>
         </footer>
-      </main>
+      </div>
 
       {showFeedback && <FeedbackModal onClose={() => setShowFeedback(false)} />}
     </div>
