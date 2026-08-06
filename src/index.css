@@ -32,6 +32,13 @@ body {
   overscroll-behavior: none;
 }
 
+/* Keyboard focus is always visible on deck chrome — the menus are fully
+   navigable without a mouse, and the default ring must survive the dark bg. */
+:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
 /* The game canvas owns the whole viewport; never show scrollbars over it. */
 canvas {
   display: block;
@@ -76,6 +83,13 @@ canvas {
   mix-blend-mode: multiply;
 }
 
+/* Opaque menu sheet over the deck grid — solid, not glass. Used for the
+   launcher's manual panels and the lobby's live-feed columns. */
+.deck-panel {
+  background: rgba(9, 10, 12, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 /* Angular panel: clipped top-left + bottom-right corners → the FPS-UI cut. */
 .clip-deck {
   clip-path: polygon(
@@ -96,6 +110,13 @@ canvas {
     0 100%,
     0 9px
   );
+}
+
+/* clip-path shears the outline's corners and can swallow the offset ring, so
+   keyboard focus also gets an inset edge glow that survives the cut corners. */
+.clip-deck:focus-visible,
+.clip-deck-sm:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(34, 211, 238, 0.8);
 }
 
 /* Staggered load reveal — add .deck-rise + an inline animation-delay. */
