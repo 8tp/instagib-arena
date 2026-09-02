@@ -1,26 +1,16 @@
+import { memo } from 'react';
 import type { KillConfirm } from './types';
-
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+import { hudTiming } from '../hud-store';
 
 // Prominent per-frag confirmation — the "you got a kill" callout that pops on
 // EVERY kill (the multi-kill banner only fires on streaks). Big punchy centered
-// text that slams in, holds, then fades. Sits in the upper third so it never
-// covers the crosshair. Cyan for body kills, amber for headshots — matching the
-// kill flash + hit marker.
-export function FragPopup({ confirm }: { confirm: KillConfirm | null }) {
+// text that slams in, holds, then fades. The slam is the HUD's one overshoot
+// and lives in the .hud-frag keyframes (src/hud.css), keyed on the confirm id:
+// it runs at display rate and React never touches the element again. Sits in
+// the upper third so it never covers the crosshair. Cyan for body kills,
+// amber for headshots — matching the kill flash + hit marker.
+export const FragPopup = memo(function FragPopup({ confirm }: { confirm: KillConfirm | null }) {
   if (!confirm) return null;
-  const t = 1 - confirm.remaining / confirm.total; // 0 → 1 over its lifetime
-  const enter = clamp01(t / 0.08); // pop in fast
-  const exit = confirm.remaining < 0.45 ? clamp01(confirm.remaining / 0.45) : 1;
-  const opacity = enter * exit;
-
-  // Overshoot pop: 0.55 → 1.15 → settle to 1.0.
-  let scale: number;
-  if (t < 0.08) scale = 0.55 + 0.6 * (t / 0.08);
-  else if (t < 0.2) scale = 1.15 - 0.15 * ((t - 0.08) / 0.12);
-  else scale = 1.0;
-  const ty = (1 - enter) * -12;
-
   const headshot = confirm.headshot;
   const accent = headshot ? '#fcd34d' : '#7ce8ff';
   const glow = headshot ? 'rgba(252,211,77,0.55)' : 'rgba(124,232,255,0.5)';
@@ -30,12 +20,8 @@ export function FragPopup({ confirm }: { confirm: KillConfirm | null }) {
     <div className='absolute inset-x-0 top-[30%] flex justify-center'>
       <div
         key={confirm.id}
-        className='flex flex-col items-center text-center'
-        style={{
-          opacity,
-          transform: `translateY(${ty}px) scale(${scale})`,
-          transformOrigin: '50% 50%',
-        }}
+        className='hud-frag flex flex-col items-center text-center'
+        style={hudTiming(confirm.remaining, confirm.total)}
       >
         <div
           className='font-mono text-6xl font-black uppercase leading-none tracking-[0.06em]'
@@ -56,4 +42,4 @@ export function FragPopup({ confirm }: { confirm: KillConfirm | null }) {
       </div>
     </div>
   );
-}
+});
