@@ -259,8 +259,10 @@ type Settings = {
   zoomFov: number; // FOV while the zoom bind is held
   viewmodelOffset: { x: number; y: number; z: number }; // railgun viewmodel nudge
   hideViewmodel: boolean; // hide the first-person gun
+  viewmodelMotion: number; // 0..1 bob / sway / landing-dip intensity (fire kick always stays)
   volume: number; // master
   sfxVolume: number;
+  uiSounds: boolean; // menu clicks / hovers / toggles (still scaled by master × SFX)
   announcerVolume: number;
   announcerEnabled: boolean;
   announcerPack: AnnouncerPackId; // which announcer voice pack (legacy = default procedural)
@@ -270,6 +272,11 @@ type Settings = {
   fpsLimit: number; // 0 = VSync (display), >0 = cap to N fps, -1 = uncapped
   resolutionScale: number; // render resolution multiplier (perf ↔ sharpness)
   lowSpec: boolean; // cap high-DPI at 1× + thin particle effects
+  // Post-processing toggles (Game.setPostFx). Low-spec forces all four off.
+  bloom: boolean;
+  shadows: boolean;
+  antialias: boolean; // SMAA
+  vignette: boolean;
   uiScale: number; // HUD scale multiplier
   botsEnabled: boolean;
   multiplayer: boolean;
@@ -348,8 +355,10 @@ const DEFAULT_SETTINGS: Settings = {
   zoomFov: DEFAULT_ZOOM_FOV,
   viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET },
   hideViewmodel: false,
+  viewmodelMotion: 1,
   volume: DEFAULT_VOLUME,
   sfxVolume: 1,
+  uiSounds: true,
   announcerVolume: 1,
   announcerEnabled: true,
   announcerPack: DEFAULT_ANNOUNCER_PACK,
@@ -359,6 +368,10 @@ const DEFAULT_SETTINGS: Settings = {
   fpsLimit: 0,
   resolutionScale: 1,
   lowSpec: false,
+  bloom: true,
+  shadows: true,
+  antialias: true,
+  vignette: true,
   uiScale: 1,
   botsEnabled: true,
   multiplayer: false,
@@ -698,10 +711,12 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setZoomSens?.(s.zoomSens);
   game.setRawInput?.(s.rawInput);
   game.setQuality?.(s.resolutionScale, s.lowSpec);
+  game.setPostFx?.({ bloom: s.bloom, shadows: s.shadows, aa: s.antialias, vignette: s.vignette });
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
   game.setZoomFov?.(s.zoomFov);
   game.setViewmodel?.(s.viewmodelOffset, s.hideViewmodel);
+  game.setViewmodelMotion?.(s.viewmodelMotion);
   game.setMasterVolume?.(s.volume);
   game.setSfxVolume?.(s.sfxVolume);
   game.setAnnouncerVolume?.(s.announcerVolume);
@@ -845,10 +860,11 @@ export default function InstagibClient() {
   }, [settings]);
 
   // The menu UI sounds (src/game/audio.ts) follow the same master × SFX
-  // sliders as gameplay audio, so muting SFX also mutes the deck chrome.
+  // sliders as gameplay audio, so muting SFX also mutes the deck chrome. The
+  // "UI sounds" toggle zeroes just this bus without touching gameplay audio.
   useEffect(() => {
-    setUiVolume(settings.volume, settings.sfxVolume);
-  }, [settings.volume, settings.sfxVolume]);
+    setUiVolume(settings.uiSounds ? settings.volume : 0, settings.sfxVolume);
+  }, [settings.volume, settings.sfxVolume, settings.uiSounds]);
 
   // Your in-game name is your identity: the account username when logged in,
   // or "Guest" otherwise. This is the source of truth (overrides any old local
@@ -7014,8 +7030,8 @@ type SettingsTab =
 const SETTINGS_TABS: ReadonlyArray<{ id: SettingsTab; label: string; keywords: string }> = [
   { id: 'controls', label: 'Controls', keywords: 'sensitivity sens mouse dpi raw input fov zoom ads aim keybind bind move jump dash strafe vertical' },
   { id: 'crosshair', label: 'Crosshair', keywords: 'crosshair reticle dot cross circle color outline gap size thickness preset share' },
-  { id: 'video', label: 'Video', keywords: 'fps framerate frame rate vsync unlimited resolution quality low spec performance ui scale hud viewmodel weapon offset map brightness tint shadows particles ping' },
-  { id: 'audio', label: 'Audio', keywords: 'audio volume sound sfx announcer master mute captions' },
+  { id: 'video', label: 'Video', keywords: 'fps framerate frame rate vsync unlimited resolution quality low spec performance ui scale hud viewmodel weapon offset motion bob sway map brightness tint shadows shadow bloom glow smaa aa anti-aliasing antialiasing vignette post processing effects particles ping' },
+  { id: 'audio', label: 'Audio', keywords: 'audio volume sound sfx announcer master mute captions ui click menu sounds interface' },
   { id: 'accessibility', label: 'Access.', keywords: 'accessibility reduced effects shake flash motion bright enemies colorblind visibility' },
   { id: 'profile', label: 'Profile', keywords: 'profile name player server url lan import export share code backup' },
 ];
@@ -7224,6 +7240,38 @@ function SettingsModal({
                 </div>
               </Section>
 
+              <Section label='Post-processing'>
+                <ToggleField
+                  label='Bloom'
+                  value={settings.bloom}
+                  disabled={settings.lowSpec}
+                  onChange={(v) => onChange({ ...settings, bloom: v })}
+                />
+                <ToggleField
+                  label='Shadows'
+                  value={settings.shadows}
+                  disabled={settings.lowSpec}
+                  onChange={(v) => onChange({ ...settings, shadows: v })}
+                />
+                <ToggleField
+                  label='Anti-aliasing'
+                  value={settings.antialias}
+                  disabled={settings.lowSpec}
+                  onChange={(v) => onChange({ ...settings, antialias: v })}
+                />
+                <ToggleField
+                  label='Vignette'
+                  value={settings.vignette}
+                  disabled={settings.lowSpec}
+                  onChange={(v) => onChange({ ...settings, vignette: v })}
+                />
+                <div className='text-[10px] normal-case tracking-normal text-white/40'>
+                  {settings.lowSpec
+                    ? 'Off on low-spec. Turn off Low-spec mode to use these.'
+                    : 'Bloom glows rail beams and lights, shadows ground the arena, anti-aliasing (SMAA) smooths edges, vignette darkens the screen corners. Each costs a little GPU.'}
+                </div>
+              </Section>
+
               <Section label='Weapon viewmodel'>
             <ToggleField
               label='Hide viewmodel'
@@ -7232,6 +7280,15 @@ function SettingsModal({
             />
             {!settings.hideViewmodel && (
               <>
+                <SliderField
+                  label='Weapon motion'
+                  value={settings.viewmodelMotion}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, viewmodelMotion: v })}
+                />
                 <SliderField
                   label='Offset X'
                   value={settings.viewmodelOffset.x}
@@ -7268,8 +7325,10 @@ function SettingsModal({
               </>
             )}
             <div className='text-[10px] normal-case tracking-normal text-white/40'>
-              The railgun sits low and to the side so it never blocks your aim. Bind “Zoom (hold)”
-              under Keybinds to narrow your FOV.
+              Weapon motion scales the bob, sway, and landing dip (0% holds the gun
+              still; the fire kick always stays). The railgun sits low and to the side
+              so it never blocks your aim. Bind “Zoom (hold)” under Keybinds to narrow
+              your FOV.
             </div>
           </Section>
 
@@ -7311,6 +7370,12 @@ function SettingsModal({
               step={0.01}
               format={(v) => `${Math.round(v * 100)}%`}
               onChange={(v) => onChange({ ...settings, sfxVolume: v })}
+            />
+            <ToggleField
+              label='UI sounds'
+              hint='Menu clicks, hovers, and toggles. Follows the master and SFX sliders.'
+              value={settings.uiSounds}
+              onChange={(v) => onChange({ ...settings, uiSounds: v })}
             />
             <ToggleField
               label='Announcer'
@@ -7650,17 +7715,23 @@ function ToggleField({
   value,
   onChange,
   hint,
+  disabled,
 }: {
   label: string;
   value: boolean;
   onChange: (v: boolean) => void;
   hint?: string;
+  disabled?: boolean;
 }) {
   return (
-    <label className='flex cursor-pointer flex-col gap-1'>
-      <span className='flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-white/65'>
+    <label className={`flex flex-col gap-1 ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+      <span
+        className={`flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] ${
+          disabled ? 'text-white/35' : 'text-white/65'
+        }`}
+      >
         <span>{label}</span>
-        <DeckSwitch value={value} onChange={onChange} label={label} />
+        <DeckSwitch value={value} onChange={onChange} label={label} disabled={disabled} />
       </span>
       {hint && <span className='text-[10px] normal-case tracking-normal text-white/35'>{hint}</span>}
     </label>
