@@ -10,6 +10,8 @@ const SERVER_PORT = process.env.SERVER_PORT || process.env.PORT || '8787';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // One copy of three.js: addons import 'three' and must resolve to the same module.
+  resolve: { dedupe: ['three'] },
   server: {
     port: 5173,
     // Agent worktrees live under .claude/worktrees; don't let their edits reload the dev tab.

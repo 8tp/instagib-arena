@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getArenaTextures, type SurfaceKind, type SurfaceTextures } from './textures';
 import type { AABB, Vec3 } from './types';
 
