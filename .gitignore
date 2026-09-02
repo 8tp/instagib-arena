@@ -20,3 +20,7 @@ data/
 *.log
 npm-debug.log*
 .DS_Store
+
+# critique captures
+design/shots/*.png
+design/shots/*.jpg
