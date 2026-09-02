@@ -15,9 +15,21 @@ import {
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { useAuth, LoginModal, type Account } from './auth';
 import { FeedbackModal } from './FeedbackModal';
+import {
+  DeckButton,
+  DeckSwitch,
+  DeckTab,
+  ModalShell,
+  SegButton,
+  Skeleton,
+  TextButton,
+  ToastStack as MenuToasts, // the in-match HUD has its own ToastStack below
+  UtilButton,
+} from './deck';
+import { prefersReducedMotion, sfxProps, toast, useModalStack } from './deck-core';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
-import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, type AnnouncerPackId } from './game/audio';
+import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, setUiVolume, type AnnouncerPackId } from './game/audio';
 import { ReplayViewer, type ReplayViewerState } from './game/replay-viewer';
 import { decodeReplay, type ReplayData } from './game/replay-codec';
 import {
@@ -285,15 +297,8 @@ type Settings = {
   hideChat: boolean; // hide the in-game chat log + disable opening the composer
 };
 
-// Default the reduced-effects toggle to the OS "reduce motion" preference.
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  try {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  } catch {
-    return false;
-  }
-}
+// (The reduced-effects toggle defaults to the OS "reduce motion" preference —
+// prefersReducedMotion() is shared with the deck chrome in src/deck-core.ts.)
 
 export type MatchConfig =
   | {
@@ -499,23 +504,11 @@ function CardStatsEditor({
         <PlayerCard card={preview} size='small' reduced={settings.reducedEffects} />
       </div>
       <div className='grid grid-cols-2 gap-2'>
-        {CARD_STAT_DEFS.map((d) => {
-          const on = settings.cardStats.includes(d.key);
-          return (
-            <button
-              key={d.key}
-              type='button'
-              onClick={() => toggle(d.key)}
-              className={`rounded-md border px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
-                on
-                  ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-200'
-                  : 'border-white/10 bg-white/[0.03] text-white/55 hover:border-white/25'
-              }`}
-            >
-              {d.label}
-            </button>
-          );
-        })}
+        {CARD_STAT_DEFS.map((d) => (
+          <SegButton key={d.key} active={settings.cardStats.includes(d.key)} onClick={() => toggle(d.key)}>
+            {d.label}
+          </SegButton>
+        ))}
       </div>
       <p className='text-[10px] normal-case tracking-normal text-white/40'>
         Pick up to {MAX_CARD_STATS}. This card is shown to a player on their killcam
@@ -851,6 +844,12 @@ export default function InstagibClient() {
     saveSettings(settings);
   }, [settings]);
 
+  // The menu UI sounds (src/game/audio.ts) follow the same master × SFX
+  // sliders as gameplay audio, so muting SFX also mutes the deck chrome.
+  useEffect(() => {
+    setUiVolume(settings.volume, settings.sfxVolume);
+  }, [settings.volume, settings.sfxVolume]);
+
   // Your in-game name is your identity: the account username when logged in,
   // or "Guest" otherwise. This is the source of truth (overrides any old local
   // name) so guests always read "Guest" and accounts always read their handle.
@@ -947,64 +946,47 @@ function OnboardingModal({
   onPlayGuest: () => void;
   onCreateAccount: () => void;
 }) {
-  // Escape = play as guest (every other modal is escapable).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onPlayGuest();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onPlayGuest]);
+  // Escape / backdrop = play as guest (every other modal is escapable). The
+  // drifting deck grid inside the sheet is this dialog's one flourish — it is
+  // the first thing a new player sees.
   return (
-    <div
-      role='dialog'
-      aria-modal='true'
-      aria-label='Welcome'
-      className='fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'
-    >
-      <div className='deck-bg w-[540px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl'>
-        <div className='border-b border-white/10 px-7 py-5'>
-          <h2
-            className='font-display text-2xl font-bold uppercase tracking-[0.18em] text-cyan-300'
-            style={{ filter: 'drop-shadow(0 0 16px rgba(34,211,238,0.4))' }}
-          >
-            Welcome to the Arena
-          </h2>
-          <p className='mt-1 text-[12px] text-white/50'>One railgun. One shot. Pure movement.</p>
-        </div>
-        <div className='px-7 py-5'>
-          <div className='text-[10px] uppercase tracking-[0.24em] text-white/45'>Controls</div>
-          <div className='mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2'>
-            {CONTROLS.map(([key, action]) => (
-              <div key={key} className='flex items-baseline gap-2 text-[12px]'>
-                <span className='shrink-0 rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wide text-cyan-200'>
-                  {key}
-                </span>
-                <span className='text-white/60'>{action}</span>
-              </div>
-            ))}
-          </div>
-          <p className='mt-5 text-[12px] leading-relaxed text-white/50'>
-            Jump in as a <span className='text-white/80'>guest</span> right now — or create a free
-            account to save your XP, levels, credits, and cosmetics and climb the leaderboards.
-          </p>
-        </div>
-        <div className='flex items-center justify-between gap-3 border-t border-white/10 px-7 py-4'>
-          <button
-            onClick={onPlayGuest}
-            className='rounded-lg border border-white/15 bg-white/5 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.14em] text-white/80 transition hover:bg-white/10'
-          >
+    <ModalShell
+      title='Welcome to the Arena'
+      onClose={onPlayGuest}
+      fixed
+      z='z-[60]'
+      size='lg'
+      className='deck-bg'
+      footer={({ close }) => (
+        <>
+          <DeckButton onClick={close} size='sm' center sound='uiBack'>
             Play as Guest
-          </button>
-          <button
-            onClick={onCreateAccount}
-            className='rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
-          >
-            Create account →
-          </button>
+          </DeckButton>
+          <DeckButton onClick={onCreateAccount} solid accent='cyan' center>
+            Create account
+          </DeckButton>
+        </>
+      )}
+    >
+      <p className='-mt-1 font-display text-sm font-semibold uppercase tracking-[0.24em] text-white/80'>
+        One railgun. One shot. Pure movement.
+      </p>
+      <div>
+        <div className='deck-label'>Controls</div>
+        <div className='mt-2 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2'>
+          {CONTROLS.map(([key, action]) => (
+            <div key={key} className='flex items-baseline gap-2.5 text-[12px]'>
+              <kbd className='deck-kbd'>{key}</kbd>
+              <span className='font-sans text-white/60'>{action}</span>
+            </div>
+          ))}
         </div>
       </div>
-    </div>
+      <p className='font-sans text-[13px] leading-relaxed text-white/55'>
+        Jump in as a <span className='text-white/85'>guest</span> right now — or create a free account
+        to save your XP, levels, credits, and cosmetics and climb the leaderboards.
+      </p>
+    </ModalShell>
   );
 }
 
@@ -1723,9 +1705,9 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.railgunFinish, settings.killEffect, view]);
   return (
-    <div className='relative h-60 w-full shrink-0 overflow-hidden rounded-lg border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
+    <div className='clip-deck-sm relative h-60 w-full shrink-0 overflow-hidden border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
       <canvas ref={ref} className='block h-full w-full' />
-      <div className='pointer-events-none absolute bottom-1.5 right-2 text-[9px] uppercase tracking-[0.18em] text-white/35'>
+      <div className='pointer-events-none absolute bottom-1.5 right-3 text-[9px] uppercase tracking-[0.18em] text-white/35'>
         Live preview
       </div>
     </div>
@@ -1752,8 +1734,11 @@ function Locker({
   account?: Account;
 }) {
   const [profile, setProfile] = useState<LockerProfile | null>(null);
+  // 'loading' until /api/profile answers: the grid shows a skeleton instead of
+  // a flash of "everything owned" that then snaps to locks. 'offline' = no
+  // backend → local-only selection (everything equippable, nothing buyable).
+  const [profileState, setProfileState] = useState<'loading' | 'ready' | 'offline'>('loading');
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [tab, setTab] = useState<LockerTab>('character');
   const [caseSpin, setCaseSpin] = useState<{ won: string; dupe: boolean; refund: number } | null>(
     null,
@@ -1764,7 +1749,11 @@ function Locker({
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
       .then((d: { profile?: InstagibProfile }) => {
-        if (!active || !d.profile) return;
+        if (!active) return;
+        if (!d.profile) {
+          setProfileState('offline');
+          return;
+        }
         const p = d.profile;
         setProfile({
           unlocked: p.unlocked ?? [],
@@ -1772,6 +1761,7 @@ function Locker({
           equipped: p.equipped ?? {},
           level: p.level ?? 1,
         });
+        setProfileState('ready');
         // Sync the server's equipped choices into the live game (once, on open).
         let patch: Settings | null = null;
         for (const sl of LOCKER_SLOTS) {
@@ -1784,6 +1774,7 @@ function Locker({
       })
       .catch(() => {
         /* offline / no backend → local-only selection below */
+        if (active) setProfileState('offline');
       });
     return () => {
       active = false;
@@ -1794,13 +1785,16 @@ function Locker({
   const owns = (id: string, source: CosmeticSource) =>
     !profile || profile.unlocked.includes(id) || source.type === 'default';
 
-  const equip = async (sl: LockerSlotDef, id: string) => {
+  const itemName = (id: string) => cosmeticById(id)?.name ?? id;
+
+  // `quiet` skips the "Equipped" toast (buy() reports the purchase instead).
+  const equip = async (sl: LockerSlotDef, id: string, quiet = false) => {
     if (!profile) {
       onChange(sl.apply(settings, id)); // local-only fallback
+      if (!quiet) toast(`Equipped · ${itemName(id)}`, { tone: 'ok' });
       return;
     }
     setBusy(id);
-    setNote(null);
     try {
       const res = await fetch('/api/equip', {
         method: 'POST',
@@ -1812,16 +1806,16 @@ function Locker({
       if (res.ok && d.ok) {
         onChange(sl.apply(settings, id));
         setProfile((p) => (p ? { ...p, equipped: d.equipped ?? p.equipped } : p));
-      } else setNote('Could not equip that.');
+        if (!quiet) toast(`Equipped · ${itemName(id)}`, { tone: 'ok' });
+      } else toast('Could not equip that.', { tone: 'err' });
     } catch {
-      setNote('Network error.');
+      toast('Network error.', { tone: 'err' });
     }
     setBusy(null);
   };
 
   const buy = async (sl: LockerSlotDef, id: string) => {
     setBusy(id);
-    setNote(null);
     try {
       const res = await fetch('/api/shop/buy', {
         method: 'POST',
@@ -1839,10 +1833,11 @@ function Locker({
         setProfile((p) =>
           p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
         );
-        await equip(sl, id);
-      } else setNote(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not buy that.');
+        toast(`Unlocked + equipped · ${itemName(id)}`, { tone: 'ok' });
+        await equip(sl, id, true);
+      } else toast(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not buy that.', { tone: 'err' });
     } catch {
-      setNote('Network error.');
+      toast('Network error.', { tone: 'err' });
     }
     setBusy(null);
   };
@@ -1850,7 +1845,6 @@ function Locker({
   const openCase = async () => {
     if (busy || (profile != null && profile.credits < HAT_CASE_COST)) return;
     setBusy('__case');
-    setNote(null);
     try {
       const res = await fetch('/api/shop/open-case', { method: 'POST', credentials: 'same-origin' });
       const d = (await res.json()) as {
@@ -1868,38 +1862,39 @@ function Locker({
           p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
         );
         setCaseSpin({ won: d.won, dupe: !!d.dupe, refund: d.refund ?? 0 });
-      } else setNote(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not open the case.');
+      } else toast(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not open the case.', { tone: 'err' });
     } catch {
-      setNote('Network error.');
+      toast('Network error.', { tone: 'err' });
     }
     setBusy(null);
   };
 
   const active = LOCKER_TABS.find((t) => t.id === tab) ?? LOCKER_TABS[0];
   const slots = LOCKER_SLOTS.filter((sl) => (active.slots as readonly string[]).includes(sl.slot));
+  const loading = profileState === 'loading';
   return (
     <>
-    <LockerShell tab={tab} setTab={setTab} credits={profile?.credits ?? null} onClose={onClose}>
+    <LockerShell tab={tab} setTab={setTab} credits={profile?.credits ?? null} loading={loading} onClose={onClose}>
       <p className='text-[10px] leading-relaxed text-white/35'>
         Cosmetics — purely visual, never affect aim, movement, or hits.
       </p>
-      {note && <div className='text-[11px] text-rose-300'>{note}</div>}
       {active.view && <LockerPreview key={active.view} settings={settings} view={active.view} />}
       {tab === 'card' && <CardStatsEditor settings={settings} onChange={onChange} account={account} />}
       {slots.map((sl) => (
-        <div key={sl.slot} className='flex flex-col gap-2'>
-          <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{sl.label}</div>
+        <div key={sl.slot} className='flex flex-col gap-2' aria-busy={loading}>
+          <div className='deck-label'>{sl.label}</div>
           {sl.slot === 'hat' && (
             <button
               type='button'
               onClick={openCase}
-              disabled={busy === '__case' || (profile != null && profile.credits < HAT_CASE_COST)}
+              disabled={loading || busy === '__case' || (profile != null && profile.credits < HAT_CASE_COST)}
               title={
                 profile != null && profile.credits < HAT_CASE_COST
                   ? `Need ${HAT_CASE_COST - profile.credits} more credits — earn them by playing online matches`
                   : undefined
               }
-              className='flex items-center justify-center gap-2 rounded-lg border border-fuchsia-400/40 bg-gradient-to-r from-fuchsia-500/15 to-amber-400/15 px-3 py-2 text-[12px] font-bold uppercase tracking-[0.12em] text-amber-100 transition hover:from-fuchsia-500/25 hover:to-amber-400/25 disabled:opacity-40'
+              {...sfxProps('uiConfirm')}
+              className='clip-deck-sm flex items-center justify-center gap-2 border border-amber-300/50 bg-gradient-to-r from-fuchsia-500/15 to-amber-400/15 px-3 py-2.5 font-display text-[12px] font-bold uppercase tracking-[0.14em] text-amber-100 transition hover:from-fuchsia-500/25 hover:to-amber-400/25 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40'
             >
               🎁{' '}
               {busy === '__case'
@@ -1910,7 +1905,9 @@ function Locker({
             </button>
           )}
           <div className='grid grid-cols-2 gap-2'>
-            {sl.items.map((item) => {
+            {loading
+              ? sl.items.slice(0, 4).map((item) => <LockerItemSkeleton key={item.id} />)
+              : sl.items.map((item) => {
               const equipped = sl.current(settings) === item.id;
               const owned = owns(item.id, item.source);
               const buyable = !owned && item.source.type === 'credits';
@@ -1925,51 +1922,51 @@ function Locker({
                   key={item.id}
                   data-cosmetic={item.id}
                   data-state={equipped ? 'equipped' : owned ? 'owned' : buyable ? 'buyable' : 'locked'}
-                  className={`flex flex-col rounded-lg border px-3 py-2 ${
-                    equipped
-                      ? 'border-cyan-300/80 bg-cyan-300/10'
-                      : owned
-                        ? 'border-white/10 bg-white/[0.03]'
-                        : 'border-white/5 bg-white/[0.01] opacity-80'
+                  className={`deck-card flex flex-col px-3 py-2.5 ${
+                    equipped ? 'deck-card-active' : owned ? '' : 'deck-card-muted'
                   }`}
                 >
                   <div className='flex items-center justify-between gap-2'>
-                    <span className={`text-sm font-semibold ${owned ? 'text-white' : 'text-white/60'}`}>
+                    <span className={`font-display text-[13px] font-semibold ${owned ? 'text-white' : 'text-white/60'}`}>
                       {item.name}
                     </span>
                     <span className={`text-[9px] uppercase tracking-[0.14em] ${RARITY_STYLE[item.rarity]}`}>
                       {item.rarity}
                     </span>
                   </div>
-                  <div className='mt-1 flex-1 text-[11px] leading-snug text-white/50'>{item.blurb}</div>
-                  <div className='mt-2'>
+                  <div className='mt-1 flex-1 font-sans text-[11px] leading-snug text-white/50'>{item.blurb}</div>
+                  <div className='mt-2.5'>
                     {equipped ? (
-                      <div className='text-[9px] uppercase tracking-[0.18em] text-cyan-300'>
+                      <div className='py-1 text-[9px] uppercase tracking-[0.18em] text-cyan-300'>
                         ✓ Equipped
                       </div>
                     ) : owned ? (
-                      <button
-                        type='button'
+                      <DeckButton
                         data-action='equip'
                         disabled={working}
                         onClick={() => equip(sl, item.id)}
-                        className='w-full rounded-md border border-cyan-400/40 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-cyan-200 transition hover:bg-cyan-400/20 disabled:opacity-50'
+                        accent='cyan'
+                        size='sm'
+                        full
+                        center
                       >
                         {working ? '…' : 'Equip'}
-                      </button>
+                      </DeckButton>
                     ) : buyable ? (
-                      <button
-                        type='button'
+                      <DeckButton
                         data-action='buy'
                         disabled={working || !affordable}
                         onClick={() => buy(sl, item.id)}
-                        className='w-full rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-amber-200 transition hover:bg-amber-400/20 disabled:opacity-40'
-                        title={affordable ? '' : 'Not enough credits'}
+                        accent='amber'
+                        size='sm'
+                        full
+                        center
+                        title={affordable ? undefined : 'Not enough credits'}
                       >
                         {working ? '…' : `Buy · ${item.source.type === 'credits' ? item.source.price : 0} ⛁`}
-                      </button>
+                      </DeckButton>
                     ) : (
-                      <div className='text-[10px] uppercase tracking-[0.12em] text-white/35'>
+                      <div className='py-1 text-[10px] uppercase tracking-[0.12em] text-white/35'>
                         🔒 {sourceLabel(item.source)}
                       </div>
                     )}
@@ -1993,71 +1990,70 @@ function Locker({
   );
 }
 
-// The Locker's own modal frame: a wider panel with a STICKY header (title + tab
-// bar + credits) so the tabs never scroll away, over a scrolling body.
+// A placeholder tile the shape of a locker item, shown while the profile
+// (ownership + credits) is still loading.
+function LockerItemSkeleton() {
+  return (
+    <div className='deck-card flex flex-col px-3 py-2.5'>
+      <div className='flex items-center justify-between gap-2'>
+        <Skeleton className='h-3.5 w-24' />
+        <Skeleton className='h-2 w-8' />
+      </div>
+      <Skeleton className='mt-2 h-2.5 w-full' />
+      <Skeleton className='mt-1 h-2.5 w-3/4' />
+      <Skeleton className='mt-3 h-7 w-full' />
+    </div>
+  );
+}
+
+// The Locker's frame: the shared ModalShell, wide, with a STICKY tab row +
+// credits readout under the title so the tabs never scroll away, over a
+// scrolling body.
 function LockerShell({
   tab,
   setTab,
   credits,
+  loading,
   onClose,
   children,
 }: {
   tab: LockerTab;
   setTab: (t: LockerTab) => void;
   credits: number | null;
+  loading: boolean;
   onClose: () => void;
   children: ReactNode;
 }) {
-  useEscapeToClose(onClose);
   return (
-    <div
-      className='absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-3 backdrop-blur-md pointer-events-auto'
-      onClick={onClose}
-    >
-      <div
-        role='dialog'
-        aria-modal='true'
-        aria-label='Locker'
-        onClick={(e) => e.stopPropagation()}
-        className='clip-deck deck-rise flex max-h-[92vh] w-[560px] max-w-[94vw] flex-col border border-cyan-500/30 bg-zinc-950/95 shadow-[0_0_60px_-12px_rgba(34,211,238,0.4)]'
-      >
-        <div className='shrink-0 border-b border-white/10 px-6 pb-3 pt-5'>
-          <div className='flex items-center justify-between'>
-            <div className='font-display text-base font-bold uppercase tracking-[0.18em] text-cyan-100'>
-              Locker
-            </div>
-            <button
-              onClick={onClose}
-              className='font-mono text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-cyan-200'
-            >
-              ✕ Esc
-            </button>
+    <ModalShell
+      title='Locker'
+      onClose={onClose}
+      size='lg'
+      scroll
+      bodyClassName='gap-4'
+      header={
+        <div className='-mx-2 -mt-1 -mb-3 flex items-center justify-between gap-3'>
+          <div role='tablist' aria-label='Locker categories' className='flex flex-wrap'>
+            {LOCKER_TABS.map((t) => (
+              <DeckTab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)}>
+                {t.label}
+              </DeckTab>
+            ))}
           </div>
-          <div className='mt-3 flex items-center justify-between gap-3'>
-            <div className='flex flex-wrap gap-1.5'>
-              {LOCKER_TABS.map((t) => (
-                <button
-                  key={t.id}
-                  type='button'
-                  onClick={() => setTab(t.id)}
-                  className={`rounded-md px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] transition ${
-                    tab === t.id
-                      ? 'bg-cyan-300/15 text-cyan-200 ring-1 ring-cyan-300/40'
-                      : 'text-white/50 hover:text-white/80'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            {credits != null && (
-              <span className='shrink-0 text-[11px] font-semibold text-amber-300'>{credits} ⛁</span>
-            )}
-          </div>
+          {loading ? (
+            <Skeleton className='mr-2 h-3.5 w-14' />
+          ) : (
+            credits != null && (
+              <span className='mr-2 shrink-0 font-mono text-[11px] font-semibold tabular-nums text-amber-300'>
+                {credits} ⛁
+              </span>
+            )
+          )}
         </div>
-        <div className='flex flex-col gap-4 overflow-y-auto px-6 py-4 font-mono'>{children}</div>
-      </div>
-    </div>
+      }
+    >
+      {children}
+    </ModalShell>
   );
 }
 
@@ -2107,58 +2103,57 @@ function CaseSpinner({
   }, []);
 
   const wonHat = hatById(won);
+  // Not dismissable until the reel has landed — the reveal is the payoff.
   return (
-    <div
-      className='fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'
-      onClick={revealed ? onClose : undefined}
+    <ModalShell
+      label='Hat case'
+      tone='fuchsia'
+      fixed
+      z='z-50'
+      size='lg'
+      backdrop='heavy'
+      onClose={revealed ? onClose : undefined}
     >
-      <div
-        className='w-[560px] max-w-[94vw] rounded-2xl border border-fuchsia-500/30 bg-zinc-950/95 p-6 font-mono shadow-2xl'
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className='mb-3 text-center text-[11px] uppercase tracking-[0.3em] text-fuchsia-200/80'>
-          {revealed ? (dupe ? 'Duplicate' : 'Unboxed!') : 'Opening case…'}
-        </div>
-        <div
-          ref={vpRef}
-          className='relative h-28 overflow-hidden rounded-lg border border-white/10 bg-black/40'
-        >
-          <div className='pointer-events-none absolute left-1/2 top-0 z-10 h-full w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.9)]' />
-          <div
-            className='absolute top-1/2 flex -translate-y-1/2 gap-2'
-            style={{
-              transform: `translateX(${offset}px)`,
-              transition: offset !== 0 ? 'transform 4.4s cubic-bezier(0.12,0.85,0.18,1)' : 'none',
-            }}
-          >
-            {reel.map((h, i) => (
-              <HatReelCard key={i} hat={h} width={CARD} />
-            ))}
+      {({ close }) => (
+        <>
+          <div className='-mb-2 text-center text-[11px] uppercase tracking-[0.3em] text-fuchsia-200/80' aria-live='polite'>
+            {revealed ? (dupe ? 'Duplicate' : 'Unboxed!') : 'Opening case…'}
           </div>
-        </div>
-        {revealed && (
-          <div className='mt-4 flex flex-col items-center gap-1 text-center'>
-            <div className={`text-xl font-extrabold ${RARITY_STYLE[wonHat.rarity]}`}>
-              {wonHat.name}
-            </div>
-            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>
-              {wonHat.rarity} hat
-            </div>
-            {dupe && (
-              <div className='mt-1 text-sm font-semibold text-amber-300'>
-                Duplicate — refunded {refund} ⛁
-              </div>
-            )}
-            <button
-              onClick={onClose}
-              className='mt-3 rounded-lg bg-emerald-400 px-6 py-2 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
+          <div ref={vpRef} className='relative h-28 overflow-hidden border border-white/10 bg-black/40'>
+            <div className='pointer-events-none absolute left-1/2 top-0 z-10 h-full w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.9)]' />
+            <div
+              className='absolute top-1/2 flex -translate-y-1/2 gap-2'
+              style={{
+                transform: `translateX(${offset}px)`,
+                transition: offset !== 0 ? 'transform 4.4s cubic-bezier(0.12,0.85,0.18,1)' : 'none',
+              }}
             >
-              Nice
-            </button>
+              {reel.map((h, i) => (
+                <HatReelCard key={i} hat={h} width={CARD} />
+              ))}
+            </div>
           </div>
-        )}
-      </div>
-    </div>
+          {revealed && (
+            <div className='flex flex-col items-center gap-1 text-center'>
+              <div className={`font-display text-xl font-bold uppercase tracking-[0.08em] ${RARITY_STYLE[wonHat.rarity]}`}>
+                {wonHat.name}
+              </div>
+              <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>
+                {wonHat.rarity} hat
+              </div>
+              {dupe && (
+                <div className='mt-1 text-sm font-semibold text-amber-300'>
+                  Duplicate — refunded {refund} ⛁
+                </div>
+              )}
+              <DeckButton onClick={close} solid accent='emerald' center className='mt-3' data-autofocus>
+                Nice
+              </DeckButton>
+            </div>
+          )}
+        </>
+      )}
+    </ModalShell>
   );
 }
 
@@ -2172,7 +2167,7 @@ function HatReelCard({ hat, width }: { hat: HatCosmetic; width: number }) {
   return (
     <div
       style={{ width }}
-      className={`flex h-24 shrink-0 flex-col items-center justify-center gap-1 rounded-md border-2 bg-white/[0.04] px-2 ${ring}`}
+      className={`flex h-24 shrink-0 flex-col items-center justify-center gap-1 border-2 bg-white/[0.04] px-2 ${ring}`}
     >
       <span className='text-2xl'>🎩</span>
       <span className='line-clamp-2 text-center text-[10px] leading-tight text-white/80'>
@@ -2258,7 +2253,7 @@ function XpReward({ progression }: { progression: ProgressionResp }) {
 
   return (
     <div
-      className={`mt-4 rounded-lg border px-4 py-3 transition-colors ${
+      className={`clip-deck-sm mt-4 border px-4 py-3 transition-colors ${
         flash ? 'border-emerald-400/60 bg-emerald-300/[0.08]' : 'border-cyan-500/20 bg-cyan-300/[0.04]'
       }`}
     >
@@ -2275,9 +2270,9 @@ function XpReward({ progression }: { progression: ProgressionResp }) {
         <span className='text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-200/80'>
           Lv {lp.level}
         </span>
-        <div className='relative h-2.5 flex-1 overflow-hidden rounded-full bg-white/10'>
+        <div className='deck-bar relative h-2.5 flex-1'>
           <div
-            className={`h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300 ${
+            className={`bg-gradient-to-r from-cyan-400 to-sky-300 ${
               noAnim ? '' : 'transition-[width] duration-700 ease-out'
             }`}
             style={{ width: `${fill}%`, boxShadow: '0 0 10px rgba(56,189,248,0.55)' }}
@@ -2376,69 +2371,76 @@ function ResultsPanel({
   const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote]);
 
   return (
-    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
-      <div className='max-h-[94vh] w-[760px] max-w-[96vw] overflow-y-auto rounded-2xl border border-cyan-500/25 bg-zinc-950/95 font-mono shadow-2xl'>
-        {/* Header: Victory/Defeat title (kept clear of the 3D labels below) */}
-        <div className='border-b border-white/10 bg-black/40 py-3 text-center'>
-          <span
-            className={`text-2xl font-extrabold uppercase tracking-[0.24em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
-            style={{
-              filter: won
-                ? 'drop-shadow(0 0 16px rgba(52,211,153,0.55))'
-                : 'drop-shadow(0 0 16px rgba(244,63,94,0.55))',
-            }}
-          >
-            {won ? 'Victory' : 'Defeat'}
-          </span>
-          <span className='ml-3 text-[10px] uppercase tracking-[0.3em] text-white/40'>Final Standings</span>
-        </div>
-        {/* Hero: the 3D podium of the top 3 (hats + emotes) */}
-        <div className='h-[340px] w-full bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
-          <PodiumResults winners={winners} />
-        </div>
-
-        <div className='p-6 pt-4'>
-          {/* Full scoreboard (all players, compact) */}
-          <div className='overflow-hidden rounded-lg border border-white/10'>
-            <div className='grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-white/45'>
-              <span>#</span>
-              <span>Player</span>
-              <span className='text-right'>K</span>
-              <span className='text-right'>D</span>
-            </div>
-            {scores.map((s, i) => (
-              <div
-                key={s.id}
-                className={`grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 px-3 py-1.5 text-sm ${
-                  s.isLocal ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/80'
-                }`}
-              >
-                <span className='tabular-nums text-white/45'>{i + 1}</span>
-                <span className='truncate'>
-                  {s.name}
-                  {s.isLocal && ' (you)'}
-                </span>
-                <span className='text-right tabular-nums'>{s.frags}</span>
-                <span className='text-right tabular-nums'>{s.deaths}</span>
-              </div>
-            ))}
-          </div>
-
-          {result && (
-            <div className='mt-4 grid grid-cols-4 gap-2 text-center'>
-              <MiniStat label='Kills' value={result.kills} />
-              <MiniStat label='Deaths' value={result.deaths} />
-              <MiniStat label='Streak' value={result.bestStreak} />
-              <MiniStat label='Acc' value={`${acc}%`} />
-            </div>
-          )}
-
-          {progression && <XpReward progression={progression} />}
-
-          <div className='mt-6 flex gap-3'>{footer}</div>
-        </div>
+    <ModalShell
+      label={won ? 'Victory — final standings' : 'Defeat — final standings'}
+      tone={won ? 'emerald' : 'rose'}
+      size='xl'
+      z='z-30'
+      backdrop='heavy'
+      scroll
+      padded={false}
+      bodyClassName='gap-0'
+    >
+      {/* Header: Victory/Defeat title (kept clear of the 3D labels below) */}
+      <div className='border-b border-white/10 bg-black/40 py-3 text-center'>
+        <span
+          className={`font-display text-2xl font-bold uppercase tracking-[0.24em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
+          style={{
+            filter: won
+              ? 'drop-shadow(0 0 16px rgba(52,211,153,0.55))'
+              : 'drop-shadow(0 0 16px rgba(244,63,94,0.55))',
+          }}
+        >
+          {won ? 'Victory' : 'Defeat'}
+        </span>
+        <span className='ml-3 text-[10px] uppercase tracking-[0.3em] text-white/40'>Final Standings</span>
       </div>
-    </div>
+      {/* Hero: the 3D podium of the top 3 (hats + emotes) */}
+      <div className='h-[340px] w-full shrink-0 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
+        <PodiumResults winners={winners} />
+      </div>
+
+      <div className='p-6 pt-4'>
+        {/* Full scoreboard (all players, compact) */}
+        <div className='overflow-hidden border border-white/10'>
+          <div className='grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-white/45'>
+            <span>#</span>
+            <span>Player</span>
+            <span className='text-right'>K</span>
+            <span className='text-right'>D</span>
+          </div>
+          {scores.map((s, i) => (
+            <div
+              key={s.id}
+              className={`deck-tr grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 px-3 py-1.5 text-sm ${
+                s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
+              }`}
+            >
+              <span className='tabular-nums text-white/45'>{i + 1}</span>
+              <span className='truncate'>
+                {s.name}
+                {s.isLocal && ' (you)'}
+              </span>
+              <span className='text-right tabular-nums'>{s.frags}</span>
+              <span className='text-right tabular-nums'>{s.deaths}</span>
+            </div>
+          ))}
+        </div>
+
+        {result && (
+          <div className='mt-4 grid grid-cols-4 gap-2 text-center'>
+            <MiniStat label='Kills' value={result.kills} />
+            <MiniStat label='Deaths' value={result.deaths} />
+            <MiniStat label='Streak' value={result.bestStreak} />
+            <MiniStat label='Acc' value={`${acc}%`} />
+          </div>
+        )}
+
+        {progression && <XpReward progression={progression} />}
+
+        <div className='mt-6 flex gap-3'>{footer}</div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -2469,18 +2471,12 @@ function MatchOverOverlay({
       progression={progression}
       footer={
         <>
-          <button
-            onClick={onPlayAgain}
-            className='flex-1 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
-          >
+          <DeckButton onClick={onPlayAgain} solid accent='emerald' center className='flex-1'>
             Play Again
-          </button>
-          <button
-            onClick={onLobby}
-            className='flex-1 rounded-lg border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-white/10'
-          >
+          </DeckButton>
+          <DeckButton onClick={onLobby} center className='flex-1' sound='uiBack'>
             Lobby
-          </button>
+          </DeckButton>
         </>
       }
     />
@@ -2523,12 +2519,9 @@ function OnlineMatchResults({
       result={result}
       progression={progression}
       footer={
-        <button
-          onClick={onContinue}
-          className='flex-1 rounded-lg bg-cyan-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300'
-        >
-          Continue to Map Vote → {secs > 0 ? `(${secs})` : ''}
-        </button>
+        <DeckButton onClick={onContinue} solid accent='cyan' center className='flex-1'>
+          Continue to Map Vote {secs > 0 ? `(${secs})` : ''}
+        </DeckButton>
       }
     />
   );
@@ -2681,50 +2674,53 @@ function MapVoteOverlay({
   const totalVotes = Object.values(vote.counts).reduce((a, b) => a + b, 0);
 
   return (
-    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
-      <div className='w-[520px] max-w-[94vw] rounded-2xl border border-cyan-500/25 bg-zinc-950/95 p-7 font-mono shadow-2xl'>
-        <div className='text-center text-2xl font-extrabold uppercase tracking-[0.2em] text-cyan-200'>
+    <ModalShell label='Vote next map' z='z-30' width='w-[520px]' backdrop='heavy' bodyClassName='gap-4'>
+      <div className='text-center'>
+        <div className='font-display text-2xl font-bold uppercase tracking-[0.2em] text-cyan-200'>
           Vote next map
         </div>
-        <div className='mt-1 text-center text-[10px] uppercase tracking-[0.3em] text-white/45'>
+        <div className='mt-1 text-[10px] uppercase tracking-[0.3em] text-white/45' aria-live='polite'>
           {remainingSec.toFixed(0)}s · {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
         </div>
-        <div className='mt-5 flex flex-col gap-2.5'>
-          {vote.options.map((id) => {
-            const count = vote.counts[id] ?? 0;
-            const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
-            const mine = vote.myVote === id;
-            return (
-              <button
-                key={id}
-                onClick={() => onVote(id)}
-                className={`relative overflow-hidden rounded-lg border px-4 py-3 text-left transition ${
-                  mine
-                    ? 'border-emerald-400 bg-emerald-400/10'
-                    : 'border-white/15 bg-white/5 hover:bg-white/10'
-                }`}
-              >
-                <div
-                  className='absolute inset-y-0 left-0 bg-cyan-400/15 transition-all'
-                  style={{ width: `${pct}%` }}
-                />
-                <div className='relative flex items-center justify-between'>
-                  <span className='text-sm font-semibold uppercase tracking-[0.12em] text-white'>
-                    {mapLabel(id)}
-                  </span>
-                  <span className='text-xs tabular-nums text-white/70'>
-                    {count} · {pct}%
-                  </span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-        <div className='mt-4 text-center text-[10px] uppercase tracking-[0.2em] text-white/35'>
-          {vote.myVote ? 'Vote locked — you can change it' : 'Click a map to vote'}
-        </div>
       </div>
-    </div>
+      <div className='flex flex-col gap-2.5'>
+        {vote.options.map((id) => {
+          const count = vote.counts[id] ?? 0;
+          const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
+          const mine = vote.myVote === id;
+          return (
+            <button
+              key={id}
+              type='button'
+              aria-pressed={mine}
+              onClick={() => onVote(id)}
+              {...sfxProps('uiConfirm')}
+              className={`clip-deck-sm relative overflow-hidden border px-4 py-3 text-left transition ${
+                mine
+                  ? 'border-emerald-400 bg-emerald-400/10'
+                  : 'border-white/15 bg-white/5 hover:bg-white/10'
+              }`}
+            >
+              <div
+                className='absolute inset-y-0 left-0 bg-cyan-400/15 transition-all'
+                style={{ width: `${pct}%` }}
+              />
+              <div className='relative flex items-center justify-between'>
+                <span className='font-display text-sm font-semibold uppercase tracking-[0.12em] text-white'>
+                  {mapLabel(id)}
+                </span>
+                <span className='text-xs tabular-nums text-white/70'>
+                  {count} · {pct}%
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className='text-center text-[10px] uppercase tracking-[0.2em] text-white/35'>
+        {vote.myVote ? 'Vote locked — you can change it' : 'Click a map to vote'}
+      </div>
+    </ModalShell>
   );
 }
 
@@ -2739,25 +2735,22 @@ function inviteLink(roomId: string): string {
 // and is auto-retrying, instead of leaving them in a silent "ghost match".
 function DisconnectedOverlay({ error, onLeave }: { error: boolean; onLeave: () => void }) {
   return (
-    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
-      <div className='w-[440px] max-w-[94vw] rounded-2xl border border-rose-500/30 bg-zinc-950/95 p-7 text-center font-mono shadow-2xl'>
-        <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-rose-200'>
-          <span className='inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-rose-300 shadow-[0_0_6px_rgba(251,113,133,0.85)]' />
-          {error ? 'Connection error' : 'Connection lost'}
-        </div>
-        <div className='mt-3 text-xl font-bold text-white'>Reconnecting…</div>
-        <p className='mt-2 text-sm text-white/55'>
+    <ModalShell label='Connection lost' tone='rose' z='z-30' backdrop='heavy' bodyClassName='items-center text-center'>
+      <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-rose-200'>
+        <span className='deck-pulse inline-block h-1.5 w-1.5 rounded-full bg-rose-300 shadow-[0_0_6px_rgba(251,113,133,0.85)]' />
+        {error ? 'Connection error' : 'Connection lost'}
+      </div>
+      <div className='-mt-2'>
+        <div className='font-display text-xl font-bold uppercase tracking-[0.12em] text-white'>Reconnecting…</div>
+        <p className='mt-2 font-sans text-sm text-white/55'>
           Lost contact with the server. Trying to get you back into the match — this usually
           takes a few seconds.
         </p>
-        <button
-          onClick={onLeave}
-          className='mt-5 rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-white/80 transition hover:bg-white/10'
-        >
-          Leave to menu
-        </button>
       </div>
-    </div>
+      <DeckButton onClick={onLeave} size='sm' center sound='uiBack'>
+        Leave to menu
+      </DeckButton>
+    </ModalShell>
   );
 }
 
@@ -2776,43 +2769,40 @@ function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLeave: () 
     }
   };
   return (
-    <div className='absolute inset-0 z-30 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
-      <div className='w-[460px] max-w-[94vw] rounded-2xl border border-cyan-500/25 bg-zinc-950/95 p-7 text-center font-mono shadow-2xl'>
-        <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-cyan-200'>
-          <span className='inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300 shadow-[0_0_6px_rgba(103,232,249,0.85)]' />
-          Waiting for opponents
-        </div>
-        <div className='mt-3 text-xl font-bold text-white'>You&apos;re the only one here</div>
-        <p className='mt-2 text-sm text-white/55'>
+    <ModalShell label='Waiting for opponents' z='z-30' width='w-[460px]' backdrop='heavy' bodyClassName='text-center'>
+      <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-cyan-200'>
+        <span className='deck-pulse inline-block h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_rgba(103,232,249,0.85)]' />
+        Waiting for opponents
+      </div>
+      <div className='-mt-2'>
+        <div className='font-display text-xl font-bold uppercase tracking-[0.12em] text-white'>You&apos;re the only one here</div>
+        <p className='mt-2 font-sans text-sm text-white/55'>
           The match starts the moment another player joins. Share the link to fill the lobby.
         </p>
-        <div className='mt-5 flex items-center gap-2'>
+      </div>
+      <div>
+        <div className='flex items-center gap-2'>
           <input
             readOnly
             value={link}
+            aria-label='Invite link'
             onFocus={(e) => e.currentTarget.select()}
-            className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1.5 font-mono text-[11px] text-white/80 outline-none'
+            className='deck-input deck-input-sm min-w-0 flex-1'
           />
-          <button
-            onClick={copy}
-            className='rounded bg-cyan-300 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-200'
-          >
+          <UtilButton onClick={copy} tone='cyan' sound='uiConfirm' className='shrink-0'>
             {copied ? 'Copied!' : 'Copy'}
-          </button>
+          </UtilButton>
         </div>
         {roomId && (
           <div className='mt-2 text-[10px] uppercase tracking-[0.16em] text-white/40'>
             Lobby code: <span className='text-white/80'>{roomId}</span>
           </div>
         )}
-        <button
-          onClick={onLeave}
-          className='mt-6 w-full rounded-lg border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-white/10'
-        >
-          Leave to Lobby
-        </button>
       </div>
-    </div>
+      <DeckButton onClick={onLeave} full center sound='uiBack'>
+        Leave to Lobby
+      </DeckButton>
+    </ModalShell>
   );
 }
 
@@ -2826,34 +2816,24 @@ function JoinErrorOverlay({
   onRetry?: () => void;
 }) {
   return (
-    <div className='absolute inset-0 z-40 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md pointer-events-auto'>
-      <div className='w-[400px] max-w-[92vw] rounded-2xl border border-rose-500/30 bg-zinc-950/95 p-7 text-center font-mono shadow-2xl'>
-        <div className='text-lg font-bold uppercase tracking-[0.16em] text-rose-300'>
+    <ModalShell label="Couldn't join" tone='rose' z='z-40' size='sm' backdrop='heavy' bodyClassName='text-center'>
+      <div>
+        <div className='font-display text-lg font-bold uppercase tracking-[0.16em] text-rose-300'>
           Couldn&apos;t join
         </div>
-        <p className='mt-3 text-sm text-white/65'>{message}</p>
-        <div className='mt-6 flex gap-3'>
-          {onRetry && (
-            <button
-              onClick={onRetry}
-              className='flex-1 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
-            >
-              Try Again
-            </button>
-          )}
-          <button
-            onClick={onLeave}
-            className={`flex-1 rounded-lg px-5 py-3 text-sm font-semibold uppercase tracking-[0.16em] transition ${
-              onRetry
-                ? 'border border-white/20 bg-white/5 text-white hover:bg-white/10'
-                : 'bg-emerald-400 font-bold text-zinc-950 hover:bg-emerald-300'
-            }`}
-          >
-            Back to Lobby
-          </button>
-        </div>
+        <p className='mt-3 font-sans text-sm text-white/65'>{message}</p>
       </div>
-    </div>
+      <div className='flex gap-3'>
+        {onRetry && (
+          <DeckButton onClick={onRetry} solid accent='emerald' center className='flex-1'>
+            Try Again
+          </DeckButton>
+        )}
+        <DeckButton onClick={onLeave} solid={!onRetry} accent={onRetry ? 'plain' : 'emerald'} center className='flex-1' sound='uiBack'>
+          Back to Lobby
+        </DeckButton>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -4325,40 +4305,40 @@ function ClickToPlay({
   // rebind (#26f). Move = the 4 movement keys; the rest follow their bindings.
   const moveKeys = [kb.forward, kb.left, kb.back, kb.right].map(keyLabel).join('');
   const controls = `${moveKeys} move · ${keyLabel(kb.jump)} jump · ${keyLabel(kb.dash)} dash · RMB boost · LMB fire · ${keyLabel(kb.scoreboard)} scores · Esc menu`;
+  // The pause menu: a dimmed sheet over the live arena with the deck's big
+  // display type. Clicking anywhere (the canvas underneath) re-locks the
+  // pointer; the buttons are the explicit paths. Menu toasts (e.g. from the
+  // in-match Settings sheet) rail here — never over live gameplay.
   return (
-    <div className='absolute inset-0 flex flex-col items-center justify-center bg-black/75 text-white backdrop-blur-sm pointer-events-auto'>
-      <div className='text-[11px] uppercase tracking-[0.35em] text-white/55'>
-        Instagib Arena · {inMatch}
-      </div>
-      <div className='mt-3 text-3xl font-semibold'>Click to play</div>
-      <div className='mt-2 text-sm text-white/60'>{controls}</div>
-      <div className='mt-8 flex items-center gap-3'>
-        <button
-          onClick={onPlay}
-          className='rounded-md bg-emerald-400 px-8 py-3 font-mono text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
-        >
-          Play
-        </button>
-        <button
-          onClick={onOpenSettings}
-          className='rounded-md border border-white/20 bg-white/5 px-6 py-3 font-mono text-sm font-semibold uppercase tracking-[0.16em] text-white transition hover:bg-white/10'
-        >
-          Settings
-        </button>
-        <button
-          onClick={onLeave}
-          className='rounded-md border border-rose-400/50 bg-rose-400/10 px-6 py-3 font-mono text-sm font-semibold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-400/20'
-        >
-          Leave
-        </button>
-      </div>
-      {hud.frags > 0 && (
-        <div className='mt-8 grid grid-cols-3 gap-6 text-center font-mono'>
-          <Stat label='Frags' value={hud.frags} />
-          <Stat label='Best streak' value={hud.bestStreak} />
-          <Stat label='Top speed' value={hud.speed.toFixed(1)} />
+    <div className='deck-scan absolute inset-0 flex flex-col items-center justify-center bg-black/70 text-white pointer-events-auto'>
+      <div className='relative flex flex-col items-center px-6 text-center'>
+        <div className='font-mono text-[11px] uppercase tracking-[0.35em] text-cyan-300/80'>
+          Instagib Arena · {inMatch}
         </div>
-      )}
+        <div className='mt-3 font-display text-4xl font-bold uppercase tracking-[0.16em] sm:text-5xl'>
+          Click to play
+        </div>
+        <div className='mt-3 font-mono text-[11px] uppercase tracking-[0.12em] text-white/50'>{controls}</div>
+        <div className='mt-8 flex flex-wrap items-center justify-center gap-3'>
+          <DeckButton onClick={onPlay} solid accent='emerald' size='lg' center className='min-w-[10rem]'>
+            Play
+          </DeckButton>
+          <DeckButton onClick={onOpenSettings} center>
+            Settings
+          </DeckButton>
+          <DeckButton onClick={onLeave} accent='rose' center sound='uiBack'>
+            Leave
+          </DeckButton>
+        </div>
+        {hud.frags > 0 && (
+          <div className='mt-10 grid grid-cols-3 gap-8 border-t border-white/10 pt-5 text-center font-mono'>
+            <Stat label='Frags' value={hud.frags} />
+            <Stat label='Best streak' value={hud.bestStreak} />
+            <Stat label='Top speed' value={hud.speed.toFixed(1)} />
+          </div>
+        )}
+      </div>
+      <MenuToasts />
     </div>
   );
 }
@@ -4366,8 +4346,8 @@ function ClickToPlay({
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div>
-      <div className='text-[10px] uppercase tracking-[0.25em] text-white/45'>{label}</div>
-      <div className='text-2xl font-bold tabular-nums'>{value}</div>
+      <div className='deck-label'>{label}</div>
+      <div className='mt-1 font-display text-2xl font-bold tabular-nums'>{value}</div>
     </div>
   );
 }
@@ -4523,9 +4503,9 @@ function ChallengeTimer({ gameRef }: { gameRef: { current: Game | null } }) {
   const m = Math.floor(s / 60);
   const clock = `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`;
   return (
-    <div className='pointer-events-none absolute left-1/2 top-3 z-[60] -translate-x-1/2 rounded-lg border border-cyan-400/30 bg-zinc-950/80 px-4 py-1.5 text-center font-mono shadow-lg backdrop-blur-sm'>
+    <div className='clip-deck-sm pointer-events-none absolute left-1/2 top-3 z-[60] -translate-x-1/2 border border-cyan-400/30 bg-[#0b0c0f]/85 px-4 py-1.5 text-center font-mono'>
       <div className='text-[9px] uppercase tracking-[0.22em] text-cyan-300/80'>Run time</div>
-      <div className='mt-0.5 text-xl font-bold tabular-nums tracking-wide text-white'>{clock}</div>
+      <div className='mt-0.5 font-display text-xl font-bold tabular-nums tracking-wide text-white'>{clock}</div>
     </div>
   );
 }
@@ -4586,68 +4566,71 @@ function RankedResultOverlay({
   const tier = mine ? rankedTier(mine.rating) : null;
   const delta = mine?.delta ?? 0;
   return (
-    <div className="absolute inset-0 z-[60] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
-      <div className="w-[420px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl">
-        <div className={`px-7 py-6 text-center ${won ? 'bg-emerald-400/10' : 'bg-rose-500/10'}`}>
-          <div
-            className={`font-display text-4xl uppercase tracking-[0.18em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
-          >
-            {won ? 'Victory' : 'Defeat'}
-          </div>
-          <div className="mt-1 text-[12px] uppercase tracking-[0.2em] text-white/45">
-            Ranked Duel · {result.winnerFrags}–{result.loserFrags}
-            {result.forfeit && ' · forfeit'}
-          </div>
+    <ModalShell
+      label={won ? 'Ranked duel — victory' : 'Ranked duel — defeat'}
+      tone={won ? 'emerald' : 'rose'}
+      z='z-[60]'
+      width='w-[420px]'
+      backdrop='heavy'
+      padded={false}
+      bodyClassName='gap-0'
+      footer={
+        <DeckButton onClick={onLobby} solid accent='cyan' center className='mx-auto'>
+          Back to lobby
+        </DeckButton>
+      }
+    >
+      <div className={`px-7 py-6 text-center ${won ? 'bg-emerald-400/10' : 'bg-rose-500/10'}`}>
+        <div
+          className={`font-display text-4xl font-bold uppercase tracking-[0.18em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
+        >
+          {won ? 'Victory' : 'Defeat'}
         </div>
-        <div className="px-7 py-6">
-          {mine ? (
-            <div className="text-center">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">New rating</div>
-              <div className="mt-1 flex items-center justify-center gap-3">
-                <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
-                  {mine.rating}
-                </span>
-                <span
-                  className={`font-mono text-lg tabular-nums ${delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}
-                >
-                  {delta >= 0 ? '+' : ''}
-                  {delta}
-                </span>
-              </div>
-              <div className="mt-1 text-[12px] text-white/55">
-                {tier?.name} · ladder #{mine.rank}
-              </div>
-              {result.reduced && (
-                <div className="mt-2 text-[11px] text-amber-300/80">
-                  Reduced rating — repeat opponent
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-center text-[12px] text-white/50">Unranked result.</div>
-          )}
-          {progression && (progression.xpGained > 0 || progression.creditsGained > 0) && (
-            <div className="mt-4 text-center text-[12px] text-white/50">
-              <span className="text-cyan-200">+{progression.xpGained} XP</span>
-              {progression.creditsGained > 0 && (
-                <>
-                  {' · '}
-                  <span className="text-amber-200">+{progression.creditsGained} credits</span>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="flex justify-center border-t border-white/10 px-7 py-4">
-          <button
-            onClick={onLobby}
-            className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
-          >
-            Back to lobby
-          </button>
+        <div className='mt-1 text-[12px] uppercase tracking-[0.2em] text-white/45'>
+          Ranked Duel · {result.winnerFrags}–{result.loserFrags}
+          {result.forfeit && ' · forfeit'}
         </div>
       </div>
-    </div>
+      <div className='px-7 py-6'>
+        {mine ? (
+          <div className='text-center'>
+            <div className='deck-label'>New rating</div>
+            <div className='mt-1 flex items-center justify-center gap-3'>
+              <span className='font-display text-3xl font-bold tabular-nums' style={{ color: tier?.color }}>
+                {mine.rating}
+              </span>
+              <span
+                className={`font-mono text-lg tabular-nums ${delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}
+              >
+                {delta >= 0 ? '+' : ''}
+                {delta}
+              </span>
+            </div>
+            <div className='mt-1 text-[12px] text-white/55'>
+              {tier?.name} · ladder #{mine.rank}
+            </div>
+            {result.reduced && (
+              <div className='mt-2 text-[11px] text-amber-300/80'>
+                Reduced rating — repeat opponent
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className='text-center text-[12px] text-white/50'>Unranked result.</div>
+        )}
+        {progression && (progression.xpGained > 0 || progression.creditsGained > 0) && (
+          <div className='mt-4 text-center text-[12px] text-white/50'>
+            <span className='text-cyan-200'>+{progression.xpGained} XP</span>
+            {progression.creditsGained > 0 && (
+              <>
+                {' · '}
+                <span className='text-amber-200'>+{progression.creditsGained} credits</span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </ModalShell>
   );
 }
 
@@ -4676,19 +4659,23 @@ function RankedModal({
 }) {
   const [profile, setProfile] = useState<RankedProfile | null>(null);
   const [ladder, setLadder] = useState<RankedLeaderEntry[]>([]);
+  // Both fetches answered (ok or not) → the skeletons give way to real data /
+  // the empty state, never a flash of "1000 · Unranked" before the answer.
+  const [loaded, setLoaded] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const searching = status?.state === 'searching';
 
   const refreshProfile = useCallback(() => {
     if (!account) return;
-    fetch('/api/ranked/me', { credentials: 'same-origin' })
+    const me = fetch('/api/ranked/me', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: RankedProfile } | null) => setProfile(d?.profile ?? null))
       .catch(() => {});
-    fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+    const board = fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: RankedLeaderEntry[] } | null) => setLadder(d?.entries ?? []))
       .catch(() => {});
+    void Promise.all([me, board]).then(() => setLoaded(true));
   }, [account]);
 
   useEffect(() => {
@@ -4714,101 +4701,108 @@ function RankedModal({
   }, [searching, status?.since]);
 
   const tier = profile ? rankedTier(profile.rating) : null;
+  const loading = !!account && !loaded;
 
   return (
-    <ModalShell title="Ranked Duel" onClose={onClose}>
+    <ModalShell title='Ranked Duel' tone='fuchsia' size={account ? 'xl' : 'md'} onClose={onClose}>
       {!account ? (
-        <div className="flex flex-col items-center gap-4 py-6 text-center font-mono">
-          <p className="text-[13px] text-white/60">
+        <div className='flex flex-col items-center gap-4 py-4 text-center'>
+          <p className='font-sans text-[13px] text-white/60'>
             Ranked Duel is for logged-in players — your rating follows your account.
           </p>
-          <button
-            onClick={onOpenLogin}
-            className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
-          >
+          <DeckButton onClick={onOpenLogin} solid accent='cyan' center>
             Log in to play ranked
-          </button>
+          </DeckButton>
         </div>
       ) : (
-        <div className="grid gap-5 font-mono md:grid-cols-[1.2fr_1fr]">
+        <div className='grid gap-5 md:grid-cols-[1.2fr_1fr]' aria-busy={loading}>
           {/* Left: your rank + queue + ladder */}
-          <div className="flex flex-col gap-4">
-            <div className="rounded-lg border border-white/12 bg-black/30 p-4">
-              <div className="flex items-center justify-between">
+          <div className='flex flex-col gap-4'>
+            <div className='border border-white/10 bg-black/30 p-4'>
+              <div className='flex items-center justify-between'>
                 <div>
-                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/45">Your rating</div>
-                  <div className="mt-0.5 flex items-baseline gap-2">
-                    <span className="font-display text-3xl tabular-nums" style={{ color: tier?.color }}>
-                      {profile?.rating ?? RANKED_BASE}
-                    </span>
-                    {tier && <span className="text-[12px] text-white/55">{tier.name}</span>}
-                  </div>
-                </div>
-                <div className="text-right text-[11px] text-white/50">
-                  {profile && profile.rank > 0 ? (
-                    <div>
-                      Ladder <span className="text-cyan-200">#{profile.rank}</span>
-                    </div>
+                  <div className='deck-label'>Your rating</div>
+                  {loading ? (
+                    <Skeleton className='mt-1.5 h-8 w-24' />
                   ) : (
-                    <div className="text-white/35">Unranked</div>
+                    <div className='mt-0.5 flex items-baseline gap-2'>
+                      <span className='font-display text-3xl font-bold tabular-nums' style={{ color: tier?.color }}>
+                        {profile?.rating ?? RANKED_BASE}
+                      </span>
+                      {tier && <span className='text-[12px] text-white/55'>{tier.name}</span>}
+                    </div>
                   )}
-                  <div className="tabular-nums">
-                    {profile?.wins ?? 0}W · {profile?.losses ?? 0}L
-                  </div>
-                  {profile?.provisional && <div className="text-amber-300/80">provisional</div>}
+                </div>
+                <div className='text-right text-[11px] text-white/50'>
+                  {loading ? (
+                    <>
+                      <Skeleton className='ml-auto h-3 w-16' />
+                      <Skeleton className='ml-auto mt-1.5 h-3 w-12' />
+                    </>
+                  ) : (
+                    <>
+                      {profile && profile.rank > 0 ? (
+                        <div>
+                          Ladder <span className='text-cyan-200'>#{profile.rank}</span>
+                        </div>
+                      ) : (
+                        <div className='text-white/35'>Unranked</div>
+                      )}
+                      <div className='tabular-nums'>
+                        {profile?.wins ?? 0}W · {profile?.losses ?? 0}L
+                      </div>
+                      {profile?.provisional && <div className='text-amber-300/80'>provisional</div>}
+                    </>
+                  )}
                 </div>
               </div>
-              <div className="mt-4">
+              <div className='mt-4'>
                 {searching ? (
-                  <button
-                    onClick={onCancel}
-                    className="w-full rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-500/20"
-                  >
+                  <DeckButton onClick={onCancel} accent='rose' full center sound='uiBack'>
                     Searching… {elapsed}s · cancel
-                  </button>
+                  </DeckButton>
                 ) : (
-                  <button
-                    onClick={onQueue}
-                    className="w-full rounded-lg bg-cyan-400 px-4 py-3 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300"
-                  >
+                  <DeckButton onClick={onQueue} solid accent='fuchsia' full center>
                     Find ranked match
-                  </button>
+                  </DeckButton>
                 )}
                 {status?.reason === 'account' && (
-                  <p className="mt-2 text-center text-[11px] text-rose-300">Ranked needs an account.</p>
+                  <p className='mt-2 text-center text-[11px] text-rose-300'>Ranked needs an account.</p>
                 )}
                 {status?.reason === 'in-match' && (
-                  <p className="mt-2 text-center text-[11px] text-rose-300">
+                  <p className='mt-2 text-center text-[11px] text-rose-300'>
                     You're already in a ranked match in another tab.
                   </p>
                 )}
               </div>
             </div>
 
-            <div className="rounded-lg border border-white/12 bg-black/30 p-4">
-              <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-white/45">Ladder</div>
-              {ladder.length === 0 ? (
-                <div className="py-4 text-center text-[12px] text-white/35">No ranked players yet — be the first.</div>
+            <div className='border border-white/10 bg-black/30 p-4'>
+              <div className='deck-label mb-2'>Ladder</div>
+              {loading ? (
+                <TableSkeleton rows={6} />
+              ) : ladder.length === 0 ? (
+                <div className='py-4 text-center text-[12px] text-white/35'>No ranked players yet — be the first.</div>
               ) : (
-                <div className="max-h-[260px] overflow-y-auto">
-                  <table className="w-full text-left text-[12px]">
+                <div className='deck-scroll max-h-[260px] overflow-y-auto'>
+                  <table className='w-full text-left text-[12px]'>
                     <tbody>
                       {ladder.map((e, i) => {
                         const t = rankedTier(e.rating);
                         const me = profile?.id === e.id;
                         return (
-                          <tr key={e.id} className={`border-t border-white/8 ${me ? 'bg-cyan-400/10' : ''}`}>
-                            <td className="py-1.5 pr-2 tabular-nums text-white/40">{i + 1}</td>
-                            <td className="py-1.5 pr-2 text-white/85">
-                              <span className="flex items-center gap-1">
+                          <tr key={e.id} className={`deck-tr ${me ? 'deck-tr-you' : ''}`}>
+                            <td className='py-1.5 pl-2 pr-2 tabular-nums text-white/40'>{i + 1}</td>
+                            <td className='py-1.5 pr-2 text-white/85'>
+                              <span className='flex items-center gap-1'>
                                 {e.userName}
-                                {e.verified && <span className="text-cyan-300">✓</span>}
+                                {e.verified && <span className='text-cyan-300'>✓</span>}
                               </span>
                             </td>
-                            <td className="py-1.5 pr-2 text-right tabular-nums" style={{ color: t.color }}>
+                            <td className='py-1.5 pr-2 text-right tabular-nums' style={{ color: t.color }}>
                               {e.rating}
                             </td>
-                            <td className="py-1.5 text-right tabular-nums text-white/40">
+                            <td className='py-1.5 pr-2 text-right tabular-nums text-white/40'>
                               {e.wins}-{e.losses}
                             </td>
                           </tr>
@@ -4822,29 +4816,31 @@ function RankedModal({
           </div>
 
           {/* Right: live ranked duels to spectate */}
-          <div className="rounded-lg border border-white/12 bg-black/30 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">Live ranked duels</span>
-              <span className="text-[10px] text-white/30">👁 spectate</span>
+          <div className='border border-white/10 bg-black/30 p-4'>
+            <div className='mb-2 flex items-center justify-between'>
+              <span className='deck-label'>Live ranked duels</span>
+              <span className='text-[10px] text-white/30'>👁 spectate</span>
             </div>
             {rooms.length === 0 ? (
-              <div className="py-6 text-center text-[12px] text-white/35">No live ranked duels right now.</div>
+              <div className='py-6 text-center text-[12px] text-white/35'>No live ranked duels right now.</div>
             ) : (
-              <div className="flex flex-col gap-2">
+              <div className='flex flex-col gap-2'>
                 {rooms.map((r) => (
                   <button
                     key={r.id}
+                    type='button'
                     onClick={() => onSpectate(r.id, r.mapId)}
-                    className="flex items-center justify-between rounded-md border border-white/12 bg-black/40 px-3 py-2 text-left transition hover:border-cyan-400/50 hover:bg-cyan-400/5"
+                    {...sfxProps('uiConfirm')}
+                    className='clip-deck-sm flex items-center justify-between border border-white/12 bg-black/40 px-3 py-2 text-left transition hover:border-cyan-400/50 hover:bg-cyan-400/5'
                   >
-                    <span className="min-w-0 flex-1 truncate text-[12px] text-white/80">
+                    <span className='min-w-0 flex-1 truncate text-[12px] text-white/80'>
                       {r.players.map((p) => p.name).join('  vs  ') || 'Ranked duel'}
                     </span>
-                    <span className="ml-3 shrink-0 tabular-nums text-[12px] text-cyan-200">
+                    <span className='ml-3 shrink-0 tabular-nums text-[12px] text-cyan-200'>
                       {r.players.map((p) => p.frags).join(' – ')}
                     </span>
                     {r.spectators > 0 && (
-                      <span className="ml-2 shrink-0 text-[10px] text-white/35">👁 {r.spectators}</span>
+                      <span className='ml-2 shrink-0 text-[10px] text-white/35'>👁 {r.spectators}</span>
                     )}
                   </button>
                 ))}
@@ -4854,6 +4850,22 @@ function RankedModal({
         </div>
       )}
     </ModalShell>
+  );
+}
+
+// Placeholder rows for a ladder / leaderboard while it loads: rank, name, and
+// a right-aligned figure, in the same rhythm as the real rows.
+function TableSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className='flex flex-col' aria-hidden='true'>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className='deck-tr flex items-center gap-3 px-2 py-2'>
+          <Skeleton className='h-3 w-4' />
+          <Skeleton className='h-3 flex-1' style={{ maxWidth: `${52 + ((i * 17) % 30)}%` }} />
+          <Skeleton className='ml-auto h-3 w-10' />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -4897,83 +4909,83 @@ function WeeklyChallengeModal({
   }, []);
   const mapName = info ? (mapById(info.map)?.name ?? info.map) : '';
   return (
-    <ModalShell title='Weekly Challenge' onClose={onClose}>
-      <div className='flex flex-col gap-4 font-mono'>
-        <p className='text-[13px] leading-relaxed text-white/65'>
-          Solo <span className='text-rose-300'>8-player FFA</span> vs 7 easy bots
-          {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Beat them to the cap and your{' '}
-          <span className='text-amber-200'>clear time</span> tops the week; lose the race and your kills
-          count instead. Every best run is recorded — hit <span className='text-cyan-300'>▶</span> to
-          rewatch anyone&apos;s. Its own board — never touches your K/D.
-        </p>
+    <ModalShell title='Weekly Challenge' tone='amber' size='lg' onClose={onClose} bodyClassName='gap-4'>
+      <p className='font-sans text-[13px] leading-relaxed text-white/65'>
+        Solo <span className='text-rose-300'>8-player FFA</span> vs 7 easy bots
+        {info ? ` on ${mapName} — first to ${info.fragLimit}` : ''}. Beat them to the cap and your{' '}
+        <span className='text-amber-200'>clear time</span> tops the week; lose the race and your kills
+        count instead. Every best run is recorded — hit <span className='text-cyan-300'>▶</span> to
+        rewatch anyone&apos;s. Its own board — never touches your K/D.
+      </p>
 
-        <div className='flex items-center justify-between rounded-lg border border-white/12 bg-black/30 px-4 py-3'>
-          <div>
-            <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>Your week</div>
-            {me ? (
-              <div className='mt-0.5 text-[13px] text-white/85'>
-                {me.won ? `Best clear ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
-                <span className='text-white/45'> · rank #{me.rank}</span>
-              </div>
-            ) : (
-              <div className='mt-0.5 text-[12px] text-white/45'>
-                {account ? 'No run yet this week.' : 'Log in to save your score.'}
-              </div>
-            )}
-          </div>
-          <button
-            onClick={onPlay}
-            className='rounded-lg bg-rose-400 px-5 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-rose-300'
-          >
-            Play challenge
-          </button>
-        </div>
-
-        <div className='rounded-lg border border-white/12 bg-black/30 p-4'>
-          <div className='mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-white/45'>
-            <span>This week</span>
-            <span className='normal-case tracking-normal text-white/30'>clear time · then kills</span>
-          </div>
+      <div className='flex items-center justify-between gap-4 border border-white/10 bg-black/30 px-4 py-3'>
+        <div className='min-w-0'>
+          <div className='deck-label'>Your week</div>
           {!ready ? (
-            <div className='py-4 text-center text-[12px] text-white/35'>Loading…</div>
-          ) : entries.length === 0 ? (
-            <div className='py-4 text-center text-[12px] text-white/35'>No runs yet — be the first.</div>
+            <Skeleton className='mt-1.5 h-3.5 w-40' />
+          ) : me ? (
+            <div className='mt-0.5 text-[13px] text-white/85'>
+              {me.won ? `Best clear ${fmtChallengeTime(me.timeMs)}` : `${me.kills} kills`}
+              <span className='text-white/45'> · rank #{me.rank}</span>
+            </div>
           ) : (
-            <div className='max-h-[300px] overflow-y-auto'>
-              <table className='w-full text-left text-[12px]'>
-                <tbody>
-                  {entries.map((e, i) => (
-                    <tr key={e.id} className={`border-t border-white/8 ${e.id === me?.id ? 'bg-rose-400/10' : ''}`}>
-                      <td className='py-1.5 pr-2 tabular-nums text-white/40'>{i + 1}</td>
-                      <td className='py-1.5 pr-2 text-white/85'>
-                        <span className='flex items-center gap-1'>
-                          {e.userName}
-                          {e.verified && <span className='text-cyan-300'>✓</span>}
-                        </span>
-                      </td>
-                      <td className='w-8 py-1.5 pr-1 text-center'>
-                        {e.hasReplay && (
-                          <button
-                            onClick={() => setWatch({ id: e.id, name: e.userName })}
-                            title={`Rewatch ${e.userName}'s run`}
-                            className='rounded px-1.5 py-0.5 text-[11px] text-cyan-300 transition hover:bg-cyan-400/15 hover:text-cyan-200'
-                          >
-                            ▶
-                          </button>
-                        )}
-                      </td>
-                      <td
-                        className={`py-1.5 text-right tabular-nums ${e.won ? 'text-amber-200/90' : 'text-white/55'}`}
-                      >
-                        {e.won ? fmtChallengeTime(e.timeMs) : `${e.kills} K`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className='mt-0.5 text-[12px] text-white/45'>
+              {account ? 'No run yet this week.' : 'Log in to save your score.'}
             </div>
           )}
         </div>
+        <DeckButton onClick={onPlay} solid accent='amber' center className='shrink-0'>
+          Play challenge
+        </DeckButton>
+      </div>
+
+      <div className='border border-white/10 bg-black/30 p-4' aria-busy={!ready}>
+        <div className='mb-2 flex items-center justify-between'>
+          <span className='deck-label'>This week</span>
+          <span className='text-[10px] text-white/30'>clear time · then kills</span>
+        </div>
+        {!ready ? (
+          <TableSkeleton rows={6} />
+        ) : entries.length === 0 ? (
+          <div className='py-4 text-center text-[12px] text-white/35'>No runs yet — be the first.</div>
+        ) : (
+          <div className='deck-scroll max-h-[300px] overflow-y-auto'>
+            <table className='w-full text-left text-[12px]'>
+              <tbody>
+                {entries.map((e, i) => (
+                  <tr key={e.id} className={`deck-tr ${e.id === me?.id ? 'deck-tr-you' : ''}`}>
+                    <td className='py-1.5 pl-2 pr-2 tabular-nums text-white/40'>{i + 1}</td>
+                    <td className='py-1.5 pr-2 text-white/85'>
+                      <span className='flex items-center gap-1'>
+                        {e.userName}
+                        {e.verified && <span className='text-cyan-300'>✓</span>}
+                      </span>
+                    </td>
+                    <td className='w-8 py-1 pr-1 text-center'>
+                      {e.hasReplay && (
+                        <button
+                          type='button'
+                          onClick={() => setWatch({ id: e.id, name: e.userName })}
+                          title={`Rewatch ${e.userName}'s run`}
+                          aria-label={`Rewatch ${e.userName}'s run`}
+                          {...sfxProps('uiConfirm')}
+                          className='px-1.5 py-0.5 text-[11px] text-cyan-300 transition hover:bg-cyan-400/15 hover:text-cyan-200'
+                        >
+                          ▶
+                        </button>
+                      )}
+                    </td>
+                    <td
+                      className={`py-1.5 pr-2 text-right tabular-nums ${e.won ? 'text-amber-200/90' : 'text-white/55'}`}
+                    >
+                      {e.won ? fmtChallengeTime(e.timeMs) : `${e.kills} K`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
       {watch && (
         <ReplayViewerOverlay
@@ -5023,6 +5035,9 @@ function ReplayViewerOverlay({
   // playback back to 0.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // Sit on top of the modal stack so the Weekly dialog underneath ignores the
+  // Escape that closes this viewer (instead of both closing at once).
+  useModalStack();
 
   useEffect(() => {
     let cancelled = false;
@@ -5151,21 +5166,13 @@ function ReplayViewerOverlay({
       <div className='relative z-10 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent px-5 py-3'>
         <div className='flex items-baseline gap-2'>
           <span className='text-[10px] uppercase tracking-[0.2em] text-cyan-300'>Replay</span>
-          <span className='text-sm text-white/90'>{playerName}&apos;s run</span>
+          <span className='font-display text-sm font-semibold text-white/90'>{playerName}&apos;s run</span>
         </div>
         <div className='flex items-center gap-2'>
-          <button
-            onClick={toggleFullscreen}
-            className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-white/70 transition hover:bg-white/10 hover:text-white'
-          >
-            {isFs ? '⤢ Windowed' : '⛶ Fullscreen'}
-          </button>
-          <button
-            onClick={onClose}
-            className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.16em] text-white/70 transition hover:bg-white/10 hover:text-white'
-          >
+          <UtilButton onClick={toggleFullscreen}>{isFs ? '⤢ Windowed' : '⛶ Fullscreen'}</UtilButton>
+          <UtilButton onClick={onClose} sound='uiBack'>
             Close ✕
-          </button>
+          </UtilButton>
         </div>
       </div>
 
@@ -5176,43 +5183,47 @@ function ReplayViewerOverlay({
         {error ? (
           <div className='text-center text-[13px] text-rose-300'>{error}</div>
         ) : !ready ? (
-          <div className='text-center text-[13px] text-white/50'>Loading replay…</div>
+          <div className='text-center text-[11px] uppercase tracking-[0.2em] text-white/50'>Loading replay…</div>
         ) : (
           <div className='mx-auto flex max-w-3xl items-center gap-3'>
-            <button
+            <DeckButton
               onClick={() => viewerRef.current?.togglePlay()}
-              className='w-16 rounded-md bg-cyan-400 px-3 py-2 text-sm font-bold text-zinc-950 transition hover:bg-cyan-300'
+              solid
+              accent='cyan'
+              size='sm'
+              center
+              className='w-16'
+              aria-label={playing ? 'Pause' : 'Play'}
+              sound='uiClick'
             >
               {playing ? '❚❚' : '▶'}
-            </button>
+            </DeckButton>
             <span className='w-12 shrink-0 text-right text-[11px] tabular-nums text-white/70'>
               {fmtChallengeTime(t * 1000)}
             </span>
             <input
               type='range'
+              aria-label='Scrub'
               min={0}
               max={Math.max(0.1, duration)}
               step={0.05}
               value={Math.min(t, duration)}
               onChange={(ev) => viewerRef.current?.seek(parseFloat(ev.target.value))}
-              className='h-1.5 flex-1 cursor-pointer accent-cyan-400'
+              className='deck-range h-1.5 flex-1'
             />
             <span className='w-12 shrink-0 text-[11px] tabular-nums text-white/40'>
               {fmtChallengeTime(duration * 1000)}
             </span>
-            <div className='flex items-center gap-1'>
+            <div className='flex items-center gap-1' role='group' aria-label='Playback speed'>
               {REPLAY_SPEEDS.map((s) => (
-                <button
+                <SegButton
                   key={s}
+                  active={state?.speed === s}
                   onClick={() => viewerRef.current?.setSpeed(s)}
-                  className={`rounded px-2 py-1 text-[11px] tabular-nums transition ${
-                    state?.speed === s
-                      ? 'bg-cyan-400/20 text-cyan-200'
-                      : 'text-white/50 hover:bg-white/10 hover:text-white/80'
-                  }`}
+                  className='px-2 py-1 font-mono text-[11px] normal-case tabular-nums tracking-normal'
                 >
                   {s}×
-                </button>
+                </SegButton>
               ))}
             </div>
           </div>
@@ -5265,7 +5276,6 @@ function Lobby({
   // Live menu presence + global chat (pushed over the lobby socket).
   const [presence, setPresence] = useState<PresenceState | null>(null);
   const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
-  const [chatNotice, setChatNotice] = useState<string | null>(null);
 
   // A custom server URL is a dev/LAN-only convenience. In production we ALWAYS
   // use the same-origin server and ignore any persisted/imported serverUrl, so
@@ -5333,13 +5343,15 @@ function Lobby({
         const next = [...log, m];
         return next.length > CHAT_LOG_MAX ? next.slice(next.length - CHAT_LOG_MAX) : next;
       });
+    // A rejected chat line surfaces as a menu toast (warn tone).
     lobby.onChatRejected = (reason) =>
-      setChatNotice(
+      toast(
         reason === 'rate'
           ? 'Slow down — too many messages.'
           : reason === 'account'
             ? 'Log in to chat.'
             : 'Message blocked by the filter.',
+        { tone: 'warn', sound: 'uiError' },
       );
     lobby.onRankedStatus = setRankedStatus;
     lobby.onRankedRooms = setRankedRooms;
@@ -5362,13 +5374,6 @@ function Lobby({
   useEffect(() => {
     lobbyRef.current?.setName(settings.playerName || 'Player');
   }, [settings.playerName]);
-
-  // Auto-dismiss a chat rejection notice (rate-limit / filter).
-  useEffect(() => {
-    if (!chatNotice) return;
-    const t = setTimeout(() => setChatNotice(null), 3000);
-    return () => clearTimeout(t);
-  }, [chatNotice]);
 
   // Pull credits/level + the claimable-challenge count for the lobby chrome.
   // Re-pulls whenever a modal that can change them closes (refreshTick).
@@ -5412,6 +5417,10 @@ function Lobby({
 
   return (
     <div className='deck-bg deck-scan fixed inset-0 z-50 overflow-hidden text-white'>
+      <a href='#lobby-main' className='deck-skip-link'>
+        Skip to content
+      </a>
+      <MenuToasts />
       <div className='relative mx-auto flex h-full w-full max-w-6xl flex-col gap-4 px-5 py-5 sm:px-8 sm:py-6'>
         {/* ── Top status bar ─────────────────────────────────────────── */}
         <header className='deck-rise flex items-center gap-3' style={{ animationDelay: '0ms' }}>
@@ -5433,20 +5442,29 @@ function Lobby({
                 </span>
                 {account.isAdmin && (
                   <button
+                    type='button'
                     onClick={() => setAdminOpen(true)}
+                    {...sfxProps('uiClick')}
                     className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
                   >
                     Admin
                   </button>
                 )}
-                <button onClick={onLogout} className='text-white/35 transition hover:text-white/70'>
+                <button
+                  type='button'
+                  onClick={onLogout}
+                  {...sfxProps('uiBack')}
+                  className='text-white/35 transition hover:text-white/70'
+                >
                   Log&nbsp;out
                 </button>
               </span>
             ) : (
               <button
+                type='button'
                 onClick={onOpenLogin}
                 title='Save your progress across devices'
+                {...sfxProps('uiClick')}
                 className='clip-deck-sm inline-flex items-center gap-1.5 border border-cyan-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100'
               >
                 <span className='text-white/40'>Guest ·</span> Log in / Register
@@ -5457,6 +5475,7 @@ function Lobby({
                 type='button'
                 onClick={() => setLockerOpen(true)}
                 title='Open the Locker — spend credits on cosmetics'
+                {...sfxProps('uiClick')}
                 className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
               >
                 <span className='text-white/45'>Lv {lobbyProfile.level}</span>
@@ -5470,7 +5489,11 @@ function Lobby({
 
         {/* ── Main grid: actions (left) · live feed (right). Scrolls as one
             page on mobile; splits into two fixed columns on desktop. ─────── */}
-        <main className='grid min-h-0 flex-1 gap-4 overflow-y-auto lg:grid-cols-[1.15fr_0.85fr] lg:overflow-visible'>
+        <main
+          id='lobby-main'
+          tabIndex={-1}
+          className='grid min-h-0 flex-1 gap-4 overflow-y-auto outline-none lg:grid-cols-[1.15fr_0.85fr] lg:overflow-visible'
+        >
           {/* Left — mode + actions */}
           <section className='deck-scroll flex min-h-0 flex-col gap-3 pr-1 lg:overflow-y-auto'>
             <p className='deck-rise max-w-md text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>
@@ -5490,6 +5513,7 @@ function Lobby({
 
             {/* Primary CTA */}
             <button
+              type='button'
               onClick={() => {
                 if (searching || !online || playDisabled) return; // double-fire guard
                 setSearching(true);
@@ -5501,6 +5525,7 @@ function Lobby({
               }}
               disabled={!online || playDisabled || searching}
               aria-busy={searching}
+              {...sfxProps('uiConfirm')}
               className='clip-deck deck-rise group bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 active:translate-y-px disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
               style={{ animationDelay: '180ms' }}
             >
@@ -5557,7 +5582,7 @@ function Lobby({
                   {claimable > 0 && (
                     <span
                       title={`${claimable} reward${claimable > 1 ? 's' : ''} ready to claim`}
-                      className='inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-400 px-1 text-[10px] font-bold text-emerald-950'
+                      className='clip-deck-sm inline-flex h-4 min-w-4 items-center justify-center bg-emerald-400 px-1.5 text-[10px] font-bold tabular-nums text-emerald-950'
                     >
                       {claimable}
                     </span>
@@ -5590,7 +5615,6 @@ function Lobby({
                 online={online}
                 canChat={!!account}
                 youName={account?.username ?? null}
-                notice={chatNotice}
                 onSend={(text) => lobbyRef.current?.sendChat(text)}
               />
             </div>
@@ -5713,77 +5737,17 @@ function Lobby({
   );
 }
 
-// Angular command-deck action button. Accent tints the hover/border; `full`
-// stretches it. Labels use the squared display face for the FPS-UI feel. An
-// optional `sub` rides the right edge as a quiet mono qualifier (e.g. the
-// queue format), so the label itself stays clean type — no emoji decoration.
-function DeckButton({
-  onClick,
-  disabled,
-  accent = 'plain',
-  full,
-  sub,
-  children,
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  accent?: 'cyan' | 'amber' | 'fuchsia' | 'plain';
-  full?: boolean;
-  sub?: string;
-  children: ReactNode;
-}) {
-  const tone =
-    accent === 'cyan'
-      ? 'border-cyan-300/40 bg-cyan-300/10 text-cyan-100 hover:border-cyan-300/70 hover:bg-cyan-300/20'
-      : accent === 'amber'
-        ? 'border-amber-300/40 bg-amber-300/10 text-amber-100 hover:border-amber-300/70 hover:bg-amber-300/20'
-        : accent === 'fuchsia'
-          ? 'border-fuchsia-300/40 bg-fuchsia-300/10 text-fuchsia-100 hover:border-fuchsia-300/70 hover:bg-fuchsia-300/20'
-          : 'border-white/12 bg-white/[0.04] text-white/85 hover:border-white/30 hover:bg-white/10';
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`clip-deck-sm border px-5 py-3 text-left font-display text-sm font-semibold uppercase tracking-[0.12em] transition active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 ${tone} ${full ? 'w-full' : ''}`}
-    >
-      <span className='flex items-baseline justify-between gap-3'>
-        <span>{children}</span>
-        {sub && (
-          <span className='shrink-0 font-mono text-[10px] font-medium normal-case tracking-[0.08em] text-white/40'>
-            {sub}
-          </span>
-        )}
-      </span>
-    </button>
-  );
-}
-
-// Low-emphasis utility action (Stats / Locker / Settings …): quiet chrome at
-// the same hit size. Keeps the accent-tinted DeckButton reserved for the ways
-// to actually play, so the action column reads as one hierarchy.
-function UtilButton({ onClick, children }: { onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className='clip-deck-sm border border-white/10 bg-white/[0.03] px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-white/60 transition hover:border-white/25 hover:text-white/90'
-    >
-      {children}
-    </button>
-  );
-}
+// (DeckButton / UtilButton — the angular action buttons — live in src/deck.tsx
+// so the login sheet and the landing page's feedback form share them.)
 
 // Compact mode badge — color-coded by mode for quick scanning in lobby rows.
 function ModeBadge({ mode }: { mode: GameMode }) {
   const color =
-    mode === 'tdm' ? 'bg-sky-300/20 text-sky-200' :
-    mode === 'duel' ? 'bg-fuchsia-300/20 text-fuchsia-200' :
-    'bg-emerald-300/20 text-emerald-200';
+    mode === 'tdm' ? 'border-sky-300/40 bg-sky-300/15 text-sky-200' :
+    mode === 'duel' ? 'border-fuchsia-300/40 bg-fuchsia-300/15 text-fuchsia-200' :
+    'border-emerald-300/40 bg-emerald-300/15 text-emerald-200';
   const short = mode === 'tdm' ? 'TDM' : mode === 'duel' ? '1v1' : 'FFA';
-  return (
-    <span className={`rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] ${color}`}>
-      {short}
-    </span>
-  );
+  return <span className={`deck-chip ${color}`}>{short}</span>;
 }
 
 // Segmented game-mode picker for the main menu, mirroring the
@@ -5864,8 +5828,10 @@ function OpenLobbies({
           )}
         </span>
         <button
+          type='button'
           onClick={onRefresh}
           disabled={!online}
+          {...sfxProps('uiClick')}
           className='font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
         >
           Refresh
@@ -5897,32 +5863,22 @@ function OpenLobbies({
                       {r.players}/{r.capacity}
                     </span>
                     {r.state === 'voting' && (
-                      <span className='rounded-sm bg-cyan-300/20 px-1.5 py-0.5 text-cyan-200'>voting</span>
+                      <span className='deck-chip border-cyan-300/40 bg-cyan-300/15 text-cyan-200'>voting</span>
                     )}
                     {r.spectators > 0 && (
-                      <span className='rounded-sm bg-white/10 px-1.5 py-0.5 text-white/60'>
-                        {r.spectators} watching
-                      </span>
+                      <span className='deck-chip text-white/60'>{r.spectators} watching</span>
                     )}
                   </div>
                 </div>
                 <div className='flex shrink-0 items-center gap-1.5'>
                   {/* Watch is always available for live matches — the whole point
                       is that a FULL match is still watchable. */}
-                  <button
-                    onClick={() => onSpectate(r)}
-                    title='Spectate this match'
-                    className='clip-deck-sm bg-white/10 px-3 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-100 transition hover:bg-white/20'
-                  >
+                  <DeckButton onClick={() => onSpectate(r)} title='Spectate this match' size='sm' center>
                     Watch
-                  </button>
-                  <button
-                    onClick={() => onJoin(r)}
-                    disabled={!r.joinable}
-                    className='clip-deck-sm bg-emerald-400 px-4 py-1.5 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/40'
-                  >
+                  </DeckButton>
+                  <DeckButton onClick={() => onJoin(r)} disabled={!r.joinable} solid accent='emerald' size='sm' center>
                     {r.joinable ? 'Join' : 'Full'}
-                  </button>
+                  </DeckButton>
                 </div>
               </div>
             ))}
@@ -5950,7 +5906,10 @@ function OnlinePlayersPanel({
   return (
     <div className='clip-deck deck-panel shrink-0'>
       <button
+        type='button'
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        {...sfxProps('uiToggle')}
         className='flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03]'
       >
         <span className='flex items-center gap-2 font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
@@ -6011,14 +5970,12 @@ function GlobalChatPanel({
   online,
   canChat,
   youName,
-  notice,
   onSend,
 }: {
   messages: ChatMessage[];
   online: boolean;
   canChat: boolean; // false for guests — they can read but not send
   youName: string | null;
-  notice: string | null;
   onSend: (text: string) => void;
 }) {
   const [draft, setDraft] = useState('');
@@ -6072,11 +6029,6 @@ function GlobalChatPanel({
           </div>
         )}
       </div>
-      {notice && (
-        <div className='shrink-0 border-t border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-center font-mono text-[10px] uppercase tracking-[0.12em] text-amber-200'>
-          {notice}
-        </div>
-      )}
       <div className='flex shrink-0 items-center gap-2 border-t border-white/10 p-2'>
         <input
           value={draft}
@@ -6089,16 +6041,22 @@ function GlobalChatPanel({
           }}
           maxLength={CHAT_CLIENT_MAX_LEN}
           disabled={!canSend}
+          aria-label='Chat message'
           placeholder={!online ? 'Offline' : !canChat ? 'Log in to chat' : 'Message everyone…'}
           className='min-w-0 flex-1 bg-white/[0.04] px-3 py-2 font-mono text-[12px] text-white outline-none transition placeholder:text-white/30 focus:bg-white/[0.07] disabled:opacity-40'
         />
-        <button
+        <DeckButton
           onClick={submit}
           disabled={!canSend || draft.trim().length === 0}
-          className='clip-deck-sm shrink-0 bg-cyan-400 px-4 py-2 font-display text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-white/40'
+          solid
+          accent='cyan'
+          size='sm'
+          center
+          className='shrink-0'
+          sound='uiClick'
         >
           Send
-        </button>
+        </DeckButton>
       </div>
     </div>
   );
@@ -6115,49 +6073,43 @@ function InviteModal({
 }) {
   const link = inviteLink(roomId);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [copied, setCopied] = useState<'idle' | 'ok' | 'selected'>('idle');
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(link);
-      setCopied('ok');
-      setTimeout(() => setCopied('idle'), 1500);
+      toast('Copied invite link', { tone: 'ok' });
     } catch {
       // Clipboard API blocked (insecure context / permission) — select the
       // field so the user can copy manually instead of a silent no-op (#26c).
       inputRef.current?.select();
-      setCopied('selected');
-      setTimeout(() => setCopied('idle'), 2500);
+      toast('Link selected — press Ctrl/⌘+C to copy', { tone: 'warn' });
     }
   };
   return (
-    <ModalShell title='Private Match' onClose={onClose}>
-      <p className='text-sm text-white/60'>
+    <ModalShell title='Private Match' tone='emerald' onClose={onClose}>
+      <p className='font-sans text-sm text-white/60'>
         Share this link with friends — it drops them straight into your lobby.
       </p>
-      <div className='flex items-center gap-2'>
-        <input
-          ref={inputRef}
-          readOnly
-          value={link}
-          onFocus={(e) => e.currentTarget.select()}
-          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1.5 font-mono text-[11px] text-white/80 outline-none'
-        />
-        <button
-          onClick={copy}
-          className='shrink-0 rounded bg-cyan-300 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-cyan-200'
-        >
-          {copied === 'ok' ? 'Copied!' : copied === 'selected' ? 'Selected' : 'Copy'}
-        </button>
+      <div>
+        <div className='flex items-center gap-2'>
+          <input
+            ref={inputRef}
+            readOnly
+            value={link}
+            aria-label='Invite link'
+            onFocus={(e) => e.currentTarget.select()}
+            className='deck-input deck-input-sm min-w-0 flex-1'
+          />
+          <UtilButton onClick={copy} tone='cyan' sound='none' className='shrink-0'>
+            Copy
+          </UtilButton>
+        </div>
+        <div className='mt-2 text-[10px] uppercase tracking-[0.16em] text-white/40'>
+          Lobby code: <span className='text-white/80'>{roomId}</span>
+        </div>
       </div>
-      <div className='text-[10px] uppercase tracking-[0.16em] text-white/40'>
-        Lobby code: <span className='text-white/80'>{roomId}</span>
-      </div>
-      <button
-        onClick={onEnter}
-        className='mt-1 rounded-md bg-emerald-400 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
-      >
+      <DeckButton onClick={onEnter} solid accent='emerald' full center>
         Enter Match
-      </button>
+      </DeckButton>
     </ModalShell>
   );
 }
@@ -6220,7 +6172,7 @@ function CreateOnlineModal({
             step={1}
             value={players}
             onChange={(e) => setPlayers(Number(e.target.value))}
-            className='w-full accent-emerald-400'
+            className='deck-range'
           />
         </label>
       )}
@@ -6233,17 +6185,14 @@ function CreateOnlineModal({
         ]}
         onChange={(v) => setIsPublic(v === 'public')}
       />
-      <div className='text-[10px] normal-case tracking-normal text-white/40'>
+      <div className='-mt-3 text-[10px] normal-case tracking-normal text-white/40'>
         {isPublic
           ? 'Public matches appear in Open Lobbies for anyone to join.'
           : 'Private matches are invite-only — you’ll get a link to share.'}
       </div>
-      <button
-        onClick={create}
-        className='mt-1 rounded-md bg-emerald-400 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
-      >
+      <DeckButton onClick={create} solid accent='emerald' full center>
         {isPublic ? 'Create & Play' : 'Create & Get Link'}
-      </button>
+      </DeckButton>
     </ModalShell>
   );
 }
@@ -6282,62 +6231,8 @@ function MiniStat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-// Escape-to-close for modal dialogs (#20). Bubble phase on purpose: the
-// keybind-rebind listener captures Escape (capture phase + stopPropagation) to
-// cancel a rebind, so registering here in the capture phase would race it and
-// close the whole modal instead. The in-game InputManager leaves Escape unbound,
-// so a bubble-phase handler is safe.
-function useEscapeToClose(onClose: () => void) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-}
-
-function ModalShell({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEscapeToClose(onClose);
-  return (
-    <div
-      className='absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-3 backdrop-blur-md pointer-events-auto'
-      onClick={onClose}
-    >
-      <div
-        role='dialog'
-        aria-modal='true'
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-        className='clip-deck deck-rise w-[440px] max-w-[92vw] border border-cyan-500/30 bg-zinc-950/95 p-6 shadow-[0_0_60px_-12px_rgba(34,211,238,0.4)]'
-      >
-        <div className='mb-5 flex items-center justify-between border-b border-white/10 pb-3'>
-          <div className='font-display text-base font-bold uppercase tracking-[0.18em] text-cyan-100'>
-            {title}
-          </div>
-          <button
-            onClick={onClose}
-            className='font-mono text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-cyan-200'
-          >
-            ✕ Esc
-          </button>
-        </div>
-        <div className='flex flex-col gap-5 font-mono'>{children}</div>
-      </div>
-    </div>
-  );
-}
+// (ModalShell — the shared dialog frame with Escape/backdrop close, exit motion,
+// focus trap + restore, and the modal stack — lives in src/deck.tsx.)
 
 function CreateMatchModal({
   settings,
@@ -6370,24 +6265,15 @@ function CreateMatchModal({
   };
 
   return (
-    <ModalShell title='Solo vs Bots' onClose={onClose}>
+    <ModalShell title='Solo vs Bots' tone='amber' onClose={onClose}>
       <SelectField label='Arena' value={mapId} options={MAPS} onChange={setMapId} />
       <div className='flex flex-col gap-1.5'>
         <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Mode</span>
         <div className='grid grid-cols-3 gap-2'>
           {GAME_MODES.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setGameMode(m.id)}
-              title={m.blurb}
-              className={`rounded-md border px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
-                gameMode === m.id
-                  ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
-                  : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
-              }`}
-            >
+            <SegButton key={m.id} active={gameMode === m.id} onClick={() => setGameMode(m.id)} title={m.blurb}>
               {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : 'Duel'}
-            </button>
+            </SegButton>
           ))}
         </div>
       </div>
@@ -6408,16 +6294,13 @@ function CreateMatchModal({
           value={effPlayers}
           disabled={gameMode === 'duel'}
           onChange={(e) => setPlayers(Number(e.target.value))}
-          className='w-full accent-emerald-400'
+          className='deck-range'
         />
       </label>
       <DifficultyPicker value={difficulty} onChange={setDifficulty} />
-      <button
-        onClick={start}
-        className='mt-1 rounded-md bg-emerald-400 px-5 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-emerald-300'
-      >
+      <DeckButton onClick={start} solid accent='emerald' full center>
         Start Match
-      </button>
+      </DeckButton>
     </ModalShell>
   );
 }
@@ -6435,17 +6318,9 @@ function DifficultyPicker({
       <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Bot difficulty</span>
       <div className='grid grid-cols-3 gap-2'>
         {opts.map((o) => (
-          <button
-            key={o}
-            onClick={() => onChange(o)}
-            className={`rounded-md border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] transition ${
-              value === o
-                ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
-                : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
-            }`}
-          >
+          <SegButton key={o} active={value === o} onClick={() => onChange(o)}>
             {o}
-          </button>
+          </SegButton>
         ))}
       </div>
     </div>
@@ -6496,33 +6371,52 @@ function StatsModal({ onClose }: { onClose: () => void }) {
       : 100;
 
   return (
-    <ModalShell title='Your Profile' onClose={onClose}>
-      {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
+    <ModalShell title='Your Profile' onClose={onClose} bodyClassName='gap-4'>
+      {state === 'loading' && (
+        <div className='flex flex-col gap-4' aria-busy='true' aria-label='Loading profile'>
+          <div className='clip-deck-sm flex items-center gap-4 border border-white/10 bg-white/[0.02] p-4'>
+            <Skeleton className='h-16 w-16 shrink-0' />
+            <div className='min-w-0 flex-1'>
+              <div className='flex items-baseline justify-between'>
+                <Skeleton className='h-3 w-20' />
+                <Skeleton className='h-3 w-24' />
+              </div>
+              <Skeleton className='mt-2 h-2.5 w-full' />
+              <Skeleton className='mt-2 h-2.5 w-2/5' />
+            </div>
+          </div>
+          <div className='grid grid-cols-2 gap-3'>
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className='deck-card px-4 py-3'>
+                <Skeleton className='h-2.5 w-16' />
+                <Skeleton className='mt-2.5 h-6 w-12' />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {state === 'error' && (
-        <div className='text-sm text-white/55'>
+        <div className='font-sans text-sm text-white/55'>
           Couldn&apos;t load your profile. Finish a match to start tracking.
         </div>
       )}
       {state === 'ready' && profile && stats && (
         <>
-          {/* Level ring + XP bar + credits */}
-          <div className='mb-4 flex items-center gap-4 rounded-xl border border-cyan-500/20 bg-cyan-300/[0.04] p-4'>
-            <div className='flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-full border-2 border-cyan-400/60 bg-cyan-300/10'>
+          {/* Level tile + XP bar + credits — the one accented block. */}
+          <div className='clip-deck-sm flex items-center gap-4 border border-cyan-400/25 bg-cyan-300/[0.04] p-4'>
+            <div className='clip-deck-sm flex h-16 w-16 shrink-0 flex-col items-center justify-center border-2 border-cyan-400/60 bg-cyan-300/10'>
               <div className='text-[8px] uppercase tracking-[0.18em] text-cyan-200/70'>Level</div>
-              <div className='text-2xl font-extrabold leading-none text-cyan-100'>{profile.level}</div>
+              <div className='font-display text-2xl font-bold leading-none text-cyan-100'>{profile.level}</div>
             </div>
             <div className='min-w-0 flex-1'>
               <div className='flex items-baseline justify-between text-[11px]'>
                 <span className='uppercase tracking-[0.16em] text-white/50'>
                   {profile.xpForNext > 0 ? 'Next level' : 'Max level'}
                 </span>
-                <span className='font-semibold text-amber-300'>{profile.credits} ⛁ credits</span>
+                <span className='font-semibold tabular-nums text-amber-300'>{profile.credits} ⛁ credits</span>
               </div>
-              <div className='mt-1.5 h-2.5 overflow-hidden rounded-full bg-white/10'>
-                <div
-                  className='h-full rounded-full bg-gradient-to-r from-cyan-400 to-sky-300'
-                  style={{ width: `${xpPct}%` }}
-                />
+              <div className='deck-bar mt-1.5 h-2.5'>
+                <div className='bg-gradient-to-r from-cyan-400 to-sky-300' style={{ width: `${xpPct}%` }} />
               </div>
               <div className='mt-1 text-[10px] tabular-nums text-white/40'>
                 {profile.xpForNext > 0
@@ -6561,7 +6455,6 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
   const [data, setData] = useState<{ daily: ChallengeView[]; weekly: ChallengeView[] } | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [claiming, setClaiming] = useState<string | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
 
   const load = useCallback(() => {
     fetch('/api/challenges', { credentials: 'same-origin' })
@@ -6580,7 +6473,6 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
 
   const claim = async (id: string) => {
     setClaiming(id);
-    setFlash(null);
     try {
       const res = await fetch('/api/challenges/claim', {
         method: 'POST',
@@ -6590,11 +6482,11 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
       });
       const d = (await res.json()) as { ok?: boolean; xpGained?: number; creditsGained?: number };
       if (res.ok && d.ok) {
-        setFlash(`+${d.xpGained} XP · +${d.creditsGained} ⛁`);
+        toast(`Reward claimed · +${d.xpGained} XP · +${d.creditsGained} ⛁`, { tone: 'ok' });
         load();
-      }
+      } else toast('Could not claim that reward.', { tone: 'err' });
     } catch {
-      /* ignore */
+      toast('Network error.', { tone: 'err' });
     }
     setClaiming(null);
   };
@@ -6607,69 +6499,84 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
         data-challenge={c.id}
         data-complete={c.complete ? '1' : '0'}
         data-claimed={c.claimed ? '1' : '0'}
-        className='rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5'
+        className={`deck-card px-3 py-2.5 ${c.complete && !c.claimed ? 'border-emerald-400/40' : ''}`}
       >
         <div className='flex items-center justify-between gap-2'>
-          <span className='text-sm text-white/90'>{c.title}</span>
+          <span className='font-sans text-sm text-white/90'>{c.title}</span>
           <span className='shrink-0 text-[10px] uppercase tracking-[0.12em] text-amber-300/90'>
             {c.rewardXp} XP · {c.rewardCredits} ⛁
           </span>
         </div>
         <div className='mt-2 flex items-center gap-2'>
-          <div className='h-2 flex-1 overflow-hidden rounded-full bg-white/10'>
-            <div
-              className={`h-full rounded-full ${c.complete ? 'bg-emerald-400' : 'bg-cyan-400/80'}`}
-              style={{ width: `${pct}%` }}
-            />
+          <div className='deck-bar h-2 flex-1'>
+            <div className={c.complete ? 'bg-emerald-400' : 'bg-cyan-400/80'} style={{ width: `${pct}%` }} />
           </div>
           <span className='w-14 shrink-0 text-right text-[11px] tabular-nums text-white/55'>
             {Math.min(c.progress, c.goal)}/{c.goal}
           </span>
           {c.claimed ? (
-            <span className='w-16 shrink-0 text-right text-[10px] uppercase tracking-[0.14em] text-white/35'>
+            <span className='w-[4.5rem] shrink-0 text-right text-[10px] uppercase tracking-[0.14em] text-white/35'>
               Claimed
             </span>
           ) : (
-            <button
-              type='button'
+            <DeckButton
               data-action='claim'
               disabled={!c.complete || claiming === c.id}
               onClick={() => claim(c.id)}
-              className='w-16 shrink-0 rounded-md border border-emerald-400/50 bg-emerald-400/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-emerald-200 transition hover:bg-emerald-400/20 disabled:border-white/10 disabled:bg-transparent disabled:text-white/25'
+              accent='emerald'
+              size='xs'
+              center
+              className='w-[4.5rem] shrink-0'
             >
               {claiming === c.id ? '…' : 'Claim'}
-            </button>
+            </DeckButton>
           )}
         </div>
       </div>
     );
   };
 
+  const RowSkeleton = (i: number) => (
+    <div key={i} className='deck-card px-3 py-2.5'>
+      <div className='flex items-center justify-between gap-2'>
+        <Skeleton className='h-3.5 w-40' />
+        <Skeleton className='h-2.5 w-16' />
+      </div>
+      <div className='mt-2.5 flex items-center gap-2'>
+        <Skeleton className='h-2 flex-1' />
+        <Skeleton className='h-3 w-14' />
+        <Skeleton className='h-6 w-[4.5rem]' />
+      </div>
+    </div>
+  );
+
   return (
     <ModalShell title='Challenges' onClose={onClose}>
-      {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
+      {state === 'loading' && (
+        <div className='flex flex-col gap-4' aria-busy='true' aria-label='Loading challenges'>
+          <div>
+            <div className='deck-label mb-2'>Daily · resets every day</div>
+            <div className='flex flex-col gap-2'>{[0, 1, 2].map(RowSkeleton)}</div>
+          </div>
+          <div>
+            <div className='deck-label mb-2'>Weekly · bigger rewards</div>
+            <div className='flex flex-col gap-2'>{[3, 4].map(RowSkeleton)}</div>
+          </div>
+        </div>
+      )}
       {state === 'error' && (
-        <div className='text-sm text-white/55'>
+        <div className='font-sans text-sm text-white/55'>
           Couldn&apos;t load challenges. Play an online match to start earning.
         </div>
       )}
       {state === 'ready' && data && (
         <div className='flex flex-col gap-4'>
-          {flash && (
-            <div className='rounded-md border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-center text-sm font-bold text-emerald-200'>
-              Reward claimed: {flash}
-            </div>
-          )}
           <div>
-            <div className='mb-2 text-[10px] uppercase tracking-[0.22em] text-white/45'>
-              Daily · resets every day
-            </div>
+            <div className='deck-label mb-2'>Daily · resets every day</div>
             <div className='flex flex-col gap-2'>{data.daily.map(Row)}</div>
           </div>
           <div>
-            <div className='mb-2 text-[10px] uppercase tracking-[0.22em] text-white/45'>
-              Weekly · bigger rewards
-            </div>
+            <div className='deck-label mb-2'>Weekly · bigger rewards</div>
             <div className='flex flex-col gap-2'>{data.weekly.map(Row)}</div>
           </div>
           <div className='text-[10px] normal-case tracking-normal text-white/35'>
@@ -6684,9 +6591,9 @@ function ChallengesModal({ onClose }: { onClose: () => void }) {
 
 function BigStat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className='rounded-lg border border-white/10 bg-white/5 px-4 py-3'>
-      <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>{label}</div>
-      <div className='mt-1 text-2xl font-bold tabular-nums text-cyan-200'>{value}</div>
+    <div className='deck-card px-4 py-3'>
+      <div className='deck-label'>{label}</div>
+      <div className='mt-1 font-display text-2xl font-bold tabular-nums text-cyan-200'>{value}</div>
     </div>
   );
 }
@@ -6777,26 +6684,32 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   const rankedMeInTop = rankedMe != null && rankedRows.some((r) => r.id === rankedMe.id);
 
   return (
-    <ModalShell title='Leaderboard' onClose={onClose}>
+    <ModalShell title='Leaderboard' size='lg' onClose={onClose}>
       <ButtonGroup label='Window' value={window} options={LEADERBOARD_WINDOWS} onChange={setWindow} />
       {!isRanked && (
         <ButtonGroup label='Sort by' value={sort} options={LEADERBOARD_SORTS} onChange={setSort} />
       )}
-      {state === 'loading' && <div className='text-sm text-white/55'>Loading…</div>}
+      {state === 'loading' && (
+        <div aria-busy='true' aria-label='Loading leaderboard'>
+          <TableSkeleton rows={8} />
+        </div>
+      )}
       {state === 'error' && isRanked && (
-        <div className='text-sm text-white/55'>Couldn&apos;t load the ranked ladder.</div>
+        <div className='font-sans text-sm text-white/55'>Couldn&apos;t load the ranked ladder.</div>
       )}
       {state === 'ready' && isRanked && rankedRows.length === 0 && (
-        <div className='text-sm text-white/55'>No ranked players yet — queue a Ranked Duel to appear here.</div>
+        <div className='font-sans text-sm text-white/55'>No ranked players yet — queue a Ranked Duel to appear here.</div>
       )}
       {state === 'ready' && isRanked && rankedRows.length > 0 && (
-        <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
-          <div className='grid grid-cols-[1.75rem_1fr_4.5rem_3.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
-            <Th align='right'>#</Th>
-            <Th>Player</Th>
-            <Th align='right'>Rating</Th>
-            <Th>Tier</Th>
-            <Th align='right'>W-L</Th>
+        <div className='deck-scroll -mx-2 max-h-[52vh] overflow-y-auto px-1'>
+          <div className='grid grid-cols-[1.75rem_1fr_4.5rem_3.5rem_3rem] gap-x-3 text-[12px]'>
+            <div className='col-span-5 grid grid-cols-subgrid gap-x-3 px-1'>
+              <Th align='right'>#</Th>
+              <Th>Player</Th>
+              <Th align='right'>Rating</Th>
+              <Th>Tier</Th>
+              <Th align='right'>W-L</Th>
+            </div>
             {rankedRows.map((row, i) => (
               <RankedLeaderRow key={row.id} rank={i + 1} row={row} you={row.id === rankedMe?.id} />
             ))}
@@ -6824,20 +6737,22 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
         </div>
       )}
       {state === 'error' && !isRanked && (
-        <div className='text-sm text-white/55'>Couldn&apos;t load the leaderboard. Try again later.</div>
+        <div className='font-sans text-sm text-white/55'>Couldn&apos;t load the leaderboard. Try again later.</div>
       )}
       {state === 'ready' && !isRanked && rows.length === 0 && (
-        <div className='text-sm text-white/55'>No ranked players yet — finish a match to appear here.</div>
+        <div className='font-sans text-sm text-white/55'>No ranked players yet — finish a match to appear here.</div>
       )}
       {state === 'ready' && !isRanked && rows.length > 0 && (
-        <div className='-mx-1 max-h-[52vh] overflow-y-auto px-1'>
-          <div className='grid grid-cols-[1.75rem_1fr_2.75rem_2.75rem_2.5rem_3rem] gap-x-3 gap-y-1 text-[12px]'>
-            <Th align='right'>#</Th>
-            <Th>Player</Th>
-            <Th align='right'>K</Th>
-            <Th align='right'>K/D</Th>
-            <Th align='right'>W</Th>
-            <Th align='right'>Acc</Th>
+        <div className='deck-scroll -mx-2 max-h-[52vh] overflow-y-auto px-1'>
+          <div className='grid grid-cols-[1.75rem_1fr_2.75rem_2.75rem_2.5rem_3rem] gap-x-3 text-[12px]'>
+            <div className='col-span-6 grid grid-cols-subgrid gap-x-3 px-1'>
+              <Th align='right'>#</Th>
+              <Th>Player</Th>
+              <Th align='right'>K</Th>
+              <Th align='right'>K/D</Th>
+              <Th align='right'>W</Th>
+              <Th align='right'>Acc</Th>
+            </div>
             {rows.map((row, i) => (
               <LeaderboardRow key={row.id || `${row.userName}-${i}`} rank={i + 1} row={row} you={row.id === youId} />
             ))}
@@ -6865,14 +6780,15 @@ function LeaderboardModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// One leaderboard row: a subgrid row div so the hairline / hover / "you" tint
+// spans the whole line, cells inheriting the parent grid's columns.
 function LeaderboardRow({ rank, row, you = false }: { rank: number; row: LeaderboardEntry; you?: boolean }) {
   const medal =
     rank === 1 ? 'text-amber-300' : rank === 2 ? 'text-zinc-300' : rank === 3 ? 'text-orange-300' : 'text-white/45';
-  const tint = you ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/90';
   return (
-    <>
+    <div className={`deck-tr col-span-6 grid grid-cols-subgrid gap-x-3 px-1 ${you ? 'deck-tr-you text-cyan-100' : 'text-white/90'}`}>
       <div className={`py-1.5 text-right tabular-nums font-bold ${you ? 'text-cyan-200' : medal}`}>{rank}</div>
-      <div className={`flex min-w-0 items-center gap-1 py-1.5 ${tint}`}>
+      <div className='flex min-w-0 items-center gap-1 py-1.5'>
         <span className='truncate'>{row.userName}</span>
         <NameBadges admin={row.admin} verified={row.verified} size={12} />
         {you && <span className='ml-1 shrink-0 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
@@ -6881,7 +6797,7 @@ function LeaderboardRow({ rank, row, you = false }: { rank: number; row: Leaderb
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.kd.toFixed(2)}</div>
       <div className='py-1.5 text-right tabular-nums text-white/65'>{row.totalWins}</div>
       <div className='py-1.5 text-right tabular-nums text-cyan-200/80'>{row.bestAccuracy.toFixed(1)}%</div>
-    </>
+    </div>
   );
 }
 
@@ -6889,12 +6805,11 @@ function LeaderboardRow({ rank, row, you = false }: { rank: number; row: Leaderb
 function RankedLeaderRow({ rank, row, you = false }: { rank: number; row: RankedLeaderEntry; you?: boolean }) {
   const medal =
     rank === 1 ? 'text-amber-300' : rank === 2 ? 'text-zinc-300' : rank === 3 ? 'text-orange-300' : 'text-white/45';
-  const tint = you ? 'bg-cyan-300/10 text-cyan-100' : 'text-white/90';
   const tier = rankedTier(row.rating);
   return (
-    <>
+    <div className={`deck-tr col-span-5 grid grid-cols-subgrid gap-x-3 px-1 ${you ? 'deck-tr-you text-cyan-100' : 'text-white/90'}`}>
       <div className={`py-1.5 text-right tabular-nums font-bold ${you ? 'text-cyan-200' : medal}`}>{rank}</div>
-      <div className={`flex min-w-0 items-center gap-1 py-1.5 ${tint}`}>
+      <div className='flex min-w-0 items-center gap-1 py-1.5'>
         <span className='truncate'>{row.userName}</span>
         <NameBadges admin={row.admin} verified={row.verified} size={12} />
         {you && <span className='ml-1 shrink-0 text-[10px] uppercase tracking-[0.1em] text-cyan-300/80'>you</span>}
@@ -6904,7 +6819,7 @@ function RankedLeaderRow({ rank, row, you = false }: { rank: number; row: Ranked
       <div className='py-1.5 text-right tabular-nums text-white/55'>
         {row.wins}-{row.losses}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -6941,7 +6856,6 @@ async function adminPost(path: string, body: object): Promise<{ ok: boolean; err
 function AdminModal({ onClose }: { onClose: () => void }) {
   const [username, setUsername] = useState('');
   const [target, setTarget] = useState<AdminLookup | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
 
@@ -6959,7 +6873,6 @@ function AdminModal({ onClose }: { onClose: () => void }) {
     const q = name.trim();
     if (!q) return;
     setBusy(true);
-    setNote(null);
     try {
       const r = await fetch(`/api/admin/lookup?username=${encodeURIComponent(q)}`, {
         credentials: 'same-origin',
@@ -6968,10 +6881,10 @@ function AdminModal({ onClose }: { onClose: () => void }) {
         setTarget((await r.json()) as AdminLookup);
       } else {
         setTarget(null);
-        setNote(r.status === 404 ? `No player named “${q}”.` : 'Lookup failed.');
+        toast(r.status === 404 ? `No player named “${q}”.` : 'Lookup failed.', { tone: 'err' });
       }
     } catch {
-      setNote('Network error.');
+      toast('Network error.', { tone: 'err' });
     } finally {
       setBusy(false);
     }
@@ -6981,29 +6894,29 @@ function AdminModal({ onClose }: { onClose: () => void }) {
     async (path: 'verify' | 'grant', body: object, label: string) => {
       if (!target) return;
       setBusy(true);
-      setNote(null);
       const r = await adminPost(path, { username: target.username, ...body });
       setBusy(false);
       if (r.ok) {
-        setNote(label);
+        toast(label, { tone: 'ok' });
         await lookup(target.username);
         refreshAudit();
       } else {
-        setNote(r.error === 'forbidden' ? 'Not authorized.' : `Failed (${r.error}).`);
+        toast(r.error === 'forbidden' ? 'Not authorized.' : `Failed (${r.error}).`, { tone: 'err' });
       }
     },
     [target, lookup, refreshAudit],
   );
 
   return (
-    <ModalShell title='Admin' onClose={onClose}>
-      <div className='flex flex-col gap-3 font-mono'>
+    <ModalShell title='Admin' tone='amber' onClose={onClose}>
+      <div className='flex flex-col gap-3'>
         <a
           href='/admin'
-          className='flex items-center justify-between rounded-md border border-cyan-400/40 bg-cyan-400/10 px-3 py-2.5 text-[12px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/15'
+          {...sfxProps('uiClick')}
+          className='clip-deck-sm flex items-center justify-between border border-cyan-400/40 bg-cyan-400/10 px-3.5 py-2.5 font-display text-[12px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/15'
         >
-          <span>📊 Metrics dashboard</span>
-          <span aria-hidden>→</span>
+          <span>Metrics dashboard</span>
+          <span className='font-mono text-[10px] font-medium tracking-[0.16em] text-cyan-200/60'>Open</span>
         </a>
         <div className='flex gap-2'>
           <input
@@ -7011,21 +6924,18 @@ function AdminModal({ onClose }: { onClose: () => void }) {
             onChange={(e) => setUsername(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && lookup(username)}
             placeholder='Player username'
+            aria-label='Player username'
             maxLength={20}
-            className='min-w-0 flex-1 rounded-md border border-white/15 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-cyan-400/60'
+            className='deck-input min-w-0 flex-1'
           />
-          <button
-            onClick={() => lookup(username)}
-            disabled={busy || !username.trim()}
-            className='shrink-0 rounded-md border border-cyan-400/40 px-3 py-2 text-xs font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 disabled:opacity-40'
-          >
+          <UtilButton onClick={() => lookup(username)} disabled={busy || !username.trim()} tone='cyan' className='shrink-0'>
             Look up
-          </button>
+          </UtilButton>
         </div>
 
         {target && (
-          <div className='rounded-md border border-white/12 bg-black/30 p-3'>
-            <div className='flex items-center gap-2 text-sm font-bold text-white'>
+          <div className='border border-white/10 bg-black/30 p-3'>
+            <div className='flex items-center gap-2 font-display text-sm font-bold text-white'>
               {target.username}
               <NameBadges admin={target.admin} verified={target.verified} size={13} />
             </div>
@@ -7033,29 +6943,31 @@ function AdminModal({ onClose }: { onClose: () => void }) {
               {target.admin ? 'Admin' : 'Player'} · {target.verified ? 'Verified' : 'Not verified'}
             </div>
             <div className='mt-3 grid grid-cols-2 gap-2'>
-              <button
+              <DeckButton
                 onClick={() => act('verify', { verified: !target.verified }, target.verified ? 'Unverified.' : 'Verified ✓')}
                 disabled={busy}
-                className='rounded-md border border-sky-400/40 px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] text-sky-200 transition hover:border-sky-300/70 disabled:opacity-40'
+                accent='cyan'
+                size='sm'
+                center
               >
                 {target.verified ? 'Remove verify' : 'Verify ✓'}
-              </button>
-              <button
+              </DeckButton>
+              <DeckButton
                 onClick={() => act('grant', { admin: !target.admin }, target.admin ? 'Admin revoked.' : 'Admin granted.')}
                 disabled={busy}
-                className='rounded-md border border-amber-400/40 px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] text-amber-200 transition hover:border-amber-300/70 disabled:opacity-40'
+                accent='amber'
+                size='sm'
+                center
               >
                 {target.admin ? 'Revoke admin' : 'Make admin'}
-              </button>
+              </DeckButton>
             </div>
           </div>
         )}
 
-        {note && <div className='text-[12px] text-cyan-200/80'>{note}</div>}
-
         <div className='mt-1'>
-          <div className='mb-1.5 text-[10px] uppercase tracking-[0.18em] text-white/45'>Recent activity</div>
-          <div className='max-h-[34vh] space-y-1 overflow-y-auto text-[11px]'>
+          <div className='deck-label mb-1.5'>Recent activity</div>
+          <div className='deck-scroll max-h-[34vh] space-y-1 overflow-y-auto text-[11px]'>
             {audit.length === 0 && <div className='text-white/40'>No events yet.</div>}
             {audit.map((e) => (
               <div key={e.id} className='flex items-baseline gap-2 border-b border-white/5 pb-1'>
@@ -7141,80 +7053,70 @@ function SettingsModal({
     const m = filterTabs(q);
     if (m.length && !m.some((t) => t.id === tab)) setTab(m[0].id);
   };
-  useEscapeToClose(onClose);
+  // Settings save continuously; "Done" only confirms (toast) if anything
+  // actually changed while the sheet was open.
+  const openedWith = useRef(settings);
   return (
-    <div
-      className='absolute inset-0 z-10 flex items-center justify-center bg-black/85 backdrop-blur-md pointer-events-auto'
-      onClick={onClose}
-    >
-      <div
-        role='dialog'
-        aria-modal='true'
-        aria-label='Settings'
-        onClick={(e) => e.stopPropagation()}
-        className='flex max-h-[88vh] w-[520px] max-w-[92vw] flex-col rounded-xl border border-white/12 bg-zinc-950/95 p-6 font-mono shadow-2xl'
-      >
-        <div className='mb-4 flex items-center justify-between'>
-          <div className='text-base font-semibold uppercase tracking-[0.18em]'>
-            Settings
-          </div>
-          <div className='flex items-center gap-4'>
-            <button
-              onClick={() => setFeedbackOpen(true)}
-              className='text-[11px] uppercase tracking-[0.18em] text-cyan-300/70 transition hover:text-cyan-200'
-            >
-              Feedback
-            </button>
-            <button
-              onClick={onClose}
-              className='text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-white'
-            >
-              Close
-            </button>
-          </div>
-        </div>
-        {feedbackOpen && (
-          <FeedbackModal
-            onClose={() => setFeedbackOpen(false)}
-            playerName={isGuestName ? undefined : settings.playerName}
+    <ModalShell
+      title='Settings'
+      onClose={onClose}
+      width='w-[520px]'
+      actions={
+        <TextButton onClick={() => setFeedbackOpen(true)} className='text-cyan-300/70 hover:text-cyan-200'>
+          Feedback
+        </TextButton>
+      }
+      header={
+        <div className='flex flex-col gap-2'>
+          <input
+            type='search'
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder='Search settings…'
+            aria-label='Search settings'
+            className='deck-input deck-input-sm'
           />
-        )}
-        <input
-          type='search'
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder='Search settings…'
-          aria-label='Search settings'
-          className='mb-3 w-full rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white placeholder:text-white/30 outline-none transition focus:border-cyan-400/60'
-        />
-        {/* Tab bar */}
-        <div
-          role='tablist'
-          aria-label='Settings sections'
-          className='mb-4 flex flex-wrap gap-1.5 border-b border-white/10 pb-3'
-        >
-          {visibleTabs.map((t) => (
-            <button
-              key={t.id}
-              role='tab'
-              aria-selected={tab === t.id}
-              data-tab={t.id}
-              onClick={() => setTab(t.id)}
-              className={`rounded-md px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition ${
-                tab === t.id
-                  ? 'bg-cyan-300/15 text-cyan-200'
-                  : 'text-white/50 hover:bg-white/5 hover:text-white/80'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+          {/* Tab bar — sits flush on the header's bottom rule so the active
+              tab's hairline reads as part of it. */}
+          <div role='tablist' aria-label='Settings sections' className='-mx-2 -mb-3 flex flex-wrap'>
+            {visibleTabs.map((t) => (
+              <DeckTab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)} data-tab={t.id}>
+                {t.label}
+              </DeckTab>
+            ))}
+          </div>
         </div>
-        {/* Fixed-height scroll area so the modal doesn't grow/shrink (and the
-            header jump) as you switch between short + tall tabs. */}
-        <div className='flex h-[58vh] flex-col gap-5 overflow-y-auto pr-1' role='tabpanel'>
+      }
+      footer={({ close }) => (
+        <>
+          <TextButton onClick={() => onChange(DEFAULT_SETTINGS)}>Reset to defaults</TextButton>
+          <DeckButton
+            onClick={() => {
+              if (settings !== openedWith.current) toast('Settings saved', { tone: 'ok', sound: 'none' });
+              close();
+            }}
+            solid
+            accent='emerald'
+            size='sm'
+            center
+          >
+            Done
+          </DeckButton>
+        </>
+      )}
+      // Fixed-height scroll area so the sheet doesn't grow/shrink (and the
+      // header jump) as you switch between short + tall tabs.
+      bodyClassName='deck-scroll h-[58vh] overflow-y-auto'
+    >
+      {feedbackOpen && (
+        <FeedbackModal
+          onClose={() => setFeedbackOpen(false)}
+          playerName={isGuestName ? undefined : settings.playerName}
+        />
+      )}
+      <div className='flex flex-col gap-5' role='tabpanel'>
           {visibleTabs.length === 0 ? (
-            <div className='text-sm text-white/55'>No settings match “{search.trim()}”.</div>
+            <div className='font-sans text-sm text-white/55'>No settings match “{search.trim()}”.</div>
           ) : (
             <>
           {tab === 'controls' && (
@@ -7451,7 +7353,9 @@ function SettingsModal({
                 {CROSSHAIR_SHAPE_PRESETS.map((p) => (
                   <button
                     key={p.id}
+                    type='button'
                     onClick={() => setCh(p.cfg)}
+                    {...sfxProps('uiClick')}
                     className='clip-deck-sm flex flex-col items-center gap-1.5 border border-white/12 bg-white/[0.03] px-2 py-2.5 transition hover:border-cyan-300/50 hover:bg-white/10'
                   >
                     <span className='flex h-7 items-center justify-center'>
@@ -7480,7 +7384,7 @@ function SettingsModal({
                   onChange={(v) => setCh({ style: v as CrosshairConfig['style'] })}
                 />
               </div>
-              <div className='flex h-16 w-16 shrink-0 items-center justify-center rounded-md border border-white/10 bg-[#1a1f29]'>
+              <div className='clip-deck-sm flex h-16 w-16 shrink-0 items-center justify-center border border-white/10 bg-[#1a1f29]'>
                 <CrosshairGraphic cfg={ch} />
               </div>
             </div>
@@ -7565,23 +7469,8 @@ function SettingsModal({
           )}
             </>
           )}
-        </div>
-        <div className='mt-6 flex items-center justify-between border-t border-white/10 pt-4'>
-          <button
-            onClick={() => onChange(DEFAULT_SETTINGS)}
-            className='text-[11px] uppercase tracking-[0.18em] text-white/55 transition hover:text-white'
-          >
-            Reset to defaults
-          </button>
-          <button
-            onClick={onClose}
-            className='rounded-md bg-emerald-400 px-5 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300'
-          >
-            Done
-          </button>
-        </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -7615,7 +7504,7 @@ function SliderField({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className='w-full accent-emerald-400'
+        className='deck-range'
       />
     </label>
   );
@@ -7667,7 +7556,7 @@ function AnnouncerPackField({
           const v = e.target.value as AnnouncerPackId;
           if (isUnlocked(v)) onChange(v);
         }}
-        className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white outline-none transition focus:border-emerald-400/70'
+        className='deck-input deck-select deck-input-sm'
       >
         {ANNOUNCER_PACKS.map((p) => {
           const ok = isUnlocked(p.id);
@@ -7705,10 +7594,10 @@ function SelectField({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className='rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white outline-none transition focus:border-emerald-400/70'
+        className='deck-input deck-select deck-input-sm'
       >
         {options.map((o) => (
-          <option key={o.id} value={o.id} className='bg-zinc-900 text-white'>
+          <option key={o.id} value={o.id}>
             {o.label}
           </option>
         ))}
@@ -7747,9 +7636,7 @@ function TextField({
         onChange={(e) => {
           if (!readOnly) onChange(e.target.value);
         }}
-        className={`rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-xs text-white outline-none transition focus:border-emerald-400/70 ${
-          readOnly ? 'cursor-not-allowed text-white/55 focus:border-white/15' : ''
-        }`}
+        className={`deck-input deck-input-sm ${readOnly ? 'cursor-not-allowed' : ''}`}
       />
       {hint && (
         <span className='text-[10px] normal-case tracking-normal text-white/40'>{hint}</span>
@@ -7773,22 +7660,7 @@ function ToggleField({
     <label className='flex cursor-pointer flex-col gap-1'>
       <span className='flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-white/65'>
         <span>{label}</span>
-        <button
-          type='button'
-          role='switch'
-          aria-checked={value}
-          aria-label={label}
-          onClick={() => onChange(!value)}
-          className={`relative h-6 w-11 shrink-0 rounded-full transition ${
-            value ? 'bg-emerald-400' : 'bg-white/15'
-          }`}
-        >
-          <span
-            className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition ${
-              value ? 'left-6' : 'left-1'
-            }`}
-          />
-        </button>
+        <DeckSwitch value={value} onChange={onChange} label={label} />
       </span>
       {hint && <span className='text-[10px] normal-case tracking-normal text-white/35'>{hint}</span>}
     </label>
@@ -7820,19 +7692,11 @@ function ButtonGroup<T extends string>({
   return (
     <div className='flex flex-col gap-1.5'>
       <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>{label}</span>
-      <div className='flex flex-wrap gap-1.5'>
+      <div className='flex flex-wrap gap-1.5' role='group' aria-label={label}>
         {options.map((o) => (
-          <button
-            key={o.id}
-            onClick={() => onChange(o.id)}
-            className={`rounded-md border px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] transition ${
-              value === o.id
-                ? 'border-emerald-400 bg-emerald-400/15 text-emerald-200'
-                : 'border-white/15 bg-white/5 text-white/65 hover:bg-white/10'
-            }`}
-          >
+          <SegButton key={o.id} active={value === o.id} onClick={() => onChange(o.id)} className='px-2.5 py-1.5 text-[10px]'>
             {o.label}
-          </button>
+          </SegButton>
         ))}
       </div>
     </div>
@@ -7856,8 +7720,9 @@ function ColorField({
         <input
           type='color'
           value={value}
+          aria-label={label}
           onChange={(e) => onChange(e.target.value)}
-          className='h-7 w-10 cursor-pointer rounded border border-white/20 bg-transparent p-0'
+          className='h-7 w-10 cursor-pointer border border-white/20 bg-transparent p-0'
         />
       </span>
     </label>
@@ -7878,7 +7743,8 @@ function CrosshairColorPresets({ onPick }: { onPick: (c: string) => void }) {
             type='button'
             aria-label={`Use ${c}`}
             onClick={() => onPick(c)}
-            className='h-6 w-6 rounded border border-white/20 transition hover:scale-110'
+            {...sfxProps('uiClick')}
+            className='h-6 w-6 border border-white/20 transition hover:scale-110'
             style={{ backgroundColor: c }}
           />
         ))}
@@ -7896,7 +7762,7 @@ function CrosshairVisibilityPreview({ cfg }: { cfg: CrosshairConfig }) {
       {bgs.map((bg) => (
         <div
           key={bg}
-          className='flex h-14 items-center justify-center overflow-hidden rounded-md border border-white/10'
+          className='flex h-14 items-center justify-center overflow-hidden border border-white/10'
           style={{ backgroundColor: bg }}
         >
           <CrosshairGraphic cfg={cfg} />
@@ -7915,17 +7781,12 @@ function SettingsShare({
 }) {
   const code = encodeSettings(settings);
   const [paste, setPaste] = useState('');
-  const [msg, setMsg] = useState<string | null>(null);
-  const flash = (m: string) => {
-    setMsg(m);
-    setTimeout(() => setMsg(null), 1500);
-  };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      flash('Copied!');
+      toast('Copied settings code', { tone: 'ok' });
     } catch {
-      flash('Copy failed');
+      toast('Copy failed', { tone: 'err' });
     }
   };
   const doImport = () => {
@@ -7933,49 +7794,39 @@ function SettingsShare({
     if (next) {
       onImport(next);
       setPaste('');
-      flash('Imported!');
+      toast('Settings imported', { tone: 'ok' });
     } else {
-      flash('Invalid code');
+      toast('Invalid settings code', { tone: 'err' });
     }
   };
   return (
-    <div className='flex flex-col gap-2 rounded-md border border-white/10 bg-black/30 p-3'>
-      <div className='flex items-center justify-between'>
-        <span className='text-[10px] uppercase tracking-[0.16em] text-white/55'>
-          All-settings code (backup / transfer)
-        </span>
-        {msg && (
-          <span className='text-[10px] uppercase tracking-[0.14em] text-emerald-300'>{msg}</span>
-        )}
-      </div>
+    <div className='flex flex-col gap-2 border border-white/10 bg-black/30 p-3'>
+      <span className='text-[10px] uppercase tracking-[0.16em] text-white/55'>
+        All-settings code (backup / transfer)
+      </span>
       <div className='flex items-center gap-2'>
         <input
           readOnly
           value={code}
+          aria-label='Settings share code'
           onFocus={(e) => e.currentTarget.select()}
-          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] text-white/80 outline-none'
+          className='deck-input deck-input-sm min-w-0 flex-1'
         />
-        <button
-          onClick={copy}
-          className='shrink-0 rounded bg-emerald-400 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300'
-        >
+        <UtilButton onClick={copy} tone='cyan' sound='none' className='shrink-0'>
           Copy
-        </button>
+        </UtilButton>
       </div>
       <div className='flex items-center gap-2'>
         <input
           value={paste}
           onChange={(e) => setPaste(e.target.value)}
           placeholder='Paste an IGS- code to import…'
-          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] text-white/80 placeholder:text-white/30 outline-none'
+          aria-label='Import settings code'
+          className='deck-input deck-input-sm min-w-0 flex-1'
         />
-        <button
-          onClick={doImport}
-          disabled={!paste.trim()}
-          className='shrink-0 rounded border border-white/20 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white transition hover:bg-white/10 disabled:opacity-40'
-        >
+        <UtilButton onClick={doImport} disabled={!paste.trim()} sound='none' className='shrink-0'>
           Import
-        </button>
+        </UtilButton>
       </div>
     </div>
   );
@@ -7990,18 +7841,13 @@ function CrosshairShare({
 }) {
   const code = encodeCrosshair(cfg);
   const [paste, setPaste] = useState('');
-  const [msg, setMsg] = useState<string | null>(null);
 
-  const flash = (m: string) => {
-    setMsg(m);
-    setTimeout(() => setMsg(null), 1500);
-  };
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      flash('Copied!');
+      toast('Copied crosshair code', { tone: 'ok' });
     } catch {
-      flash('Copy failed');
+      toast('Copy failed', { tone: 'err' });
     }
   };
   const doImport = () => {
@@ -8009,48 +7855,38 @@ function CrosshairShare({
     if (next) {
       onImport(next);
       setPaste('');
-      flash('Imported!');
+      toast('Crosshair imported', { tone: 'ok' });
     } else {
-      flash('Invalid code');
+      toast('Invalid crosshair code', { tone: 'err' });
     }
   };
 
   return (
-    <div className='flex flex-col gap-2 rounded-md border border-white/10 bg-black/30 p-3'>
-      <div className='flex items-center justify-between'>
-        <span className='text-[10px] uppercase tracking-[0.16em] text-white/55'>Share code</span>
-        {msg && (
-          <span className='text-[10px] uppercase tracking-[0.14em] text-emerald-300'>{msg}</span>
-        )}
-      </div>
+    <div className='flex flex-col gap-2 border border-white/10 bg-black/30 p-3'>
+      <span className='text-[10px] uppercase tracking-[0.16em] text-white/55'>Share code</span>
       <div className='flex items-center gap-2'>
         <input
           readOnly
           value={code}
+          aria-label='Crosshair share code'
           onFocus={(e) => e.currentTarget.select()}
-          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] text-white/80 outline-none'
+          className='deck-input deck-input-sm min-w-0 flex-1'
         />
-        <button
-          onClick={copy}
-          className='rounded bg-emerald-400 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-emerald-300'
-        >
+        <UtilButton onClick={copy} tone='cyan' sound='none' className='shrink-0'>
           Copy
-        </button>
+        </UtilButton>
       </div>
       <div className='flex items-center gap-2'>
         <input
           value={paste}
           placeholder='Paste a share code…'
+          aria-label='Import crosshair code'
           onChange={(e) => setPaste(e.target.value)}
-          className='min-w-0 flex-1 rounded border border-white/15 bg-black/40 px-2 py-1 font-mono text-[11px] text-white outline-none transition focus:border-emerald-400/70'
+          className='deck-input deck-input-sm min-w-0 flex-1'
         />
-        <button
-          onClick={doImport}
-          disabled={!paste.trim()}
-          className='rounded border border-cyan-300/50 bg-cyan-300/10 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-cyan-100 transition hover:bg-cyan-300/20 disabled:opacity-40'
-        >
+        <UtilButton onClick={doImport} disabled={!paste.trim()} sound='none' className='shrink-0'>
           Import
-        </button>
+        </UtilButton>
       </div>
     </div>
   );
@@ -8135,7 +7971,7 @@ function NumberField({
           const n = Number(e.target.value);
           if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, Math.round(n))));
         }}
-        className='w-24 rounded border border-white/15 bg-black/40 px-2 py-1 text-right font-mono text-xs text-white outline-none transition focus:border-emerald-400/70'
+        className='deck-input deck-input-sm w-24 text-right'
       />
     </label>
   );
@@ -8211,10 +8047,13 @@ function KeybindsSection({
         >
           <span>{label}</span>
           <button
+            type='button'
             onClick={() => setListening(id)}
-            className={`min-w-[5.5rem] rounded border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] transition ${
+            aria-pressed={listening === id}
+            {...sfxProps('uiClick')}
+            className={`clip-deck-sm min-w-[5.5rem] border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.1em] transition ${
               listening === id
-                ? 'animate-pulse border-emerald-400 bg-emerald-400/15 text-emerald-200'
+                ? 'deck-pulse border-cyan-400 bg-cyan-400/15 text-cyan-200'
                 : 'border-white/15 bg-black/40 text-white/85 hover:bg-white/10'
             }`}
           >

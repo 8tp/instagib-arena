@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { DeckButton, DeckTab, ModalShell, TextButton } from './deck';
 
 // Client auth: guest by default, optional account. The session lives in an
 // httpOnly cookie set by the server, so the client only holds the username (or
@@ -94,7 +95,9 @@ const ERRORS: Record<string, string> = {
   network: 'Network error — try again',
 };
 
-// Login / Register modal. `mode` is the initial tab.
+// Login / Register sheet. `mode` is the initial tab. Deck ModalShell (fixed:
+// it opens over the lobby root and over onboarding) with the two modes as a
+// tab row under the title; Escape / backdrop / "Stay a guest" all dismiss.
 export function LoginModal({
   auth,
   onClose,
@@ -111,15 +114,7 @@ export function LoginModal({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const submit = async () => {
+  const submit = async (close: () => void) => {
     if (busy) return;
     setBusy(true);
     setErr(null);
@@ -129,92 +124,100 @@ export function LoginModal({
         : await auth.register(username.trim(), password, email.trim());
     setBusy(false);
     if (code) setErr(ERRORS[code] ?? 'Something went wrong');
-    else onClose();
+    else close();
   };
 
   return (
-    <div
-      role='dialog'
-      aria-modal='true'
-      aria-label={mode === 'login' ? 'Log in' : 'Create account'}
-      className='fixed inset-0 z-[70] flex items-center justify-center bg-black/85 p-4 backdrop-blur-md'
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className='deck-bg w-[420px] max-w-[94vw] overflow-hidden rounded-2xl border border-cyan-500/30 bg-zinc-950/95 shadow-2xl'>
-        <div className='flex border-b border-white/10'>
+    <ModalShell
+      title='Account'
+      onClose={onClose}
+      fixed
+      z='z-[70]'
+      header={
+        <div role='tablist' aria-label='Account mode' className='-mx-2 -mt-1 -mb-3 flex'>
           {(['register', 'login'] as const).map((m) => (
-            <button
+            <DeckTab
               key={m}
+              active={mode === m}
               onClick={() => {
                 setMode(m);
                 setErr(null);
               }}
-              className={`flex-1 px-5 py-3.5 text-[11px] font-bold uppercase tracking-[0.18em] transition ${
-                mode === m ? 'bg-cyan-400/10 text-cyan-300' : 'text-white/40 hover:text-white/70'
-              }`}
             >
               {m === 'register' ? 'Create account' : 'Log in'}
-            </button>
+            </DeckTab>
           ))}
         </div>
-        <div className='px-7 py-6'>
-          <p className='mb-4 text-[12px] leading-relaxed text-white/50'>
-            {mode === 'register'
-              ? 'Create an account to save your XP, levels, credits, and cosmetics, and climb the leaderboards. Email is optional (for password recovery).'
-              : 'Log in to pick up your progress on any device.'}
-          </p>
-          <label className='block text-[10px] uppercase tracking-[0.24em] text-white/45'>Username</label>
-          <input
-            autoFocus
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
-            maxLength={20}
-            placeholder='3–20 letters, numbers, _'
-            className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-cyan-400/60'
-          />
-          <label className='mt-4 block text-[10px] uppercase tracking-[0.24em] text-white/45'>Password</label>
-          <input
-            type='password'
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
-            maxLength={200}
-            placeholder='At least 6 characters'
-            className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-cyan-400/60'
-          />
-          {mode === 'register' && (
-            <>
-              <label className='mt-4 block text-[10px] uppercase tracking-[0.24em] text-white/45'>
-                Email <span className='text-white/30'>(optional)</span>
-              </label>
-              <input
-                type='email'
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submit()}
-                placeholder='for password recovery'
-                className='mt-1.5 w-full rounded-lg border border-white/15 bg-black/40 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-cyan-400/60'
-              />
-            </>
-          )}
-          {err && <div className='mt-4 text-[12px] text-rose-300'>{err}</div>}
-        </div>
-        <div className='flex items-center justify-between border-t border-white/10 px-7 py-4'>
-          <button onClick={onClose} className='text-[11px] uppercase tracking-[0.16em] text-white/40 hover:text-white/70'>
+      }
+      footer={({ close }) => (
+        <>
+          <TextButton onClick={close} sound='uiBack'>
             Stay a guest
-          </button>
-          <button
-            onClick={submit}
-            disabled={busy}
-            className='rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-zinc-950 transition hover:bg-cyan-300 disabled:opacity-50'
-          >
+          </TextButton>
+          <DeckButton onClick={() => submit(close)} disabled={busy} solid accent='cyan' center>
             {busy ? '…' : mode === 'register' ? 'Create account' : 'Log in'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </DeckButton>
+        </>
+      )}
+    >
+      {({ close }) => (
+        <>
+          <div className='flex flex-col gap-4'>
+            <p className='text-[12px] leading-relaxed text-white/50'>
+              {mode === 'register'
+                ? 'Create an account to save your XP, levels, credits, and cosmetics, and climb the leaderboards. Email is optional (for password recovery).'
+                : 'Log in to pick up your progress on any device.'}
+            </p>
+            <label className='flex flex-col gap-1.5'>
+              <span className='deck-label'>Username</span>
+              <input
+                autoFocus
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submit(close)}
+                maxLength={20}
+                autoComplete='username'
+                placeholder='3–20 letters, numbers, _'
+                className='deck-input'
+              />
+            </label>
+            <label className='flex flex-col gap-1.5'>
+              <span className='deck-label'>Password</span>
+              <input
+                type='password'
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submit(close)}
+                maxLength={200}
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                placeholder='At least 6 characters'
+                className='deck-input'
+              />
+            </label>
+            {mode === 'register' && (
+              <label className='flex flex-col gap-1.5'>
+                <span className='deck-label'>
+                  Email <span className='text-white/30'>(optional)</span>
+                </span>
+                <input
+                  type='email'
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submit(close)}
+                  autoComplete='email'
+                  placeholder='for password recovery'
+                  className='deck-input'
+                />
+              </label>
+            )}
+            {err && (
+              <div role='alert' className='text-[12px] text-rose-300'>
+                {err}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </ModalShell>
   );
 }
