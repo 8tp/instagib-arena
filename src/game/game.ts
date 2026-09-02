@@ -111,7 +111,15 @@ const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
 
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
-import { createCamera, createRenderer, createScene } from './renderer';
+import {
+  PostFxPipeline,
+  applyMapShadowFlags,
+  createCamera,
+  createRenderer,
+  createScene,
+  SHADOW_TUNING,
+  type PostFxOptions,
+} from './renderer';
 import { buildRailgun } from './weapon-model';
 import { ViewmodelMotion } from './viewmodel-motion';
 import type {
@@ -228,6 +236,10 @@ export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
+  // Post chain (bloom / SMAA / vignette) + sun shadows. Prefs are what the
+  // player asked for; low-spec overrides them all off (see applyPostFx).
+  private postFx: PostFxPipeline;
+  private postFxPrefs: PostFxOptions = { bloom: true, shadows: true, aa: true, vignette: true };
   private map: ArenaMap = DEFAULT_MAP;
   private mapMesh: THREE.Group;
   private player: Player;
@@ -437,6 +449,8 @@ export class Game {
     this.renderer = createRenderer(canvas);
     this.scene = createScene(this.renderer);
     this.camera = createCamera(canvas);
+    this.postFx = new PostFxPipeline(this.renderer, this.scene, this.camera);
+    this.applyPostFx();
     // Parent the viewmodel to the camera so it tracks the view. The camera is
     // added to the scene so its child (the gun) is part of the render.
     this.scene.add(this.camera);
@@ -464,6 +478,7 @@ export class Game {
       this.emitHud();
     });
     this.mapMesh = buildMapMesh(this.map);
+    applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
     this.player = new Player(this.map.spawn);
 
@@ -604,6 +619,7 @@ export class Game {
     this.lowSpec = !!lowSpec;
     this.applyPixelRatio();
     this.effects.setQuality(lowSpec ? 0.5 : 1);
+    this.applyPostFx();
   }
 
   private applyPixelRatio() {
@@ -612,6 +628,29 @@ export class Game {
     const cap = this.lowSpec ? 1 : 2; // low-spec ignores high-DPI displays
     const pr = Math.min(Math.min(dpr, cap) * this.resolutionScale, this.lowSpec ? 1.5 : 3);
     this.renderer.setPixelRatio(pr);
+    this.postFx.setPixelRatio(pr);
+  }
+
+  // Post-processing + shadows toggles (bloom / sun shadows / SMAA / vignette).
+  // Stored as prefs so a later settings UI can drive them; low-spec forces all
+  // of them off and the frame renders straight to the canvas.
+  setPostFx(opts: Partial<PostFxOptions>) {
+    this.postFxPrefs = { ...this.postFxPrefs, ...opts };
+    this.applyPostFx();
+  }
+
+  private applyPostFx() {
+    const p = this.postFxPrefs;
+    const on = !this.lowSpec;
+    this.postFx.setOptions({
+      bloom: on && p.bloom,
+      shadows: on && p.shadows,
+      aa: on && p.aa,
+      vignette: on && p.vignette,
+    });
+    this.postFx.setShadowMapSize(
+      this.resolutionScale < 0.75 ? SHADOW_TUNING.mapSizeLow : SHADOW_TUNING.mapSize,
+    );
   }
 
   setViewmodel(offset: { x: number; y: number; z: number }, hide: boolean) {
@@ -882,6 +921,7 @@ export class Game {
     this.scene.remove(this.mapMesh);
     disposeGroup(this.mapMesh);
     this.mapMesh = buildMapMesh(map);
+    applyMapShadowFlags(this.mapMesh, map);
     this.scene.add(this.mapMesh);
     this.applyWorldStyle(); // re-tint the freshly-built materials
     // Reset the local player onto the new spawn.
@@ -1062,6 +1102,7 @@ export class Game {
     (this.scene.environment as THREE.Texture | null)?.dispose();
     this.scene.environment = null;
     this.disposeScene();
+    this.postFx.dispose();
     this.renderer.dispose();
   }
 
@@ -3240,7 +3281,11 @@ export class Game {
       this.tmpForward.x, this.tmpForward.y, this.tmpForward.z,
       0, 1, 0,
     );
-    this.renderer.render(this.scene, this.camera);
+    // Post chain (or direct render when every pass is off / low-spec). The
+    // vignette follows reduced-effects each frame; the sun's shadow box is
+    // re-centred under the (now finalized) camera inside render().
+    this.postFx.muteVignette(this.reducedEffects);
+    this.postFx.render();
   }
 
   private handleResize() {
@@ -3251,6 +3296,7 @@ export class Game {
     // staying at the mount-time DPR (#26j).
     this.applyPixelRatio();
     this.renderer.setSize(w, h, false);
+    this.postFx.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
