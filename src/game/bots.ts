@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
   AIR_JUMPS,
   BOOST_FORWARD_BIAS,
@@ -24,8 +23,8 @@ import {
   type BotDifficulty,
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
-import { LocomotionBlender } from './locomotion';
-import { attachRailgunToSoldier, WeaponHold } from './weapon-model';
+import { CharacterAnimator, cloneCharacter, enableShadows, type CharacterModel } from './character-anim';
+import { attachRailgunToSoldier } from './weapon-model';
 import { WornHat } from './hats';
 import { HATS, UNUSUALS } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
@@ -89,12 +88,9 @@ const MODEL_SCALE = 1.0;
 // atan2(dx, dz) which is 0 for wishdir +Z, so we add π to rotate the
 // model's natural -Z forward around to match wishdir.
 const MODEL_YAW_OFFSET = Math.PI;
-const DEATH_ANIM_DURATION = 1.2;
 
-export type BotModel = {
-  scene: THREE.Object3D;
-  animations: THREE.AnimationClip[];
-};
+// The loaded character (scene + clips) — shared with remote players + replays.
+export type BotModel = CharacterModel;
 
 // Module-level cache so React StrictMode's double-mount (and any future
 // remount) doesn't trigger two concurrent GLTFLoader runs. Two concurrent
@@ -278,36 +274,13 @@ export function applyHighlight(
   else if (mat) one(mat);
 }
 
-// Look up an animation clip by friendly name. Falls back to indexed
-// access (matches Three.js's Soldier example which uses indices 0/1/3).
-function pickClip(
-  animations: THREE.AnimationClip[],
-  names: string[],
-  fallbackIndex?: number,
-): THREE.AnimationClip | null {
-  const lookup = new Map<string, THREE.AnimationClip>();
-  for (const c of animations) lookup.set(c.name.toLowerCase(), c);
-  for (const n of names) {
-    const hit = lookup.get(n.toLowerCase());
-    if (hit) return hit;
-  }
-  if (fallbackIndex !== undefined && animations[fallbackIndex]) {
-    return animations[fallbackIndex];
-  }
-  return null;
-}
-
-type ActionKey = 'idle' | 'walk' | 'run' | 'jump' | 'death';
-
 export class Bot {
   state: BotState;
   group: THREE.Group;
-  private modelRoot: THREE.Object3D | null = null;
   private hat: WornHat | null = null;
-  private mixer: THREE.AnimationMixer | null = null;
-  private actions: Partial<Record<ActionKey, THREE.AnimationAction>> = {};
-  private loco: LocomotionBlender | null = null;
-  private hold: WeaponHold | null = null;
+  // Shared third-person animator (gait, aim pitch, jump/land, death) — the same
+  // implementation remote players use. Null on the capsule fallback.
+  private anim: CharacterAnimator | null = null;
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
@@ -316,7 +289,6 @@ export class Bot {
   private team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color
   private nameColor = '#ffd1d8'; // current nameplate color (team-tinted in TDM)
   private facing = 0;
-  private dyingTimer = 0;
   // Vertical physics so bots obey gravity (fall off ledges) and auto-step up
   // ramps/cover instead of being glued to the ground plane (#7).
   private vel: Vec3 = { x: 0, y: 0, z: 0 };
@@ -329,7 +301,6 @@ export class Bot {
   private dashCooldown = 0;
   private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
   private boostCooldown = 0;
-  private jumping = false;              // true between takeoff and landing (drives the jump anim)
   private wasOnGround = true;           // for landing-edge detection
   private shotAtTimer = 0;              // counts down after the bot is recently shot near; raises dodge reactivity
   // Combat state
@@ -387,12 +358,17 @@ export class Bot {
   // `enemies` is every targetable entity (player + other bots); the bot filters
   // itself out by id.
   step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
-    if (this.mixer) this.mixer.update(dt);
-    // Pin the gun-carry pose over the animated arms while alive; let the death
-    // clip flail freely when dead.
-    if (this.state.alive) this.hold?.apply();
-    // Countdown freeze: keep animating (idle plays via the mixer above) but stay
-    // put — no movement, decisions, or fire until the match goes live.
+    const intent = this.stepLogic(dt, map, enemies, frozen);
+    // Animate AFTER the body's transform is final for this tick (the animator
+    // measures motion from the group position). The manager re-seats the hat
+    // afterwards via updateHat().
+    this.animate(dt);
+    return intent;
+  }
+
+  private stepLogic(dt: number, map: ArenaMap, enemies: BotTarget[], frozen: boolean): BotFireIntent | null {
+    // Countdown freeze: keep animating (idle, via animate()) but stay put — no
+    // movement, decisions, or fire until the match goes live.
     if (frozen) {
       this.vel = { x: 0, y: 0, z: 0 };
       return null;
@@ -406,10 +382,11 @@ export class Bot {
     if (this.decideTimer > 0) this.decideTimer -= dt;
 
     if (!this.state.alive) {
-      if (this.dyingTimer > 0) {
-        this.dyingTimer -= dt;
-        if (this.dyingTimer <= 0) this.group.visible = false;
-        return null;
+      // Corpse phase: the death one-shot / collapse plays in place, then the
+      // body hides for the rest of the respawn delay (the delay itself is
+      // unchanged — it keeps ticking through the corpse phase).
+      if (this.group.visible && !(this.anim?.isDying() && !this.anim.deathDone())) {
+        this.group.visible = false;
       }
       this.state.respawnTimer -= dt;
       if (this.state.respawnTimer <= 0) {
@@ -422,7 +399,6 @@ export class Bot {
         this.dashTimer = 0;
         this.dashCooldown = 0;
         this.boostCooldown = 0;
-        this.jumping = false;
         this.wasOnGround = true;
         this.shotAtTimer = 0;
         this.decideTimer = rand(0, this.mv.decideInterval);
@@ -434,8 +410,7 @@ export class Bot {
         this.seenForSec = 0;
         this.aimSeeded = false;
         this.lastTargetId = null;
-        this.actions.death?.stop(); // clear the clamped death pose
-        this.loco?.start();
+        this.anim?.respawn(this.group.position); // clear the death pose, back to idle
       }
       return null;
     }
@@ -464,8 +439,6 @@ export class Bot {
       // for ~1s after the duel breaks (no external shot-at signal is available
       // without changing the public API / game.ts).
       if (bestDist < COMBAT_RANGE_MAX * 1.4) this.shotAtTimer = 1.0;
-      const px = this.state.pos.x;
-      const pz = this.state.pos.z;
       // Track the target with human-like lag + measure its lateral speed.
       this.updateAim(eye, best, dt);
       // Randomly reverse strafe direction so circling isn't perfectly periodic.
@@ -484,12 +457,10 @@ export class Bot {
       const desired = this.combatMove(dt, best.pos, bestDist);
       const { blocked } = this.integrate(dt, map, desired);
       if (blocked) this.strafeSign *= -1; // bounce off walls
-      this.updateLoco(px, pz, dt);
-      // Face the target.
+      // Face the target (applied to the model by animate()).
       const desiredFacing = Math.atan2(best.pos.x - this.state.pos.x, best.pos.z - this.state.pos.z);
       const lerpT = 1 - Math.exp(-BOT_FACING_LERP * dt);
       this.facing = lerpAngle(this.facing, desiredFacing, lerpT);
-      this.applyFacing();
       // Fire once reaction time has elapsed and the weapon is off cooldown.
       if (this.seenForSec >= this.diff.reaction && this.shootCooldown <= 0) {
         // Jitter the cadence ±15% so bots don't fire on a metronome.
@@ -504,11 +475,22 @@ export class Bot {
     this.seenForSec = 0;
     this.aimSeeded = false; // re-acquire aim from scratch on the next target
     this.lastTargetId = null;
-    const px = this.state.pos.x;
-    const pz = this.state.pos.z;
     this.roam(dt, map);
-    this.updateLoco(px, pz, dt);
     return null;
+  }
+
+  // Drive the shared third-person animator: gait from the measured motion, aim
+  // pitch toward the (smoothed) aim point while engaged, jump/land/death
+  // layers. Purely visual — the hitbox is the state.pos AABB.
+  private animate(dt: number) {
+    if (!this.anim || !this.group.visible) return;
+    let pitch = 0;
+    if (this.state.alive && this.engagedId !== null && this.aimSeeded) {
+      const eye = this.eyePos();
+      const h = Math.hypot(this.aimPoint.x - eye.x, this.aimPoint.z - eye.z);
+      pitch = Math.atan2(this.aimPoint.y - eye.y, h);
+    }
+    this.anim.update({ dt, yaw: this.facing + MODEL_YAW_OFFSET, pitch, pos: this.group.position });
   }
 
   // Chase a smoothed aim point toward the target (low aimTrack = laggy = misses
@@ -554,7 +536,7 @@ export class Bot {
   // steers it toward the wish dir (air control), so jumps/boosts carry instead
   // of stopping dead; and a positive vel.y (from a jump/double-jump/boost) lofts
   // the bot up before gravity reclaims it. Landing resets the air-jump budget
-  // and drops out of the jump animation.
+  // (the jump/land pose is inferred from the motion by the shared animator).
   private integrate(dt: number, map: ArenaMap, desired: { x: number; z: number }): { blocked: boolean } {
     const size: Vec3 = { x: BOT_RADIUS * 2, y: BOT_HEIGHT, z: BOT_RADIUS * 2 };
 
@@ -625,14 +607,8 @@ export class Bot {
       if (r.blocked.y && this.vel.y > 0) this.vel.y = 0; // bonked a ceiling
       this.onGround = false;
     }
-    // Landing edge: refill the air-jump budget and end the jump animation.
-    if (this.onGround && !this.wasOnGround) {
-      this.airJumpsLeft = AIR_JUMPS;
-      if (this.jumping) {
-        this.jumping = false;
-        this.loco?.start(); // back to the speed-blended locomotion
-      }
-    }
+    // Landing edge: refill the air-jump budget.
+    if (this.onGround && !this.wasOnGround) this.airJumpsLeft = AIR_JUMPS;
     this.wasOnGround = this.onGround;
     this.group.position.set(this.state.pos.x, this.state.pos.y, this.state.pos.z);
     return { blocked };
@@ -641,12 +617,11 @@ export class Bot {
   // ── Movement actions ───────────────────────────────────────────────────────
   // Each sets velocity directly; integrate() applies it with collision next.
 
-  // Ground jump (or wall-clearing hop). Launches straight up at JUMP_SPEED and
-  // plays the jump clip un-blended for the airtime.
+  // Ground jump (or wall-clearing hop). Launches straight up at JUMP_SPEED; the
+  // animator picks the takeoff up from the motion.
   private doJump() {
     this.vel.y = JUMP_SPEED;
     this.onGround = false;
-    this.startJumpAnim();
   }
 
   // Mid-air second hop — spends an air jump. Optionally redirect horizontal
@@ -661,7 +636,6 @@ export class Bot {
       this.vel.x = (dir.x / len) * speed;
       this.vel.z = (dir.z / len) * speed;
     }
-    this.startJumpAnim();
     return true;
   }
 
@@ -698,16 +672,6 @@ export class Bot {
     this.onGround = false;
     this.airJumpsLeft = AIR_JUMPS; // a boost refreshes the air jump, like the player's
     this.boostCooldown = this.mv.boostCooldown;
-    this.startJumpAnim();
-  }
-
-  private startJumpAnim() {
-    if (this.jumping) return;
-    this.jumping = true;
-    if (this.actions.jump) {
-      this.loco?.stop(); // play the jump clip un-blended for the airtime
-      this.playOneShot('jump');
-    }
   }
 
   // Combat movement brain: pick + execute the per-tick jump/dash/boost on top of
@@ -811,12 +775,6 @@ export class Bot {
     }
   }
 
-  // Drive the locomotion blend from how far the bot actually moved this tick.
-  private updateLoco(prevX: number, prevZ: number, dt: number) {
-    const moved = Math.hypot(this.state.pos.x - prevX, this.state.pos.z - prevZ);
-    this.loco?.update(dt > 0 ? moved / dt : 0, dt);
-  }
-
   private eyePos(): Vec3 {
     return {
       x: this.state.pos.x,
@@ -888,7 +846,6 @@ export class Bot {
       const desiredFacing = Math.atan2(dx, dz);
       const lerpT = 1 - Math.exp(-BOT_FACING_LERP * dt);
       this.facing = lerpAngle(this.facing, desiredFacing, lerpT);
-      this.applyFacing();
       // Stuck recovery (anti stand-still glitch): if we INTENDED to move but barely
       // did (wedged on geometry, or aiming at an unreachable spot), accrue stuck
       // time; once it crosses the threshold, hop to clear the lip and pick a brand-
@@ -970,14 +927,10 @@ export class Bot {
     if (!this.state.alive) return;
     this.state.alive = false;
     this.state.respawnTimer = BOT_RESPAWN_DELAY;
-    if (this.mixer && this.actions.death) {
-      this.dyingTimer = DEATH_ANIM_DURATION;
-      this.loco?.stop(); // let the death clip play un-blended
-      this.playOneShot('death');
-    } else {
-      this.dyingTimer = 0;
-      this.group.visible = false;
-    }
+    // The death one-shot (clip if the rig has one, else the procedural collapse)
+    // plays in place; step() hides the body once it has held its last frame.
+    // Capsule fallback or a mid-air kill: vanish at once, as before.
+    if (!this.anim?.die()) this.group.visible = false;
   }
 
   isHeadshot(hitY: number): boolean {
@@ -1028,48 +981,21 @@ export class Bot {
     const smMat = this.nameSprite.material as THREE.SpriteMaterial;
     smMat.map?.dispose();
     smMat.dispose();
-    if (this.mixer) this.mixer.stopAllAction();
+    this.anim?.dispose();
   }
 
   private installModel(model: BotModel) {
-    const cloned = SkeletonUtils.clone(model.scene);
-    // Defensive: force a clean rest transform regardless of what the
-    // GLB's root node had baked in. The lean-back bug we saw was
-    // partial axis writes leaving residual X/Z rotation in place.
-    cloned.position.set(0, 0, 0);
-    cloned.rotation.set(0, 0, 0);
-    cloned.scale.setScalar(MODEL_SCALE);
-    // Tag the whole subtree so Game.disposeScene() skips disposing the
-    // shared geometry / materials / textures from the cached source.
-    cloned.traverse((obj) => {
-      obj.userData.shared = true;
-    });
+    // Shared clone path: rest transform, `userData.shared` tag (so
+    // Game.disposeScene() skips the cached source's resources), shadow casting.
+    const cloned = cloneCharacter(model, MODEL_SCALE);
     this.group.add(cloned);
-    this.modelRoot = cloned;
     this.hat = new WornHat(this.group, cloned);
     void this.hat.setHat(randomHatId());
     if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
-    attachRailgunToSoldier(cloned, BOT_HEIGHT);
-    this.hold = new WeaponHold(cloned);
-    this.mixer = new THREE.AnimationMixer(cloned);
-
-    const idleClip = pickClip(model.animations, ['idle'], 0);
-    const walkClip = pickClip(model.animations, ['walk', 'walking'], 3);
-    const runClip = pickClip(model.animations, ['run', 'running'], 1);
-    const jumpClip = pickClip(model.animations, ['jump']);
-    const deathClip = pickClip(model.animations, ['death', 'die']);
-
-    if (idleClip)  this.actions.idle  = this.mixer.clipAction(idleClip);
-    if (walkClip)  this.actions.walk  = this.mixer.clipAction(walkClip);
-    if (runClip)   this.actions.run   = this.mixer.clipAction(runClip);
-    if (jumpClip)  this.actions.jump  = this.mixer.clipAction(jumpClip);
-    if (deathClip) this.actions.death = this.mixer.clipAction(deathClip);
-
-    this.loco = new LocomotionBlender({
-      idle: this.actions.idle ?? null,
-      walk: this.actions.walk ?? null,
-      run: this.actions.run ?? null,
-    });
+    enableShadows(attachRailgunToSoldier(cloned, BOT_HEIGHT));
+    // Clip resolution, the gait blend, the gun-carry arm pin and every
+    // procedural layer live in the animator — the same one remote players use.
+    this.anim = new CharacterAnimator(cloned, model.animations);
   }
 
   private installFallback() {
@@ -1088,6 +1014,7 @@ export class Bot {
     });
     this.fallbackBody = new THREE.Mesh(bodyGeom, bodyMat);
     this.fallbackBody.position.y = (BOT_HEIGHT - 0.35) / 2;
+    this.fallbackBody.castShadow = true;
     this.group.add(this.fallbackBody);
     const headGeom = new THREE.SphereGeometry(BOT_RADIUS * 0.78, 16, 12);
     const headMat = new THREE.MeshStandardMaterial({
@@ -1098,14 +1025,8 @@ export class Bot {
     });
     this.fallbackHead = new THREE.Mesh(headGeom, headMat);
     this.fallbackHead.position.y = BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD + 0.12;
+    this.fallbackHead.castShadow = true;
     this.group.add(this.fallbackHead);
-  }
-
-  private applyFacing() {
-    if (this.modelRoot) {
-      // Always set ALL axes — don't leave .x / .z dangling.
-      this.modelRoot.rotation.set(0, this.facing + MODEL_YAW_OFFSET, 0);
-    }
   }
 
   // Bright-enemy highlight: emissive glow only (reversible, leaves base colour
@@ -1115,16 +1036,6 @@ export class Bot {
       const m = (obj as THREE.Mesh).material;
       applyHighlight(m, color);
     });
-  }
-
-  private playOneShot(key: ActionKey) {
-    if (!this.mixer) return;
-    const a = this.actions[key];
-    if (!a) return;
-    a.reset();
-    a.setLoop(THREE.LoopOnce, 1);
-    a.clampWhenFinished = true;
-    a.play();
   }
 }
 

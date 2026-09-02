@@ -51,6 +51,8 @@ export class LocomotionBlender {
     for (const a of [this.idle, this.walk, this.run]) {
       if (!a) continue;
       a.enabled = true;
+      a.paused = false;
+      a.stopFading();
       a.setEffectiveTimeScale(1);
       a.time = 0;
       a.play();
@@ -61,6 +63,9 @@ export class LocomotionBlender {
   }
 
   // Stop locomotion so a one-shot (e.g. death) can play un-blended.
+  // CAUTION: stopping the last action bound to a bone makes the mixer restore
+  // that bone's bind pose (T-pose). Prefer freeze()/fadeOut() for anything
+  // that should keep the current pose on screen.
   stop() {
     this.running = false;
     this.idle?.stop();
@@ -68,9 +73,26 @@ export class LocomotionBlender {
     this.run?.stop();
   }
 
+  // Hold the current pose: the gaits stay active (so their bones keep the last
+  // written pose) but no longer advance. Used for the procedural death collapse.
+  freeze() {
+    this.running = false;
+    for (const a of [this.idle, this.walk, this.run]) if (a) a.paused = true;
+  }
+
+  // Fade every gait to zero weight over `sec` so a one-shot clip (jump/death on
+  // rigs that have one) can take over — three's crossFade pattern. Bindings stay
+  // alive, so nothing snaps to bind pose. start() restores the blend.
+  fadeOut(sec: number) {
+    this.running = false;
+    for (const a of [this.idle, this.walk, this.run]) if (a) a.fadeOut(sec);
+  }
+
   // Blend toward the gait(s) matching `speed` (m/s). Call once per frame; the
   // mixer.update() that actually advances the clips is the caller's job.
-  update(speed: number, dt: number) {
+  // `dir` scales the walk/run playback direction: +1 forward, -1 reversed (a
+  // backpedal plays the run cycle backwards), fractional values mid-crossover.
+  update(speed: number, dt: number, dir = 1) {
     if (!this.running) return;
 
     let ti = 0;
@@ -112,11 +134,11 @@ export class LocomotionBlender {
     }
     if (this.walk) {
       this.walk.setEffectiveWeight(this.wWalk);
-      this.walk.setEffectiveTimeScale(rate);
+      this.walk.setEffectiveTimeScale(rate * dir);
     }
     if (this.run) {
       this.run.setEffectiveWeight(this.wRun);
-      this.run.setEffectiveTimeScale(rate * this.runSync);
+      this.run.setEffectiveTimeScale(rate * this.runSync * dir);
     }
   }
 }
