@@ -3243,7 +3243,7 @@ export class Game {
     this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
     if (this.viewmodelGlow) {
       const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
-      this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * g;
+      this.viewmodelGlow.emissiveIntensity += (0.8 - this.viewmodelGlow.emissiveIntensity) * g;
     }
     // Viewmodel: show while actively playing in first person, OR while watching a
     // player in first-person spectator POV (so you see THEIR gun skin). The

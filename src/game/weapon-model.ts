@@ -52,14 +52,14 @@ export function buildRailgun(finish?: RailgunFinish): RailgunModel {
   const glow = new THREE.MeshStandardMaterial({
     color: COL_ACCENT_HOT,
     emissive: new THREE.Color(COL_ACCENT_HOT),
-    emissiveIntensity: 1.7,
+    emissiveIntensity: 0.8,
     metalness: 0.2,
     roughness: 0.25,
   });
   const glowDim = new THREE.MeshStandardMaterial({
     color: COL_ACCENT,
     emissive: new THREE.Color(COL_ACCENT),
-    emissiveIntensity: 1.0,
+    emissiveIntensity: 0.5,
     metalness: 0.3,
     roughness: 0.3,
   });

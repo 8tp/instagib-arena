@@ -46,14 +46,14 @@ export const SHADOW_TUNING = {
   // With shadows on, the sun needs presence (lit vs shade) and the hemisphere
   // lifts the shaded side. Off (low-spec / ReplayViewer) keeps today's look.
   sunIntensity: 1.8,
-  hemiIntensity: 0.8,
+  hemiIntensity: 0.5,
   sunIntensityUnshadowed: 1.5,
   hemiIntensityUnshadowed: 0.7,
 };
 
 export const VIGNETTE_TUNING = {
   offset: 0.65, // ~21% darker at the extreme corners, ~10% at the edge midpoints
-  darkness: 1.0,
+  darkness: 0.6,
 };
 
 export const SUN_DIRECTION = new THREE.Vector3(20, 40, 12).normalize();
@@ -74,7 +74,7 @@ export function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
   // punchy instead of the old flat, murky look. With the post chain active the
   // same curve/exposure is applied once, by OutputPass, instead of per material.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.15;
+  renderer.toneMappingExposure = 0.95;
   const w = canvas.clientWidth || window.innerWidth;
   const h = canvas.clientHeight || window.innerHeight;
   renderer.setSize(w, h, false);
@@ -225,12 +225,14 @@ export function createScene(renderer: THREE.WebGLRenderer): THREE.Scene {
   // Soft image-based fill so PBR surfaces look lit-from-everywhere and bright.
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  // RoomEnvironment fill was ~equal to the sun; dim it so shadows read (critic r1).
+  scene.environmentIntensity = 0.4;
   pmrem.dispose();
 
   // Sky/ground hemisphere + a warm key "sun" + a cool fill. Brighter than the
   // old setup so the arena isn't murky. Intensities here are the unshadowed
   // look; PostFxPipeline lifts sun/hemi when it turns shadows on.
-  const hemi = new THREE.HemisphereLight(0xcfe2f2, 0x55504e, SHADOW_TUNING.hemiIntensityUnshadowed);
+  const hemi = new THREE.HemisphereLight(0xcfe2f2, 0x7d8088, SHADOW_TUNING.hemiIntensityUnshadowed);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff2d8, SHADOW_TUNING.sunIntensityUnshadowed);
   sun.position.set(20, 40, 12);

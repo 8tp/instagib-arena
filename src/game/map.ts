@@ -402,7 +402,7 @@ const SURFACE_KINDS: SurfaceKind[] = ['floor', 'ceiling', 'wall', 'cover', 'plat
 const TRIM_HEIGHT = 0.06;
 const TRIM_DEPTH = 0.03;
 const TRIM_DROP = 0.16;
-const TRIM_EMISSIVE = 1.1;
+const TRIM_EMISSIVE = 1.9;
 
 // Size heuristic that assigns each AABB a surface kind (unchanged from the
 // original per-box build, so maps read the way they were authored).
