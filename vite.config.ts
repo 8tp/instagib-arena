@@ -12,6 +12,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
+    // Agent worktrees live under .claude/worktrees; don't let their edits reload the dev tab.
+    watch: { ignored: ['**/.claude/**', '**/dist/**'] },
     proxy: {
       '/api': { target: `http://localhost:${SERVER_PORT}`, changeOrigin: true },
       '/ws': { target: `ws://localhost:${SERVER_PORT}`, ws: true },
