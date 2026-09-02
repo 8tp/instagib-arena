@@ -259,6 +259,7 @@ export class Game {
   // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
   // input latency, at high CPU cost). See scheduleFrame().
   private fpsLimit = 0;
+  private photoMode = false; // dev: see constructor
   private netDebugOn = false; // F3 net-debug overlay
   private frameTimeout: ReturnType<typeof setTimeout> | null = null;
   private fpsChannel: MessageChannel | null = null;
@@ -452,7 +453,12 @@ export class Game {
     this.postFx = new PostFxPipeline(this.renderer, this.scene, this.camera);
     this.applyPostFx();
     // Dev-only handle for the visual-critique harness (console / screenshot bots).
-    if (import.meta.env.DEV) (window as unknown as { __ig?: Game }).__ig = this;
+    if (import.meta.env.DEV) {
+      (window as unknown as { __ig?: Game }).__ig = this;
+      // `?photo=1`: run without a real pointer lock (automation can't grant one)
+      // and keep rendering while the tab is hidden (rAF is paused there).
+      this.photoMode = new URLSearchParams(window.location.search).get('photo') === '1';
+    }
     // Parent the viewmodel to the camera so it tracks the view. The camera is
     // added to the scene so its child (the gun) is part of the render.
     this.scene.add(this.camera);
@@ -1047,6 +1053,7 @@ export class Game {
   }
 
   async start() {
+    if (this.photoMode) this.input.forceLocked();
     if (this.disposed) return;
     this.lastTime = performance.now();
     this.runLoop();
@@ -1478,6 +1485,18 @@ export class Game {
   // Frame-rate limit. 0 = VSync (display refresh), a positive number caps to
   // that fps, a negative value uncaps (renders as fast as the machine allows,
   // beyond vsync). Applied on the next scheduled frame.
+  // Dev harness: aim the first-person view directly (photo mode has no mouse).
+  setPlayerView(yaw: number, pitch: number, pos?: { x: number; y: number; z: number }) {
+    this.player.yaw = yaw;
+    this.player.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+    if (pos) {
+      this.player.pos.x = pos.x;
+      this.player.pos.y = pos.y;
+      this.player.pos.z = pos.z;
+      this.player.vel.x = this.player.vel.y = this.player.vel.z = 0;
+    }
+  }
+
   setFpsLimit(n: number) {
     this.fpsLimit = Number.isFinite(n) ? Math.trunc(n) : 0;
   }
@@ -1559,7 +1578,8 @@ export class Game {
   private scheduleFrame() {
     const fn = this.tickFn;
     if (this.disposed || !fn) return;
-    const limit = this.fpsLimit;
+    let limit = this.fpsLimit;
+    if (this.photoMode && typeof document !== 'undefined' && document.hidden) limit = -1;
     if (limit < 0) {
       // Uncapped: re-run ASAP via a MessageChannel — beats setTimeout's ~4ms
       // clamp, so it can render well past the display refresh.
