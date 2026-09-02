@@ -293,6 +293,72 @@ export const DEFAULT_VIEWMODEL_OFFSET = { x: 0, y: 0, z: 0 } as const;
 export const MIN_VIEWMODEL_OFFSET = -0.5;
 export const MAX_VIEWMODEL_OFFSET = 0.5;
 
+// Viewmodel motion (bob / look sway / landing dip / dash lean / two-stage fire
+// kick / zoom tuck / idle breathing) — driven by viewmodel-motion.ts and layered
+// on top of VIEWMODEL_BASE + the user offset. Positions are camera-local units
+// (the gun sits ~0.5 out, so 0.006 ≈ 6 mm on screen); angles are radians. The
+// `viewmodelMotion` intensity (0–1, Game.setViewmodelMotion) scales every
+// cosmetic term except the fire kick + zoom tuck. Reference feel: Diabotical /
+// QC rail — tight, readable, crosshair never touched.
+export const DEFAULT_VIEWMODEL_MOTION = 1;
+export const VIEWMODEL_MOTION = {
+  maxDt: 0.05, // per-frame dt clamp so a hitch can't launch a spring
+  // Walk/run bob: figure-8 (x = sin φ, y = −|sin φ|, tiny roll). Amplitude ramps
+  // (smoothstep) with ground speed up to WALK_SPEED and fades out airborne;
+  // phase advances by distance travelled — one cycle per bobStrideM (1.25 Hz
+  // sway / 2.5 Hz footfall at full run) — so cadence follows acceleration.
+  bobAmpX: 0.006,
+  bobAmpY: 0.005,
+  bobRoll: 0.008, // 0.45°
+  bobStrideM: 8,
+  bobInTau: 0.12, // s, envelope fade-in
+  bobOutTau: 0.045, // s, envelope fade-out (leaving the ground)
+  zoomBobCut: 0.75, // bob amplitude × (1 − cut·zoom)
+  // Look sway: the gun trails mouse look (rate-based, so frame-rate independent),
+  // clamped, then critically damped (swayOmega ≈ 55 ms response).
+  swayRotPerRate: 0.006, // rad of lag per rad/s of turn
+  swayRotMax: 0.052, // 3°
+  swayPosPerRate: 0.0012, // units per rad/s
+  swayPosMax: 0.012, // 12 mm
+  swayRollPerRate: 0.003, // roll into the turn
+  swayRollMax: 0.026, // 1.5°
+  swayOmega: 18,
+  zoomSwayCut: 0.5,
+  // Landing dip: a velocity impulse (landKick × impact m/s, clamped) into a
+  // lightly underdamped spring → ~10 mm dip from a normal jump, ~20 mm max.
+  landOmega: 20,
+  landZeta: 0.6,
+  landKick: 0.045,
+  landMinImpact: 2.5, // m/s — soft step-downs don't dip
+  landMaxImpact: 18,
+  landPitch: 1.2, // gun pitch (rad) per unit of dip (≈ −0.7° at 10 mm)
+  landCamPitch: 0.9, // cosmetic camera pitch per unit of dip (≈ 0.5° at 10 mm)…
+  landCamMax: 0.026, // …capped at 1.5°; off under reduced effects
+  jumpKick: 0.15, // take-off: ~2.5 mm lag-down
+  // Strafe lean + dash: roll toward the movement direction; a dash adds an
+  // inertia shove (≈ 12 mm) and a roll kick (≈ 2.5°) that spring back.
+  leanOmega: 14,
+  leanZeta: 0.7,
+  leanRoll: 0.021, // 1.2° at full strafe speed
+  dashOmega: 16,
+  dashZeta: 0.55,
+  dashKick: 0.37,
+  dashRollKick: 1.35,
+  // Two-stage fire kick. A: sharp back+up, exponential bleed (t½ ≈ 38 ms).
+  // B: velocity impulse into an underdamped spring — rises to its peak ~60 ms
+  // later, settles with a small forward overshoot and an alternating-side roll.
+  // Peak travel (A + B) ≈ 0.06–0.07 back / 0.15–0.17 rad up — about the old
+  // single-stage kick (0.08 / 0.22), just shaped.
+  recoilA: { z: 0.06, y: 0.012, pitch: 0.17, decay: 18 },
+  recoilB: { z: 0.025, y: 0.005, pitch: 0.05, roll: 0.022, kick: 35, omega: 20, zeta: 0.45 },
+  muzzleDecay: 28, // muzzle bloom fade (≈ 100 ms)
+  // Zoom tuck: the gun eases down + slightly right + away while zoomed.
+  zoomTuck: { x: 0.02, y: -0.05, z: -0.02, pitch: -0.04 },
+  zoomTuckRate: 9,
+  // Idle breathing: two slow, incommensurate sines (never visibly loops).
+  idle: { x: 0.0012, y: 0.0018, roll: 0.0035, pitch: 0.0018, hzA: 0.27, hzB: 0.17 },
+} as const;
+
 // Source/CS2 cm-per-360 for a sensitivity + mouse DPI (for the settings readout).
 export function cm360(sensitivity: number, dpi: number): number {
   if (sensitivity <= 0 || dpi <= 0) return 0;

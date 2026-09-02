@@ -113,6 +113,7 @@ const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
 import { createCamera, createRenderer, createScene } from './renderer';
 import { buildRailgun } from './weapon-model';
+import { ViewmodelMotion } from './viewmodel-motion';
 import type {
   AABB,
   BannerState,
@@ -406,11 +407,14 @@ export class Game {
   private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
   private localCard: CardPayload | null = null; // your playercard (kill banner)
   private reducedEffects = false; // accessibility: gate shake/flash/heavy bursts
-  // Weapon feedback: recoil kicks the viewmodel back+up; viewKick punches the
-  // view up. Both are transient and decay to 0 each frame (aim is unaffected —
-  // viewKick is purely visual, layered on top of the real pitch).
-  private recoil = 0;
+  // Weapon feedback: viewKick punches the view up on fire (transient, decays to
+  // 0 each frame; aim is unaffected — it's layered on top of the real pitch).
+  // The gun's own kick — plus bob / look sway / landing dip / dash lean / zoom
+  // tuck / idle breathing — lives in viewmodelMotion (viewmodel-motion.ts) and
+  // is applied in render() on top of the base position + user offset.
   private viewKick = 0;
+  private readonly viewmodelMotion = new ViewmodelMotion();
+  private viewmodelMuzzle: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> | null = null;
 
   // FOV / zoom. baseFov is the settings FOV; camera.fov lerps toward zoomFov
   // while the zoom bind is held.
@@ -616,6 +620,13 @@ export class Game {
     this.applyViewmodelTransform();
   }
 
+  // Viewmodel motion intensity, 0–1 (0 = static gun, only the fire kick and zoom
+  // tuck remain; 1 = full bob / sway / landing dip / dash lean / idle). A
+  // settings slider can be wired straight to this.
+  setViewmodelMotion(intensity: number) {
+    this.viewmodelMotion.setIntensity(intensity);
+  }
+
   private applyViewmodelTransform() {
     if (!this.viewmodel) return;
     this.viewmodel.position.set(
@@ -788,6 +799,7 @@ export class Game {
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
+    this.viewmodelMuzzle = vm.muzzleFlash;
     this.applyViewmodelTransform();
     this.camera.add(this.viewmodel);
   }
@@ -1737,7 +1749,32 @@ export class Game {
     // While dead, movement is frozen — the camera is owned by the killcam in
     // render(). (Look is drained every frame in applyLook(), so it can't pile up
     // and snap the view on respawn.)
-    if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
+    if (!dead) {
+      // Snapshot pre-step state so the viewmodel motion can react to the edges
+      // this tick produces: touchdown (dip ∝ impact speed), take-off (ground /
+      // air jump / boost), and dash start (inertia shove toward view space).
+      const wasGround = this.player.onGround;
+      const preVy = this.player.vel.y;
+      const wasDashing = this.player.dashTimer > 0;
+      this.player.step(input, dt, this.map, this.inCountdown);
+      const v = this.player.vel;
+      if (!wasGround && this.player.onGround) {
+        this.viewmodelMotion.onLand(-preVy);
+      } else if (
+        (wasGround && !this.player.onGround && v.y > 0) ||
+        (!wasGround && v.y - preVy > 4)
+      ) {
+        this.viewmodelMotion.onJump();
+      }
+      if (!wasDashing && this.player.dashTimer > 0) {
+        const yaw = this.player.yaw;
+        const sp = Math.hypot(v.x, v.z) || 1;
+        this.viewmodelMotion.onDash(
+          (-v.x * Math.sin(yaw) - v.z * Math.cos(yaw)) / sp, // forward component
+          (v.x * Math.cos(yaw) - v.z * Math.sin(yaw)) / sp, // lateral (+ = right)
+        );
+      }
+    }
 
     // Self-heal the local sim: a NaN (degenerate collision) or falling out of
     // the world (boosted through a seam) would otherwise be unrecoverable
@@ -1957,9 +1994,10 @@ export class Game {
     });
     this.audio.play('fire', 0.55);
     this.addShake(SHAKE_FIRE);
-    // Weapon feedback: recoil the gun, punch the view up, flash the muzzle, and
-    // spike the gun's energy glow (all decay back over the next few frames).
-    this.recoil = 1;
+    // Weapon feedback: two-stage gun kick + muzzle bloom (viewmodelMotion), punch
+    // the view up, flash the muzzle, and spike the gun's energy glow (all decay
+    // back over the next few frames).
+    this.viewmodelMotion.onFire();
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
     this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
@@ -3135,26 +3173,60 @@ export class Game {
     // same at 60fps and uncapped (the marketed FPS-uncap would otherwise change
     // recoil/kick feel with framerate). Constants match the old /frame factors.
     const fdt = this.frameDt;
-    this.recoil *= Math.exp(-10.46 * fdt); // ≈ 0.84/frame at 60fps
     this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
     if (this.viewmodelGlow) {
       const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
       this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * g;
     }
     // Viewmodel: show while actively playing in first person, OR while watching a
-    // player in first-person spectator POV (so you see THEIR gun skin). Apply
-    // recoil (kicks back toward the camera + muzzle tilts up, easing back to rest).
+    // player in first-person spectator POV (so you see THEIR gun skin). The
+    // motion helper layers bob / look sway / landing dip / dash lean / the
+    // two-stage fire kick / zoom tuck / idle breathing on top of the base
+    // position + the user's offset (viewmodel-motion.ts; all exp/spring-smoothed
+    // on real dt, so the feel is identical at 60fps and uncapped).
     if (this.viewmodel) {
-      const specPov = this.spectator && !!this.spectatedId && !!this.net?.remotes.get(this.spectatedId);
+      const specSnap =
+        this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
+      const specPov = !!specSnap;
       this.viewmodel.visible =
         !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay;
-      const r = this.recoil;
-      this.viewmodel.position.set(
-        VIEWMODEL_BASE.x + this.viewmodelOffset.x,
-        VIEWMODEL_BASE.y + this.viewmodelOffset.y + r * 0.02,
-        VIEWMODEL_BASE.z + this.viewmodelOffset.z + r * 0.08,
-      );
-      this.viewmodel.rotation.x = r * 0.22;
+      // Local first person feeds full movement state; spectator POV gets only the
+      // watched player's look (idle + sway); killcam/replay coast to rest.
+      const localPov = !this.spectator && !this.killcam && !this.replay;
+      const p = this.player;
+      const pose = this.viewmodelMotion.update({
+        dt: fdt,
+        yaw: specSnap ? specSnap.yaw : p.yaw,
+        pitch: specSnap ? specSnap.pitch : p.pitch,
+        groundSpeed: localPov ? Math.hypot(p.vel.x, p.vel.z) : 0,
+        lateralSpeed: localPov ? p.vel.x * Math.cos(p.yaw) - p.vel.z * Math.sin(p.yaw) : 0,
+        grounded: localPov ? p.onGround : true,
+        zoom: zoomT,
+        reducedEffects: this.reducedEffects,
+      });
+      if (this.viewmodel.visible) {
+        this.viewmodel.position.set(
+          VIEWMODEL_BASE.x + this.viewmodelOffset.x + pose.x,
+          VIEWMODEL_BASE.y + this.viewmodelOffset.y + pose.y,
+          VIEWMODEL_BASE.z + this.viewmodelOffset.z + pose.z,
+        );
+        this.viewmodel.rotation.set(pose.rx, pose.ry, pose.rz);
+      }
+      // Muzzle bloom: pops on fire, then expands as it dims. Hidden at rest so
+      // it costs nothing between shots.
+      if (this.viewmodelMuzzle) {
+        const m = pose.muzzle;
+        const on = m > 0 && this.viewmodel.visible;
+        this.viewmodelMuzzle.visible = on;
+        if (on) {
+          this.viewmodelMuzzle.material.opacity = m;
+          this.viewmodelMuzzle.scale.setScalar(1 + (1 - m) * 0.9);
+        }
+      }
+      // Cosmetic landing dip on the camera (≤ 1.5°, zero under reduced effects),
+      // added after the aim rotation was set above. The shot direction reads
+      // player.pitch/yaw, never the camera, so aim is untouched.
+      if (localPov && pose.camPitch !== 0) this.camera.rotation.x += pose.camPitch;
     }
     // Track the HRTF audio listener to the (now finalized) camera so spatial
     // sounds — other players' rail fire etc. — pan to where they actually are.
