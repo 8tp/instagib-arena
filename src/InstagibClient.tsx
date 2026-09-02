@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { memo } from 'react';
+import {
+  HudStore,
+  HudStoreContext,
+  cssVars,
+  hudTiming,
+  shallowEqual,
+  useExitList,
+  useHudLatched,
+  useHudSlice,
+  useStoreSlice,
+} from './hud-store';
 import { Game, type HudListener, type MatchResult, type NetMatchEvent } from './game/game';
 import { useAuth, LoginModal, type Account } from './auth';
 import { FeedbackModal } from './FeedbackModal';
@@ -1014,9 +1026,31 @@ function GameView({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<Game | null>(null);
-  const [hud, setHud] = useState<HudState>(INITIAL_HUD);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
+  // Every HudState push (20 Hz + events) lands in this store. GameView itself
+  // only re-renders on the SLOW fields it gates overlays with; the in-match
+  // HUD pieces subscribe to their own slices inside HudOverlay. The paused
+  // card (ClickToPlay) reads live numbers, so those count only while the
+  // pointer is unlocked.
+  const [hudStore] = useState(() => new HudStore(INITIAL_HUD));
+  const hud = useStoreSlice(
+    hudStore,
+    (s) => ({
+      locked: s.locked,
+      matchOver: s.matchOver,
+      netStatus: s.netStatus,
+      netPeers: s.netPeers,
+      vote: s.vote,
+      pom: s.pom,
+      chat: s.chat,
+      scores: s.scores,
+      frags: s.locked ? 0 : s.frags,
+      bestStreak: s.locked ? 0 : s.bestStreak,
+      speed: s.locked ? 0 : s.speed,
+    }),
+    shallowEqual,
+  );
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
   // Ranked Duel end-of-match result (rating delta) → full-screen overlay.
@@ -1027,7 +1061,6 @@ function GameView({
   // We freeze the final standings here so a late snapshot can't change the podium.
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
-  const hudRef = useRef<HudState>(INITIAL_HUD);
   const offlineMatch = config.mode !== 'multiplayer';
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
   // weekly board, NOT career K/D. The engine owns the authoritative run time.
@@ -1036,10 +1069,7 @@ function GameView({
   useEffect(() => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
-    const listener: HudListener = (state) => {
-      hudRef.current = state;
-      setHud(state);
-    };
+    const listener: HudListener = (state) => hudStore.push(state);
     // Match ended (frag limit): submit stats once + keep the result for the
     // results overlay. Offline navigates from the overlay buttons; online shows
     // the results podium, then continues to the server-driven map vote.
@@ -1061,7 +1091,7 @@ function GameView({
         });
       }
       if (config.mode === 'multiplayer') {
-        setPodiumScores(hudRef.current.scores);
+        setPodiumScores(hudStore.getState().scores);
         setOnlineResults(true);
       }
     });
@@ -1209,7 +1239,7 @@ function GameView({
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
-      {!hud.pom && <HudOverlay hud={hud} settings={settings} />}
+      {!hud.pom && <HudOverlay store={hudStore} settings={settings} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1258,7 +1288,9 @@ function GameView({
           onPlay={requestPlay}
           onOpenSettings={() => setSettingsOpen(true)}
           onLeave={leave}
-          hud={hud}
+          // Latest raw push: the slice above re-renders us whenever a field the
+          // paused card shows changes (only while unlocked, i.e. while it's shown).
+          hud={hudStore.getState()}
           settings={settings}
         />
       )}
@@ -2827,95 +2859,214 @@ function JoinErrorOverlay({
 
 /* ───────────────────────── HUD layout ───────────────────────── */
 
-function HudOverlay({
-  hud,
-  settings,
-}: {
-  hud: HudState;
-  settings: Settings;
-}) {
-  const dead = hud.killcam !== null;
+// Must match --hud-out in src/hud.css: the fade-only exit every HUD element uses.
+const HUD_EXIT_MS = 240;
+// How long before the engine drops a timed entry its pre-scheduled CSS fade
+// starts: the fade itself plus slack so it has finished by the time the next
+// HudState push unmounts the element.
+const HUD_EXIT_LEAD_MS = HUD_EXIT_MS + 120;
+
+function HudOverlay({ store, settings }: { store: HudStore; settings: Settings }) {
   const s = settings.uiScale || 1;
   // UI scale: a counter-sized wrapper rendered at 1/s then transform-scaled by s,
   // so corner-anchored HUD elements keep their anchors while everything resizes.
+  // .hud-reduced mirrors the reducedEffects setting into CSS (src/hud.css) so
+  // entrances become instant and pops/slides/shockwaves are neutralised.
   return (
-    <div className='pointer-events-none absolute inset-0 select-none'>
+    <HudStoreContext.Provider value={store}>
       <div
-        className='absolute left-0 top-0 origin-top-left'
-        style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
+        className={`hud-root pointer-events-none absolute inset-0 select-none${
+          settings.reducedEffects ? ' hud-reduced' : ''
+        }`}
       >
-        {!dead && <BoostRing active={hud.boostReady} />}
-      <KillFlashLayer flash={hud.killFlash} />
-      {hud.damageFlash > 0 && (
         <div
-          className='pointer-events-none absolute inset-0'
-          style={{
-            opacity: Math.min(1, hud.damageFlash),
-            background:
-              'radial-gradient(circle at center, transparent 35%, rgba(220,38,38,0.55) 100%)',
-          }}
-        />
-      )}
+          className='absolute left-0 top-0 origin-top-left'
+          style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
+        >
+          <HudLayout settings={settings} />
+        </div>
+      </div>
+    </HudStoreContext.Provider>
+  );
+}
+
+// Static layout. Each piece below subscribes to its own slice of the store, so
+// a HudState push only re-renders the pieces whose slice actually changed (a
+// push with only `speed` changed re-renders the speed readout alone).
+const HudLayout = memo(function HudLayout({ settings }: { settings: Settings }) {
+  const dead = useHudSlice((s) => s.killcam !== null);
+  return (
+    <>
+      {!dead && <HudBoostRing />}
+      <HudKillFlash />
+      <HudDamageVignette />
       {!dead && <Crosshair cfg={settings.crosshair} />}
-      {!dead && <ReloadBar railCooldown={hud.railCooldown} />}
-      {!dead && <HitMarkerLayer marker={hud.hitMarker} />}
-      <Killfeed entries={hud.killfeed} />
-      <ToastStack toasts={hud.toasts} />
-      <MiniLeaderboard scores={hud.scores} />
-      {hud.mode === 'tdm' && hud.teamScores && (
-        <TeamScoreBar scores={hud.teamScores} localTeam={hud.localTeam} />
-      )}
-      {hud.netDebug && <NetDebugOverlay s={hud.netDebug} />}
-      {hud.training && <TrainingPanel t={hud.training} />}
-      <BannerOverlay banner={hud.banner} />
-      <CaptionLayer hud={hud} captions={settings.captions} />
-      <FragPopup confirm={hud.killConfirm} />
+      {!dead && <HudReloadBar />}
+      {!dead && <HudHitMarker />}
+      <HudKillfeed />
+      <HudToasts />
+      <HudMiniLeaderboard />
+      <HudTeamScoreBar />
+      <HudNetDebug />
+      <HudTraining />
+      <HudBanner />
+      <HudCaptions captions={settings.captions} />
+      <HudFragPopup />
       {/* Your own card is NOT shown on your kills — it's broadcast so the VICTIM
           sees it on their killcam. The killer's card shows on YOUR killcam below. */}
-      <KillcamOverlay killcam={hud.killcam} reduced={settings.reducedEffects} />
-      {!dead && <SpeedAndStreak speed={hud.speed} streak={hud.currentStreak} />}
-      {!dead && (
-        <CooldownCluster
-          railCooldown={hud.railCooldown}
-          dashCooldown={hud.dashCooldown}
-          airJumpsLeft={hud.airJumpsLeft}
-        />
-      )}
-      {settings.showFps && <FpsCounter fps={hud.fps} />}
-      {hud.netStatus !== 'off' && (
-        <NetStatusPill status={hud.netStatus} peers={hud.netPeers} rttMs={hud.netRttMs} />
-      )}
-      {hud.netStatus !== 'off' && hud.localInvulnMs > 0 && (
-        <InvulnPill remainingMs={hud.localInvulnMs} />
-      )}
-      {hud.warmupMsLeft > 0 &&
-        !hud.vote &&
-        !hud.matchOver &&
-        !hud.killcam && <WarmupOverlay remainingMs={hud.warmupMsLeft} />}
-      {hud.showScoreboard && (
-        <FullScoreboard
-          scores={hud.scores}
-          netStatus={hud.netStatus}
-          mode={hud.mode}
-          showPing={settings.showPing && hud.netStatus !== 'off'}
-        />
-      )}
-      </div>
-    </div>
+      <HudKillcam reduced={settings.reducedEffects} />
+      {!dead && <HudSpeedAndStreak />}
+      {!dead && <HudCooldowns />}
+      {settings.showFps && <HudFps />}
+      <HudNetStatus />
+      <HudInvuln />
+      <HudWarmup />
+      <HudScoreboard showPing={settings.showPing} />
+    </>
+  );
+});
+
+/* Store-connected wrappers: each selects one slice (primitives or structurally
+   shared references from the store) and hands it to a memoized presentational
+   component below. Presentational components keep plain props so the
+   spectator view can reuse them without the store. */
+
+function HudBoostRing() {
+  return <BoostRing active={useHudSlice((s) => s.boostReady)} />;
+}
+
+function HudKillFlash() {
+  return <KillFlashLayer flash={useHudSlice((s) => s.killFlash)} />;
+}
+
+function HudDamageVignette() {
+  return <DamageVignette id={useHudSlice((s) => (s.damageFlash > 0 ? s.damageId : 0))} />;
+}
+
+function HudReloadBar() {
+  const fireId = useHudSlice((s) => s.railFireId);
+  const cooling = useHudSlice((s) => s.railCooldown > 0);
+  // How far into the cooldown the bar was when this shot registered (or when
+  // the HUD mounted mid-cooldown) — pinned per shot so the fill never restarts.
+  const elapsedMs = useHudLatched(fireId, (s) => (RAIL_COOLDOWN - s.railCooldown) * 1000);
+  if (!cooling) return null;
+  return <ReloadBar fireId={fireId} elapsedMs={elapsedMs} />;
+}
+
+function HudHitMarker() {
+  return <HitMarkerLayer marker={useHudSlice((s) => s.hitMarker)} />;
+}
+
+function HudKillfeed() {
+  return <Killfeed entries={useHudSlice((s) => s.killfeed)} />;
+}
+
+function HudToasts() {
+  return <ToastStack toasts={useHudSlice((s) => s.toasts)} />;
+}
+
+function HudMiniLeaderboard() {
+  return <MiniLeaderboard scores={useHudSlice((s) => s.scores)} />;
+}
+
+function HudTeamScoreBar() {
+  const t = useHudSlice(
+    (s) => ({ tdm: s.mode === 'tdm', scores: s.teamScores, localTeam: s.localTeam }),
+    shallowEqual,
+  );
+  if (!t.tdm || !t.scores) return null;
+  return <TeamScoreBar scores={t.scores} localTeam={t.localTeam} />;
+}
+
+function HudNetDebug() {
+  const stats = useHudSlice((s) => s.netDebug);
+  return stats ? <NetDebugOverlay s={stats} /> : null;
+}
+
+function HudTraining() {
+  // Whole seconds for the running clock so the panel re-renders ~1 Hz, not per push.
+  const t = useHudSlice(
+    (s) => (s.training ? { ...s.training, elapsed: Math.floor(s.training.elapsed) } : null),
+    shallowEqual,
+  );
+  return t ? <TrainingPanel t={t} /> : null;
+}
+
+function HudBanner() {
+  return <BannerOverlay banner={useHudSlice((s) => s.banner)} />;
+}
+
+function HudCaptions({ captions }: { captions: boolean }) {
+  return <CaptionLayer text={useHudSlice(captionText)} captions={captions} />;
+}
+
+function HudFragPopup() {
+  return <FragPopup confirm={useHudSlice((s) => s.killConfirm)} />;
+}
+
+function HudKillcam({ reduced }: { reduced: boolean }) {
+  const killcam = useHudSlice((s) => s.killcam);
+  const killcamId = useHudSlice((s) => s.killcamId);
+  return <KillcamOverlay killcam={killcam} killcamId={killcamId} reduced={reduced} />;
+}
+
+function HudFps() {
+  return <FpsCounter fps={useHudSlice((s) => s.fps)} />;
+}
+
+function HudNetStatus() {
+  const n = useHudSlice(
+    (s) => ({ status: s.netStatus, peers: s.netPeers, rttMs: s.netRttMs }),
+    shallowEqual,
+  );
+  if (n.status === 'off') return null;
+  return <NetStatusPill status={n.status} peers={n.peers} rttMs={n.rttMs} />;
+}
+
+function HudInvuln() {
+  const secs = useHudSlice((s) =>
+    s.netStatus !== 'off' && s.localInvulnMs > 0 ? (s.localInvulnMs / 1000).toFixed(1) : '',
+  );
+  return secs ? <InvulnPill secs={secs} /> : null;
+}
+
+function HudWarmup() {
+  const secs = useHudSlice((s) =>
+    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam
+      ? Math.max(1, Math.ceil(s.warmupMsLeft / 1000))
+      : 0,
+  );
+  return secs > 0 ? <WarmupOverlay secs={secs} /> : null;
+}
+
+function HudScoreboard({ showPing }: { showPing: boolean }) {
+  const b = useHudSlice(
+    (s) => (s.showScoreboard ? { scores: s.scores, netStatus: s.netStatus, mode: s.mode } : null),
+    shallowEqual,
+  );
+  if (!b) return null;
+  return (
+    <FullScoreboard
+      scores={b.scores}
+      netStatus={b.netStatus}
+      mode={b.mode}
+      showPing={showPing && b.netStatus !== 'off'}
+    />
   );
 }
 
 // Match-start "get ready" countdown. The server freezes shots during this
 // window (resumeAt), so it's a fair start — nobody can be fragged on the bell.
-function WarmupOverlay({ remainingMs }: { remainingMs: number }) {
-  const secs = Math.max(1, Math.ceil(remainingMs / 1000));
+const WarmupOverlay = memo(function WarmupOverlay({ secs }: { secs: number }) {
   return (
     <div className='pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center'>
       <div className='text-[11px] font-semibold uppercase tracking-[0.4em] text-cyan-200/80'>
         Get ready
       </div>
+      {/* Keyed on the second so each count ticks in (CSS .hud-tick). */}
       <div
-        className='mt-1 font-mono text-7xl font-extrabold tabular-nums text-cyan-100'
+        key={secs}
+        className='hud-tick hud-tick-center mt-1 font-mono text-7xl font-extrabold tabular-nums text-cyan-100'
         style={{ filter: 'drop-shadow(0 0 22px rgba(103,232,249,0.55))' }}
       >
         {secs}
@@ -2925,10 +3076,9 @@ function WarmupOverlay({ remainingMs }: { remainingMs: number }) {
       </div>
     </div>
   );
-}
+});
 
-function InvulnPill({ remainingMs }: { remainingMs: number }) {
-  const secs = (remainingMs / 1000).toFixed(1);
+const InvulnPill = memo(function InvulnPill({ secs }: { secs: string }) {
   return (
     <>
       {/* Subtle cyan vignette so it's obvious the player is in grace */}
@@ -2946,31 +3096,67 @@ function InvulnPill({ remainingMs }: { remainingMs: number }) {
       </div>
     </>
   );
-}
+});
 
-function KillcamOverlay({ killcam, reduced = false }: { killcam: KillcamState | null; reduced?: boolean }) {
-  if (!killcam) return null;
-  const t = 1 - killcam.remaining / killcam.total;
-  const enter = Math.min(1, t / 0.18);
-  const exit = killcam.remaining < 0.4 ? clamp01(killcam.remaining / 0.4) : 1;
-  const opacity = enter * exit;
+// The killcam's old React-driven fade covered its last 0.4 s; the CSS fade is
+// pre-scheduled to start then (and finishes before the engine clears it).
+const KILLCAM_FADE_LEAD_MS = 400;
+
+type KillcamItem = { id: number; remaining: number; total: number; cam: KillcamState };
+
+const KillcamOverlay = memo(function KillcamOverlay({
+  killcam,
+  killcamId,
+  reduced = false,
+}: {
+  killcam: KillcamState | null;
+  killcamId: number;
+  reduced?: boolean;
+}) {
+  // One item per death (KillcamState has no id; the store numbers them). It is
+  // kept for the exit fade after the engine clears it on respawn.
+  const items = useExitList<KillcamItem>(
+    killcam ? [{ id: killcamId, remaining: killcam.remaining, total: killcam.total, cam: killcam }] : [],
+    { exitMs: HUD_EXIT_MS, leadMs: KILLCAM_FADE_LEAD_MS },
+  );
   return (
     <>
+      {items.map(({ item, leaving }) => (
+        <KillcamCard key={item.id} item={item} leaving={leaving} reduced={reduced} />
+      ))}
+    </>
+  );
+});
+
+const KillcamCard = memo(function KillcamCard({
+  item,
+  leaving,
+  reduced,
+}: {
+  item: KillcamItem;
+  leaving: boolean;
+  reduced: boolean;
+}) {
+  const { cam } = item;
+  return (
+    <div
+      className={`hud-killcam absolute inset-0${leaving ? ' hud-leaving' : ''}`}
+      style={hudTiming(item.remaining, item.total, KILLCAM_FADE_LEAD_MS)}
+    >
       <div
         className='absolute inset-0'
         style={{
           background:
             'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
-          opacity,
         }}
       />
-      {killcam.dirAngle !== undefined && (
+      {cam.dirAngle !== undefined && (
         // Directional "the shot came from here" arrow, rotated around screen
         // center toward the killer (0 = dead ahead, clockwise). Teaches new
         // players where they're being picked off from.
         <div
           className='pointer-events-none absolute left-1/2 top-1/2'
-          style={{ opacity, transform: `translate(-50%,-50%) rotate(${killcam.dirAngle}rad)` }}
+          style={{ transform: `translate(-50%,-50%) rotate(${cam.dirAngle}rad)` }}
         >
           <div
             className='text-3xl leading-none text-rose-400'
@@ -2980,7 +3166,7 @@ function KillcamOverlay({ killcam, reduced = false }: { killcam: KillcamState | 
           </div>
         </div>
       )}
-      <div className='absolute inset-x-0 top-[18%] flex flex-col items-center text-center font-mono' style={{ opacity }}>
+      <div className='hud-killcam-card absolute inset-x-0 top-[18%] flex flex-col items-center text-center font-mono'>
         <div className='text-[10px] uppercase tracking-[0.4em] text-white/55'>
           You were killed by
         </div>
@@ -2988,23 +3174,34 @@ function KillcamOverlay({ killcam, reduced = false }: { killcam: KillcamState | 
           className='mt-2 text-4xl font-extrabold uppercase tracking-[0.08em] text-rose-300'
           style={{ filter: 'drop-shadow(0 0 22px rgba(244,63,94,0.55))' }}
         >
-          {killcam.killerName}
+          {cam.killerName}
         </div>
-        {killcam.killerCard && (
+        {cam.killerCard && (
           <div className='mt-5'>
-            <PlayerCard card={killcam.killerCard} reduced={reduced} />
+            <PlayerCard card={cam.killerCard} reduced={reduced} />
           </div>
         )}
         <div className='mt-6 text-[11px] uppercase tracking-[0.3em] text-white/55'>
           Respawning in{' '}
-          <span className='text-white'>{Math.max(0, killcam.remaining).toFixed(1)}s</span>
+          <span className='text-white'>
+            <KillcamCountdown />s
+          </span>
         </div>
       </div>
-    </>
+    </div>
   );
+});
+
+// The one live number on the death screen: the respawn countdown (10 Hz text
+// updates on this span alone; the card around it never re-renders).
+function KillcamCountdown() {
+  const secs = useHudSlice((s) =>
+    s.raw.killcam ? Math.max(0, s.raw.killcam.remaining).toFixed(1) : '0.0',
+  );
+  return <>{secs}</>;
 }
 
-function NetStatusPill({
+const NetStatusPill = memo(function NetStatusPill({
   status,
   peers,
   rttMs,
@@ -3031,13 +3228,13 @@ function NetStatusPill({
       {label}
     </div>
   );
-}
+});
 
 /* ───────────────────────── TDM team score bar (top-center) ───────────────────────── */
 
 // Compact Red vs Blue total-frag readout. Your team gets a "YOU" tag + a glowing
 // outline so it's obvious which side you're on.
-function TeamScoreBar({
+const TeamScoreBar = memo(function TeamScoreBar({
   scores,
   localTeam,
 }: {
@@ -3086,14 +3283,14 @@ function TeamScoreBar({
       </div>
     </div>
   );
-}
+});
 
 // Net-debug overlay (F3). Top-left live netcode readout so we can see the cause
 // of jitter in a real match. The two tells: `extrap` high (frames rendering
 // past the buffer = TCP stalls → UDP is the fix) vs `clkDrift` high (render
 // clock wandering → a client-side cause UDP won't fix). `buffer` going negative
 // means we're underrunning.
-function NetDebugOverlay({ s }: { s: NonNullable<HudState['netDebug']> }) {
+const NetDebugOverlay = memo(function NetDebugOverlay({ s }: { s: NonNullable<HudState['netDebug']> }) {
   const warn = (b: boolean) => (b ? 'text-rose-400' : 'text-emerald-300');
   const Row = ({ k, v, cls }: { k: string; v: string; cls?: string }) => (
     <div className="flex justify-between gap-4">
@@ -3115,14 +3312,14 @@ function NetDebugOverlay({ s }: { s: NonNullable<HudState['netDebug']> }) {
       <Row k="peers" v={`${s.peers}`} />
     </div>
   );
-}
+});
 
 /* ───────────────────────── Crosshair + hit marker ───────────────────────── */
 
 // Ratz "Boost Range Indicator": a ring around the crosshair that's a faint
 // dashed hint when no surface is in range, and a bright glowing cyan ring the
 // moment a boostable surface is under your aim (right-click to launch off it).
-function BoostRing({ active }: { active: boolean }) {
+const BoostRing = memo(function BoostRing({ active }: { active: boolean }) {
   return (
     <div className='absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2'>
       <svg width='52' height='52' viewBox='0 0 52 52' aria-hidden>
@@ -3142,11 +3339,11 @@ function BoostRing({ active }: { active: boolean }) {
       </svg>
     </div>
   );
-}
+});
 
 // Renders a crosshair from a CrosshairConfig as a centered SVG. Reused by the
 // in-game HUD and the settings preview so they're always identical.
-function CrosshairGraphic({ cfg }: { cfg: CrosshairConfig }) {
+const CrosshairGraphic = memo(function CrosshairGraphic({ cfg }: { cfg: CrosshairConfig }) {
   const { style, color, size, thickness, gap, dotSize, outline } = cfg;
   const arms = style === 'cross' || style === 'cross-dot';
   const ring = style === 'circle';
@@ -3181,9 +3378,9 @@ function CrosshairGraphic({ cfg }: { cfg: CrosshairConfig }) {
       {showDot && <circle cx={c} cy={c} r={dotR} fill={color} stroke={stroke} strokeWidth={sw} />}
     </svg>
   );
-}
+});
 
-function Crosshair({ cfg }: { cfg: CrosshairConfig }) {
+const Crosshair = memo(function Crosshair({ cfg }: { cfg: CrosshairConfig }) {
   return (
     <div
       className='absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2'
@@ -3192,11 +3389,19 @@ function Crosshair({ cfg }: { cfg: CrosshairConfig }) {
       <CrosshairGraphic cfg={cfg} />
     </div>
   );
-}
+});
 
-function ReloadBar({ railCooldown }: { railCooldown: number }) {
-  if (railCooldown <= 0) return null;
-  const pct = clamp01(1 - railCooldown / RAIL_COOLDOWN);
+// Reload bar under the crosshair. The fill is a CSS scaleX over the rail
+// cooldown keyed on the shot (railFireId); `elapsedMs` (pinned when the shot
+// registered) lets a late mount join mid-fill. Same duration as before — the
+// engine's cooldown is still what gates the next shot.
+const ReloadBar = memo(function ReloadBar({
+  fireId,
+  elapsedMs,
+}: {
+  fireId: number;
+  elapsedMs: number;
+}) {
   // Full-width row 24px below the viewport center, flex-centered. No
   // translate math, no intrinsic-width gotchas — the bar sits dead
   // under the crosshair regardless of viewport size or DPI.
@@ -3207,63 +3412,75 @@ function ReloadBar({ railCooldown }: { railCooldown: number }) {
     >
       <div className='relative h-1 w-16 overflow-hidden rounded-full bg-white/15'>
         <div
-          className='absolute left-0 top-0 h-full rounded-full bg-cyan-300/85 shadow-[0_0_6px_rgba(103,232,249,0.6)]'
-          style={{ width: `${pct * 100}%` }}
+          key={fireId}
+          className='hud-fill-x absolute left-0 top-0 h-full w-full rounded-full bg-cyan-300/85 shadow-[0_0_6px_rgba(103,232,249,0.6)]'
+          style={cssVars({
+            '--cd-total': `${RAIL_COOLDOWN}s`,
+            '--cd-elapsed': `${Math.max(0, Math.round(elapsedMs))}ms`,
+          })}
         />
       </div>
     </div>
   );
-}
+});
 
 // Full-screen kill-confirmation flash: an edge vignette that pulses in and out
 // so it reads as "frag!" without ever covering the crosshair. Cyan for body
 // kills, amber for headshots.
-function KillFlashLayer({ flash }: { flash: KillFlash | null }) {
+const KillFlashLayer = memo(function KillFlashLayer({ flash }: { flash: KillFlash | null }) {
   if (!flash) return null;
-  const t = 1 - flash.remaining / flash.total;
-  // Quick pulse: ramp up over the first ~25%, ease out over the rest.
-  const pulse = t < 0.25 ? t / 0.25 : clamp01(1 - (t - 0.25) / 0.75);
   const edge = flash.headshot ? 'rgba(252,211,77,0.40)' : 'rgba(120,230,255,0.34)';
+  // Keyed on the flash id: the pulse is the .hud-killflash keyframes.
   return (
     <div
       key={flash.id}
-      className='absolute inset-0'
+      className='hud-killflash absolute inset-0'
       style={{
-        opacity: pulse,
+        ...hudTiming(flash.remaining, flash.total),
         background: `radial-gradient(ellipse at center, transparent 52%, ${edge} 100%)`,
       }}
     />
   );
-}
+});
 
-function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
+// "You were hit" red vignette. Keyed on the damage event so the engine's 0.5 s
+// linear decay is a CSS fade; unmounts once damageFlash reaches 0.
+const DamageVignette = memo(function DamageVignette({ id }: { id: number }) {
+  if (id === 0) return null;
+  return (
+    <div
+      key={id}
+      className='hud-damage pointer-events-none absolute inset-0'
+      style={{
+        background:
+          'radial-gradient(circle at center, transparent 35%, rgba(220,38,38,0.55) 100%)',
+      }}
+    />
+  );
+});
+
+const HitMarkerLayer = memo(function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
   if (!marker) return null;
-  const max = marker.kind === 'hit' ? HIT_MARKER_DURATION_SEC : HIT_MARKER_KILL_DURATION_SEC;
-  const t = 1 - marker.remaining / max;
   const isKill = marker.kind !== 'hit';
-  // Kills get a snappier, bigger pop than plain hits.
-  const scale = isKill ? 1.15 + t * 0.75 : 1 + t * 0.35;
-  const opacity = clamp01(marker.remaining / (max * 0.6));
+  const max = isKill ? HIT_MARKER_KILL_DURATION_SEC : HIT_MARKER_DURATION_SEC;
   const stroke =
     marker.kind === 'headshot' ? '#facc15' :
     marker.kind === 'kill' ? '#fb7185' :
     '#ffffff';
   // Use flex centering — exact crosshair alignment regardless of marker
-  // size or scale. The previous translate(-50%) math drifted off-pixel
-  // when the wrapper's intrinsic size didn't match the SVG viewBox.
-  // Kill markers fire an expanding ring (a quick shockwave around the X).
-  const ringScale = 0.5 + t * 2.0;
-  const ringOpacity = isKill ? clamp01(1 - t) * 0.85 : 0;
+  // size or scale. Keyed on the marker id: the pop-and-settle (and, on
+  // kills, the expanding shockwave ring) are the .hud-hm / .hud-hm-ring
+  // keyframes, run once per id at display rate.
   return (
     <div
       key={marker.id}
       className='absolute inset-0 flex items-center justify-center'
+      style={cssVars({ '--hud-total': `${max}s` })}
     >
       {isKill && (
         <svg
           width='42' height='42' viewBox='0 0 42 42' aria-hidden
-          className='absolute'
-          style={{ opacity: ringOpacity, transform: `scale(${ringScale})`, transformOrigin: '50% 50%' }}
+          className='hud-hm-ring absolute'
         >
           <circle
             cx='21' cy='21' r='13' fill='none' stroke={stroke} strokeWidth='2'
@@ -3276,7 +3493,7 @@ function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
         height='42'
         viewBox='0 0 42 42'
         aria-hidden
-        style={{ opacity, transform: `scale(${scale})`, transformOrigin: '50% 50%' }}
+        className={`hud-hm ${isKill ? 'hud-hm-kill' : 'hud-hm-hit'}`}
       >
         <g
           stroke={stroke}
@@ -3292,7 +3509,7 @@ function HitMarkerLayer({ marker }: { marker: HitMarker | null }) {
       </svg>
     </div>
   );
-}
+});
 
 /* ───────────────────────── In-game chat (bottom-left) ───────────────────────── */
 
@@ -3403,18 +3620,27 @@ function InGameChat({
 
 /* ───────────────────────── Killfeed (top-right) ───────────────────────── */
 
-function Killfeed({ entries }: { entries: KillfeedEntry[] }) {
+const Killfeed = memo(function Killfeed({ entries }: { entries: KillfeedEntry[] }) {
+  const rows = useExitList(entries, { exitMs: HUD_EXIT_MS, leadMs: HUD_EXIT_LEAD_MS });
   return (
     <div className='absolute right-6 top-6 flex w-72 flex-col items-end gap-1.5 font-mono text-[13px]'>
-      {entries.map((e) => (
-        <KillfeedRow key={e.id} entry={e} />
+      {rows.map(({ item, leaving }) => (
+        <KillfeedRow key={item.id} entry={item} leaving={leaving} />
       ))}
     </div>
   );
-}
+});
 
-function KillfeedRow({ entry }: { entry: KillfeedEntry }) {
-  const opacity = entry.remaining < 0.8 ? clamp01(entry.remaining / 0.8) : 1;
+// Slides in from the right, holds, and fades on a pre-scheduled CSS delay (see
+// hudTiming) — no React updates between mount and unmount. `leaving` plays the
+// fade now when the engine dropped the row early (feed cap / reset).
+const KillfeedRow = memo(function KillfeedRow({
+  entry,
+  leaving,
+}: {
+  entry: KillfeedEntry;
+  leaving: boolean;
+}) {
   const specialBadge =
     entry.special === 'headshot'
       ? { text: 'HS', color: 'bg-amber-400/85 text-amber-950' }
@@ -3423,8 +3649,10 @@ function KillfeedRow({ entry }: { entry: KillfeedEntry }) {
         : null;
   return (
     <div
-      style={{ opacity }}
-      className='flex items-center gap-2 rounded-md bg-black/55 px-2.5 py-1.5 backdrop-blur-sm'
+      className={`hud-chip flex items-center gap-2 rounded-md bg-black/55 px-2.5 py-1.5 backdrop-blur-sm${
+        leaving ? ' hud-leaving' : ''
+      }`}
+      style={hudTiming(entry.remaining, entry.total, HUD_EXIT_LEAD_MS)}
     >
       <span
         className={
@@ -3444,30 +3672,39 @@ function KillfeedRow({ entry }: { entry: KillfeedEntry }) {
       )}
     </div>
   );
-}
+});
 
 /* ───────────── Toast stack (top-right, under killfeed) ───────────── */
 
-function ToastStack({ toasts }: { toasts: ToastEntry[] }) {
+// Medal toasts fade over the engine's TOAST_FADE_SEC window: the fade itself is
+// the shared HUD_EXIT_MS, the rest is slack for push jitter.
+const TOAST_FADE_LEAD_MS = TOAST_FADE_SEC * 1000;
+
+const ToastStack = memo(function ToastStack({ toasts }: { toasts: ToastEntry[] }) {
+  const chips = useExitList(toasts, { exitMs: HUD_EXIT_MS, leadMs: TOAST_FADE_LEAD_MS });
   return (
     <div className='absolute right-6 top-40 flex flex-col items-end gap-1.5'>
-      {toasts.map((t) => (
-        <ToastChip key={t.id} toast={t} />
+      {chips.map(({ item, leaving }) => (
+        <ToastChip key={item.id} toast={item} leaving={leaving} />
       ))}
     </div>
   );
-}
+});
 
-function ToastChip({ toast }: { toast: ToastEntry }) {
-  const enter = Math.min(1, (toast.total - toast.remaining) / 0.18);
-  const exit = toast.remaining < TOAST_FADE_SEC ? clamp01(toast.remaining / TOAST_FADE_SEC) : 1;
-  const opacity = enter * exit;
-  const tx = (1 - enter) * 8;
+const ToastChip = memo(function ToastChip({
+  toast,
+  leaving,
+}: {
+  toast: ToastEntry;
+  leaving: boolean;
+}) {
   const colors = tierColors(toast.tier);
   return (
     <div
-      style={{ opacity, transform: `translateX(${tx}px)` }}
-      className={`flex items-center gap-2 rounded-full border ${colors.border} bg-black/60 px-3 py-1 font-mono text-xs backdrop-blur-sm`}
+      className={`hud-chip flex items-center gap-2 rounded-full border ${colors.border} bg-black/60 px-3 py-1 font-mono text-xs backdrop-blur-sm${
+        leaving ? ' hud-leaving' : ''
+      }`}
+      style={hudTiming(toast.remaining, toast.total, TOAST_FADE_LEAD_MS)}
     >
       <span className={`text-[10px] font-bold uppercase tracking-[0.2em] ${colors.text}`}>
         {toast.title}
@@ -3477,11 +3714,11 @@ function ToastChip({ toast }: { toast: ToastEntry }) {
       )}
     </div>
   );
-}
+});
 
 /* ───────────────────────── Training range panel ───────────────────────── */
 
-function TrainingPanel({ t }: { t: TrainingHud }) {
+const TrainingPanel = memo(function TrainingPanel({ t }: { t: TrainingHud }) {
   const acc = Math.round(t.accuracy * 100);
   const mins = Math.floor(t.elapsed / 60);
   const secs = Math.floor(t.elapsed % 60);
@@ -3509,11 +3746,11 @@ function TrainingPanel({ t }: { t: TrainingHud }) {
       </div>
     </div>
   );
-}
+});
 
 /* ───────────────────────── Mini leaderboard (top-left) ───────────────────────── */
 
-function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
+const MiniLeaderboard = memo(function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
   const top = scores.slice(0, 5);
   // If you're not in the top 5, show your own rank in a pinned extra row.
   const localIndex = scores.findIndex((s) => s.isLocal);
@@ -3581,7 +3818,7 @@ function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
       </div>
     </div>
   );
-}
+});
 
 /* ───────────── Accessibility: announcer captions + SR live region ───────────── */
 
@@ -3596,8 +3833,13 @@ function captionText(hud: HudState): string {
   return '';
 }
 
-function CaptionLayer({ hud, captions }: { hud: HudState; captions: boolean }) {
-  const text = captionText(hud);
+const CaptionLayer = memo(function CaptionLayer({
+  text,
+  captions,
+}: {
+  text: string;
+  captions: boolean;
+}) {
   return (
     <>
       {/* Always present so screen readers announce callouts regardless of the
@@ -3606,7 +3848,10 @@ function CaptionLayer({ hud, captions }: { hud: HudState; captions: boolean }) {
         {text}
       </div>
       {captions && text && (
-        <div className='pointer-events-none absolute bottom-28 left-1/2 -translate-x-1/2'>
+        <div
+          key={text}
+          className='hud-caption pointer-events-none absolute bottom-28 left-1/2 -translate-x-1/2'
+        >
           <span className='rounded-md bg-black/70 px-3 py-1.5 font-mono text-sm font-semibold uppercase tracking-[0.16em] text-white/90 shadow-lg'>
             {text}
           </span>
@@ -3614,26 +3859,45 @@ function CaptionLayer({ hud, captions }: { hud: HudState; captions: boolean }) {
       )}
     </>
   );
-}
+});
 
 /* ───────────── Banner (top-center, BIG kill announce) ───────────── */
 
-function BannerOverlay({ banner }: { banner: BannerState | null }) {
-  if (!banner) return null;
-  const t = 1 - banner.remaining / banner.total;
-  const enter = Math.min(1, t / 0.12);
-  const exit = banner.remaining < 0.4 ? clamp01(banner.remaining / 0.4) : 1;
-  const scale = 0.85 + 0.15 * enter;
-  const opacity = enter * exit;
+const BannerOverlay = memo(function BannerOverlay({ banner }: { banner: BannerState | null }) {
+  // A replaced or cleared banner fades out under the incoming one (leaving
+  // first in DOM order so the new banner paints on top).
+  const items = useExitList(banner ? [banner] : [], {
+    exitMs: HUD_EXIT_MS,
+    leadMs: HUD_EXIT_LEAD_MS,
+    leavingFirst: true,
+  });
+  if (items.length === 0) return null;
+  return (
+    <div className='absolute inset-x-0 top-[12%]'>
+      {items.map(({ item, leaving }) => (
+        <BannerCard key={item.id} banner={item} leaving={leaving} />
+      ))}
+    </div>
+  );
+});
+
+// One orchestrated in/out (.hud-banner*): title scales in, the bar under it
+// draws, the subtitle rises in; the block fades on its pre-scheduled delay.
+const BannerCard = memo(function BannerCard({
+  banner,
+  leaving,
+}: {
+  banner: BannerState;
+  leaving: boolean;
+}) {
   const colors = tierColors(banner.tier);
   return (
     // Robust centering: full-width flex row at fixed top offset. No translate
     // math, no left-1/2 vs intrinsic-width games.
-    <div className='absolute inset-x-0 top-[12%] flex justify-center'>
+    <div className='absolute inset-x-0 top-0 flex justify-center'>
       <div
-        key={banner.id}
-        style={{ transform: `scale(${scale})`, opacity, transformOrigin: '50% 50%' }}
-        className='flex flex-col items-center text-center'
+        className={`hud-banner flex flex-col items-center text-center${leaving ? ' hud-leaving' : ''}`}
+        style={hudTiming(banner.remaining, banner.total, HUD_EXIT_LEAD_MS)}
       >
         <div
           className={`bg-gradient-to-b ${colors.gradient} bg-clip-text font-mono text-[88px] font-black uppercase leading-[0.95] tracking-[0.04em] text-transparent`}
@@ -3644,71 +3908,133 @@ function BannerOverlay({ banner }: { banner: BannerState | null }) {
         >
           {banner.title}
         </div>
-        <div className={`mt-2 h-[3px] w-28 rounded-full ${colors.bar}`} />
+        <div className={`hud-banner-bar mt-2 h-[3px] w-28 rounded-full ${colors.bar}`} />
         {banner.subtitle && (
-          <div className='mt-2 font-mono text-sm uppercase tracking-[0.4em] text-white/75'>
+          <div className='hud-banner-sub mt-2 font-mono text-sm uppercase tracking-[0.4em] text-white/75'>
             {banner.subtitle}
           </div>
         )}
       </div>
     </div>
   );
-}
+});
 
 /* ───────────────────────── Speed + streak (bottom-left) ───────────────────────── */
 
-function SpeedAndStreak({ speed, streak }: { speed: number; streak: number }) {
+function HudSpeedAndStreak() {
   return (
     <div className='absolute bottom-6 left-6 font-mono'>
+      <SpeedReadout />
+      <StreakReadout />
+    </div>
+  );
+}
+
+// Live speed — re-renders only when the displayed tenth changes. The number
+// ticks (CSS scale pop) on each dash, the action that changes it.
+function SpeedReadout() {
+  const text = useHudSlice((s) => s.speed.toFixed(1));
+  const dashId = useHudSlice((s) => s.dashId);
+  return (
+    <>
       <div className='text-[10px] uppercase tracking-[0.25em] text-white/55'>Speed</div>
       <div className='text-3xl font-bold tabular-nums leading-none'>
-        {speed.toFixed(1)}
+        <span key={dashId} className={dashId > 0 ? 'hud-tick' : undefined}>
+          {text}
+        </span>
         <span className='ml-1 text-sm font-normal text-white/40'>m/s</span>
       </div>
-      {streak >= 2 && (
-        <div className='mt-3 flex items-center gap-2'>
-          <span className='text-[10px] uppercase tracking-[0.25em] text-amber-300/85'>Streak</span>
-          <span className='text-xl font-bold tabular-nums text-amber-200'>{streak}</span>
-        </div>
-      )}
+    </>
+  );
+}
+
+function StreakReadout() {
+  const streak = useHudSlice((s) => s.currentStreak);
+  if (streak < 2) return null;
+  return (
+    <div className='mt-3 flex items-center gap-2'>
+      <span className='text-[10px] uppercase tracking-[0.25em] text-amber-300/85'>Streak</span>
+      {/* Keyed on the count so every increment ticks in. */}
+      <span key={streak} className='hud-tick text-xl font-bold tabular-nums text-amber-200'>
+        {streak}
+      </span>
     </div>
   );
 }
 
 /* ───────────────────────── Cooldown cluster (bottom-right) ───────────────────────── */
 
-function CooldownCluster({
-  railCooldown,
-  dashCooldown,
-  airJumpsLeft,
-}: {
-  railCooldown: number;
-  dashCooldown: number;
-  airJumpsLeft: number;
-}) {
+function HudCooldowns() {
   return (
     <div className='absolute bottom-6 right-6 flex items-end gap-3'>
-      <CooldownPip label='Rail' value={railCooldown} max={RAIL_COOLDOWN} ready={railCooldown === 0} accent='#67e8f9' />
-      <CooldownPip label='Dash' value={dashCooldown} max={DASH_COOLDOWN} ready={dashCooldown === 0} accent='#fcd34d' />
-      <AirJumpPip left={airJumpsLeft} max={AIR_JUMPS} />
+      <HudRailPip />
+      <HudDashPip />
+      <HudAirJumps />
     </div>
   );
 }
 
-function CooldownPip({
+function HudRailPip() {
+  const fireId = useHudSlice((s) => s.railFireId);
+  const ready = useHudSlice((s) => s.railCooldown <= 0);
+  const text = useHudSlice((s) => s.railCooldown.toFixed(1));
+  const elapsedMs = useHudLatched(fireId, (s) => (RAIL_COOLDOWN - s.railCooldown) * 1000);
+  return (
+    <CooldownPip
+      label='Rail'
+      eventId={fireId}
+      ready={ready}
+      text={text}
+      total={RAIL_COOLDOWN}
+      elapsedMs={elapsedMs}
+      accent='#67e8f9'
+    />
+  );
+}
+
+function HudDashPip() {
+  const dashId = useHudSlice((s) => s.dashId);
+  const ready = useHudSlice((s) => s.dashCooldown <= 0);
+  const text = useHudSlice((s) => s.dashCooldown.toFixed(1));
+  const elapsedMs = useHudLatched(dashId, (s) => (DASH_COOLDOWN - s.dashCooldown) * 1000);
+  return (
+    <CooldownPip
+      label='Dash'
+      eventId={dashId}
+      ready={ready}
+      text={text}
+      total={DASH_COOLDOWN}
+      elapsedMs={elapsedMs}
+      accent='#fcd34d'
+    />
+  );
+}
+
+function HudAirJumps() {
+  return <AirJumpPip left={useHudSlice((s) => s.airJumpsLeft)} max={AIR_JUMPS} />;
+}
+
+// Ring pip. While cooling, the ring fill is a CSS stroke-dashoffset animation
+// over the cooldown keyed on the use (`eventId`) and joined mid-way through
+// `elapsedMs`; only the tenths readout in the middle updates from React. On
+// ready the dot ticks in.
+const CooldownPip = memo(function CooldownPip({
   label,
-  value,
-  max,
+  eventId,
   ready,
+  text,
+  total,
+  elapsedMs,
   accent,
 }: {
   label: string;
-  value: number;
-  max: number;
+  eventId: number;
   ready: boolean;
+  text: string;
+  total: number;
+  elapsedMs: number;
   accent: string;
 }) {
-  const pct = clamp01(value / max);
   const R = 14;
   const C = 2 * Math.PI * R;
   return (
@@ -3716,28 +4042,44 @@ function CooldownPip({
       <div className='relative h-12 w-12'>
         <svg viewBox='0 0 32 32' className='h-full w-full -rotate-90'>
           <circle cx='16' cy='16' r={R} fill='none' stroke='rgba(255,255,255,0.12)' strokeWidth='3' />
-          <circle
-            cx='16'
-            cy='16'
-            r={R}
-            fill='none'
-            stroke={ready ? accent : 'rgba(255,255,255,0.4)'}
-            strokeWidth='3'
-            strokeDasharray={C}
-            strokeDashoffset={pct * C}
-            strokeLinecap='round'
-          />
+          {ready ? (
+            <circle cx='16' cy='16' r={R} fill='none' stroke={accent} strokeWidth='3' strokeLinecap='round' />
+          ) : (
+            <circle
+              key={eventId}
+              className='hud-cd-ring'
+              cx='16'
+              cy='16'
+              r={R}
+              fill='none'
+              stroke='rgba(255,255,255,0.4)'
+              strokeWidth='3'
+              strokeDasharray={C}
+              strokeLinecap='round'
+              style={cssVars({
+                '--cd-c': C,
+                '--cd-total': `${total}s`,
+                '--cd-elapsed': `${Math.max(0, Math.round(elapsedMs))}ms`,
+              })}
+            />
+          )}
         </svg>
         <div className='absolute inset-0 flex items-center justify-center text-[11px] font-bold'>
-          {ready ? '●' : value.toFixed(1)}
+          {ready ? (
+            <span key={eventId} className='hud-tick hud-tick-center'>
+              ●
+            </span>
+          ) : (
+            text
+          )}
         </div>
       </div>
       <div className='text-[10px] uppercase tracking-[0.16em] text-white/55'>{label}</div>
     </div>
   );
-}
+});
 
-function AirJumpPip({ left, max }: { left: number; max: number }) {
+const AirJumpPip = memo(function AirJumpPip({ left, max }: { left: number; max: number }) {
   return (
     <div className='flex flex-col items-center gap-1 font-mono'>
       <div className='flex h-12 items-end gap-1 pb-1'>
@@ -3753,11 +4095,11 @@ function AirJumpPip({ left, max }: { left: number; max: number }) {
       <div className='text-[10px] uppercase tracking-[0.16em] text-white/55'>Air</div>
     </div>
   );
-}
+});
 
 /* ───────────────────────── FPS counter ───────────────────────── */
 
-function FpsCounter({ fps }: { fps: number }) {
+const FpsCounter = memo(function FpsCounter({ fps }: { fps: number }) {
   const color = fps >= 55 ? 'text-emerald-300' : fps >= 30 ? 'text-amber-300' : 'text-rose-300';
   return (
     <div className='absolute right-6 top-2 font-mono text-[11px] tabular-nums text-white/70'>
@@ -3765,11 +4107,11 @@ function FpsCounter({ fps }: { fps: number }) {
       <span className='text-white/40'>fps</span>
     </div>
   );
-}
+});
 
 /* ───────────────────────── Full scoreboard (Tab held) ───────────────────────── */
 
-function FullScoreboard({
+const FullScoreboard = memo(function FullScoreboard({
   scores,
   netStatus,
   mode,
@@ -3813,7 +4155,7 @@ function FullScoreboard({
       </div>
     </div>
   );
-}
+});
 
 // A scoreboard table body (header + rows). Reused for the flat FFA/Duel
 // scoreboard and each TDM team section.
@@ -7888,12 +8230,6 @@ function KeybindsSection({
 }
 
 /* ───────────────────────── helpers ───────────────────────── */
-
-function clamp01(n: number) {
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
-}
 
 function tierColors(tier: MedalTier): {
   gradient: string;

@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './hud.css';
 
 @custom-variant dark (&:where(.dark, .dark *));
 
