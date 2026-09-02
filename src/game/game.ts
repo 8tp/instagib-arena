@@ -1218,7 +1218,7 @@ export class Game {
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
     const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
-    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix);
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map);
     // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
     // the audio listener, so you can hear which direction a shot came from.
     this.audio.playAt('fire', b.ox, b.oy, b.oz, 0.5);
@@ -1934,6 +1934,7 @@ export class Game {
       this.map.boxes,
       targets,
       this.tmpBeamOrigin,
+      this.map,
     );
     // Cooldown blocked the shot → no SFX, no side effects.
     if (!result) return;
@@ -1962,7 +1963,7 @@ export class Game {
     this.recoil = 1;
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
-    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, undefined, this.tmpForward);
 
     // Training range: count the shot, pop any targets the rail passed through,
     // and break the streak on a clean miss. Live stats refresh to the HUD.
@@ -2152,7 +2153,7 @@ export class Game {
 
     // Visible beam to the impact point (enemy fire reveals positions).
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
-    this.weapon.spawnBeam(origin, end, this.scene);
+    this.weapon.spawnBeam(origin, end, this.scene, undefined, undefined, this.map);
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },
@@ -2400,6 +2401,9 @@ export class Game {
           new THREE.Vector3(o.x, o.y, o.z),
           new THREE.Vector3(e.x, e.y, e.z),
           this.scene,
+          undefined,
+          undefined,
+          this.map,
         ),
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
