@@ -451,6 +451,8 @@ export class Game {
     this.camera = createCamera(canvas);
     this.postFx = new PostFxPipeline(this.renderer, this.scene, this.camera);
     this.applyPostFx();
+    // Dev-only handle for the visual-critique harness (console / screenshot bots).
+    if (import.meta.env.DEV) (window as unknown as { __ig?: Game }).__ig = this;
     // Parent the viewmodel to the camera so it tracks the view. The camera is
     // added to the scene so its child (the gun) is part of the render.
     this.scene.add(this.camera);
