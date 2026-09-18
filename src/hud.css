@@ -1,0 +1,318 @@
+/* ── In-match HUD motion ──────────────────────────────────────────────────
+   The engine pushes HudState at ~20 Hz; React only mounts/unmounts HUD
+   elements keyed by an event id (src/hud-store.ts). Everything that moves
+   between mount and unmount is a CSS animation here, so motion runs at
+   display rate with zero React work in between.
+
+   Grammar: entrances ease OUT (fast start, settle), exits ease IN and are
+   fade-only, the frag popup alone overshoots. Every amplitude and entrance
+   duration is scaled by --hud-motion, which drops to 0 under the OS
+   reduce-motion preference or the reducedEffects setting (.hud-reduced):
+   things then appear instantly, keep their fade-only exits, and never scale
+   or travel; the kill shockwave ring is hidden.
+
+   Per-element timing vars set inline (see hudTiming()):
+     --hud-total      lifetime of a self-contained animation
+     --hud-age        how far in the element already was when React mounted it
+                      (used as a negative delay so a late mount joins mid-way)
+     --hud-out-delay  when the pre-scheduled fade-out starts */
+.hud-root {
+  --hud-motion: 1;
+  --hud-in: calc(160ms * var(--hud-motion));
+  --hud-out: 240ms; /* keep in sync with HUD_EXIT_MS (InstagibClient.tsx) */
+  --hud-slide: calc(12px * var(--hud-motion));
+  --hud-pop: calc(1 + 0.15 * var(--hud-motion));
+  --hud-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* The HUD never affects layout outside itself and clips to the viewport. */
+  contain: layout paint;
+}
+.hud-root.hud-reduced {
+  --hud-motion: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-root {
+    --hud-motion: 0;
+  }
+}
+.hud-reduced .hud-hm-ring {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-hm-ring {
+    display: none;
+  }
+}
+
+/* ── Shared keyframes ─────────────────────────────────────────────────── */
+@keyframes hud-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes hud-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes hud-slide-in-x {
+  from {
+    opacity: 0;
+    transform: translateX(var(--hud-slide));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes hud-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--hud-slide));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hud-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── Timed chip (killfeed row, medal toast) ───────────────────────────────
+   Slide in from the right, hold, then fade on its pre-scheduled delay. The
+   fade uses `forwards` (not `both`): a backwards fill would pin opacity to 1
+   during the delay and override the entrance. */
+.hud-chip {
+  animation:
+    hud-slide-in-x var(--hud-in) var(--hud-ease-out) both,
+    hud-fade-out var(--hud-out) ease-in forwards;
+  animation-delay: calc(-1 * var(--hud-age, 0ms)), var(--hud-out-delay, 9999s);
+  will-change: transform, opacity;
+}
+
+/* ── Hit marker ───────────────────────────────────────────────────────────
+   Pop in big, settle, shrink slightly; solid for the first 40 % of its life
+   then fade. The kill variant pops harder and adds an expanding shockwave. */
+.hud-hm {
+  transform-origin: 50% 50%;
+  animation:
+    hud-hm-pop var(--hud-total) var(--hud-ease-out) both,
+    hud-fade-out calc(var(--hud-total) * 0.6) linear forwards;
+  animation-delay: 0ms, calc(var(--hud-total) * 0.4);
+  will-change: transform, opacity;
+}
+.hud-hm-hit {
+  --hm-from: calc(1 + 0.35 * var(--hud-motion));
+  --hm-mid: 1;
+  --hm-to: calc(1 - 0.12 * var(--hud-motion));
+}
+.hud-hm-kill {
+  --hm-from: calc(1 + 0.7 * var(--hud-motion));
+  --hm-mid: calc(1 + 0.15 * var(--hud-motion));
+  --hm-to: 1;
+}
+@keyframes hud-hm-pop {
+  from {
+    transform: scale(var(--hm-from));
+  }
+  30% {
+    transform: scale(var(--hm-mid));
+  }
+  to {
+    transform: scale(var(--hm-to));
+  }
+}
+.hud-hm-ring {
+  transform-origin: 50% 50%;
+  animation: hud-ring var(--hud-total) ease-out both;
+  will-change: transform, opacity;
+}
+@keyframes hud-ring {
+  from {
+    opacity: 0.85;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+/* ── Full-screen pulses ───────────────────────────────────────────────── */
+/* Kill flash vignette: up over the first quarter, out over the rest. */
+.hud-killflash {
+  animation: hud-killflash var(--hud-total) linear both;
+  animation-delay: calc(-1 * var(--hud-age, 0ms));
+  will-change: opacity;
+}
+@keyframes hud-killflash {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* "You were hit" red vignette: linear decay matching the engine's 0.5 s. */
+.hud-damage {
+  animation: hud-fade-out 500ms linear both;
+  will-change: opacity;
+}
+
+/* ── Frag popup — the HUD's one overshoot ─────────────────────────────────
+   Slams in (scale 0.55 → 1.15 → 1, rising 12px), holds, fades over the last
+   ~28 %. Percentages mirror the old per-frame curve for a 1.6 s lifetime. */
+.hud-frag {
+  transform-origin: 50% 50%;
+  animation: hud-frag var(--hud-total) linear both;
+  animation-delay: calc(-1 * var(--hud-age, 0ms));
+  will-change: transform, opacity;
+}
+@keyframes hud-frag {
+  0% {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--hud-slide))) scale(calc(1 - 0.45 * var(--hud-motion)));
+    animation-timing-function: var(--hud-ease-out);
+  }
+  8% {
+    opacity: 1;
+    transform: translateY(0) scale(var(--hud-pop));
+    animation-timing-function: ease-out;
+  }
+  20% {
+    transform: translateY(0) scale(1);
+  }
+  72% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    animation-timing-function: ease-in;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── Banner (BIG announce) — one orchestrated in/out ──────────────────────
+   Title scales in, the bar under it draws 80 ms later, the subtitle rises
+   in at 120 ms; the whole block fades out on its pre-scheduled delay. */
+.hud-banner {
+  transform-origin: 50% 50%;
+  animation:
+    hud-scale-in calc(180ms * var(--hud-motion)) var(--hud-ease-out) both,
+    hud-fade-out var(--hud-out) ease-in forwards;
+  animation-delay: calc(-1 * var(--hud-age, 0ms)), var(--hud-out-delay, 9999s);
+  will-change: transform, opacity;
+}
+.hud-banner-bar {
+  transform-origin: 50% 50%;
+  animation: hud-bar-draw calc(240ms * var(--hud-motion)) var(--hud-ease-out) both;
+  animation-delay: calc(80ms * var(--hud-motion) - var(--hud-age, 0ms));
+}
+@keyframes hud-bar-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.hud-banner-sub {
+  animation: hud-rise-in calc(200ms * var(--hud-motion)) var(--hud-ease-out) both;
+  animation-delay: calc(120ms * var(--hud-motion) - var(--hud-age, 0ms));
+}
+
+/* ── Killcam (death screen) ─────────────────────────────────────────────── */
+.hud-killcam {
+  animation:
+    hud-fade-in calc(200ms * var(--hud-motion)) ease-out both,
+    hud-fade-out var(--hud-out) ease-in forwards;
+  animation-delay: calc(-1 * var(--hud-age, 0ms)), var(--hud-out-delay, 9999s);
+  will-change: opacity;
+}
+.hud-killcam-card {
+  animation: hud-rise-in calc(260ms * var(--hud-motion)) var(--hud-ease-out) both;
+  animation-delay: calc(60ms * var(--hud-motion) - var(--hud-age, 0ms));
+  will-change: transform, opacity;
+}
+
+/* ── Small confirmations ────────────────────────────────────────────────── */
+/* Caption text (announcer mirror) fades in per callout. */
+.hud-caption {
+  animation: hud-fade-in calc(120ms * var(--hud-motion)) ease-out both;
+}
+/* Value tick: a number that just changed (streak, warmup count, dash speed,
+   the cooldown "ready" dot) settles from a small pop. Keyed on the value. */
+.hud-tick {
+  display: inline-block;
+  transform-origin: 0% 100%;
+  animation: hud-tick calc(220ms * var(--hud-motion)) var(--hud-ease-out) both;
+}
+.hud-tick-center {
+  transform-origin: 50% 50%;
+}
+@keyframes hud-tick {
+  from {
+    transform: scale(var(--hud-pop));
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* ── Cooldown fills ─────────────────────────────────────────────────────── */
+/* Ring pip: stroke-dashoffset from empty (C) to full (0) over the cooldown,
+   joining mid-way through a negative delay when mounted late. The engine's
+   cooldown still gates the next use; this only draws it smoothly. */
+.hud-cd-ring {
+  animation: hud-cd-fill var(--cd-total) linear both;
+  animation-delay: calc(-1 * var(--cd-elapsed, 0ms));
+}
+@keyframes hud-cd-fill {
+  from {
+    stroke-dashoffset: var(--cd-c);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+/* Reload bar under the crosshair: a scaleX fill over the rail cooldown. */
+.hud-fill-x {
+  transform-origin: 0% 50%;
+  animation: hud-fill-x var(--cd-total) linear both;
+  animation-delay: calc(-1 * var(--cd-elapsed, 0ms));
+  will-change: transform;
+}
+@keyframes hud-fill-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* ── Early removal ──────────────────────────────────────────────────────────
+   The engine dropped the entry before its scheduled fade (feed cap, reset, a
+   banner replaced by a newer one): play the exit now. Declared last so it
+   wins over every recipe above at equal specificity. */
+.hud-leaving {
+  animation: hud-fade-out var(--hud-out) ease-in both;
+  animation-delay: 0ms;
+}

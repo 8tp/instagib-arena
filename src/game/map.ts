@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { getArenaTextures } from './textures';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { getArenaTextures, type SurfaceKind, type SurfaceTextures } from './textures';
 import type { AABB, Vec3 } from './types';
 
 export type ArenaMap = {
@@ -10,6 +11,9 @@ export type ArenaMap = {
   // Open-air arena: the ceiling box (index 1) still collides but isn't drawn,
   // so the skybox shows. Use with tall perimeter walls + a high invisible cap.
   openTop?: boolean;
+  // Emissive edge-light colour (trim bars on platforms + cover). Defaults to
+  // the brand cyan.
+  accent?: number;
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -54,6 +58,7 @@ export const LOUNGE: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 16 },
     bounds: { min: { x: -30, y: -1, z: -22 }, max: { x: 30, y: 20, z: 22 } },
+    accent: 0xffc46b,
   };
 })();
 
@@ -95,6 +100,7 @@ export const CAUSEWAY: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 19 },
     bounds: { min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 22, z: 25 } },
+    accent: 0x5ce1ff,
   };
 })();
 
@@ -143,6 +149,7 @@ export const REACTOR: ArenaMap = (() => {
     boxes,
     spawn: { x: -30, y: 0.05, z: 0 },
     bounds: { min: { x: -40, y: -1, z: -28 }, max: { x: 40, y: 24, z: 28 } },
+    accent: 0x7dffd0,
   };
 })();
 
@@ -183,6 +190,7 @@ export const CONTAINERYARD: ArenaMap = (() => {
     boxes,
     spawn: { x: -10.5, y: 0.05, z: 8.5 },
     bounds: { min: { x: -13, y: -1, z: -11 }, max: { x: 13, y: 13, z: 11 } },
+    accent: 0x5ce1ff,
     openTop: true,
   };
 })();
@@ -220,6 +228,7 @@ export const DERRICK: ArenaMap = (() => {
     // the central derrick, and the flank pillars.
     spawn: { x: 9, y: 0.05, z: 9 },
     bounds: { min: { x: -12, y: -1, z: -12 }, max: { x: 12, y: 23, z: 12 } },
+    accent: 0xff9a5c,
     openTop: true,
   };
 })();
@@ -274,6 +283,7 @@ export const TRAINING: ArenaMap = (() => {
     boxes,
     spawn: { x: 0, y: 0.05, z: 17 },
     bounds: { min: { x: -23, y: -1, z: -20 }, max: { x: 23, y: 25, z: 20 } },
+    accent: 0xffb34a,
     openTop: true,
   };
 })();
@@ -332,6 +342,7 @@ export const NUKETOWN: ArenaMap = (() => {
     boxes,
     spawn: { x: -29, y: 0.05, z: 0 },
     bounds: { min: { x: -32, y: -1, z: -22 }, max: { x: 32, y: 17, z: 22 } },
+    accent: 0xffd85c,
     openTop: true,
   };
 })();
@@ -358,53 +369,203 @@ export function mapById(id: string): ArenaMap {
   return MAPS.find((m) => m.id === id)?.map ?? DEFAULT_MAP;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Rendering. Collision never touches these meshes (player/bots/weapon use the
+// AABB arrays via movePlayer/rayAabb), so the render build is free to merge.
+//
+// Mesh tagging convention (for decal/impact raycasts, shadow setup, tint):
+//   group.name = 'map', group.userData.mapRoot = true
+//   every mesh: name = 'map:<kind>', userData.map = true, userData.surface =
+//   'floor' | 'ceiling' | 'wall' | 'cover' | 'platform' | 'tower' | 'trim'
+// Use isMapSurface(obj) to pick the solid surfaces and skip the trim bars.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const DEFAULT_ACCENT = 0x5ce1ff;
+
+// Per-surface material tuning for the PMREM RoomEnvironment + warm key light.
+// Roughness is baked into the ORM texture (material.roughness stays a ×1
+// multiplier); metalness is scalar. normalScale tames the baked ~45° bevels.
+const SURFACE_MATERIALS: Record<SurfaceKind, { metalness: number; normalScale: number; ao: number }> = {
+  floor: { metalness: 0.15, normalScale: 0.75, ao: 0.6 },
+  ceiling: { metalness: 0.1, normalScale: 0.5, ao: 0.5 },
+  wall: { metalness: 0.2, normalScale: 0.85, ao: 0.65 },
+  cover: { metalness: 0.25, normalScale: 1.0, ao: 0.7 },
+  platform: { metalness: 0.3, normalScale: 0.7, ao: 0.6 },
+  tower: { metalness: 0.3, normalScale: 0.85, ao: 0.65 },
+};
+
+const SURFACE_KINDS: SurfaceKind[] = ['floor', 'ceiling', 'wall', 'cover', 'platform', 'tower'];
+
+// Edge-light trim (metres): a thin bar wrapped around the side faces of
+// platforms + cover just below their top edge. Low intensity so bloom only
+// catches it lightly; never on floors, where it would compete with enemies.
+const TRIM_HEIGHT = 0.06;
+const TRIM_DEPTH = 0.03;
+const TRIM_DROP = 0.16;
+const TRIM_EMISSIVE = 1.9;
+
+// Size heuristic that assigns each AABB a surface kind (unchanged from the
+// original per-box build, so maps read the way they were authored).
+export function surfaceKindFor(index: number, b: AABB): SurfaceKind {
+  const sx = b.max.x - b.min.x;
+  const sy = b.max.y - b.min.y;
+  const sz = b.max.z - b.min.z;
+  if (index === 0) return 'floor';
+  if (index === 1) return 'ceiling';
+  if (sy < 1.3) return 'cover';
+  if (sy >= 4 && sx <= 5 && sz <= 5) return 'tower';
+  if (sy < 3) return 'platform';
+  return 'wall';
+}
+
+// True for the solid arena surfaces — what a decal / impact raycast should
+// test against. Excludes the emissive trim bars.
+export function isMapSurface(obj: THREE.Object3D): boolean {
+  return obj.userData.map === true && obj.userData.surface !== 'trim';
+}
+
+// One AABB → BoxGeometry in WORLD space with world-projected UVs: each face's
+// u/v are the world coordinates spanning it divided by `tile`, so texture
+// scale is identical on a 2 m crate and a 60 m wall, and seams run
+// continuously across adjacent boxes (ramps, stacked steps, wall segments).
+function boxGeometry(b: AABB, tile: number): THREE.BufferGeometry {
+  const sx = b.max.x - b.min.x;
+  const sy = b.max.y - b.min.y;
+  const sz = b.max.z - b.min.z;
+  const g = new THREE.BoxGeometry(sx, sy, sz);
+  g.translate((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2);
+  const pos = g.getAttribute('position');
+  const nrm = g.getAttribute('normal');
+  const uv = g.getAttribute('uv');
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    if (Math.abs(nrm.getX(i)) > 0.5) uv.setXY(i, z / tile, y / tile);
+    else if (Math.abs(nrm.getY(i)) > 0.5) uv.setXY(i, x / tile, z / tile);
+    else uv.setXY(i, x / tile, y / tile);
+  }
+  return g;
+}
+
+function pointInBox(x: number, y: number, z: number, b: AABB): boolean {
+  return x > b.min.x && x < b.max.x && y > b.min.y && y < b.max.y && z > b.min.z && z < b.max.z;
+}
+
+// Four trim bars around a box's side faces. A face whose bar would sit inside
+// a neighbouring solid (abutting a perimeter wall, the inner corner of an
+// L-shape, a riser buried under the next step) or outside the arena bounds
+// (a shelf flush with the outer wall) is skipped.
+function addTrim(out: THREE.BufferGeometry[], b: AABB, solids: AABB[], bounds: AABB) {
+  const sx = b.max.x - b.min.x;
+  const sy = b.max.y - b.min.y;
+  const sz = b.max.z - b.min.z;
+  if (sy < 0.3) return;
+  const y = b.max.y - TRIM_DROP;
+  const cx = (b.min.x + b.max.x) / 2;
+  const cz = (b.min.z + b.max.z) / 2;
+  const half = TRIM_DEPTH / 2;
+  const over = TRIM_DEPTH * 2; // extend past the corners so the four bars close
+  const faces: Array<[number, number, number, number]> = [
+    [b.max.x + half, cz, TRIM_DEPTH, sz + over],
+    [b.min.x - half, cz, TRIM_DEPTH, sz + over],
+    [cx, b.max.z + half, sx + over, TRIM_DEPTH],
+    [cx, b.min.z - half, sx + over, TRIM_DEPTH],
+  ];
+  for (const [px, pz, w, d] of faces) {
+    if (!pointInBox(px, y, pz, bounds)) continue;
+    if (solids.some((s) => s !== b && pointInBox(px, y, pz, s))) continue;
+    const g = new THREE.BoxGeometry(w, TRIM_HEIGHT, d);
+    g.translate(px, y, pz);
+    out.push(g);
+  }
+}
+
+// Colour is baked into the albedo, so materials stay white and the world-tint
+// / full-bright control (game.ts applyWorldStyle) can drive `color` +
+// `emissive` at runtime: emissiveMap MUST stay === map for that contract.
+function surfaceMaterial(kind: SurfaceKind, t: SurfaceTextures): THREE.MeshStandardMaterial {
+  const p = SURFACE_MATERIALS[kind];
+  return new THREE.MeshStandardMaterial({
+    map: t.map,
+    emissiveMap: t.map,
+    emissive: 0x000000,
+    normalMap: t.normalMap,
+    normalScale: new THREE.Vector2(p.normalScale, p.normalScale),
+    roughnessMap: t.orm,
+    roughness: 1,
+    aoMap: t.orm,
+    aoMapIntensity: p.ao,
+    metalness: p.metalness,
+  });
+}
+
+// No emissiveMap on purpose: applyWorldStyle only retints materials that have
+// one, so the accent trim keeps its colour under any world tint.
+function trimMaterial(accent: THREE.Color): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: accent.clone().multiplyScalar(0.12),
+    emissive: accent,
+    emissiveIntensity: TRIM_EMISSIVE,
+    roughness: 0.35,
+    metalness: 0,
+  });
+}
+
+// Builds the arena as ONE merged mesh per surface kind (+ one for the trim)
+// instead of one mesh per AABB: ≤ 7 draw calls per map. Materials are created
+// per build and disposed with the group on map switch; textures are cached.
 export function buildMapMesh(map: ArenaMap): THREE.Group {
   const group = new THREE.Group();
+  group.name = 'map';
+  group.userData.mapRoot = true;
   const tex = getArenaTextures();
-  // Colour is baked into the textures, so materials stay white. Shared per
-  // surface type; disposed with the group on map switch (textures are cached).
-  // emissiveMap is pre-wired (emissive black) so the world-tint/brightness
-  // control can drive emissive at runtime without a shader recompile.
-  const surfaceMat = (
-    map: THREE.Texture,
-    roughness: number,
-    metalness: number,
-  ) =>
-    new THREE.MeshStandardMaterial({
-      map,
-      emissiveMap: map,
-      emissive: 0x000000,
-      roughness,
-      metalness,
-    });
-  const matWall = surfaceMat(tex.wall, 0.8, 0.1);
-  const matFloor = surfaceMat(tex.floor, 0.9, 0.05);
-  const matCeiling = new THREE.MeshStandardMaterial({ color: 0x2c333f, roughness: 0.95 });
-  const matPlatform = surfaceMat(tex.platform, 0.55, 0.2);
-  const matCover = surfaceMat(tex.cover, 0.7, 0.1);
-  const matTower = surfaceMat(tex.tower, 0.7, 0.15);
+  const accent = new THREE.Color(map.accent ?? DEFAULT_ACCENT);
+
+  const parts: Record<SurfaceKind, THREE.BufferGeometry[]> = {
+    floor: [], ceiling: [], wall: [], cover: [], platform: [], tower: [],
+  };
+  const trims: THREE.BufferGeometry[] = [];
+  // Open-air arenas keep the ceiling for collision but don't draw it, so the
+  // skybox shows overhead. It hides nothing, so it's not a trim occluder.
+  const drawn = (i: number) => !(i === 1 && map.openTop);
+  const solids = map.boxes.filter((_, i) => drawn(i));
   for (let i = 0; i < map.boxes.length; i++) {
-    // Open-air arenas keep the ceiling for collision but don't draw it, so the
-    // skybox shows overhead.
-    if (i === 1 && map.openTop) continue;
+    if (!drawn(i)) continue;
     const b = map.boxes[i];
-    const sx = b.max.x - b.min.x;
-    const sy = b.max.y - b.min.y;
-    const sz = b.max.z - b.min.z;
-    const cx = (b.min.x + b.max.x) / 2;
-    const cy = (b.min.y + b.max.y) / 2;
-    const cz = (b.min.z + b.max.z) / 2;
-    const geom = new THREE.BoxGeometry(sx, sy, sz);
-    let mat: THREE.MeshStandardMaterial;
-    if (i === 0) mat = matFloor;
-    else if (i === 1) mat = matCeiling;
-    else if (sy < 1.3) mat = matCover;
-    else if (sy >= 4 && sx <= 5 && sz <= 5) mat = matTower;
-    else if (sy < 3) mat = matPlatform;
-    else mat = matWall;
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.position.set(cx, cy, cz);
+    const kind = surfaceKindFor(i, b);
+    parts[kind].push(boxGeometry(b, tex[kind].tile));
+    if (kind === 'platform' || kind === 'cover') addTrim(trims, b, solids, map.bounds);
+  }
+
+  for (const kind of SURFACE_KINDS) {
+    const geoms = parts[kind];
+    if (!geoms.length) continue;
+    const merged = mergeGeometries(geoms, false);
+    geoms.forEach((g) => g.dispose());
+    if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, surfaceMaterial(kind, tex[kind]));
+    mesh.name = `map:${kind}`;
+    mesh.userData.map = true;
+    mesh.userData.surface = kind;
+    mesh.receiveShadow = true;
+    // The giant floor/ceiling slabs only receive; everything else casts.
+    mesh.castShadow = kind !== 'floor' && kind !== 'ceiling';
     group.add(mesh);
+  }
+
+  if (trims.length) {
+    const merged = mergeGeometries(trims, false);
+    trims.forEach((g) => g.dispose());
+    if (merged) {
+      const mesh = new THREE.Mesh(merged, trimMaterial(accent));
+      mesh.name = 'map:trim';
+      mesh.userData.map = true;
+      mesh.userData.surface = 'trim';
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      group.add(mesh);
+    }
   }
   return group;
 }

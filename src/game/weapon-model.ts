@@ -30,6 +30,9 @@ export type RailgunModel = {
   group: THREE.Group;
   muzzle: THREE.Object3D; // barrel-tip marker (beam origin for third-person)
   glow: THREE.MeshStandardMaterial; // shared emissive (pulse this on fire)
+  // Additive bloom seated on the muzzle, hidden at rest. The first-person
+  // viewmodel pops it on fire (opacity + scale) and fades it over ~100 ms.
+  muzzleFlash: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
 };
 
 // Canonical railgun, ~0.95 units long, grip at the origin, barrel down -Z.
@@ -49,14 +52,14 @@ export function buildRailgun(finish?: RailgunFinish): RailgunModel {
   const glow = new THREE.MeshStandardMaterial({
     color: COL_ACCENT_HOT,
     emissive: new THREE.Color(COL_ACCENT_HOT),
-    emissiveIntensity: 1.7,
+    emissiveIntensity: 0.8,
     metalness: 0.2,
     roughness: 0.25,
   });
   const glowDim = new THREE.MeshStandardMaterial({
     color: COL_ACCENT,
     emissive: new THREE.Color(COL_ACCENT),
-    emissiveIntensity: 1.0,
+    emissiveIntensity: 0.5,
     metalness: 0.3,
     roughness: 0.3,
   });
@@ -126,7 +129,28 @@ export function buildRailgun(finish?: RailgunFinish): RailgunModel {
   muzzle.position.set(0, 0.03, -0.9);
   group.add(muzzle);
 
-  return { group, muzzle, glow };
+  // Muzzle bloom: a small additive, slightly elongated sphere just past the
+  // aperture. Unlit + un-tonemapped so it reads as pure light; depthWrite off
+  // so it never punches a hole in the beam/particles. Starts hidden — only the
+  // viewmodel drives it (third-person guns keep their scene-space flash).
+  const flashGeo = new THREE.SphereGeometry(0.045, 12, 8);
+  flashGeo.scale(1, 1, 1.9);
+  const muzzleFlash = new THREE.Mesh(
+    flashGeo,
+    new THREE.MeshBasicMaterial({
+      color: COL_ACCENT_HOT,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  muzzleFlash.position.set(0, 0, -0.03);
+  muzzleFlash.visible = false;
+  muzzle.add(muzzleFlash);
+
+  return { group, muzzle, glow, muzzleFlash };
 }
 
 // Third-person attach. Seats the railgun in the soldier's right hand so it

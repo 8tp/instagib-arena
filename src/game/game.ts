@@ -111,8 +111,17 @@ const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
 
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
-import { createCamera, createRenderer, createScene } from './renderer';
+import {
+  PostFxPipeline,
+  applyMapShadowFlags,
+  createCamera,
+  createRenderer,
+  createScene,
+  SHADOW_TUNING,
+  type PostFxOptions,
+} from './renderer';
 import { buildRailgun } from './weapon-model';
+import { ViewmodelMotion } from './viewmodel-motion';
 import type {
   AABB,
   BannerState,
@@ -227,6 +236,10 @@ export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
+  // Post chain (bloom / SMAA / vignette) + sun shadows. Prefs are what the
+  // player asked for; low-spec overrides them all off (see applyPostFx).
+  private postFx: PostFxPipeline;
+  private postFxPrefs: PostFxOptions = { bloom: true, shadows: true, aa: true, vignette: true };
   private map: ArenaMap = DEFAULT_MAP;
   private mapMesh: THREE.Group;
   private player: Player;
@@ -246,6 +259,7 @@ export class Game {
   // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
   // input latency, at high CPU cost). See scheduleFrame().
   private fpsLimit = 0;
+  private photoMode = false; // dev: see constructor
   private netDebugOn = false; // F3 net-debug overlay
   private frameTimeout: ReturnType<typeof setTimeout> | null = null;
   private fpsChannel: MessageChannel | null = null;
@@ -406,11 +420,14 @@ export class Game {
   private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
   private localCard: CardPayload | null = null; // your playercard (kill banner)
   private reducedEffects = false; // accessibility: gate shake/flash/heavy bursts
-  // Weapon feedback: recoil kicks the viewmodel back+up; viewKick punches the
-  // view up. Both are transient and decay to 0 each frame (aim is unaffected —
-  // viewKick is purely visual, layered on top of the real pitch).
-  private recoil = 0;
+  // Weapon feedback: viewKick punches the view up on fire (transient, decays to
+  // 0 each frame; aim is unaffected — it's layered on top of the real pitch).
+  // The gun's own kick — plus bob / look sway / landing dip / dash lean / zoom
+  // tuck / idle breathing — lives in viewmodelMotion (viewmodel-motion.ts) and
+  // is applied in render() on top of the base position + user offset.
   private viewKick = 0;
+  private readonly viewmodelMotion = new ViewmodelMotion();
+  private viewmodelMuzzle: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> | null = null;
 
   // FOV / zoom. baseFov is the settings FOV; camera.fov lerps toward zoomFov
   // while the zoom bind is held.
@@ -433,6 +450,15 @@ export class Game {
     this.renderer = createRenderer(canvas);
     this.scene = createScene(this.renderer);
     this.camera = createCamera(canvas);
+    this.postFx = new PostFxPipeline(this.renderer, this.scene, this.camera);
+    this.applyPostFx();
+    // Dev-only handle for the visual-critique harness (console / screenshot bots).
+    if (import.meta.env.DEV) {
+      (window as unknown as { __ig?: Game }).__ig = this;
+      // `?photo=1`: run without a real pointer lock (automation can't grant one)
+      // and keep rendering while the tab is hidden (rAF is paused there).
+      this.photoMode = new URLSearchParams(window.location.search).get('photo') === '1';
+    }
     // Parent the viewmodel to the camera so it tracks the view. The camera is
     // added to the scene so its child (the gun) is part of the render.
     this.scene.add(this.camera);
@@ -460,6 +486,7 @@ export class Game {
       this.emitHud();
     });
     this.mapMesh = buildMapMesh(this.map);
+    applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
     this.player = new Player(this.map.spawn);
 
@@ -600,6 +627,7 @@ export class Game {
     this.lowSpec = !!lowSpec;
     this.applyPixelRatio();
     this.effects.setQuality(lowSpec ? 0.5 : 1);
+    this.applyPostFx();
   }
 
   private applyPixelRatio() {
@@ -608,12 +636,42 @@ export class Game {
     const cap = this.lowSpec ? 1 : 2; // low-spec ignores high-DPI displays
     const pr = Math.min(Math.min(dpr, cap) * this.resolutionScale, this.lowSpec ? 1.5 : 3);
     this.renderer.setPixelRatio(pr);
+    this.postFx.setPixelRatio(pr);
+  }
+
+  // Post-processing + shadows toggles (bloom / sun shadows / SMAA / vignette).
+  // Stored as prefs so a later settings UI can drive them; low-spec forces all
+  // of them off and the frame renders straight to the canvas.
+  setPostFx(opts: Partial<PostFxOptions>) {
+    this.postFxPrefs = { ...this.postFxPrefs, ...opts };
+    this.applyPostFx();
+  }
+
+  private applyPostFx() {
+    const p = this.postFxPrefs;
+    const on = !this.lowSpec;
+    this.postFx.setOptions({
+      bloom: on && p.bloom,
+      shadows: on && p.shadows,
+      aa: on && p.aa,
+      vignette: on && p.vignette,
+    });
+    this.postFx.setShadowMapSize(
+      this.resolutionScale < 0.75 ? SHADOW_TUNING.mapSizeLow : SHADOW_TUNING.mapSize,
+    );
   }
 
   setViewmodel(offset: { x: number; y: number; z: number }, hide: boolean) {
     this.viewmodelOffset = { x: offset.x, y: offset.y, z: offset.z };
     this.hideViewmodel = hide;
     this.applyViewmodelTransform();
+  }
+
+  // Viewmodel motion intensity, 0–1 (0 = static gun, only the fire kick and zoom
+  // tuck remain; 1 = full bob / sway / landing dip / dash lean / idle). A
+  // settings slider can be wired straight to this.
+  setViewmodelMotion(intensity: number) {
+    this.viewmodelMotion.setIntensity(intensity);
   }
 
   private applyViewmodelTransform() {
@@ -788,6 +846,7 @@ export class Game {
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
+    this.viewmodelMuzzle = vm.muzzleFlash;
     this.applyViewmodelTransform();
     this.camera.add(this.viewmodel);
   }
@@ -870,6 +929,7 @@ export class Game {
     this.scene.remove(this.mapMesh);
     disposeGroup(this.mapMesh);
     this.mapMesh = buildMapMesh(map);
+    applyMapShadowFlags(this.mapMesh, map);
     this.scene.add(this.mapMesh);
     this.applyWorldStyle(); // re-tint the freshly-built materials
     // Reset the local player onto the new spawn.
@@ -993,6 +1053,7 @@ export class Game {
   }
 
   async start() {
+    if (this.photoMode) this.input.forceLocked();
     if (this.disposed) return;
     this.lastTime = performance.now();
     this.runLoop();
@@ -1050,6 +1111,7 @@ export class Game {
     (this.scene.environment as THREE.Texture | null)?.dispose();
     this.scene.environment = null;
     this.disposeScene();
+    this.postFx.dispose();
     this.renderer.dispose();
   }
 
@@ -1218,7 +1280,7 @@ export class Game {
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
     const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
-    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix);
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map);
     // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
     // the audio listener, so you can hear which direction a shot came from.
     this.audio.playAt('fire', b.ox, b.oy, b.oz, 0.5);
@@ -1423,6 +1485,18 @@ export class Game {
   // Frame-rate limit. 0 = VSync (display refresh), a positive number caps to
   // that fps, a negative value uncaps (renders as fast as the machine allows,
   // beyond vsync). Applied on the next scheduled frame.
+  // Dev harness: aim the first-person view directly (photo mode has no mouse).
+  setPlayerView(yaw: number, pitch: number, pos?: { x: number; y: number; z: number }) {
+    this.player.yaw = yaw;
+    this.player.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+    if (pos) {
+      this.player.pos.x = pos.x;
+      this.player.pos.y = pos.y;
+      this.player.pos.z = pos.z;
+      this.player.vel.x = this.player.vel.y = this.player.vel.z = 0;
+    }
+  }
+
   setFpsLimit(n: number) {
     this.fpsLimit = Number.isFinite(n) ? Math.trunc(n) : 0;
   }
@@ -1504,7 +1578,8 @@ export class Game {
   private scheduleFrame() {
     const fn = this.tickFn;
     if (this.disposed || !fn) return;
-    const limit = this.fpsLimit;
+    let limit = this.fpsLimit;
+    if (this.photoMode && typeof document !== 'undefined' && document.hidden) limit = -1;
     if (limit < 0) {
       // Uncapped: re-run ASAP via a MessageChannel — beats setTimeout's ~4ms
       // clamp, so it can render well past the display refresh.
@@ -1737,7 +1812,32 @@ export class Game {
     // While dead, movement is frozen — the camera is owned by the killcam in
     // render(). (Look is drained every frame in applyLook(), so it can't pile up
     // and snap the view on respawn.)
-    if (!dead) this.player.step(input, dt, this.map, this.inCountdown);
+    if (!dead) {
+      // Snapshot pre-step state so the viewmodel motion can react to the edges
+      // this tick produces: touchdown (dip ∝ impact speed), take-off (ground /
+      // air jump / boost), and dash start (inertia shove toward view space).
+      const wasGround = this.player.onGround;
+      const preVy = this.player.vel.y;
+      const wasDashing = this.player.dashTimer > 0;
+      this.player.step(input, dt, this.map, this.inCountdown);
+      const v = this.player.vel;
+      if (!wasGround && this.player.onGround) {
+        this.viewmodelMotion.onLand(-preVy);
+      } else if (
+        (wasGround && !this.player.onGround && v.y > 0) ||
+        (!wasGround && v.y - preVy > 4)
+      ) {
+        this.viewmodelMotion.onJump();
+      }
+      if (!wasDashing && this.player.dashTimer > 0) {
+        const yaw = this.player.yaw;
+        const sp = Math.hypot(v.x, v.z) || 1;
+        this.viewmodelMotion.onDash(
+          (-v.x * Math.sin(yaw) - v.z * Math.cos(yaw)) / sp, // forward component
+          (v.x * Math.cos(yaw) - v.z * Math.sin(yaw)) / sp, // lateral (+ = right)
+        );
+      }
+    }
 
     // Self-heal the local sim: a NaN (degenerate collision) or falling out of
     // the world (boosted through a seam) would otherwise be unrecoverable
@@ -1934,6 +2034,7 @@ export class Game {
       this.map.boxes,
       targets,
       this.tmpBeamOrigin,
+      this.map,
     );
     // Cooldown blocked the shot → no SFX, no side effects.
     if (!result) return;
@@ -1957,12 +2058,13 @@ export class Game {
     });
     this.audio.play('fire', 0.55);
     this.addShake(SHAKE_FIRE);
-    // Weapon feedback: recoil the gun, punch the view up, flash the muzzle, and
-    // spike the gun's energy glow (all decay back over the next few frames).
-    this.recoil = 1;
+    // Weapon feedback: two-stage gun kick + muzzle bloom (viewmodelMotion), punch
+    // the view up, flash the muzzle, and spike the gun's energy glow (all decay
+    // back over the next few frames).
+    this.viewmodelMotion.onFire();
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
-    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin);
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, undefined, this.tmpForward);
 
     // Training range: count the shot, pop any targets the rail passed through,
     // and break the streak on a clean miss. Live stats refresh to the HUD.
@@ -2152,7 +2254,7 @@ export class Game {
 
     // Visible beam to the impact point (enemy fire reveals positions).
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
-    this.weapon.spawnBeam(origin, end, this.scene);
+    this.weapon.spawnBeam(origin, end, this.scene, undefined, undefined, this.map);
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },
@@ -2400,6 +2502,9 @@ export class Game {
           new THREE.Vector3(o.x, o.y, o.z),
           new THREE.Vector3(e.x, e.y, e.z),
           this.scene,
+          undefined,
+          undefined,
+          this.map,
         ),
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
@@ -3135,26 +3240,60 @@ export class Game {
     // same at 60fps and uncapped (the marketed FPS-uncap would otherwise change
     // recoil/kick feel with framerate). Constants match the old /frame factors.
     const fdt = this.frameDt;
-    this.recoil *= Math.exp(-10.46 * fdt); // ≈ 0.84/frame at 60fps
     this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
     if (this.viewmodelGlow) {
       const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
-      this.viewmodelGlow.emissiveIntensity += (1.3 - this.viewmodelGlow.emissiveIntensity) * g;
+      this.viewmodelGlow.emissiveIntensity += (0.8 - this.viewmodelGlow.emissiveIntensity) * g;
     }
     // Viewmodel: show while actively playing in first person, OR while watching a
-    // player in first-person spectator POV (so you see THEIR gun skin). Apply
-    // recoil (kicks back toward the camera + muzzle tilts up, easing back to rest).
+    // player in first-person spectator POV (so you see THEIR gun skin). The
+    // motion helper layers bob / look sway / landing dip / dash lean / the
+    // two-stage fire kick / zoom tuck / idle breathing on top of the base
+    // position + the user's offset (viewmodel-motion.ts; all exp/spring-smoothed
+    // on real dt, so the feel is identical at 60fps and uncapped).
     if (this.viewmodel) {
-      const specPov = this.spectator && !!this.spectatedId && !!this.net?.remotes.get(this.spectatedId);
+      const specSnap =
+        this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
+      const specPov = !!specSnap;
       this.viewmodel.visible =
         !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay;
-      const r = this.recoil;
-      this.viewmodel.position.set(
-        VIEWMODEL_BASE.x + this.viewmodelOffset.x,
-        VIEWMODEL_BASE.y + this.viewmodelOffset.y + r * 0.02,
-        VIEWMODEL_BASE.z + this.viewmodelOffset.z + r * 0.08,
-      );
-      this.viewmodel.rotation.x = r * 0.22;
+      // Local first person feeds full movement state; spectator POV gets only the
+      // watched player's look (idle + sway); killcam/replay coast to rest.
+      const localPov = !this.spectator && !this.killcam && !this.replay;
+      const p = this.player;
+      const pose = this.viewmodelMotion.update({
+        dt: fdt,
+        yaw: specSnap ? specSnap.yaw : p.yaw,
+        pitch: specSnap ? specSnap.pitch : p.pitch,
+        groundSpeed: localPov ? Math.hypot(p.vel.x, p.vel.z) : 0,
+        lateralSpeed: localPov ? p.vel.x * Math.cos(p.yaw) - p.vel.z * Math.sin(p.yaw) : 0,
+        grounded: localPov ? p.onGround : true,
+        zoom: zoomT,
+        reducedEffects: this.reducedEffects,
+      });
+      if (this.viewmodel.visible) {
+        this.viewmodel.position.set(
+          VIEWMODEL_BASE.x + this.viewmodelOffset.x + pose.x,
+          VIEWMODEL_BASE.y + this.viewmodelOffset.y + pose.y,
+          VIEWMODEL_BASE.z + this.viewmodelOffset.z + pose.z,
+        );
+        this.viewmodel.rotation.set(pose.rx, pose.ry, pose.rz);
+      }
+      // Muzzle bloom: pops on fire, then expands as it dims. Hidden at rest so
+      // it costs nothing between shots.
+      if (this.viewmodelMuzzle) {
+        const m = pose.muzzle;
+        const on = m > 0 && this.viewmodel.visible;
+        this.viewmodelMuzzle.visible = on;
+        if (on) {
+          this.viewmodelMuzzle.material.opacity = m;
+          this.viewmodelMuzzle.scale.setScalar(1 + (1 - m) * 0.9);
+        }
+      }
+      // Cosmetic landing dip on the camera (≤ 1.5°, zero under reduced effects),
+      // added after the aim rotation was set above. The shot direction reads
+      // player.pitch/yaw, never the camera, so aim is untouched.
+      if (localPov && pose.camPitch !== 0) this.camera.rotation.x += pose.camPitch;
     }
     // Track the HRTF audio listener to the (now finalized) camera so spatial
     // sounds — other players' rail fire etc. — pan to where they actually are.
@@ -3164,7 +3303,11 @@ export class Game {
       this.tmpForward.x, this.tmpForward.y, this.tmpForward.z,
       0, 1, 0,
     );
-    this.renderer.render(this.scene, this.camera);
+    // Post chain (or direct render when every pass is off / low-spec). The
+    // vignette follows reduced-effects each frame; the sun's shadow box is
+    // re-centred under the (now finalized) camera inside render().
+    this.postFx.muteVignette(this.reducedEffects);
+    this.postFx.render();
   }
 
   private handleResize() {
@@ -3175,6 +3318,7 @@ export class Game {
     // staying at the mount-time DPR (#26j).
     this.applyPixelRatio();
     this.renderer.setSize(w, h, false);
+    this.postFx.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }

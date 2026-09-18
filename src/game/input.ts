@@ -315,6 +315,14 @@ export class InputManager {
     this.clearKeys();
   };
 
+  // Dev photo mode: behave as if the pointer were locked without a real lock
+  // (automation can't grant one). Look deltas then come from setPlayerView().
+  forceLocked() {
+    this.locked = true;
+    this.justLocked = true;
+    this.onLockChange(true);
+  }
+
   private onLock = () => {
     this.locked = document.pointerLockElement === this.canvas;
     if (this.locked) this.justLocked = true; // drop the first post-lock delta

@@ -10,7 +10,9 @@ import {
   RAIL_HELIX_TURN_LEN,
   RAIL_RANGE,
 } from './constants';
-import { rayAabb } from './map';
+import { spawnRailImpact } from './effects';
+import { peekFxContext } from './fx-pool';
+import { rayAabb, rayAabbNormal, type ArenaMap } from './map';
 import type { AABB, Vec3 } from './types';
 
 // A fading rail trail: a Group of meshes/lines plus the materials to fade and
@@ -22,6 +24,35 @@ type Beam = {
 };
 
 const UP = new THREE.Vector3(0, 1, 0);
+const tmpNormal = new THREE.Vector3();
+const tmpDir = new THREE.Vector3();
+
+// Which drawn map face (if any) does the visible beam origin→end stop on?
+// Analytic: the map is a list of AABBs, so the entry face of the nearest box
+// along the beam gives an exact normal — no scene raycast, no mesh tagging.
+// Returns null when the beam stopped short of the wall (it hit a player), ran
+// out at max range, or ended on the undrawn ceiling of an open-top arena.
+function resolveImpactNormal(origin: THREE.Vector3, end: THREE.Vector3, map: ArenaMap): THREE.Vector3 | null {
+  const o: Vec3 = { x: origin.x, y: origin.y, z: origin.z };
+  const d: Vec3 = { x: end.x - origin.x, y: end.y - origin.y, z: end.z - origin.z };
+  const len = Math.hypot(d.x, d.y, d.z);
+  if (len < 1e-4) return null;
+  let best = Infinity;
+  let idx = -1;
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < map.boxes.length; i++) {
+    const hit = rayAabbNormal(o, d, map.boxes[i]);
+    if (hit !== null && hit.t > 0 && hit.t < best) {
+      best = hit.t;
+      idx = i;
+      nx = hit.normal.x; ny = hit.normal.y; nz = hit.normal.z;
+    }
+  }
+  if (idx < 0 || (idx === 1 && map.openTop)) return null;
+  // `t` is in units of |d|, so t ≈ 1 means the beam ends exactly on the face.
+  if (Math.abs(best - 1) * len > 0.08) return null;
+  return tmpNormal.set(nx, ny, nz);
+}
 
 // Quake-III CG_RailTrail look: a bright solid core cylinder, a soft additive
 // glow sleeve, and a helix spiralling around the axis. All additive so trails
@@ -146,6 +177,10 @@ export class Railgun {
         this.beams.splice(i, 1);
       }
     }
+    // Impact sparks live in the shared FX pool, normally stepped by the
+    // scene's EffectsManager; step it here only when nobody else does.
+    const fx = peekFxContext(scene);
+    if (fx && !fx.managed) fx.step(dt);
   }
 
   // Returns null when the shot was blocked by cooldown (no side effects, no
@@ -161,6 +196,9 @@ export class Railgun {
     // Where the VISIBLE beam starts (the gun muzzle). Hit detection still uses
     // `origin` (the eye), so aim stays exact while the trail comes from the gun.
     beamOrigin?: THREE.Vector3,
+    // The arena (surface hint): lets the beam skip its impact effect on the
+    // invisible collision ceiling of open-top maps. Pass `boxes`' owner.
+    surface?: ArenaMap,
   ): RailFireResult | null {
     if (this.cooldown > 0) return null;
     this.cooldown = RAIL_COOLDOWN;
@@ -168,11 +206,18 @@ export class Railgun {
     const o: Vec3 = { x: origin.x, y: origin.y, z: origin.z };
     const d: Vec3 = { x: dir.x, y: dir.y, z: dir.z };
 
-    // 1) Find the nearest wall — that's where the visible beam ends.
+    // 1) Find the nearest wall — that's where the visible beam ends. Its face
+    //    normal (exact, from the AABB) orients the impact sparks + decal.
     let wallT = RAIL_RANGE;
-    for (const b of boxes) {
-      const t = rayAabb(o, d, b);
-      if (t !== null && t > 0 && t < wallT) wallT = t;
+    let wallIdx = -1;
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const hit = rayAabbNormal(o, d, boxes[i]);
+      if (hit !== null && hit.t > 0 && hit.t < wallT) {
+        wallT = hit.t;
+        wallIdx = i;
+        nx = hit.normal.x; ny = hit.normal.y; nz = hit.normal.z;
+      }
     }
 
     // 2) Every target whose entry point is closer than the nearest wall is
@@ -194,8 +239,12 @@ export class Railgun {
     hits.sort((a, b) => a.t - b.t);
 
     const end = origin.clone().addScaledVector(dir, wallT);
-    // The player's OWN beam uses their equipped rail colors.
-    this.spawnBeam((beamOrigin ?? origin).clone(), end, scene, this.beamCore, this.beamHelix);
+    // The player's OWN beam uses their equipped rail colors. The impact only
+    // plays on a real, drawn wall — not at max range, and not on the
+    // invisible ceiling that caps open-top arenas.
+    const drawnWall = wallIdx >= 0 && !(wallIdx === 1 && surface?.openTop);
+    const normal = drawnWall ? tmpNormal.set(nx, ny, nz) : null;
+    this.spawnBeamAt((beamOrigin ?? origin).clone(), end, scene, this.beamCore, this.beamHelix, normal, dir);
 
     return { hits, end };
   }
@@ -204,16 +253,36 @@ export class Railgun {
   // so enemy fire is visible without going through the player's weapon state.
   // Colors default to the stock rail (enemy beams), or the player's equipped
   // colors when fire() passes them.
+  // `surface` (the arena) is an optional hint: with it, a beam that ends on a
+  // drawn map face also plays the rail impact (sparks + ring + decal) there.
   spawnBeam(
     origin: THREE.Vector3,
     end: THREE.Vector3,
     scene: THREE.Scene,
     core: number = RAIL_CORE_COLOR,
     helix: number = RAIL_HELIX_COLOR,
+    surface?: ArenaMap,
   ) {
-    const beam = buildRailBeam(origin.clone(), end.clone(), core, helix);
+    const normal = surface ? resolveImpactNormal(origin, end, surface) : null;
+    this.spawnBeamAt(origin.clone(), end.clone(), scene, core, helix, normal, null);
+  }
+
+  private spawnBeamAt(
+    origin: THREE.Vector3,
+    end: THREE.Vector3,
+    scene: THREE.Scene,
+    core: number,
+    helix: number,
+    impactNormal: THREE.Vector3 | null,
+    dir: THREE.Vector3 | null,
+  ) {
+    const beam = buildRailBeam(origin, end, core, helix);
     scene.add(beam.group);
     this.beams.push(beam);
+    if (impactNormal) {
+      const d = dir ?? tmpDir.subVectors(end, origin).normalize();
+      spawnRailImpact(scene, end, impactNormal, d, core, helix);
+    }
   }
 
   disposeAll(scene: THREE.Scene) {

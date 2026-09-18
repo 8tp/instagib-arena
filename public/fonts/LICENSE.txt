@@ -1,0 +1,13 @@
+Self-hosted web fonts for Instagib Arena. All three families are licensed
+under the SIL Open Font License, Version 1.1 (OFL-1.1):
+https://openfontlicense.org/
+
+  Chakra Petch  (c) 2018 Cadson Demak            — ChakraPetch-*.woff2
+  Geist         (c) 2023 Vercel, Inc.             — Geist-var-*.woff2
+  Geist Mono    (c) 2023 Vercel, Inc.             — GeistMono-var-*.woff2
+
+The woff2 files are the latin + latin-ext subsets as served by Google Fonts
+(Chakra Petch weights 500/600/700 as static instances; Geist 300-700 and
+Geist Mono 400-600 as variable-weight instances). The fonts are used and
+redistributed here unmodified under the terms of the OFL; the OFL does not
+apply to the rest of this repository.
