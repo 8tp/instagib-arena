@@ -1,31 +1,33 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { buildRailgun } from '../weapon-model';
+import { buildThirdPersonRailgun } from '../weapon-model';
 import type { RailgunFinish } from '../cosmetics';
 import type { Character } from './character';
 
-// Third-person railgun: the railgun builder's model (grip at the origin,
-// barrel down −Z) seated in the combatant's hand.R gun socket. The arm IK
-// (see character-anim.ts) places that hand on the aim line, so the barrel
-// follows the view pitch exactly.
+// Third-person railgun: the railgun track's low-LOD model (grip/trigger at the
+// origin, barrel down −Z, metres; ~1.33 long) seated in the combatant's hand.R
+// gun socket. The arm IK (see character-anim.ts) places that hand on the aim
+// line, so the barrel follows the view pitch exactly.
 
-// World size of the third-person gun (the builder's canonical model is ~0.95
-// units long → ~0.6 m in hand).
-export const GUN_SCALE = 0.62;
-// Gun origin relative to the palm socket: the palm wraps the pistol grip, which
-// hangs below/behind the gun origin.
-const GUN_IN_SOCKET = new THREE.Vector3(0, 0.1, -0.06);
+// World size of the third-person gun (~0.8 m in hand).
+export const GUN_SCALE = 0.6;
+// The model's palm point is ~(0, -0.12, 0.09) in gun space; seat it on the
+// socket (the palm centre), i.e. the gun origin sits up/forward of the palm.
+const GUN_IN_SOCKET = new THREE.Vector3(0, 0.12 * GUN_SCALE, -0.09 * GUN_SCALE);
 
 // Hold geometry in the AIM frame (offsets from the chest bone position; −Z =
-// along the barrel). `grip` is the right palm; `support` is the left palm on
-// the barrel's underside.
+// along the barrel). These are PALM positions: `grip` is the right palm on the
+// pistol grip, `support` the left palm cupping the barrel just behind the
+// coils. The animator converts them to wrist (IK) targets.
 export const HOLD = {
-  grip: new THREE.Vector3(0.12, -0.02, -0.21),
-  support: new THREE.Vector3(0.11, 0.07, -0.47),
+  grip: new THREE.Vector3(0.125, 0.07, -0.24),
+  support: new THREE.Vector3(0.118, 0.122, -0.44),
 };
+// Palm offset from the wrist in the hand bone's frame (= the gun socket).
+export const PALM_OFFSET = new THREE.Vector3(0, -0.065, -0.012);
 
 export function attachRailgun(ch: Character, finish?: RailgunFinish): THREE.Group {
-  const model = buildRailgun(finish);
+  const model = buildThirdPersonRailgun(finish);
   const g = model.group;
   g.scale.setScalar(GUN_SCALE);
   g.position.copy(GUN_IN_SOCKET);

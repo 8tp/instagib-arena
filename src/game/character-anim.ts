@@ -4,7 +4,7 @@ import { Character } from './character/character';
 import { B } from './character/rig';
 import { PoseSpec, SIDE_L, SIDE_R, solvePose } from './character/pose';
 import { evalClip, type Clip } from './character/clip';
-import { HOLD } from './character/gun';
+import { HOLD, PALM_OFFSET } from './character/gun';
 import { GibBurst, type GibFloor } from './character/gibs';
 import { Locomotion, type FootfallListener, type LocoInput } from './locomotion';
 import { emoteClip, emoteStance } from './emotes';
@@ -297,28 +297,35 @@ export class CharacterAnimator {
     spec.addR(B.chest, pitch * 0.3, -RIFLE_TWIST, 0);
     spec.addR(B.neck, pitch * 0.15, RIFLE_TWIST * 0.4, 0);
     spec.addR(B.head, pitch * 0.35, RIFLE_TWIST * 0.6, 0);
-    spec.addR(B.clavicleL, 0, -8 * DEG, 0); // left shoulder reaches forward
     spec.handSpace = 'aim';
     spec.aimPitch = pitch;
-    // Air: the support hand lets go for balance, gun stays on the aim.
+    // Hand orientations in the aim frame: right = the gun's own frame (the
+    // socket has no rotation), left = palm up under the barrel, fingers
+    // wrapping toward the right.
+    spec.handQOn[SIDE_R] = true;
+    spec.handQ[SIDE_R].identity();
+    _e.set(0, 0, 90 * DEG, 'YXZ');
+    spec.handQ[SIDE_L].setFromEuler(_e);
     const air = this.loco.air;
-    spec.hand[SIDE_R].copy(HOLD.grip);
-    spec.hand[SIDE_L].copy(HOLD.support);
+    spec.handQOn[SIDE_L] = air < 0.5;
+    // Wrist targets = palm targets − handQ·palmOffset.
+    _v.copy(PALM_OFFSET).applyQuaternion(spec.handQ[SIDE_R]);
+    spec.hand[SIDE_R].copy(HOLD.grip).sub(_v);
+    _v.copy(PALM_OFFSET).applyQuaternion(spec.handQ[SIDE_L]);
+    spec.hand[SIDE_L].copy(HOLD.support).sub(_v);
+    // Air: the support hand lets go for balance, the gun stays on the aim.
     if (air > 0.01) {
-      spec.hand[SIDE_L].x += (-0.36 - HOLD.support.x) * air * 0.85;
-      spec.hand[SIDE_L].y += (-0.02 - HOLD.support.y) * air * 0.85;
-      spec.hand[SIDE_L].z += (0.02 - HOLD.support.z) * air * 0.85;
+      const k = air * 0.85;
+      const h = spec.hand[SIDE_L];
+      h.x += (-0.36 - h.x) * k;
+      h.y += (-0.02 - h.y) * k;
+      h.z += (0.02 - h.z) * k;
     }
     // Landing: the gun dips with the body.
     spec.hand[SIDE_R].y -= 0.05 * this.loco.land;
     spec.hand[SIDE_L].y -= 0.05 * this.loco.land;
     spec.elbow[SIDE_R].set(0.55, -1, 0.35);
     spec.elbow[SIDE_L].set(-0.7, -1, -0.1);
-    spec.handQOn[SIDE_R] = true;
-    spec.handQ[SIDE_R].identity();
-    spec.handQOn[SIDE_L] = air < 0.5;
-    _e.set(0, 0, 90 * DEG, 'YXZ');
-    spec.handQ[SIDE_L].setFromEuler(_e);
   }
 
   private relaxedArms(spec: PoseSpec) {
@@ -439,6 +446,7 @@ export class CharacterAnimator {
 }
 
 const _e = new THREE.Euler();
+const _v = new THREE.Vector3();
 
 // Build a character + animator pair (the common case for live entities).
 export function createCombatant(opts: { colorHex?: string; castShadow?: boolean } & AnimatorOptions = {}) {
