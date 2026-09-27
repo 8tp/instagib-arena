@@ -53,7 +53,9 @@ export type LocoInput = {
 };
 
 // Tunables (exported for the pose lab).
-export const GAIT = {
+export // Max whole-body (feet-pivot) lean — see the fairness note at the lean.
+const ROOT_LEAN_MAX = 6 * DEG;
+const GAIT = {
   idleSpeed: 0.8, // below this the gait blends to idle
   freqBase: 0.95, // Hz at 0 m/s
   freqPerMps: 0.17, // Hz per m/s  (10 m/s → 2.65 Hz ≈ 5.3 steps/s)
@@ -384,16 +386,25 @@ export class Locomotion {
     spec.setR(B.hips, 1.5 * DEG * idleW + 4 * DEG * this.land, this.legYaw + pelvisYaw, pelvisRoll - shift * 1.2 * DEG * idleW);
 
     // Whole-body lean into travel (pivot at the feet): forward/back + side.
+    // CAPPED (fairness): the pivot is the feet, so the head moves ~1.7 m ×
+    // sin(lean). Uncapped (run 12° + dash 14°) that put the helmet ~0.7 m
+    // outside the server hitbox (r 0.4 m) at dash speed and shots at a visible
+    // head missed. ≤ ROOT_LEAN_MAX keeps the head within ~0.2 m of the hitbox
+    // axis (the chest's own run/dash fold adds < 0.1 m on a higher pivot).
     const vLen = Math.hypot(inp.vx, inp.vz) || 1;
     const leanAmt = clamp(this.speedS / 10, 0, 1.2) * this.move * (1 - this.air);
     const leanF = (-inp.vz / vLen) * leanAmt; // +1 = moving forward
     const leanR = (inp.vx / vLen) * leanAmt;
-    const dashLean = this.dash * 14 * DEG;
+    const dashLean = this.dash * (1 - this.air) * 14 * DEG;
     spec.setR(
       B.root,
-      -(leanF * GAIT.leanRun + (leanF >= 0 ? dashLean : -dashLean * 0.5) * Math.abs(-inp.vz / vLen)),
+      clamp(
+        -(leanF * GAIT.leanRun + (leanF >= 0 ? dashLean : -dashLean * 0.5) * Math.abs(-inp.vz / vLen)),
+        -ROOT_LEAN_MAX,
+        ROOT_LEAN_MAX,
+      ),
       0,
-      -(leanR * 4 * DEG + (inp.vx / vLen) * dashLean * 0.6),
+      clamp(-(leanR * 4 * DEG + (inp.vx / vLen) * dashLean * 0.6), -ROOT_LEAN_MAX, ROOT_LEAN_MAX),
     );
 
     // Spine/chest: counter-rotate the pelvis twist so the chest faces the aim,

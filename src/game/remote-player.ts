@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { applyHighlight, type BotModel } from './bots';
-import { CharacterAnimator } from './character-anim';
+import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun } from './character/gun';
 import { probeGibFloor } from './character/gibs';
@@ -102,6 +102,16 @@ const DEAD_HIDE_DURATION_SEC = 1.4;
 const DEFAULT_NAME_COLOR = '#c7e0ff';
 
 export class RemotePlayer {
+  // Reused animator input (no per-frame allocation) — see animInput().
+  private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
+  private animInput(dt: number, yaw: number, pitch: number): CharacterAnimInput {
+    const ai = this.animIn;
+    ai.dt = dt;
+    ai.yaw = yaw;
+    ai.pitch = pitch;
+    ai.pos = this.group.position;
+    return ai;
+  }
   id: string;
   name: string;
   team: number | null = null; // TDM team index; null otherwise (set by Game)
@@ -338,7 +348,7 @@ export class RemotePlayer {
         this.setPlateHidden(true);
       }
       if (anim?.isDying() && !anim.deathDone()) {
-        anim.update({ dt, yaw: this.facing, pitch: this.pitch, pos: this.group.position });
+        anim.update(this.animInput(dt, this.facing, this.pitch));
         return;
       }
       this.deadHidden = true;
@@ -366,7 +376,7 @@ export class RemotePlayer {
   // the hat is re-seated on the (possibly rotated) head bone. The caller must
   // have already positioned the group + set `facing`/`pitch`.
   private drive(dt: number) {
-    this.anim?.update({ dt, yaw: this.facing + MODEL_YAW_OFFSET, pitch: this.pitch, pos: this.group.position });
+    this.anim?.update(this.animInput(dt, this.facing + MODEL_YAW_OFFSET, this.pitch));
     this.hat?.update(dt);
   }
 

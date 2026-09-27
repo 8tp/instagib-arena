@@ -12,17 +12,20 @@ import { B, Rig, SOCKETS, type SocketName } from './rig';
 // Bright, saturated "skins" (Quake Live forced-bright style). A player's
 // natural colour is a stable pick from this list keyed by their name, so the
 // same player reads the same colour everywhere (match, killcam, podium).
+// Luminance-banded (fairness): relative luminance kept within ~0.32–0.60 so no
+// name hashes to a skin that is markedly darker (harder to see) than another —
+// the raw palette spanned 0.25 (cobalt/crimson) to 0.75 (volt), a 3× spread.
 export const SKIN_PALETTE: readonly string[] = [
-  '#ff5a2e', // blaze
+  '#ff6b4e', // blaze
   '#ffb21e', // amber
-  '#9be22d', // lime
+  '#99df2c', // lime
   '#1fd6a0', // jade
   '#27b8ff', // sky
-  '#6f7cff', // cobalt
-  '#c565ff', // violet
-  '#ff4fa0', // magenta
-  '#ffe03a', // volt
-  '#ff3b4f', // crimson
+  '#8791ff', // cobalt
+  '#c976ff', // violet
+  '#ff5fa5', // magenta
+  '#e7cb34', // volt
+  '#ff6873', // crimson
 ];
 
 export function skinColorFor(seed: string): string {

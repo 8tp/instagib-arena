@@ -166,6 +166,7 @@ export class ReplayViewer {
     this.beamGeo.dispose();
     this.beamMat.dispose();
     this.renderer.dispose();
+    if (import.meta.env.PROD) this.renderer.forceContextLoss(); // see Game.dispose
   }
 
   // ── internals ──

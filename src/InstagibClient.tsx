@@ -4869,6 +4869,7 @@ function WeeklyChallengeModal({
       </div>
       {watch && (
         <ReplayViewerOverlay
+          key={watch.id} // fresh canvas per replay (the viewer force-loses its context on dispose)
           playerId={watch.id}
           playerName={watch.name}
           settings={settings}

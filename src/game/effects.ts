@@ -4,6 +4,7 @@ import {
   disposeFxContext,
   flashTexture,
   getFxContext,
+  peekFxContext,
   getFxQuality,
   glowTexture,
   ringTexture,
@@ -145,11 +146,13 @@ function killPulse(ctx: FxContext, at: THREE.Vector3, headshot: boolean) {
   const hot = headshot ? 0xfff0c8 : 0xe2f8ff;
   const accent = headshot ? 0xffb030 : 0x3fb4ff;
   const cy = at.y + 0.1;
-  // Flash: a soft energy bloom behind a crisp star.
-  sprite(ctx, glowTexture(), at.x, cy, at.z, 1.9, -0.25, 0.14, 1.6, hot, 2.4, false);
-  sprite(ctx, flashTexture(), at.x, cy, at.z, 1.15, 0.25, 0.09, 1.5, hot, 2.8, true);
-  // Spherical shock front: a camera-facing ring blown out to ~2.6 m.
-  sprite(ctx, ringTexture(), at.x, cy, at.z, 0.4, -5.5, 0.28, 1.4, accent, 2.4, false);
+  // Flash: a soft energy bloom behind a crisp star. Sized like the paid
+  // styles (fairness: the free default must not hide the kill spot longer or
+  // wider than a cosmetic one — it was ~2.5 m of glow at gain 2.4–2.8).
+  sprite(ctx, glowTexture(), at.x, cy, at.z, 1.1, -0.25, 0.14, 1.6, hot, 2.0, false);
+  sprite(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.25, 0.09, 1.5, hot, 2.4, true);
+  // Spherical shock front: a camera-facing ring blown out to ~1.7 m.
+  sprite(ctx, ringTexture(), at.x, cy, at.z, 0.4, -3.4, 0.28, 1.4, accent, 2.0, false);
   // Shockwave across the floor at the victim's feet (seen from above, never
   // edge-on at eye height).
   ring(pool, at.x, at.y - 0.85, at.z, accent, 0.3, 0.02, 0.36, 6.5, 1.3);
@@ -407,9 +410,11 @@ const tmpMuzzle = new THREE.Vector3();
 // short energy streaks jetting down the bore line, and a ≤ 60 ms light pulse.
 // For the local shot the first-person viewmodel carries its own flare on the
 // barrel, so here the world part moves to that real muzzle and stays small.
-function muzzleFlash(ctx: FxContext, at: THREE.Vector3, color: number, dir?: THREE.Vector3) {
+function muzzleFlash(ctx: FxContext, at: THREE.Vector3, color: number, dir: THREE.Vector3 | undefined, ownShot: boolean) {
   let x = at.x, y = at.y, z = at.z;
-  const own = liveViewmodelMuzzle(tmpMuzzle) && tmpMuzzle.distanceToSquared(at) < 1.44;
+  // Only the local player's own shot snaps to the viewmodel barrel (an enemy
+  // firing from 1–2 m away used to have its flash drawn on your gun).
+  const own = ownShot && liveViewmodelMuzzle(tmpMuzzle);
   if (own) {
     x = tmpMuzzle.x; y = tmpMuzzle.y; z = tmpMuzzle.z;
   }
@@ -588,8 +593,8 @@ export class EffectsManager {
 
   // Muzzle flash at the gun muzzle on fire. `dir` (the beam direction, any
   // length) orients the discharge ring; without it the ring faces the camera.
-  spawnMuzzleFlash(scene: THREE.Scene, at: THREE.Vector3, color = 0x9fe8ff, dir?: THREE.Vector3) {
-    muzzleFlash(getFxContext(scene), at, color, dir);
+  spawnMuzzleFlash(scene: THREE.Scene, at: THREE.Vector3, color = 0x9fe8ff, dir?: THREE.Vector3, own = false) {
+    muzzleFlash(getFxContext(scene), at, color, dir, own);
   }
 
   spawnKillBurst(
@@ -635,8 +640,22 @@ export class EffectsManager {
     ctx.step(dt);
   }
 
+  // Create the scene's FX context up front (its two permanent point lights
+  // included), so the first frames compile every lit material with the final
+  // light count instead of re-keying them all when the first effect appears.
+  warm(scene: THREE.Scene) {
+    getFxContext(scene);
+  }
+
+  // Clears every live effect (map switch) but KEEPS the pooled GPU resources
+  // and the point lights — removing the lights re-keys (recompiles) every lit
+  // material on the next frame.
+  clear(scene: THREE.Scene) {
+    peekFxContext(scene)?.clear();
+  }
+
   // Clears every live effect and releases the scene's pooled GPU resources
-  // (they're rebuilt lazily on the next spawn/step, e.g. after a map switch).
+  // (teardown).
   dispose(scene: THREE.Scene) {
     disposeFxContext(scene);
   }

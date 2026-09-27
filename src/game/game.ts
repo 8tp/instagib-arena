@@ -59,7 +59,7 @@ import {
 import { EffectsManager } from './effects';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
-import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, type ArenaMap } from './map';
+import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, setMapBuildQuality, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker, medalSting } from './medals';
 import { FOOTSTEP_STRIDE, MotionTracker } from './sfx/motion-tracker';
 import { floorBelow, setCharacterFxQuality, setGibFloorProbe } from './character/gibs';
@@ -125,6 +125,7 @@ import {
 } from './renderer';
 import { buildRailgun, type RailgunModel } from './weapon-model';
 import { POS_FLAG_HOLD } from './netcodec';
+import { localRail } from './fx/rail-state';
 import { ViewmodelMotion } from './viewmodel-motion';
 import type {
   AABB,
@@ -518,6 +519,7 @@ export class Game {
     this.mapMesh = buildMapMesh(this.map);
     applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
+    this.effects.warm(this.scene); // FX lights present before the first compile
     this.player = new Player(this.map.spawn);
     // Gibs bounce on the real floor under the victim (closure reads the current map).
     setGibFloorProbe((x, y, z) => floorBelow(this.map.boxes, x, y, z));
@@ -664,6 +666,7 @@ export class Game {
     this.audio.setLowSpec(this.lowSpec); // shorter reverb, cheaper panning, fewer voices
     this.postFx.setWorldQuality(this.lowSpec); // sky drops its procedural detail on the low tier
     setCharacterFxQuality({ lowSpec: this.lowSpec }); // fewer gib chunks
+    setMapBuildQuality(this.lowSpec); // lighter dressing from the next map build
     this.applyPostFx();
   }
 
@@ -979,9 +982,10 @@ export class Game {
     this.player.pos = { ...map.spawn };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
-    // Clear transient visuals tied to the old geometry.
+    // Clear transient visuals tied to the old geometry (keep the FX pools +
+    // lights — see EffectsManager.clear).
     this.weapon.disposeAll(this.scene);
-    this.effects.dispose(this.scene);
+    this.effects.clear(this.scene);
     this.killcam = null;
     // Rebuild bots for the new layout.
     if (this.bots) {
@@ -1157,7 +1161,16 @@ export class Game {
     this.scene.environment = null;
     this.disposeScene();
     this.postFx.dispose();
+    // Drop the viewmodel muzzle link (fx/rail-state.ts) so the module-level
+    // ref can't keep this disposed Game's scene alive in the menu.
+    localRail.muzzle = null;
     this.renderer.dispose();
+    // Release the context now: session-cached textures (theme sets, lightmaps)
+    // hold a dispose listener per renderer that otherwise keeps every remounted
+    // match's context + its GPU copies alive. Production only: each match
+    // mounts a fresh canvas there, but a dev Fast Refresh re-runs the effect on
+    // the SAME canvas, and a force-lost context can't be re-acquired.
+    if (import.meta.env.PROD) this.renderer.forceContextLoss();
   }
 
   private applyBotsState() {
@@ -2201,7 +2214,7 @@ export class Game {
     this.viewmodelMotion.onFire();
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
-    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, undefined, this.tmpForward);
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, undefined, this.tmpForward, true);
 
     // Training range: count the shot, pop any targets the rail passed through,
     // and break the streak on a clean miss. Live stats refresh to the HUD.

@@ -13,6 +13,16 @@ import type { AABB, Vec3 } from './types';
 const tmpNormal = new THREE.Vector3();
 const tmpDir = new THREE.Vector3();
 const tmpMuzzle = new THREE.Vector3();
+// The impact face's box clipped to its DRAWN top (sky-brush perimeter walls
+// render lower than their collision), so a scorch never overhangs into the sky.
+const tmpFaceBox: AABB = { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
+function drawnFaceBox(map: ArenaMap | undefined, idx: number, box: AABB): AABB {
+  const top = map ? mapVisualTop(map, idx) : Infinity;
+  if (!(top < box.max.y)) return box;
+  tmpFaceBox.min.x = box.min.x; tmpFaceBox.min.y = box.min.y; tmpFaceBox.min.z = box.min.z;
+  tmpFaceBox.max.x = box.max.x; tmpFaceBox.max.y = Math.max(box.min.y, top); tmpFaceBox.max.z = box.max.z;
+  return tmpFaceBox;
+}
 
 // Which drawn map face (if any) does the visible beam origin→end stop on?
 // Analytic: the map is a list of AABBs, so the entry face of the nearest box
@@ -177,7 +187,7 @@ export class Railgun {
       this.beamHelix,
       drawnWall ? tmpNormal.set(nx, ny, nz) : null,
       dir,
-      drawnWall ? boxes[wallIdx] : undefined,
+      drawnWall ? drawnFaceBox(surface, wallIdx, boxes[wallIdx]) : undefined,
       true,
     );
 
@@ -199,7 +209,7 @@ export class Railgun {
     surface?: ArenaMap,
   ) {
     const face = surface ? resolveImpactFace(origin, end, surface) : -1;
-    const box = surface && face >= 0 ? surface.boxes[face] : undefined;
+    const box = surface && face >= 0 ? drawnFaceBox(surface, face, surface.boxes[face]) : undefined;
     this.spawnBeamAt(origin, end, scene, core, helix, box ? tmpNormal : null, null, box, false);
   }
 

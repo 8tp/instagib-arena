@@ -706,6 +706,13 @@ function atmosphereFor(theme: WorldTheme): WorldAtmosphere {
 // Builds the themed, lightmapped arena. Materials + geometry are created per
 // build and disposed with the group on map switch (game.ts disposeGroup);
 // textures and the lightmap atlas are cached for the session.
+// Low-spec build tier: set by the Game's quality setting; applies from the
+// next build (map switch) — the dressing skips its purely decorative ribs.
+let lowBuild = false;
+export function setMapBuildQuality(low: boolean): void {
+  lowBuild = low;
+}
+
 export function buildMapMesh(map: ArenaMap): THREE.Group {
   const group = new THREE.Group();
   group.name = 'map';
@@ -786,7 +793,7 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
   // Architectural dressing + light fixtures + floor paint.
   const dressTex = tex[theme.dress.slot];
   const dress = buildDressing({
-    boxes: rboxes, bounds: map.bounds, drawn, slots, perimeter, lm, theme, tile: dressTex.tile, low: false,
+    boxes: rboxes, bounds: map.bounds, drawn, slots, perimeter, lm, theme, tile: dressTex.tile, low: lowBuild,
   });
   if (dress.metal) {
     const p = theme.slots[theme.dress.slot];

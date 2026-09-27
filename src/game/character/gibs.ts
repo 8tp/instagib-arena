@@ -192,6 +192,10 @@ export class GibBurst {
     rig.frozen = true;
     ch.mesh.frustumCulled = false;
     ch.sockets.gun.visible = false;
+    // The hat rides the head bone, which shrinks to nothing — but point-sprite
+    // size ignores object scale, so an unusual-effect cloud would collapse into
+    // one full-size additive blob. Hide the whole hat socket while gibbed.
+    ch.sockets.headTop.visible = false;
 
     // Parent-space frame: floor height + velocity rotation.
     const parent = root.parent;
@@ -378,6 +382,7 @@ export class GibBurst {
     ch.rig.frozen = false;
     ch.mesh.frustumCulled = true;
     ch.sockets.gun.visible = true;
+    ch.sockets.headTop.visible = true;
     ch.setGlow(0);
     ch.setBurn(0);
     if (this.flash) {

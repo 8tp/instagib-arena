@@ -22,9 +22,9 @@ import {
   type BotDifficulty,
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
-import { CharacterAnimator } from './character-anim';
+import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
-import { attachRailgun } from './character/gun';
+import { attachRailgun, disposeRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
@@ -251,6 +251,9 @@ export class Bot {
   state: BotState;
   group: THREE.Group;
   private hat: WornHat | null = null;
+  private gun: THREE.Group | null = null; // third-person railgun (disposed with the bot)
+  // Reused animator input (no per-frame allocation).
+  private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
   // Shared third-person animator (gait, aim, jump/land, gibs) — the same
   // implementation remote players use. Null on the capsule fallback.
   private anim: CharacterAnimator | null = null;
@@ -475,7 +478,9 @@ export class Bot {
       const h = Math.hypot(this.aimPoint.x - eye.x, this.aimPoint.z - eye.z);
       pitch = Math.atan2(this.aimPoint.y - eye.y, h);
     }
-    this.anim.update({ dt, yaw: this.facing + MODEL_YAW_OFFSET, pitch, pos: this.group.position });
+    const ai = this.animIn;
+    ai.dt = dt; ai.yaw = this.facing + MODEL_YAW_OFFSET; ai.pitch = pitch; ai.pos = this.group.position;
+    this.anim.update(ai);
   }
 
   // Chase a smoothed aim point toward the target (low aimTrack = laggy = misses
@@ -974,6 +979,8 @@ export class Bot {
 
   dispose(scene: THREE.Scene) {
     this.hat?.dispose();
+    if (this.gun) disposeRailgun(this.gun); // per-bot gun geometry/materials
+    this.gun = null;
     this.character?.dispose();
     scene.remove(this.group);
     if (this.fallbackBody) {
@@ -999,7 +1006,7 @@ export class Bot {
     this.hat = new WornHat(ch.sockets.headTop);
     void this.hat.setHat(randomHatId());
     if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
-    attachRailgun(ch);
+    this.gun = attachRailgun(ch);
     // Gait, aim, gun hold, jumps/landings and gibs live in the animator — the
     // same one remote players use.
     this.anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
