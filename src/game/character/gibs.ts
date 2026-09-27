@@ -25,6 +25,36 @@ export function setCharacterFxQuality(opts: { reducedEffects?: boolean; lowSpec?
   if (opts.lowSpec !== undefined) quality.low = opts.lowSpec;
 }
 
+// Optional world floor probe (the Game can install one built on the map's
+// collision boxes) so remote players' gibs bounce on the real floor even when
+// they die mid-air. Without it the animator guesses from the last ground height.
+type FloorProbe = (x: number, y: number, z: number) => number | null;
+let floorProbe: FloorProbe | null = null;
+export function setGibFloorProbe(fn: FloorProbe | null): void {
+  floorProbe = fn;
+}
+export function probeGibFloor(x: number, y: number, z: number): GibFloor {
+  if (!floorProbe) return null;
+  const f = floorProbe(x, y, z);
+  return f === null || y - f > 6 ? null : { y: f };
+}
+
+// Highest box top at or just below (x, y, z) — a ready-made probe over AABBs.
+export function floorBelow(
+  boxes: ReadonlyArray<{ min: { x: number; z: number }; max: { x: number; y: number; z: number } }>,
+  x: number,
+  y: number,
+  z: number,
+): number | null {
+  let best: number | null = null;
+  for (const b of boxes) {
+    if (x < b.min.x || x > b.max.x || z < b.min.z || z > b.max.z) continue;
+    const top = b.max.y;
+    if (top <= y + 0.05 && (best === null || top > best)) best = top;
+  }
+  return best;
+}
+
 const GRAVITY = 22;
 const DURATION = 1.3; // everything has shrunk away by here (< respawn delays)
 const FLASH_SEC = 0.2;
@@ -82,7 +112,6 @@ const _q2 = new THREE.Quaternion();
 const _s = new THREE.Vector3();
 const _pq = new THREE.Quaternion();
 const _pp = new THREE.Vector3();
-const _col = new THREE.Color();
 const WHITE = new THREE.Color(1, 1, 1);
 
 export class GibBurst {
@@ -341,5 +370,3 @@ export class GibBurst {
   }
 }
 
-// Silence unused-import lint for the colour scratch (kept for future tints).
-void _col;

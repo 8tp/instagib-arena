@@ -59,8 +59,12 @@ export class Character {
     this.mesh.name = 'combatant-body';
     this.mesh.castShadow = opts.castShadow ?? true;
     this.mesh.receiveShadow = false;
-    // Bounds come from the (generous, static) geometry sphere — skip three's
-    // per-frame skinned-bounds recompute.
+    // SkinnedMesh caches a bounding sphere computed ONCE from whatever pose the
+    // bones hold at the first cull test (stale bones → a misplaced sphere → the
+    // body culled while its shadow and nameplate still show). Give it a fixed,
+    // generous local sphere instead: every pose and emote stays inside it (gibs
+    // disable culling while they fly).
+    this.mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.95, 0), 1.75);
     this.mesh.frustumCulled = true;
     this.root.add(this.mesh);
     this.mesh.bind(this.rig.skeleton, new THREE.Matrix4());

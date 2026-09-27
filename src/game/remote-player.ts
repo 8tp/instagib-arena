@@ -3,6 +3,7 @@ import { applyHighlight, type BotModel } from './bots';
 import { CharacterAnimator } from './character-anim';
 import { Character, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun } from './character/gun';
+import { probeGibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
 import {
@@ -189,7 +190,8 @@ export class RemotePlayer {
   markDead() {
     this.deadTimer = DEAD_HIDE_DURATION_SEC;
     this.shieldMesh.visible = false;
-    if (this.anim?.die()) {
+    const p = this.group.position;
+    if (this.anim?.die(probeGibFloor(p.x, p.y, p.z) ?? undefined)) {
       // Instagib: the body bursts into gibs where it stood (the killer's kill
       // effect plays on top from Game); it hides once the chunks are gone.
       this.deadHidden = false;

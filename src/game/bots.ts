@@ -25,7 +25,7 @@ import { movePlayer, rayAabb, type ArenaMap } from './map';
 import { CharacterAnimator } from './character-anim';
 import { Character, skinColorFor } from './character/character';
 import { attachRailgun } from './character/gun';
-import type { GibFloor } from './character/gibs';
+import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
 import { HATS, UNUSUALS } from './cosmetics';
@@ -98,18 +98,6 @@ const COMBATANT_MODEL: BotModel = Object.freeze({ kind: 'combatant' as const });
 // Resolves immediately. The URL (the old soldier.glb path) is ignored.
 export async function loadBotModel(_url?: string): Promise<BotModel | null> {
   return COMBATANT_MODEL;
-}
-
-// Highest collision-box top at or just below (x, y, z) — where a bot's gibs
-// should bounce. Rendering-only; null when nothing is below.
-function floorBelow(map: ArenaMap, x: number, y: number, z: number): number | null {
-  let best: number | null = null;
-  for (const b of map.boxes) {
-    if (x < b.min.x || x > b.max.x || z < b.min.z || z > b.max.z) continue;
-    const top = b.max.y;
-    if (top <= y + 0.05 && (best === null || top > best)) best = top;
-  }
-  return best;
 }
 
 function rand(lo: number, hi: number): number {
@@ -400,7 +388,8 @@ export class Bot {
         this.seenForSec = 0;
         this.aimSeeded = false;
         this.lastTargetId = null;
-        this.anim?.respawn(this.group.position); // clear the death pose, back to idle
+        this.anim?.respawn(this.group.position); // clear the gibs, back to idle
+        this.nameSprite.visible = true;
       }
       return null;
     }
@@ -474,6 +463,12 @@ export class Bot {
   // layers. Purely visual — the hitbox is the state.pos AABB.
   private animate(dt: number) {
     if (!this.anim || !this.group.visible) return;
+    // Safety net: a finished gib burst never lingers (e.g. a death right
+    // before a countdown freeze skips the corpse branch in stepLogic).
+    if (!this.state.alive && this.anim.deathDone()) {
+      this.group.visible = false;
+      return;
+    }
     let pitch = 0;
     if (this.state.alive && this.engagedId !== null && this.aimSeeded) {
       const eye = this.eyePos();
@@ -928,10 +923,11 @@ export class Bot {
     let floor: GibFloor = null;
     if (this.onGround) floor = { y: this.state.pos.y };
     else if (this.lastMap) {
-      const y = floorBelow(this.lastMap, this.state.pos.x, this.state.pos.y, this.state.pos.z);
+      const y = floorBelow(this.lastMap.boxes, this.state.pos.x, this.state.pos.y, this.state.pos.z);
       if (y !== null && this.state.pos.y - y < 4) floor = { y };
     }
     if (!this.anim?.die(floor)) this.group.visible = false;
+    this.nameSprite.visible = false; // no floating name over the gibs
   }
 
   isHeadshot(hitY: number): boolean {
