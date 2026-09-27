@@ -8,19 +8,21 @@ import * as THREE from 'three';
 //
 //  • CORE — one camera-facing ribbon from muzzle to impact. Its cross-section
 //    is a white-hot, bloom-bright core line (≥ ~1 px wide at any range, so it
-//    never breaks up or shimmers) inside a soft coloured glow sleeve. The core
-//    flashes and cools into the rail colour within ~0.4 s; the sleeve loosens
-//    and fades by ~0.6 s. The ribbon tapers out of the muzzle.
-//  • SPIRAL — up to MAX_MOTES soft motes laid along a helix around the beam
-//    (instanced; the vertex shader places mote i at s = s0 + i·spacing). Fresh,
-//    they overlap into a continuous spiral; over the life the helix radius
-//    eases outward and the motes shrink in brightness, so the spiral spreads
-//    and dissipates (~0.85 s).
+//    never breaks up or shimmers) inside a soft coloured glow sleeve (≤ ~28 px
+//    wide however close it passes). The core flashes and cools into the rail
+//    colour; the sleeve loosens and fades. The ribbon tapers out of the muzzle.
+//  • SPIRAL — one continuous thin ribbon wound round the beam as a helix (a
+//    strip template; the vertex shader places vertex i at s = s0 + i·step and
+//    faces it to the camera). Its width is clamped to ~2–5 px on screen at any
+//    distance, so it never balloons near the camera. Over the life the helix
+//    radius eases outward and the ribbon breaks into dashes that drop out, so
+//    the spiral spreads and dissipates (~0.85 s).
 //
-// Own beams (the local shooter's) clear their first few metres almost at once
-// so the line from the gun to the crosshair never hangs in front of the aim.
-// Distant pieces are clamped to a minimum pixel size with energy-conserving
-// dimming, so far trails stay crisp instead of aliasing into dots.
+// Everything within ~2 m of the camera fades out (a trail passing your head
+// never fills the screen). Own beams (the local shooter's) also clear their
+// first few metres almost at once so the line from the gun to the crosshair
+// never hangs in front of the aim. Pieces widened past their world size by the
+// pixel clamps dim to match, so far trails stay crisp instead of aliasing.
 //
 // One pool per scene (owned by the scene's FxContext); the oldest trail is
 // recycled when every slot is live.
@@ -28,15 +30,15 @@ import * as THREE from 'three';
 
 const SLOTS = 16;
 const CORE_SEGS = 44;
-const MAX_MOTES = 2400;
-const MOTE_SPACING = 0.035; // metres between spiral motes (full quality)
+const HELIX_SEGS = 3200; // strip segments per trail (full quality)
 const SPIRAL_START = 0.3; // spiral begins this far past the muzzle
 
 export const BEAM_LIFE = 0.85; // s — the spiral's life; core/glow fade sooner
 const OWN_LIFE_SCALE = 0.8;
 const HELIX_TURN = 0.75; // metres of beam per spiral turn
-const HELIX_R0 = 0.11; // spiral radius when fresh…
-const HELIX_R1 = 0.42; // …and fully spread
+const HELIX_STEP = HELIX_TURN / 16; // metres of beam per strip segment
+const HELIX_R0 = 0.1; // spiral radius when fresh…
+const HELIX_R1 = 0.34; // …and fully spread
 const GLOW_HALF_WIDTH = 0.16; // glow sleeve half-width (m)
 
 // Shared: drawing-buffer height for the pixel clamp, refreshed right before
@@ -57,6 +59,8 @@ uniform float uOwn;
 uniform float uViewH;
 // World size of one pixel at view depth d.
 float pixelSize(float d) { return 2.0 * max(d, 0.05) / (projectionMatrix[1][1] * uViewH); }
+// The whole trail fades out within ~2 m of the camera.
+float camFade(vec3 p) { return smoothstep(0.9, 2.1, length(cameraPosition - p)); }
 `;
 
 const NEAR_FADE = /* glsl */ `
@@ -85,10 +89,10 @@ void main() {
   float px = pixelSize(-(viewMatrix * vec4(P, 1.0)).z);
   float k = clamp(uAge / uLife, 0.0, 1.0);
   float hw = uWidth * mix(0.22, 1.0, smoothstep(0.0, 1.4, s)) * (1.0 + 0.7 * k);
-  float hwc = max(hw, px * 3.0);
-  // Widened past its world size → dim to match; right beside the camera (a
-  // trail passing your head) → fade instead of washing out the screen.
-  vDim = mix(1.0, hw / hwc, 0.6) * smoothstep(0.35, 1.6, length(cameraPosition - P));
+  // ≥ 3 px either side (crisp at range), ≤ 14 px (never a screen-wide wash).
+  float hwc = clamp(hw, px * 3.0, px * 14.0);
+  // Widened past its world size → dim to match; near the camera → fade.
+  vDim = mix(1.0, min(1.0, hw / hwc), 0.6) * camFade(P);
   vPx = hwc / px;
   vX = position.y;
   vS = s;
@@ -128,40 +132,43 @@ void main() {
 
 const SPIRAL_VERT = /* glsl */ `
 ${COMMON}
-attribute float aIdx;
 uniform vec3 uU;
 uniform vec3 uV;
 uniform float uS0;
-uniform float uSpacing;
+uniform float uStep;
 uniform float uPhase;
-varying vec2 vUv;
+varying float vX;
 varying float vS;
 varying float vFade;
 float hash(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
 void main() {
   vec3 d = uEnd - uStart;
   float len = length(d);
-  float s = uS0 + aIdx * uSpacing;
-  if (s > len - 0.05) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; } // past the end: clipped
   vec3 axis = d / max(len, 1e-5);
+  float s = min(uS0 + position.x * uStep, len);
   float k = clamp(uAge / uLife, 0.0, 1.0);
-  float h = hash(aIdx + 1.0);
   float spread = 1.0 - (1.0 - k) * (1.0 - k);
-  float r = ${HELIX_R0.toFixed(3)} + ${(HELIX_R1 - HELIX_R0).toFixed(3)} * spread * (0.6 + 0.8 * h);
-  float th = s / ${HELIX_TURN.toFixed(3)} * 6.2831853 + uPhase;
-  vec3 C = uStart + axis * s + (cos(th) * uU + sin(th) * uV) * r;
-  vec4 mv = viewMatrix * vec4(C, 1.0);
-  float size = mix(0.04, 0.07, spread);
-  float sizec = max(size, pixelSize(-mv.z) * 1.6);
-  mv.xy += position.xy * sizec;
-  gl_Position = projectionMatrix * mv;
-  vUv = position.xy;
+  float r = ${HELIX_R0.toFixed(3)} + ${(HELIX_R1 - HELIX_R0).toFixed(3)} * spread;
+  float w = 6.2831853 / ${HELIX_TURN.toFixed(3)};
+  float th = s * w + uPhase;
+  vec3 radial = cos(th) * uU + sin(th) * uV;
+  vec3 C = uStart + axis * s + radial * r;
+  vec3 tangent = normalize(axis + (-sin(th) * uU + cos(th) * uV) * (r * w));
+  vec3 side = cross(tangent, cameraPosition - C);
+  float sl = length(side);
+  side = sl > 1e-6 ? side / sl : radial;
+  float px = pixelSize(-(viewMatrix * vec4(C, 1.0)).z);
+  // A thin ribbon: ~1.8–5 px wide on screen whatever the distance.
+  float hwWorld = mix(0.008, 0.016, spread);
+  float hw = clamp(hwWorld, px * 0.9, px * 2.5);
+  float dim = max(0.3, min(1.0, hwWorld / hw));
+  // Dissipation: the helix breaks into dashes that drop out as it ages.
+  float n = hash(floor(s * 4.0) + uPhase * 13.0);
+  float keep = 1.0 - smoothstep(n - 0.12, n + 0.12, k * 1.3 - 0.2);
+  vX = position.y;
   vS = s;
-  float area = size / sizec;
-  // Motes right beside the camera (a trail whizzing past your head) fade out
-  // instead of ballooning into screen-filling blobs.
-  float camNear = smoothstep(0.5, 1.8, length(cameraPosition - C));
-  vFade = pow(1.0 - k, 1.3) * (0.7 + 0.6 * h) * area * area * camNear;
+  vFade = pow(1.0 - k, 1.2) * dim * keep * camFade(C);
+  gl_Position = projectionMatrix * viewMatrix * vec4(C + side * hw * position.y, 1.0);
 }
 `;
 
@@ -170,16 +177,14 @@ uniform vec3 uColor;
 uniform float uAge;
 uniform float uOwn;
 ${NEAR_FADE}
-varying vec2 vUv;
+varying float vX;
 varying float vS;
 varying float vFade;
 void main() {
-  float d2 = dot(vUv, vUv);
-  if (d2 > 1.0) discard;
-  float a = exp(-d2 * 4.0) - 0.0183; // gaussian, zero at the quad edge
+  float a = 1.0 - vX * vX; // soft edges across the ribbon
   vec3 c = mix(vec3(1.0), uColor, smoothstep(0.0, 0.14, uAge));
-  float head = smoothstep(0.3, 0.7, vS);
-  gl_FragColor = vec4(c * (1.35 * a * vFade * head * nearFade(vS, uAge)), 1.0);
+  float head = smoothstep(0.3, 0.8, vS);
+  gl_FragColor = vec4(c * (1.7 * a * vFade * head * nearFade(vS, uAge)), 1.0);
   #include <colorspace_fragment>
 }
 `;
@@ -196,13 +201,13 @@ type Uniforms = {
 type Slot = {
   core: THREE.Mesh;
   spiral: THREE.Mesh;
-  spiralGeo: THREE.InstancedBufferGeometry;
+  spiralGeo: THREE.BufferGeometry;
   coreMat: THREE.ShaderMaterial;
   spiralMat: THREE.ShaderMaterial;
   u: Uniforms;
   uU: { value: THREE.Vector3 };
   uV: { value: THREE.Vector3 };
-  uSpacing: { value: number };
+  uStep: { value: number };
   uPhase: { value: number };
   uCore: { value: THREE.Color };
   uGlow: { value: THREE.Color };
@@ -231,6 +236,21 @@ function buildCoreGeometry(): THREE.BufferGeometry {
   return g;
 }
 
+// Helix strip template: x = segment index 0…HELIX_SEGS, y = ±1 across.
+function buildHelixAttributes(): { pos: THREE.BufferAttribute; index: THREE.BufferAttribute } {
+  const n = HELIX_SEGS + 1;
+  const pos = new Float32Array(n * 2 * 3);
+  const idx = new Uint16Array(HELIX_SEGS * 6); // 6402 verts < 65536
+  for (let i = 0; i < n; i++) {
+    pos.set([i, -1, 0, i, 1, 0], i * 6);
+    if (i < HELIX_SEGS) {
+      const a = i * 2;
+      idx.set([a, a + 2, a + 1, a + 1, a + 2, a + 3], i * 6);
+    }
+  }
+  return { pos: new THREE.BufferAttribute(pos, 3), index: new THREE.BufferAttribute(idx, 1) };
+}
+
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpAxis = new THREE.Vector3();
 
@@ -238,19 +258,12 @@ export class RailBeams {
   readonly group = new THREE.Group();
   private readonly slots: Slot[] = [];
   private readonly coreGeo = buildCoreGeometry();
-  private readonly quadPos: THREE.BufferAttribute;
-  private readonly quadIndex: THREE.BufferAttribute;
-  private readonly moteIdx: THREE.InstancedBufferAttribute;
+  private readonly helix = buildHelixAttributes();
   private quality = 1;
 
   constructor() {
     this.group.name = 'rail-beams';
     this.group.userData.shared = true;
-    this.quadPos = new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3);
-    this.quadIndex = new THREE.BufferAttribute(new Uint16Array([0, 1, 2, 0, 2, 3]), 1);
-    const ids = new Float32Array(MAX_MOTES);
-    for (let i = 0; i < MAX_MOTES; i++) ids[i] = i;
-    this.moteIdx = new THREE.InstancedBufferAttribute(ids, 1);
     for (let i = 0; i < SLOTS; i++) this.slots.push(this.buildSlot());
   }
 
@@ -267,7 +280,7 @@ export class RailBeams {
     const uGlow = { value: new THREE.Color() };
     const uU = { value: new THREE.Vector3() };
     const uV = { value: new THREE.Vector3() };
-    const uSpacing = { value: MOTE_SPACING };
+    const uStep = { value: HELIX_STEP };
     const uPhase = { value: 0 };
     const additive = {
       transparent: true,
@@ -284,15 +297,15 @@ export class RailBeams {
     });
     const spiralMat = new THREE.ShaderMaterial({
       ...additive,
-      uniforms: { ...u, uU, uV, uS0: { value: SPIRAL_START }, uSpacing, uPhase, uColor: uGlow },
+      uniforms: { ...u, uU, uV, uS0: { value: SPIRAL_START }, uStep, uPhase, uColor: uGlow },
       vertexShader: SPIRAL_VERT,
       fragmentShader: SPIRAL_FRAG,
     });
-    const spiralGeo = new THREE.InstancedBufferGeometry();
-    spiralGeo.setAttribute('position', this.quadPos);
-    spiralGeo.setIndex(this.quadIndex);
-    spiralGeo.setAttribute('aIdx', this.moteIdx);
-    spiralGeo.instanceCount = 0;
+    // Per-slot geometry sharing the strip template; drawRange = trail length.
+    const spiralGeo = new THREE.BufferGeometry();
+    spiralGeo.setAttribute('position', this.helix.pos);
+    spiralGeo.setIndex(this.helix.index);
+    spiralGeo.setDrawRange(0, 0);
 
     const core = new THREE.Mesh(this.coreGeo, coreMat);
     const spiral = new THREE.Mesh(spiralGeo, spiralMat);
@@ -307,12 +320,12 @@ export class RailBeams {
     core.onBeforeRender = (renderer) => syncViewH(renderer);
     spiral.onBeforeRender = (renderer) => syncViewH(renderer);
     return {
-      core, spiral, spiralGeo, coreMat, spiralMat, u, uU, uV, uSpacing, uPhase, uCore, uGlow,
+      core, spiral, spiralGeo, coreMat, spiralMat, u, uU, uV, uStep, uPhase, uCore, uGlow,
       age: 0, life: BEAM_LIFE, active: false,
     };
   }
 
-  // 1 = full; < 1 thins the spiral (low-spec).
+  // 1 = full; < 1 coarsens the spiral (low-spec).
   setQuality(q: number) {
     this.quality = q;
   }
@@ -345,11 +358,12 @@ export class RailBeams {
     s.uV.value.crossVectors(tmpAxis, s.uU.value).normalize();
     s.uPhase.value = Math.random() * Math.PI * 2;
     const span = Math.max(0, len - SPIRAL_START);
-    const spacing = Math.max(MOTE_SPACING / Math.max(0.35, this.quality), span / MAX_MOTES);
-    s.uSpacing.value = spacing;
-    s.spiralGeo.instanceCount = Math.min(MAX_MOTES, Math.ceil(span / spacing));
+    const step = Math.max(HELIX_STEP / Math.max(0.35, this.quality), span / HELIX_SEGS);
+    const segs = Math.min(HELIX_SEGS, Math.ceil(span / step));
+    s.uStep.value = step;
+    s.spiralGeo.setDrawRange(0, segs * 6);
     s.core.visible = len > 1e-3;
-    s.spiral.visible = s.spiralGeo.instanceCount > 0;
+    s.spiral.visible = segs > 0;
   }
 
   step(dt: number) {

@@ -42,14 +42,18 @@ const STOCK_ACCENT_HOT = 0x8af2ff; // bright cyan energy
 const COIL_COUNT = 6;
 const BARREL_Y = 0.03; // accelerator axis height
 
-// Coil emissive levels (linear). REST stays under the bloom threshold (1.5) so
-// a ready gun reads lit without glaring; the fire flash + ready glint bloom.
-const COIL_REST = 1.15;
-const COIL_DARK = 0.035;
-const COIL_EDGE = 1.6; // leading-edge glint while a coil fills
+// Coil emissive levels (linear). REST is a restrained meter glow, well under
+// the bloom threshold (1.5): a ready gun reads "charged", not as a lamp under
+// the crosshair. The fire flash blooms; the fill edge + ready glint just lift.
+const COIL_REST = 0.55;
+const COIL_DARK = 0.03;
+const COIL_EDGE = 1.2; // leading-edge glint while a coil fills
 const COIL_FLASH = 7;
-const COIL_READY = 1.6;
-const CAP_REST = 0.55;
+const COIL_READY = 1.1;
+const CAP_REST = 0.35;
+// An explicit drive (setCharge/notifyFire) lapses back to the shared local
+// state after this long without a call (e.g. a spectator starts playing).
+const EXTERNAL_LAPSE_MS = 600;
 
 export type RailgunLod = 'high' | 'low';
 
@@ -219,6 +223,7 @@ const tmpHot = new THREE.Color();
 // (performance.now) so the flash/glint look identical at any frame rate.
 class CoilDriver {
   external = false;
+  externalMs = -1e9;
   charge = 1;
   private shots = -1;
   private fireMs = -1e9;
@@ -237,6 +242,7 @@ class CoilDriver {
   }
 
   update(now: number) {
+    if (this.external && now - this.externalMs > EXTERNAL_LAPSE_MS) this.external = false;
     if (!this.external) {
       this.charge = localRail.charge;
       if (localRail.shots !== this.shots) {
@@ -544,11 +550,13 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     setCharge(charge: number) {
       if (!driver) return;
       driver.external = true;
+      driver.externalMs = nowMs();
       driver.charge = Number.isFinite(charge) ? charge : 1;
     },
     notifyFire() {
       if (!driver) return;
       driver.external = true;
+      driver.externalMs = nowMs();
       driver.fire(nowMs());
     },
   };
