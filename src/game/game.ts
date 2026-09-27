@@ -1202,6 +1202,15 @@ export class Game {
     this.localRespawnInvuln = LOCAL_WARMUP_SEC + LOCAL_RESPAWN_INVULN_SEC;
   }
 
+  // Offline: the UI calls this when the loading screen clears, so the 3-2-1
+  // starts at "3" in view instead of having ticked down behind the loading
+  // screen. Only while the warmup is still running (never re-freezes a live match).
+  restartLocalWarmup() {
+    if (this.net || this.training || !this.localWarmupArmed) return;
+    if (this.localWarmupUntil - performance.now() <= 0) return;
+    this.beginLocalWarmup();
+  }
+
   // The 3-2-1 pre-match countdown — offline (localWarmupUntil) OR online
   // (server resumeAt). During it nobody can move OR fire; bots stay put too.
   private get inCountdown(): boolean {

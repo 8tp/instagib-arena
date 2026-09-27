@@ -1425,7 +1425,10 @@ function GameView({
           minMs={loadAbort ? 0 : online ? 500 : 900}
           shotWaitMs={online ? 0 : 600}
           reduced={settings.reducedEffects}
-          onGone={() => setLoadGone(true)}
+          onGone={() => {
+            setLoadGone(true);
+            gameRef.current?.restartLocalWarmup(); // offline 3-2-1 starts in view
+          }}
         />
       )}
       {showInter && nextMap && (
