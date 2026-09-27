@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { applyHighlight, type BotModel } from './bots';
-import { CharacterAnimator, cloneCharacter, enableShadows } from './character-anim';
-import { attachRailgunToSoldier } from './weapon-model';
+import { CharacterAnimator } from './character-anim';
+import { Character, skinColorFor } from './character/character';
+import { attachRailgun, disposeRailgun } from './character/gun';
+import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
 import {
   DEFAULT_RAILGUN_FINISH,
@@ -14,8 +16,7 @@ import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
 import type { AABB } from './types';
 
-const MODEL_SCALE = 1.0;
-// Soldier.glb faces -Z at identity. A remote player at yaw=0 is looking down
+// The combatant faces -Z at identity. A remote player at yaw=0 is looking down
 // -Z too (forward = (-sin yaw, -cos yaw)), so the model already matches with
 // NO offset — rotation.y = yaw faces the look direction exactly. (Bots use a
 // +π offset, but only because they're fed atan2(dx,dz) of their MOVEMENT
@@ -92,8 +93,8 @@ function makeNameSprite(name: string, color: string, title = ''): THREE.Sprite {
   return sprite;
 }
 
-// Window after a kill during which this avatar is "dead": the body plays its
-// death in place (see CharacterAnimator), hides once that has held, and
+// Window after a kill during which this avatar is "dead": the body bursts into
+// gibs in place (see character/gibs.ts), hides once they've shrunk away, and
 // un-hides at the server's new spawn when the window ends.
 const DEAD_HIDE_DURATION_SEC = 1.4;
 
@@ -120,6 +121,9 @@ export class RemotePlayer {
   private firstPersonHidden = false;
   private plateHidden = false; // nameplate off while the corpse is on screen
   private modelRoot: THREE.Object3D | null = null;
+  private character: Character | null = null;
+  // Look inputs: TDM team colour > the viewer's enemy highlight > own skin.
+  private highlight: THREE.Color | null = null;
   private weaponGroup: THREE.Group | null = null; // the attached 3rd-person railgun (rebuilt on finish change)
   private railgunFinishId = DEFAULT_RAILGUN_FINISH;
   private hat: WornHat | null = null;
@@ -129,8 +133,8 @@ export class RemotePlayer {
   private spawnEffectId = 'spawn.beam';
   private titleId = 'title.none';
   private titleText = ''; // resolved flair text drawn under the name ('' = none)
-  // Shared third-person animator (gait, aim pitch, jump/land, death). Null on
-  // the capsule fallback, which has nothing to animate.
+  // Shared third-person animator (gait, aim, jump/land, gibs). Null on the
+  // capsule fallback, which has nothing to animate.
   private anim: CharacterAnimator | null = null;
   private nameSprite: THREE.Sprite;
   private fallbackBody: THREE.Mesh | null = null;
@@ -184,13 +188,14 @@ export class RemotePlayer {
 
   markDead() {
     this.deadTimer = DEAD_HIDE_DURATION_SEC;
+    this.shieldMesh.visible = false;
     if (this.anim?.die()) {
-      // Play the death in place (the kill burst fires from Game as before);
-      // the body hides once the collapse has held its last frame.
+      // Instagib: the body bursts into gibs where it stood (the killer's kill
+      // effect plays on top from Game); it hides once the chunks are gone.
       this.deadHidden = false;
       this.setPlateHidden(true);
     } else {
-      // Capsule fallback, or killed mid-air: vanish at once, as before.
+      // Capsule fallback: vanish at once.
       this.deadHidden = true;
     }
     this.applyVisibility();
@@ -213,11 +218,32 @@ export class RemotePlayer {
     this.group.visible = !this.deadHidden && !this.firstPersonHidden;
   }
 
-  // Bright-enemy highlight (emissive glow only). null = natural.
+  // Bright-enemy highlight / TDM team colour (from Game). null = natural skin.
   setHighlight(color: THREE.Color | null) {
-    this.group.traverse((obj) => {
-      applyHighlight((obj as THREE.Mesh).material, color);
-    });
+    if (color) (this.highlight ??= new THREE.Color()).copy(color);
+    else this.highlight = null;
+    if (this.fallbackBody) applyHighlight(this.fallbackBody.material, color);
+    this.resolveLook();
+  }
+
+  // Armour colour: a TDM team colour reads as identification (natural look);
+  // otherwise the viewer's enemy-highlight colour goes full-bright; otherwise
+  // the player's own stable bright skin.
+  private resolveLook() {
+    const ch = this.character;
+    if (!ch) return;
+    if (this.teamColor) ch.setLook(this.teamColor, 'natural');
+    else if (this.highlight) ch.setLook(this.highlight, 'highlight');
+    else ch.setLook(skinColorFor(this.name), 'natural');
+  }
+
+  // Footfall events for synced footstep audio: a monotonically increasing
+  // count, and/or a callback fired as each foot plants (side 0 = left).
+  get footfalls(): number {
+    return this.anim?.footfalls ?? 0;
+  }
+  set onFootfall(fn: FootfallListener | null) {
+    if (this.anim) this.anim.onFootfall = fn;
   }
 
   // Returns true on the single frame this player un-hides (respawns), so the
@@ -301,15 +327,32 @@ export class RemotePlayer {
   snap(pose: { x: number; y: number; z: number; yaw: number; pitch?: number; visible: boolean }, dt: number) {
     this.deadTimer = 0;
     const wasHidden = this.deadHidden;
-    this.deadHidden = !pose.visible;
-    this.applyVisibility();
-    this.group.position.set(pose.x, pose.y, pose.z);
+    const anim = this.anim;
     if (!pose.visible) {
+      // Visible → hidden while playing forward is a death: gib in place (the
+      // group stays where they died), then hide once the chunks are gone.
+      if (!wasHidden && anim && !anim.isDying() && dt > 0 && dt < 0.25) {
+        anim.die();
+        this.setPlateHidden(true);
+      }
+      if (anim?.isDying() && !anim.deathDone()) {
+        anim.update({ dt, yaw: this.facing, pitch: this.pitch, pos: this.group.position });
+        return;
+      }
+      this.deadHidden = true;
+      this.applyVisibility();
+      this.group.position.set(pose.x, pose.y, pose.z);
       // Keep the motion history current so reappearing doesn't read as a move.
-      this.anim?.resetMotion(this.group.position);
+      anim?.resetMotion(this.group.position);
       return;
     }
-    if (wasHidden) this.anim?.respawn(this.group.position); // reappear standing, no stale pose
+    this.group.position.set(pose.x, pose.y, pose.z);
+    if (wasHidden || anim?.isDying()) {
+      anim?.respawn(this.group.position); // reappear standing, no stale pose
+      this.setPlateHidden(false);
+    }
+    this.deadHidden = false;
+    this.applyVisibility();
     this.facing = pose.yaw;
     this.pitch = pose.pitch ?? 0;
     this.drive(dt);
@@ -325,8 +368,8 @@ export class RemotePlayer {
     this.hat?.update(dt);
   }
 
-  // Dead but still on screen: animate the death where the body fell and hide
-  // once the collapse has held its last frame.
+  // Dead but still on screen: the gibs fly where the body burst; hide once
+  // they've shrunk away.
   private driveCorpse(dt: number) {
     if (this.anim) {
       this.drive(dt);
@@ -364,9 +407,9 @@ export class RemotePlayer {
     return this.group.position.y + BOT_HEIGHT * BOT_HEADSHOT_THRESHOLD;
   }
 
-  // True once the real skinned model is installed (vs the fallback capsule).
-  // The Game upgrades a fallback → model when the GLB finishes loading after the
-  // socket already connected (so a slow/late model load doesn't leave "pills").
+  // True once the combatant is installed (vs the fallback capsule). The Game
+  // upgrades a fallback → model when the model token arrives after the socket
+  // already connected (so a late model load never leaves "pills").
   hasModel(): boolean {
     return this.modelRoot !== null;
   }
@@ -374,6 +417,7 @@ export class RemotePlayer {
   setName(name: string) {
     this.name = name;
     this.rebuildNameSprite();
+    this.resolveLook(); // the natural skin is keyed by name
   }
 
   // TDM team override (set by Game): a hex that takes precedence over the
@@ -382,6 +426,7 @@ export class RemotePlayer {
     if (hex === this.teamColor) return;
     this.teamColor = hex;
     this.resolveNameColor();
+    this.resolveLook();
   }
 
   // Pick the effective nameplate color (team override > cosmetic > default) and
@@ -411,6 +456,7 @@ export class RemotePlayer {
   dispose(scene: THREE.Scene) {
     this.hat?.dispose();
     this.disposeWeaponGroup();
+    this.character?.dispose();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -424,46 +470,32 @@ export class RemotePlayer {
     this.anim?.dispose();
   }
 
-  private installModel(model: BotModel) {
-    // Shared clone path: rest transform, `userData.shared` tag, shadow casting.
-    const cloned = cloneCharacter(model, MODEL_SCALE);
-    this.group.add(cloned);
-    this.modelRoot = cloned;
-    this.hat = new WornHat(this.group, cloned);
+  private installModel(_model: BotModel) {
+    // The code-built combatant (see character/): one skinned mesh, a clean
+    // rig, sockets for the hat (helmet crown) and the railgun (right hand).
+    const ch = new Character({ colorHex: skinColorFor(this.name) });
+    this.group.add(ch.root);
+    this.character = ch;
+    this.modelRoot = ch.root;
+    this.hat = new WornHat(ch.sockets.headTop);
     void this.hat.setHat(this.hatId);
-    this.weaponGroup = attachRailgunToSoldier(
-      cloned,
-      BOT_HEIGHT,
-      railgunFinishById(this.railgunFinishId).data,
-    );
-    enableShadows(this.weaponGroup);
-    // Clip resolution (idle/walk/run + optional jump/death), the gait blend,
-    // the gun-carry arm pin and every procedural layer live in the animator —
+    this.weaponGroup = attachRailgun(ch, railgunFinishById(this.railgunFinishId).data);
+    // Gait, aim, gun hold, jumps/landings and gibs all live in the animator —
     // the same implementation bots use.
-    this.anim = new CharacterAnimator(cloned, model.animations);
+    this.anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
+    this.resolveLook();
   }
 
-  // Swap the 3rd-person railgun for one with the current finish. Disposes the old
-  // gun's procedural geometry/materials (not shared, unlike the cloned soldier).
+  // Swap the 3rd-person railgun for one with the current finish.
   private rebuildWeapon() {
-    if (!this.modelRoot) return; // fallback capsule has no gun
+    if (!this.character) return; // fallback capsule has no gun
     this.disposeWeaponGroup();
     const finishId = isRailgunFinish(this.railgunFinishId) ? this.railgunFinishId : DEFAULT_RAILGUN_FINISH;
-    this.weaponGroup = attachRailgunToSoldier(this.modelRoot, BOT_HEIGHT, railgunFinishById(finishId).data);
-    enableShadows(this.weaponGroup);
+    this.weaponGroup = attachRailgun(this.character, railgunFinishById(finishId).data);
   }
 
   private disposeWeaponGroup() {
-    if (!this.weaponGroup) return;
-    this.weaponGroup.parent?.remove(this.weaponGroup);
-    this.weaponGroup.traverse((obj) => {
-      const mesh = obj as THREE.Mesh & THREE.Line;
-      const geom = (mesh as unknown as { geometry?: THREE.BufferGeometry }).geometry;
-      if (geom) geom.dispose();
-      const mat = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-      else if (mat) mat.dispose();
-    });
+    disposeRailgun(this.weaponGroup);
     this.weaponGroup = null;
   }
 

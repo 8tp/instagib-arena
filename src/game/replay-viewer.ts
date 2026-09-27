@@ -3,7 +3,7 @@
 // Plays back a downloaded weekly-challenge run end-to-end, first-person through
 // the runner's eyes, with play/pause/scrub/speed controls. It is intentionally
 // decoupled from `Game` (no net, no input, no match lifecycle): it builds its own
-// renderer/scene/camera + map geometry + bot model and drives a full-run
+// renderer/scene/camera + map geometry + combatants and drives a full-run
 // `ReplayPlayer`. Reuses the same scene/lighting/map builders the live game uses
 // so the arena looks identical to playing it.
 
@@ -16,7 +16,6 @@ import { createCamera, createRenderer, createScene } from './renderer';
 import type { ReplayData } from './replay-codec';
 import type { Vec3 } from './types';
 
-const BOT_MODEL_URL = '/models/instagib/soldier.glb';
 const BEAM_LIFE = 0.14; // seconds a replayed rail trace lingers before fading
 const STATE_EMIT_MS = 80; // throttle the progress callback (≈12.5 Hz) for React
 
@@ -90,13 +89,14 @@ export class ReplayViewer {
     this.effects.setQuality(lowSpec ? 0.5 : 1);
   }
 
-  // Async because the bot GLB loads over the network. Safe to call once.
+  // Async for API stability (the combatant is built in code now, so the model
+  // token resolves immediately). Safe to call once.
   async start() {
     const arena = mapById(this.data.mapId);
     this.mapMesh = buildMapMesh(arena);
     this.scene.add(this.mapMesh);
 
-    const botModel = await loadBotModel(BOT_MODEL_URL).catch(() => null);
+    const botModel = await loadBotModel().catch(() => null);
     if (this.disposed) return;
 
     const frames = this.data.frames;
