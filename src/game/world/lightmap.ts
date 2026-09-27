@@ -362,7 +362,35 @@ export function bakeLightmap(boxes: AABB[], bounds: AABB, drawn: boolean[], cfg:
   const sky = cfg.sky ? cosineDirs(cfg.sky.rays) : null;
   const lights = cfg.lights;
   const sun = cfg.sunDir;
-  const sunInv: V3 | null = sun ? [inv(sun[0]), inv(sun[1]), inv(sun[2])] : null;
+  // Sun visibility is supersampled: SUN_SS sub-positions across the texel's
+  // footprint × slightly jittered directions (a ~0.6° sun disc), so a shadow
+  // edge crossing a texel gets fractional coverage instead of a hard 0/1 step
+  // (no stair-stepping on long dusk shadows).
+  const SUN_SS = 4;
+  const sunDirs: Float64Array | null = sun ? new Float64Array(SUN_SS * 3) : null;
+  if (sun && sunDirs) {
+    const t1: V3 = Math.abs(sun[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    const ux = sun[1] * t1[2] - sun[2] * t1[1];
+    const uy = sun[2] * t1[0] - sun[0] * t1[2];
+    const uz = sun[0] * t1[1] - sun[1] * t1[0];
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    const vx = sun[1] * uz - sun[2] * uy;
+    const vy = sun[2] * ux - sun[0] * uz;
+    const vz = sun[0] * uy - sun[1] * ux;
+    const vl = Math.hypot(vx, vy, vz) || 1;
+    const spread = 0.011;
+    for (let k = 0; k < SUN_SS; k++) {
+      const a = (k / SUN_SS) * Math.PI * 2 + 0.4;
+      const dx = sun[0] + (Math.cos(a) * ux / ul + Math.sin(a) * vx / vl) * spread;
+      const dy = sun[1] + (Math.cos(a) * uy / ul + Math.sin(a) * vy / vl) * spread;
+      const dz = sun[2] + (Math.cos(a) * uz / ul + Math.sin(a) * vz / vl) * spread;
+      sunDirs[k * 3] = inv(dx);
+      sunDirs[k * 3 + 1] = inv(dy);
+      sunDirs[k * 3 + 2] = inv(dz);
+    }
+  }
+  // Sub-texel offsets (fractions of a texel step) for the sun samples.
+  const SUB = [-0.25, -0.25, 0.25, -0.25, -0.25, 0.25, 0.25, 0.25];
   const P: V3 = [0, 0, 0];
   const mn: V3 = [0, 0, 0];
   const mx: V3 = [0, 0, 0];
@@ -389,6 +417,8 @@ export function bakeLightmap(boxes: AABB[], bounds: AABB, drawn: boolean[], cfg:
     const uAt = (i: number) => Math.min(f.u1 - eu, Math.max(f.u0 + eu, f.u0 + (i / (f.nu - 1)) * (f.u1 - f.u0)));
     const vAt = (j: number) => Math.min(f.v1 - ev, Math.max(f.v0 + ev, f.v0 + (j / (f.nv - 1)) * (f.v1 - f.v0)));
     const sunOn = !!sun && sun[a] * s > 0;
+    const du = (f.u1 - f.u0) / Math.max(1, f.nu - 1);
+    const dv = (f.v1 - f.v0) / Math.max(1, f.nv - 1);
 
     // Candidate occluder lists are gathered per CHUNK of texels (not per
     // face), so a 70 m floor doesn't test every box on the map for every ray.
@@ -510,10 +540,18 @@ export function bakeLightmap(boxes: AABB[], bounds: AABB, drawn: boolean[], cfg:
               bb += cfg.sky.color[2] * vis;
             }
 
-            // Sun visibility (alpha).
+            // Sun visibility (alpha), supersampled across the texel.
             let sunVis = 1;
-            if (sunInv && sunList && sunList.length) {
-              sunVis = blocked(px, py, pz, sunInv[0], sunInv[1], sunInv[2], 1e5, sunList, B) ? 0 : 1;
+            if (sunDirs && sunList && sunList.length) {
+              let lit = 0;
+              for (let k = 0; k < SUN_SS; k++) {
+                P[ua] = u + SUB[k * 2] * du;
+                P[va] = v + SUB[k * 2 + 1] * dv;
+                if (!blocked(P[0], P[1], P[2], sunDirs[k * 3], sunDirs[k * 3 + 1], sunDirs[k * 3 + 2], 1e5, sunList, B)) lit++;
+              }
+              P[ua] = u;
+              P[va] = v;
+              sunVis = lit / SUN_SS;
             }
 
             // Point / spot lights.
@@ -571,6 +609,7 @@ export function bakeLightmap(boxes: AABB[], bounds: AABB, drawn: boolean[], cfg:
     blurFace(f, W, R, tmpR);
     blurFace(f, W, G, tmpG);
     blurFace(f, W, Bl, tmpB);
+    blurFace(f, W, A, tmpA);
     blurFace(f, W, A, tmpA);
   }
 

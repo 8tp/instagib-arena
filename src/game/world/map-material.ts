@@ -8,9 +8,10 @@ import * as THREE from 'three';
 //   lightmap rgb  sqrt-encoded baked irradiance (× lightMapIntensity after
 //                 squaring) — the ambient/AO/coloured-light pools.
 //   lightmap a    baked sun visibility; directional light 0 (the sun) is
-//                 scaled by uSunScale × a on map surfaces, so map-on-map sun
-//                 shadows exist without realtime shadows and the realtime
-//                 shadow map still darkens it where players stand.
+//                 scaled by uSunScale × a on map surfaces — used where the
+//                 realtime shadow box doesn't reach and when realtime shadows
+//                 are off (low-spec); inside the box the shadow map alone
+//                 shapes the sun (crisp edges, no texel stair-steps).
 //   realtime      where the sun's realtime shadow map darkens a spot the bake
 //   shadow        calls sunlit (i.e. a player's shadow), the baked irradiance
 //                 is darkened too (× uShadowLift) — so players stay grounded
@@ -19,13 +20,16 @@ import * as THREE from 'three';
 //   hemisphere    × uHemiScale (kept low: it's what made the world flat).
 //   IBL           × uIblScale × (baked brightness) — dark corners stop
 //                 reflecting a bright studio.
-//   world grade   outgoingLight desaturated toward luma by uWorldSat, on map
-//                 surfaces only, so bright players pop against the world.
+//   world grade   outgoingLight desaturated toward luma by uWorldSat, then
+//                 its chroma capped at uSatCap ((max-min)/max in linear light;
+//                 0.6 ≈ 35% HSV saturation on screen) — on map surfaces only,
+//                 so saturated player colours always pop against the world.
 // The uniforms are shared objects, so one theme change updates every map
 // material. One program for all of them (customProgramCacheKey).
 // ─────────────────────────────────────────────────────────────────────────
 
 export type MapShading = {
+  uSatCap: { value: number };
   uShadowLift: { value: number };
   uIblClamp: { value: number };
   uSunScale: { value: number };
@@ -38,6 +42,7 @@ export type MapShading = {
 
 export function createMapShading(): MapShading {
   return {
+    uSatCap: { value: 0.6 },
     uShadowLift: { value: 0.4 },
     uIblClamp: { value: 1.5 },
     uSunScale: { value: 1 },
@@ -50,6 +55,7 @@ export function createMapShading(): MapShading {
 }
 
 const DECLS = /* glsl */ `
+uniform float uSatCap;
 uniform float uShadowLift;
 uniform float uIblClamp;
 uniform float uSunScale;
@@ -79,7 +85,11 @@ function patchedBegin(): string {
     `#if ( UNROLLED_LOOP_INDEX == 0 )
 		{
 			float arenaPre = arenaPreShadow.r + arenaPreShadow.g + arenaPreShadow.b;
-			if ( arenaPre > 1e-5 ) arenaShadow = ( directLight.color.r + directLight.color.g + directLight.color.b ) / arenaPre;
+			// Only surfaces facing the sun: a face turned away is "in shadow" in
+			// the shadow map by construction and must not lose its baked light.
+			if ( arenaPre > 1e-5 && dot( geometryNormal, directLight.direction ) > 0.05 ) {
+				arenaShadow = ( directLight.color.r + directLight.color.g + directLight.color.b ) / arenaPre;
+			}
 		}
 		#endif
 		${reDirect}`,
@@ -99,7 +109,21 @@ vec3 arenaPreShadow = vec3( 0.0 );
         dirInfo,
         `${dirInfo}
 		#if ( UNROLLED_LOOP_INDEX == 0 )
-		directLight.color *= uSunScale * arenaLm.a;
+		{
+			// Inside the realtime shadow box the shadow map owns the sun's
+			// edges (map geometry casts into it, crisp); the baked visibility
+			// (0.2–0.4 m texels) only covers what the box can't see.
+			float arenaSunVis = arenaLm.a;
+			#if defined( USE_SHADOWMAP ) && ( NUM_DIR_LIGHT_SHADOWS > 0 )
+			{
+				vec3 arenaSc = vDirectionalShadowCoord[ 0 ].xyz / vDirectionalShadowCoord[ 0 ].w;
+				vec2 arenaEdge = min( arenaSc.xy, 1.0 - arenaSc.xy );
+				float arenaIn = smoothstep( 0.0, 0.08, min( arenaEdge.x, arenaEdge.y ) ) * step( arenaSc.z, 1.0 );
+				arenaSunVis = mix( arenaLm.a, 1.0, arenaIn * float( receiveShadow ) );
+			}
+			#endif
+			directLight.color *= uSunScale * arenaSunVis;
+		}
 		arenaPreShadow = directLight.color;
 		#elif ( UNROLLED_LOOP_INDEX == 1 )
 		directLight.color *= uFillScale;
@@ -160,8 +184,15 @@ export function applyMapShading(mat: THREE.MeshStandardMaterial, shading: MapSha
       .replace('#include <lights_fragment_maps>', mapsSrc as string)
       .replace(
         '#include <opaque_fragment>',
-        'outgoingLight = mix( vec3( dot( outgoingLight, vec3( 0.2126, 0.7152, 0.0722 ) ) ), outgoingLight, uWorldSat );\n#include <opaque_fragment>',
+        /* glsl */ `outgoingLight = mix( vec3( dot( outgoingLight, vec3( 0.2126, 0.7152, 0.0722 ) ) ), outgoingLight, uWorldSat );
+{
+  float arenaMx = max( outgoingLight.r, max( outgoingLight.g, outgoingLight.b ) );
+  float arenaMn = min( outgoingLight.r, min( outgoingLight.g, outgoingLight.b ) );
+  float arenaSat = arenaMx > 1e-5 ? ( arenaMx - arenaMn ) / arenaMx : 0.0;
+  if ( arenaSat > uSatCap ) outgoingLight = vec3( arenaMx ) - ( vec3( arenaMx ) - outgoingLight ) * ( uSatCap / arenaSat );
+}
+#include <opaque_fragment>`,
       );
   };
-  mat.customProgramCacheKey = () => 'arena-lightmapped-v2';
+  mat.customProgramCacheKey = () => 'arena-lightmapped-v4';
 }

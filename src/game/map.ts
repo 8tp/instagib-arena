@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { applyWorldAtmosphere, type WorldAtmosphere } from './renderer';
-import { getThemeTextures, type SurfaceKind, type SurfaceTextures } from './textures';
+import { getHazardTexture, getThemeTextures, type SurfaceKind, type SurfaceTextures } from './textures';
 import type { AABB, Vec3 } from './types';
 import { buildDressing } from './world/dressing';
 import { bakeLightmap, faceUv, type LmFace, type LmLight, type Lightmap, type V3 } from './world/lightmap';
@@ -490,6 +490,7 @@ function trimMaterial(accent: THREE.Color, intensity: number): THREE.MeshStandar
 
 type WorldBake = {
   lm: Lightmap;
+  boxes: AABB[]; // RENDER boxes (perimeter walls lowered to the sky line)
   drawn: boolean[];
   slots: SurfaceKind[];
   tints: Array<THREE.Color | null>;
@@ -550,13 +551,37 @@ function toBakeLights(theme: WorldTheme): LmLight[] {
   return out;
 }
 
+// Render copies of the AABBs. Open-sky themes draw their tall boundary walls
+// only up to `perimeterTop` (Quake 3 sky-brush style): the collision boxes in
+// map.boxes are untouched — only what's drawn, baked and shadowed is lower.
+function renderBoxes(map: ArenaMap, theme: WorldTheme, perimeter: boolean[]): AABB[] {
+  const top = theme.perimeterTop;
+  return map.boxes.map((b, i) =>
+    top !== undefined && perimeter[i] && b.max.y > top
+      ? { min: { ...b.min }, max: { x: b.max.x, y: Math.max(b.min.y + 0.5, top), z: b.max.z } }
+      : b,
+  );
+}
+
+// Visual top of box `index` — above it the box still collides but nothing is
+// drawn (sky-brush perimeter walls on open-sky maps). Impact FX should be
+// suppressed for hits above this height, like hits on an openTop cap.
+export function mapVisualTop(map: ArenaMap, index: number): number {
+  const b = map.boxes[index];
+  if (!b) return Infinity;
+  const theme = themeForMapId(mapIdOf(map));
+  if (index === 1 && (map.openTop || theme.openSky)) return -Infinity;
+  if (theme.perimeterTop !== undefined && isPerimeter(index, b, map.bounds)) return Math.min(b.max.y, theme.perimeterTop);
+  return b.max.y;
+}
+
 function bakeWorld(map: ArenaMap, key: string, theme: WorldTheme): WorldBake {
   const hit = bakeCache.get(key);
   if (hit) return hit;
   const openTop = !!map.openTop || theme.openSky;
-  const boxes = map.boxes;
+  const perimeter = map.boxes.map((b, i) => isPerimeter(i, b, map.bounds));
+  const boxes = renderBoxes(map, theme, perimeter);
   const drawn = boxes.map((_, i) => !(i === 1 && openTop));
-  const perimeter = boxes.map((b, i) => isPerimeter(i, b, map.bounds));
   const slots = boxes.map((b, i) => {
     const kind = surfaceKindFor(i, b);
     return theme.slotFor ? theme.slotFor(i, b, kind) : defaultSlot(i, b, kind);
@@ -581,7 +606,7 @@ function bakeWorld(map: ArenaMap, key: string, theme: WorldTheme): WorldBake {
     // The ceiling is big, flat and far: half the texel density.
     coarse: (i) => (i === 1 ? 2 : 1),
   });
-  const bake: WorldBake = { lm, drawn, slots, tints, perimeter };
+  const bake: WorldBake = { lm, boxes, drawn, slots, tints, perimeter };
   bakeCache.set(key, bake);
   if (import.meta.env?.DEV) {
     console.info(
@@ -674,6 +699,7 @@ function atmosphereFor(theme: WorldTheme): WorldAtmosphere {
     hemi: { sky: theme.hemi.sky, ground: theme.hemi.ground, intensity: theme.hemi.intensity },
     fill: { dir: theme.fill.dir, color: theme.fill.color, intensity: theme.fill.intensity },
     envIntensity: theme.env.intensity,
+    shadowBox: theme.shadowBox,
   };
 }
 
@@ -689,6 +715,7 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
   const tex = getThemeTextures(theme.id);
   const world = bakeWorld(map, id ?? `anon:${map.name}`, theme);
   const { lm, slots, tints, perimeter, drawn } = world;
+  const rboxes = world.boxes;
 
   const shading = createMapShading();
   shading.uSunScale.value = theme.sun.mapScale;
@@ -732,10 +759,10 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
   // authored), for themes that use it.
   if (theme.trim) {
     const trims: THREE.BufferGeometry[] = [];
-    const solids = map.boxes.filter((_, i) => drawn[i]);
-    for (let i = 0; i < map.boxes.length; i++) {
+    const solids = rboxes.filter((_, i) => drawn[i]);
+    for (let i = 0; i < rboxes.length; i++) {
       if (!drawn[i]) continue;
-      const b = map.boxes[i];
+      const b = rboxes[i];
       const kind = surfaceKindFor(i, b);
       if (kind === 'platform' || kind === 'cover') addTrim(trims, b, solids, map.bounds);
     }
@@ -759,12 +786,12 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
   // Architectural dressing + light fixtures + floor paint.
   const dressTex = tex[theme.dress.slot];
   const dress = buildDressing({
-    boxes: map.boxes, bounds: map.bounds, drawn, slots, perimeter, lm, theme, tile: dressTex.tile, low: false,
+    boxes: rboxes, bounds: map.bounds, drawn, slots, perimeter, lm, theme, tile: dressTex.tile, low: false,
   });
   if (dress.metal) {
     const p = theme.slots[theme.dress.slot];
-    const mat = lightmappedMaterial(dressTex, { ...p, metalness: Math.min(1, p.metalness + 0.2) }, lm, shading);
-    mat.roughness = 0.8;
+    const mat = lightmappedMaterial(dressTex, p, lm, shading);
+    mat.roughness = 0.85;
     const mesh = new THREE.Mesh(dress.metal, mat);
     mesh.name = 'map:dress';
     mesh.userData.map = true;
@@ -774,9 +801,16 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
     mesh.receiveShadow = true;
     group.add(mesh);
   }
-  if (dress.paint) {
+  // Paint + hazard stripes keep their colour (no world saturation cap): they
+  // are small, and the safety yellow is the point.
+  const paintShading = createMapShading();
+  for (const k of Object.keys(shading) as Array<keyof MapShading>) paintShading[k].value = shading[k].value;
+  paintShading.uSatCap.value = 1;
+  paintShading.uWorldSat.value = 0.92;
+  const paintMesh = (geo: THREE.BufferGeometry, name: string, map?: THREE.Texture) => {
     const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
+      map: map ?? null,
+      vertexColors: !map,
       roughness: 0.75,
       metalness: 0,
       lightMap: lm.texture,
@@ -785,14 +819,28 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
     });
-    applyMapShading(mat, shading);
-    const mesh = new THREE.Mesh(dress.paint, mat);
-    mesh.name = 'map:paint';
+    applyMapShading(mat, paintShading);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = name;
     mesh.userData.map = true;
     mesh.userData.surface = 'trim';
     mesh.userData.noShadow = true;
     mesh.castShadow = false;
     mesh.receiveShadow = true;
+    group.add(mesh);
+  };
+  if (dress.paint) paintMesh(dress.paint, 'map:paint');
+  if (dress.hazard) paintMesh(dress.hazard, 'map:hazard', getHazardTexture());
+  if (dress.skyline) {
+    // Outside the arena: unlit dark silhouettes, fogged into the sky.
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    const mesh = new THREE.Mesh(dress.skyline, mat);
+    mesh.name = 'map:skyline';
+    mesh.userData.map = true;
+    mesh.userData.surface = 'trim';
+    mesh.userData.noShadow = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
     group.add(mesh);
   }
   if (dress.fixtures) {

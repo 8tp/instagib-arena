@@ -102,6 +102,7 @@ export type ArenaLighting = {
   // the sun and dim the hemisphere when realtime shadows turn on).
   tuning: { sun: number; hemi: number } | null;
   lowDetail: boolean;
+  shadowBox: number; // current ortho shadow box edge (metres)
 };
 const lightingByScene = new WeakMap<THREE.Scene, ArenaLighting>();
 const rendererByScene = new WeakMap<THREE.Scene, THREE.WebGLRenderer>();
@@ -124,6 +125,7 @@ export type WorldAtmosphere = {
   hemi: { sky: number; ground: number; intensity: number };
   fill: { dir: [number, number, number]; color: number; intensity: number };
   envIntensity: number;
+  shadowBox?: number; // sun shadow box edge; small arenas + low suns want a tighter box (sharper texels)
 };
 
 // The pre-theme look (also what a scene shows before any map is added).
@@ -198,6 +200,7 @@ export function createScene(renderer: THREE.WebGLRenderer): THREE.Scene {
     version: 0,
     tuning: null,
     lowDetail: false,
+    shadowBox: SHADOW_TUNING.boxSize,
   });
   rendererByScene.set(scene, renderer);
   applyWorldAtmosphere(scene, DEFAULT_ATMOSPHERE);
@@ -229,6 +232,16 @@ export function applyWorldAtmosphere(scene: THREE.Scene, atm: WorldAtmosphere): 
   l.fill.color.setHex(atm.fill.color);
   l.fill.intensity = atm.fill.intensity;
   l.fill.position.set(atm.fill.dir[0], atm.fill.dir[1], atm.fill.dir[2]).multiplyScalar(30);
+  const box = atm.shadowBox ?? SHADOW_TUNING.boxSize;
+  if (box !== l.shadowBox) {
+    l.shadowBox = box;
+    const sc = l.sun.shadow.camera;
+    sc.left = -box / 2;
+    sc.right = box / 2;
+    sc.top = box / 2;
+    sc.bottom = -box / 2;
+    sc.updateProjectionMatrix();
+  }
   applySky(l.sky, atm.sky, l.sunDir);
   setSkyDetail(l.sky, !l.lowDetail);
 }
@@ -512,7 +525,7 @@ export class PostFxPipeline {
     const fl = this.tmpFwd.length();
     const target = this.tmpTarget.copy(this.tmpCamPos);
     if (fl > 1e-4) target.addScaledVector(this.tmpFwd, SHADOW_TUNING.forwardBias / fl);
-    const texel = SHADOW_TUNING.boxSize / this.shadowMapSize;
+    const texel = l.shadowBox / this.shadowMapSize;
     const du = target.dot(this.lightU);
     const dv = target.dot(this.lightV);
     target.addScaledVector(this.lightU, Math.round(du / texel) * texel - du);
