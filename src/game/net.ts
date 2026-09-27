@@ -302,17 +302,19 @@ const interpDelayForPlayerCount = (players: number): number => {
 // add one snapshot interval + margin. Unlike the reverted adaptive buffer (EMAs
 // of arrival jitter that moved every frame), the target is a windowed statistic
 // and the APPLIED delay moves at a bounded, asymmetric rate: it rises ≤4%
-// (slower playback while absorbing a worse link) and falls ≤1%, so renderT never
+// (slower playback while absorbing a worse link) and falls ≤2%, so renderT never
 // wobbles with arrival timing. `?interp=fixed` restores the fixed schedule.
 const AGE_WINDOW = 256; // ~4s of 64Hz snapshots
 const AGE_ROBUST_RANK = 3; // use the Nth-largest age in the window
 const AGE_RECOMPUTE_MS = 250;
 const INTERP_ADAPTIVE_MIN_MS = 55;
-const INTERP_ADAPTIVE_MAX_MS = 220; // well under the server's 350ms rewind clamp
+// The server rewinds uplink + this delay (≈ RTT + ~30ms); MAX_REWIND_MS (500)
+// keeps exact lag comp to ~470ms RTT at this ceiling.
+const INTERP_ADAPTIVE_MAX_MS = 220;
 const INTERP_ADAPTIVE_MARGIN_MS = 10;
 const INTERP_SNAPSHOT_MS = 1000 / 64;
 const INTERP_RISE_MS_PER_S = 40;
-const INTERP_FALL_MS_PER_S = 10;
+const INTERP_FALL_MS_PER_S = 20; // ≤2% speed-up; a stall-raised delay relaxes in ~5s
 // Clock sync keeps this many recent pong samples and trusts the one with the
 // lowest RTT (least queueing → the most symmetric, accurate offset), NTP-style,
 // instead of an EMA that averages queueing noise into the offset.
@@ -504,6 +506,10 @@ export class NetClient {
       this.snapBuffer.length = 0;
       this.ageCount = 0;
       this.ageIdx = 0;
+      // A reconnect may land on a new host / after a clock step: re-seed the
+      // clock from the next welcome instead of trusting old pong samples.
+      this.clockRtt.fill(Infinity);
+      this.clockSeeded = false;
       this.stopPing();
       this.setStatus('closed');
       this.scheduleReconnect();

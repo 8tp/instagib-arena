@@ -195,14 +195,38 @@ const POS_PLAYOUT_RISE_MS_PER_S = 80; // ≤8% slow-down while absorbing a burst
 const POS_PLAYOUT_FALL_MS_PER_S = 20; // ≤2% speed-up while relaxing
 const POS_PLAYOUT_SNAP_MS = 400; // beyond any stall the cap allows: a real discontinuity, snap once
 const POS_PLAYOUT_EXTRA_MAX_MS = 200; // max playout above the newest upload's lateness
-// Anti-speedhack for tick-stamped uploads: a client's sim clock may not run
-// ahead of the fastest lead (sim time − arrival time) it has shown, beyond this
-// slack plus a small drift allowance — so a modified client can bank at most
-// ~a quarter second, and can't move faster by claiming more elapsed ticks.
+// Anti-speedhack for tick-stamped uploads — two bounds, both on a MONOTONIC
+// arrival clock (an NTP step can't trip them):
+//  • per upload, the speed clamp's dt is the claimed sim dt but never more
+//    than the real time since the last accepted upload + POS_DT_SLACK_MS, so
+//    time banked by letting the sim clock fall behind can't be spent in one
+//    blink (honest multi-tick flushes need only a tick of slack each);
+//  • cumulatively, the sim clock may not run ahead of its lead baseline
+//    (sim ms − arrival ms) by more than POS_LEAD_SLACK_MS; the baseline creeps
+//    at POS_LEAD_CREEP_PER_S. A persistent overrun (POS_LEAD_RESEED_REJECTS in a
+//    row, ~0.5s — e.g. a first upload that arrived very late behind a TCP
+//    retransmit set the baseline low) re-seeds it rather than freezing an
+//    honest player; that upload's clamp gets real time only.
+const POS_DT_SLACK_MS = 50;
+// Movement credit for the speed clamp, on every path: real time accrues per
+// RECEIVED upload (so a player whose uploads were briefly rejected can still
+// catch up), but a silent gap accrues at most POS_SILENT_CREDIT_MS — "go
+// silent, then blink" used to allow 80 m/s × the whole silence. Honest clients
+// never need more: idle ones heartbeat every 250ms without moving, and a
+// stalled connection re-delivers every tick in order. Reset on each accept.
+const POS_SILENT_CREDIT_MS = 100;
 const POS_LEAD_SLACK_MS = 250;
-const POS_LEAD_DRIFT_PER_S = 1; // ms/s the lead baseline may creep (clock drift)
+const POS_LEAD_CREEP_PER_S = 20;
+const POS_LEAD_RESEED_REJECTS = 32;
+// Upload sanity: finite, in-arena magnitudes. A float32 yaw of ~1e30 used to
+// spin the angle-wrap loop forever (the whole server hung).
+const POS_MAX_COORD = 1e4;
+const POS_MAX_ANGLE = 1e3;
 const POS_RESAMPLE_TELEPORT = 5; // m between adjacent samples above which we DON'T lerp (respawn)
-const MAX_REWIND_MS = 350; // clamp how far a shot may rewind targets
+// Clamp how far a shot may rewind targets. The server-side rewind is uplink +
+// the shooter's interp delay (≈ RTT + ~30ms with the ping-aware delay), so this
+// keeps exact lag comp up to ~470ms RTT (the old fixed 110ms delay reached ~480).
+const MAX_REWIND_MS = 500;
 const DEFAULT_CAPACITY = 8;
 // Anti-cheat / abuse guards. The server is authoritative for hits + score, so
 // these are the trust boundary against modified clients.
@@ -240,8 +264,10 @@ type PosSample = { t: number; x: number; y: number; z: number; yaw: number };
 // Per-sender playback state for tick-stamped uploads (see TICK_MS above).
 type PosTimeline = {
   lastTick: number; // last accepted sim tick (-1 = none yet → legacy path until one arrives)
-  lastArrival: number; // server ms of the last accepted upload
-  leadBase: number; // anti-speedhack baseline of (sim ms − arrival ms)
+  lastArrival: number; // server ms (Date.now) of the last accepted upload
+  lastMono: number; // monotonic ms (performance.now) of the last accepted upload
+  leadBase: number; // anti-speedhack baseline of (sim ms − monotonic arrival ms)
+  leadRejects: number; // consecutive over-lead rejections (→ re-seed)
   late: Float64Array; // ring of recent (arrival ms − sim ms)
   lateCount: number;
   lateIdx: number;
@@ -273,6 +299,8 @@ type ClientRecord = {
   lastRecoverMs: number; // last void-recovery time (debounces stale OOB positions)
   lastShotMs: number; // server-side fire-rate gate
   lastPosMs: number; // for the pos-update speed clamp
+  lastPosRxMono: number; // monotonic ms of the last RECEIVED pos (accepted or not)
+  posCreditMs: number; // movement time the speed clamp allows (see POS_SILENT_CREDIT_MS)
   msgWindowStart: number; // inbound message-rate window start
   msgCount: number; // messages seen in the current window
   roomWindowStart: number; // room-creation rate window start
@@ -480,11 +508,19 @@ function genId(len = 8): ClientId {
 
 // Cryptographically-strong token for slot reclaim — it's the only secret
 // guarding the resume path, so it must not come from predictable Math.random().
+// Wrap an angle to [-π, π] in closed form (a subtract-2π loop never ends for
+// huge inputs).
+function wrapAngle(a: number): number {
+  return a - Math.PI * 2 * Math.round(a / (Math.PI * 2));
+}
+
 function newPosTimeline(): PosTimeline {
   return {
     lastTick: -1,
     lastArrival: 0,
+    lastMono: 0,
     leadBase: 0,
+    leadRejects: 0,
     late: new Float64Array(POS_LATE_WINDOW),
     lateCount: 0,
     lateIdx: 0,
@@ -1162,8 +1198,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // The high-rate snapshot: ONLY the fields that change per tick. Everything
   // static (name, team, cosmetics, badges) rides the `meta` channel below, sent
   // on change, so it isn't re-serialized + re-parsed 40×/sec for no reason.
-  const roomSnapshot = (room: Room) => {
-    const now = Date.now();
+  // `now` defaults to the wall clock; the snapshot tick passes ITS `now` so the
+  // frame's timestamp is exactly the one the lag-comp history was stamped with.
+  const roomSnapshot = (room: Room, now = Date.now()) => {
     const players: object[] = [];
     for (const id of room.members) {
       const c = clients.get(id);
@@ -1291,9 +1328,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > POS_RESAMPLE_TELEPORT) return b;
         const span = b.t - a.t || 1;
         const f = (t - a.t) / span;
-        let dyaw = b.yaw - a.yaw;
-        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
-        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        const dyaw = wrapAngle(b.yaw - a.yaw);
         return {
           t,
           x: a.x + (b.x - a.x) * f,
@@ -1729,6 +1764,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
       lastRecoverMs: 0,
       lastShotMs: 0,
       lastPosMs: 0,
+      lastPosRxMono: 0,
+      posCreditMs: 0,
       msgWindowStart: now,
       msgCount: 0,
       roomWindowStart: now,
@@ -2207,68 +2244,102 @@ export function attachInstagibWs(wss: WebSocketServer) {
           });
           break;
 
-        case 'pos':
+        case 'pos': {
           if (
-            record.roomId &&
-            Number.isFinite(msg.x) &&
-            Number.isFinite(msg.y) &&
-            Number.isFinite(msg.z) &&
-            Number.isFinite(msg.yaw)
+            !record.roomId ||
+            !Number.isFinite(msg.x) ||
+            !Number.isFinite(msg.y) ||
+            !Number.isFinite(msg.z) ||
+            !Number.isFinite(msg.yaw) ||
+            Math.abs(msg.x) > POS_MAX_COORD ||
+            Math.abs(msg.y) > POS_MAX_COORD ||
+            Math.abs(msg.z) > POS_MAX_COORD ||
+            Math.abs(msg.yaw) > POS_MAX_ANGLE
           ) {
+            break;
+          }
+          // Only a well-formed u32 tick opts into the tick timeline (JSON uploads
+          // could otherwise carry negative / huge / fractional ticks).
+          const hasTick = msg.tick !== undefined;
+          const ticked =
+            hasTick && Number.isInteger(msg.tick) && (msg.tick as number) >= 0 && (msg.tick as number) <= 0xffffffff;
+          if (hasTick && !ticked) break;
+          const flags = Number.isInteger(msg.flags) ? (msg.flags as number) & 0xff : 0;
+          const yaw = wrapAngle(msg.yaw);
+          {
             const tl = record.posTl;
-            const ticked = typeof msg.tick === 'number' && Number.isFinite(msg.tick);
             const prevPosMs = record.lastPosMs;
-            // Elapsed time for the speed clamp. Tick-stamped uploads use the
-            // sender's exact SIM time: the old receive-time dt read a flush of
-            // several ticks landing ~1ms apart as 100+ m/s and DROPPED legitimate
-            // movement — every double-tick frame, several times a second.
-            let dtSec = (ts - prevPosMs) / 1000;
+            // Movement credit (see POS_SILENT_CREDIT_MS): real time since the
+            // previous RECEIVED upload, silence capped. The speed clamp below
+            // allows at most this much movement time since the last ACCEPTED pos.
+            const mono = performance.now();
+            if (record.lastPosRxMono > 0) {
+              record.posCreditMs += Math.min(mono - record.lastPosRxMono, POS_SILENT_CREDIT_MS);
+            }
+            record.lastPosRxMono = mono;
+            // Elapsed movement time for the clamp. Tick-stamped uploads use the
+            // sender's SIM dt, bounded by the credit + POS_DT_SLACK_MS (the old
+            // receive-time dt read a flush of several ticks landing ~1ms apart as
+            // 100+ m/s and DROPPED legitimate movement); legacy uploads use the credit.
+            let clampMs = record.posCreditMs;
             let simMs = ts;
             let hold: PosSample | null = null;
             if (ticked) {
               const tick = msg.tick as number;
               simMs = tick * TICK_MS;
-              const lead = simMs - ts;
+              const lead = simMs - mono;
               if (tl.lastTick >= 0) {
                 if (tick <= tl.lastTick) break; // stale/duplicate (a reordered datagram)
-                // Speedhack guard: the sim clock may not run ahead of the fastest
-                // lead this sender has shown (plus slack + slow drift).
-                const creep = ((ts - tl.lastArrival) / 1000) * POS_LEAD_DRIFT_PER_S;
-                if (lead > tl.leadBase + creep + POS_LEAD_SLACK_MS) break;
-                tl.leadBase = Math.max(tl.leadBase, Math.min(lead, tl.leadBase + creep));
-                dtSec = ((tick - tl.lastTick) * TICK_MS) / 1000;
+                const creep = ((mono - tl.lastMono) / 1000) * POS_LEAD_CREEP_PER_S;
+                if (lead > tl.leadBase + creep + POS_LEAD_SLACK_MS) {
+                  // Sim clock ahead of real time: drop — unless it persists, which
+                  // is a genuine shift (see POS_LEAD_RESEED_REJECTS), not a hack.
+                  tl.leadRejects += 1;
+                  if (tl.leadRejects < POS_LEAD_RESEED_REJECTS) break;
+                  tl.leadBase = lead;
+                  tl.leadRejects = 0;
+                  // (the re-seed upload's clamp gets the real-time credit only)
+                } else {
+                  tl.leadRejects = 0;
+                  tl.leadBase = Math.max(tl.leadBase, Math.min(lead, tl.leadBase + creep));
+                  clampMs = Math.min((tick - tl.lastTick) * TICK_MS, record.posCreditMs + POS_DT_SLACK_MS);
+                }
                 // The sender skipped uploads because nothing changed (or its sim
                 // froze): hold the last pose up to the tick before this one
                 // instead of gliding across the gap.
                 const last = record.posSamples[record.posSamples.length - 1];
-                if (((msg.flags ?? 0) & POS_FLAG_HOLD) !== 0 && tick - tl.lastTick > 1 && last) {
+                if ((flags & POS_FLAG_HOLD) !== 0 && tick - tl.lastTick > 1 && last) {
                   hold = { t: simMs - TICK_MS, x: last.x, y: last.y, z: last.z, yaw: last.yaw };
                 }
               } else {
+                // First tick-stamped upload of this timeline: seed the baseline
+                // (the clamp uses the real-time credit).
                 tl.leadBase = lead;
-                dtSec = 0;
+                tl.leadRejects = 0;
               }
-            } else {
-              record.lastPosMs = ts;
             }
             // Speed clamp (#3): reject implausible teleports/speedhacks — these
             // positions feed both the snapshot broadcast and lag-comp rewind, so
             // a spoof would poison what every other player sees + shoots. Skip
             // the first packet after a teleport (history cleared by a server
-            // respawn/vote) so legitimate repositions aren't flagged.
+            // respawn/vote) so legitimate repositions aren't flagged. A zero
+            // allowance (two uploads in the same instant) still bounds the move.
             if (record.history.length > 0 && prevPosMs > 0) {
               const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
               const vert = Math.abs(msg.y - record.pos.y);
+              const dtSec = Math.max(clampMs, 1) / 1000;
               // Clamp BOTH axes — vertical was previously untrusted, letting a
               // client fly/noclip straight up (moving its hitbox + snapshot).
-              if (dtSec > 0 && (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED)) {
-                break; // drop, keep last good pos
+              if (horiz / dtSec > MAX_MOVE_SPEED || vert / dtSec > MAX_VERTICAL_SPEED) {
+                break; // drop, keep last good pos (credit keeps accruing)
               }
             }
+            record.posCreditMs = 0;
+            record.lastPosMs = ts;
             if (ticked) {
               tl.lastTick = msg.tick as number;
               tl.lastArrival = ts;
-              record.lastPosMs = ts;
+              tl.lastMono = mono;
               noteLateness(tl, ts, ts - simMs);
             }
             // Count real movement as activity (resets the AFK timer; pings don't),
@@ -2292,14 +2363,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
             record.pos.x = msg.x;
             record.pos.y = msg.y;
             record.pos.z = msg.z;
-            record.yaw = msg.yaw;
+            record.yaw = yaw;
             if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
-              record.pitch = msg.pitch;
+              record.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, msg.pitch));
             }
             // Buffer the sample (sim- or receive-time stamped) so the snapshot
             // tick can resample to a consistent instant (see POS_LAG_MS / TICK_MS).
             if (hold) record.posSamples.push(hold);
-            record.posSamples.push({ t: simMs, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
+            record.posSamples.push({ t: simMs, x: msg.x, y: msg.y, z: msg.z, yaw });
             const sCut = simMs - (ticked ? POS_TICK_SAMPLE_WINDOW_MS : POS_SAMPLE_WINDOW_MS);
             while (record.posSamples.length > 2 && record.posSamples[0].t < sCut) {
               record.posSamples.shift();
@@ -2309,6 +2380,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (room) recoverIfOob(record, room, ts);
           }
           break;
+        }
 
         case 'ping':
           if (typeof msg.rtt === 'number' && msg.rtt >= 0 && msg.rtt < 2000) {
@@ -2438,7 +2510,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       }
       // Encode the snapshot ONCE as a binary frame and fan it out (vs JSON per
       // tick). ~3× smaller and no JSON.parse on the client's hot path.
-      const snap = roomSnapshot(room);
+      const snap = roomSnapshot(room, now);
       const buf = encodeState(snap.t, snap.players as unknown as BinStatePlayer[], snap.resumeAt ?? 0);
       if (NETCODE_DIAG) {
         snapshotDiagFrames += 1;

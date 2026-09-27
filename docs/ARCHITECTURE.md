@@ -124,7 +124,7 @@ The client buffers snapshots and **renders remote players in the past** by a
 applied in, so clock-estimate error cancels) goes into a ~4 s window; the
 target is the window's 3rd-largest age + one snapshot interval + 10 ms,
 clamped to 55–220 ms. The applied delay moves toward the target at a bounded,
-asymmetric rate (rises ≤ 4 %, falls ≤ 1 % playback speed), so the render clock
+asymmetric rate (rises ≤ 4 %, falls ≤ 2 % playback speed), so the render clock
 never wobbles with arrival timing — the failure mode of the earlier EMA-driven
 buffer. A 20 ms-ping player renders remotes ~50 ms closer to real time than
 the old fixed 110–170 ms; a 150 ms-ping player no longer underruns.
@@ -160,9 +160,14 @@ bursts (a sender's GC pause) are bridged by ≤ 48 ms of extrapolation instead
 of raising everyone's view of that player; clients send one unchanged pose
 before going quiet, so a stop is always zero velocity and extrapolation can't
 coast past it. A `HOLD` flag marks gaps where sends were skipped because
-nothing changed. The speed clamp uses exact sim time, and a lead-baseline
-guard stops a client banking more than ~250 ms of sim time (speedhack).
-Legacy `BIN_POS` uploads (no tick) still use the older arrival-time resampler.
+nothing changed. Anti-speedhack, on a monotonic arrival clock: the speed
+clamp's dt is the claimed sim dt but never more than the real time since the
+last accepted upload + 50 ms (banked time can't be spent in one blink), and the
+sim clock may not run ahead of its lead baseline by more than 250 ms (a
+persistent overrun re-seeds rather than freezing an honest player). Uploads are
+sanity-checked (finite, in-arena coordinates, bounded angles wrapped in closed
+form, a u32 tick). Legacy `BIN_POS` uploads (no tick) still use the older
+arrival-time resampler.
 
 The resampled-and-quantized pose is what goes into BOTH the snapshot and the
 lag-comp **position history** — so what a shooter renders and what the server
