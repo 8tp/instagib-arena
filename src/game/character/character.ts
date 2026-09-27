@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { createCharacterMaterial, getBodyGeometry, type CharacterUniforms } from './body';
-import { Rig, SOCKETS, type SocketName } from './rig';
+import { B, Rig, SOCKETS, type SocketName } from './rig';
 
 // One arena combatant: a Rig (flat bones + FK/IK), ONE SkinnedMesh sharing the
 // cached body geometry, a per-instance material (for the player colour), and
@@ -83,6 +83,9 @@ export class Character {
       sockets[name] = o;
     }
     this.sockets = sockets;
+    // Hats report equip changes through the crown socket: hide the crest fin
+    // under a hat so it never pokes through the brim.
+    sockets.headTop.userData.onHatChange = (hasHat: boolean) => this.setCrestHidden(hasHat);
     this.setLook(opts.colorHex ?? SKIN_PALETTE[0], 'natural');
   }
 
@@ -95,11 +98,20 @@ export class Character {
     this.mode = mode;
     const u = this.uniforms;
     u.uPlayer.value.copy(this.color);
-    // Visor: a hot, pale version of the skin colour (reads as "the face").
-    u.uVisor.value.copy(this.color).lerp(WHITE, 0.55).multiplyScalar(mode === 'highlight' ? 2.6 : 2.2);
-    u.uRim.value.copy(this.color).lerp(WHITE, 0.3);
-    u.uLift.value = mode === 'highlight' ? 0.55 : 0.14;
-    u.uRimStr.value = mode === 'highlight' ? 1.1 : 0.6;
+    // Visor: a hot near-white core (blooms) fading to a saturated player-
+    // colour edge; the light slits use the edge colour.
+    u.uVisorCore.value.copy(this.color).lerp(WHITE, 0.8).multiplyScalar(mode === 'highlight' ? 3.0 : 2.6);
+    u.uVisorEdge.value.copy(this.color).multiplyScalar(mode === 'highlight' ? 2.4 : 2.0);
+    // Readability rim: a light tint of the skin colour, strong enough to read
+    // as a thin outline at 30 m on same-hue walls. Same for every player.
+    u.uRim.value.copy(this.color).lerp(WHITE, 0.15).multiplyScalar(1.15);
+    u.uLift.value = mode === 'highlight' ? 0.55 : 0.22;
+    u.uRimStr.value = mode === 'highlight' ? 1.6 : 1.15;
+  }
+
+  setCrestHidden(hidden: boolean): void {
+    this.rig.boneScale[B.crest] = hidden ? 0.0001 : 1;
+    this.rig.writeBones();
   }
 
   getColor(out: THREE.Color): THREE.Color {
@@ -110,10 +122,15 @@ export class Character {
     return this.mode;
   }
 
-  // Gib heat: 0..1 glow over the whole body (energy discharge on death).
+  // Gib heat: glowing seams/silhouette in `color` (energy discharge on death).
   setGlow(v: number, color?: THREE.Color): void {
     this.uniforms.uGlow.value = v;
     if (color) this.uniforms.uGlowCol.value.copy(color);
+  }
+
+  // Gib char: 0 = clean paint … 1 = scorched plates.
+  setBurn(v: number): void {
+    this.uniforms.uBurn.value = v;
   }
 
   dispose(): void {

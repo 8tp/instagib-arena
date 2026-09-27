@@ -35,6 +35,7 @@ export const BONE_NAMES = [
   'thigh.R',
   'shin.R',
   'foot.R',
+  'crest', // helmet crest fin — its own bone so it can hide under a hat
 ] as const;
 export type BoneName = (typeof BONE_NAMES)[number];
 export const BONE_COUNT = BONE_NAMES.length;
@@ -60,6 +61,7 @@ export const B = {
   thighR: 17,
   shinR: 18,
   footR: 19,
+  crest: 20,
 } as const;
 
 export const BONE_INDEX: Record<BoneName, number> = Object.fromEntries(
@@ -88,6 +90,7 @@ export const PARENT: readonly number[] = [
   B.hips, // thigh.R
   B.thighR, // shin.R
   B.shinR, // foot.R
+  B.head, // crest
 ];
 
 // Absolute rest positions (model space, metres). 1.8 m athlete: hip 0.915,
@@ -116,6 +119,7 @@ export const REST_ABS: readonly (readonly [number, number, number])[] = [
   [HIP_X, 0.915, 0], // thigh.R
   [HIP_X, 0.505, 0], // shin.R
   [HIP_X, 0.095, 0], // foot.R
+  [0, 1.78, 0], // crest
 ];
 
 // Rest offset of each bone from its parent.
@@ -240,6 +244,7 @@ const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _m = new THREE.Matrix4();
 const _s1 = new THREE.Vector3(1, 1, 1);
+const _sv = new THREE.Vector3();
 
 // ── Rig instance: bones + skeleton + FK/IK ──────────────────────────────────
 export class Rig {
@@ -251,6 +256,8 @@ export class Rig {
   readonly mq = new Float32Array(BONE_COUNT * 4);
   // Gib/override mode: when set, writeBones() leaves these bones' matrices alone.
   frozen = false;
+  // Per-bone display scale (e.g. the crest shrinks to nothing under a hat).
+  readonly boneScale = new Float32Array(BONE_COUNT).fill(1);
 
   constructor(parent: THREE.Object3D) {
     const inverses: THREE.Matrix4[] = [];
@@ -314,7 +321,8 @@ export class Rig {
     for (let i = 0; i < BONE_COUNT; i++) {
       _v.set(this.mp[i * 3], this.mp[i * 3 + 1], this.mp[i * 3 + 2]);
       _q.set(this.mq[i * 4], this.mq[i * 4 + 1], this.mq[i * 4 + 2], this.mq[i * 4 + 3]);
-      this.bones[i].matrix.compose(_v, _q, _s1);
+      const sc = this.boneScale[i];
+      this.bones[i].matrix.compose(_v, _q, sc === 1 ? _s1 : _sv.set(sc, sc, sc));
       this.bones[i].matrixWorldNeedsUpdate = true;
     }
   }

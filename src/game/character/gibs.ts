@@ -74,6 +74,7 @@ const LEAD_REDUCED: readonly number[] = (() => {
   lead[B.footL] = B.thighL;
   lead[B.shinR] = B.thighR;
   lead[B.footR] = B.thighR;
+  lead[B.crest] = B.head;
   return lead;
 })();
 // Full set: every bone its own chunk, except the clavicles (pauldrons) which
@@ -82,6 +83,7 @@ const LEAD_FULL: readonly number[] = (() => {
   const lead = Array.from({ length: BONE_COUNT }, (_, i) => i);
   lead[B.clavicleL] = B.chest;
   lead[B.clavicleR] = B.chest;
+  lead[B.crest] = B.head;
   return lead;
 })();
 
@@ -113,6 +115,26 @@ const _s = new THREE.Vector3();
 const _pq = new THREE.Quaternion();
 const _pp = new THREE.Vector3();
 const WHITE = new THREE.Color(1, 1, 1);
+const _heat = new THREE.Color();
+// Black-body-ish cooling ramp for the gib seams (linear HDR).
+const HEAT_KEYS: ReadonlyArray<readonly [number, number, number, number]> = [
+  [0.0, 3.4, 3.0, 2.4], // white-hot
+  [0.18, 3.0, 1.35, 0.35], // yellow-orange
+  [0.5, 1.9, 0.42, 0.06], // orange
+  [1.1, 0.55, 0.06, 0.015], // deep red
+];
+function heatColor(t: number, out: THREE.Color): THREE.Color {
+  for (let i = 1; i < HEAT_KEYS.length; i++) {
+    const a = HEAT_KEYS[i - 1];
+    const b = HEAT_KEYS[i];
+    if (t <= b[0]) {
+      const k = (t - a[0]) / (b[0] - a[0]);
+      return out.setRGB(a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k);
+    }
+  }
+  const l = HEAT_KEYS[HEAT_KEYS.length - 1];
+  return out.setRGB(l[1], l[2], l[3]);
+}
 
 export class GibBurst {
   active = false;
@@ -240,10 +262,11 @@ export class GibBurst {
       this.shrinkAt[i] = 0.5 + Math.random() * 0.35;
     }
 
-    // Heat glow in a hot version of the armour colour.
+    // The torso flash is the player's energy colour; the chunks themselves
+    // char and glow like hot metal (see heat() below).
     ch.getColor(this.glowCol).lerp(WHITE, 0.55);
-    ch.setGlow(quality.reduced ? 0.5 : 1.6, this.glowCol);
     if (!quality.reduced) this.showFlash();
+    ch.setBurn(0);
     this.update(0);
   }
 
@@ -330,9 +353,10 @@ export class GibBurst {
       rig.bones[i].matrix.multiplyMatrices(rig.bones[l].matrix, this.rel[i]);
       rig.bones[i].matrixWorldNeedsUpdate = true;
     }
-    // Heat cools; flash pops and fades.
-    const glow0 = quality.reduced ? 0.5 : 1.6;
-    this.ch.setGlow(glow0 * Math.exp(-t * 4.5));
+    // Plates char at once; seams glow white-hot, cooling orange → deep red.
+    this.ch.setBurn(Math.min(1, t / 0.07));
+    heatColor(t, _heat);
+    this.ch.setGlow((quality.reduced ? 0.45 : 1) * Math.exp(-t * 1.5), _heat);
     if (this.flash) {
       const k = t / FLASH_SEC;
       if (k >= 1) this.flash.visible = false;
@@ -355,6 +379,7 @@ export class GibBurst {
     ch.mesh.frustumCulled = true;
     ch.sockets.gun.visible = true;
     ch.setGlow(0);
+    ch.setBurn(0);
     if (this.flash) {
       this.flash.visible = false;
       this.flash.parent?.remove(this.flash);
