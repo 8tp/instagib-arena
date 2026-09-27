@@ -223,8 +223,8 @@ export class GibBurst {
         dy = 1;
         dl = Math.hypot(dx, dy, dz);
       }
-      const sp = (3.2 + Math.random() * 4.2) * speedMul;
-      const up = (2.2 + Math.random() * 3.2 + (i === B.head ? 1.5 : 0)) * speedMul;
+      const sp = (2.8 + Math.random() * 3.6) * speedMul;
+      const up = (2.0 + Math.random() * 2.8 + (i === B.head ? 0.9 : 0)) * speedMul;
       this.vel[i * 3] = (dx / dl) * sp + _v2.x + (Math.random() - 0.5) * 1.2;
       this.vel[i * 3 + 1] = (dy / dl) * sp * 0.6 + up + _v2.y;
       this.vel[i * 3 + 2] = (dz / dl) * sp + _v2.z + (Math.random() - 0.5) * 1.2;

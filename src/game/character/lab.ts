@@ -161,6 +161,8 @@ export class CharacterLab {
       const fitH = (rows * 2.3) / 2 / Math.tan(vfov / 2);
       dist = Math.max(fitW, fitH) * 1.08 + (rows - 1) * spacing * 0.8;
     }
+    const ty = this.params.get('ty');
+    if (ty !== null) target.y = Number(ty);
     const dir = this.viewDir();
     if (grid && rows > 1) dir.y = 0.35;
     dir.normalize();

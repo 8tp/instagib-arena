@@ -4,6 +4,7 @@ import { WornHat } from '../hats';
 import { CharacterAnimator } from '../character-anim';
 import { EMOTE_KINDS } from '../emotes';
 import { attachRailgun } from './gun';
+import { setCharacterFxQuality } from './gibs';
 import type { Character } from './character';
 import type { LabDriver } from './lab';
 
@@ -136,6 +137,9 @@ function emoteDriver(kinds: EmoteKind[], times: number[], label: (i: number) => 
 
 export function labDriverFromParams(params: URLSearchParams): LabDriver {
   const t = Number(params.get('t') ?? 0);
+  // ?fx=reduced|low → the gib quality tiers.
+  const fx = params.get('fx');
+  setCharacterFxQuality({ reducedEffects: fx === 'reduced', lowSpec: fx === 'low' });
   const grid = params.get('grid');
   const emote = params.get('emote') as EmoteKind | null;
   const play = params.get('play') === '1';
