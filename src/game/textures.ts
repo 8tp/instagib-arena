@@ -34,7 +34,7 @@ export type ArenaTextures = Record<SurfaceKind, SurfaceTextures>;
 
 // Anisotropic filtering level. three clamps it to the device maximum at upload
 // time, so a value above the hardware limit is safe.
-export const ARENA_TEXTURE_ANISOTROPY = 8;
+export const ARENA_TEXTURE_ANISOTROPY = 16;
 
 let cache: ArenaTextures | null = null;
 
@@ -785,29 +785,32 @@ const THEME_RECIPES: Record<TextureThemeId, Record<SurfaceKind, Recipe>> = {
   },
   // Reactor: industrial steel plate + grating, worn safety-yellow cover.
   reactor: {
-    floor: () => panel(0x5c6168, 4, {
-      rivets: 'corners', rivetInset: 12, rivetR: 2.5, rivetH: 1.2, rough: 0.55, seed: 12,
-      stain: { color: 0x303034, amount: 0.18, cell: 64, bias: 0.16, rough: -0.1, seed: 13 },
+    // Big 3 m deck plates, low-contrast grout: the floor must not out-shout
+    // the walls or the players standing on it.
+    floor: () => panel(0x4a4f56, 6, {
+      seamHalf: 1, bevel: 2, depth: 2, seamDark: 0.78, rough: 0.55, tone: 0.03, seed: 12,
+      stain: { color: 0x3a3c40, amount: 0.2, cell: 56, bias: 0.14, rough: -0.12, seed: 13 },
     }),
+    // Tall 3 × 6 m bulkhead plates with a shallow mid seam — no rivet grid.
     wall: () => bake(
-      panelField({ size: R, cols: 2, rows: 1, seamHalf: 1.5, bevel: 3, depth: 3, midSeam: 0.45, rivets: 'bands', rivetInset: 13, rivetR: 2.5, rivetH: 1.2, wobble: 0.7, seed: 24 }),
+      panelField({ size: R, cols: 2, rows: 1, seamHalf: 1.2, bevel: 2.5, depth: 3, midSeam: 0.35, rivets: 'none', wobble: 0.7, seed: 24 }),
       {
-        base: 0x69707a, seamDark: 0.5, rivetLight: 0.15, toneNoise: 0.04, grain: 0.02,
-        rough: { base: 0.6, seam: 0.25, centre: 0.08, rivet: 0.12, blotch: 0.07, grain: 0.03 },
-        ao: 0.75, aoBlur: 4, seed: 25,
-        stain: { color: 0x3a3d42, amount: 0.14, cell: 64, bias: 0.18, rough: 0.08, seed: 26 },
+        base: 0x646b74, seamDark: 0.6, toneNoise: 0.05, grain: 0.015,
+        rough: { base: 0.6, seam: 0.2, centre: 0.08, blotch: 0.07, grain: 0.03 },
+        ao: 0.7, aoBlur: 4, seed: 25,
+        stain: { color: 0x44474c, amount: 0.18, cell: 64, bias: 0.16, rough: 0.08, seed: 26 },
       },
-      4,
+      6,
     ),
     ceiling: () => panel(0x33373e, 8, { rough: 0.85, seed: 37 }),
     platform: () => bake(
-      gratingField({ size: R, pitch: 10, bar: 1.6, cross: 40, rod: 1.1, depth: 5, frame: 4, seed: 42 }),
+      gratingField({ size: R, pitch: 21, bar: 2.6, cross: 64, rod: 1.8, depth: 5, frame: 5, seed: 42 }),
       {
-        base: 0x737a84, seamDark: 0.12, toneNoise: 0.03, grain: 0.02,
+        base: 0x737a84, seamDark: 0.3, toneNoise: 0.03, grain: 0.02,
         rough: { base: 0.45, seam: 0.4, centre: 0, blotch: 0.06, grain: 0.03 },
-        ao: 0.85, aoBlur: 3, seed: 43,
+        ao: 0.7, aoBlur: 3, seed: 43,
       },
-      2,
+      3,
     ),
     cover: () => panel(0x9c8646, 2, {
       cols: 1, rows: 1, bevel: 3, depth: 4, rivets: 'corners', rivetInset: 14, rivetR: 3, rivetH: 1.5, rough: 0.6, seed: 54,
@@ -902,8 +905,8 @@ const THEME_RECIPES: Record<TextureThemeId, Record<SurfaceKind, Recipe>> = {
   // Night port: wet concrete, streaked retaining walls, rusted container skin.
   nightport: {
     floor: () => panel(0x55565a, 4, {
-      seamHalf: 1, bevel: 1.5, depth: 2, rough: 0.6, tone: 0.07, grain: 0.03, seed: 19,
-      stain: { color: 0x36373a, amount: 0.35, cell: 72, bias: 0.08, rough: -0.25, seed: 20 },
+      seamHalf: 1, bevel: 1.5, depth: 2, rough: 0.42, tone: 0.07, grain: 0.03, seed: 19,
+      stain: { color: 0x2e2f32, amount: 0.45, cell: 72, bias: 0.06, rough: -0.32, seed: 20 },
     }),
     wall: () => panel(0x6a6862, 4, {
       cols: 1, rows: 1, seamHalf: 1, bevel: 1.5, depth: 1.5, rivets: 'corners', rivetInset: 24, rivetR: 3, rivetH: -1.5,
@@ -912,7 +915,7 @@ const THEME_RECIPES: Record<TextureThemeId, Record<SurfaceKind, Recipe>> = {
     }),
     ceiling: unusedCeiling,
     platform: () => bake(
-      gratingField({ size: R, pitch: 10, bar: 1.6, cross: 40, rod: 1.1, depth: 5, frame: 4, seed: 48 }),
+      gratingField({ size: R, pitch: 21, bar: 2.6, cross: 64, rod: 1.8, depth: 5, frame: 5, seed: 48 }),
       {
         base: 0x5d6168, seamDark: 0.12, toneNoise: 0.03, grain: 0.02,
         rough: { base: 0.5, seam: 0.4, centre: 0, blotch: 0.06, grain: 0.03 },
@@ -950,7 +953,7 @@ const THEME_RECIPES: Record<TextureThemeId, Record<SurfaceKind, Recipe>> = {
     ),
     ceiling: unusedCeiling,
     platform: () => bake(
-      gratingField({ size: R, pitch: 10, bar: 1.6, cross: 40, rod: 1.1, depth: 5, frame: 4, seed: 50 }),
+      gratingField({ size: R, pitch: 21, bar: 2.6, cross: 64, rod: 1.8, depth: 5, frame: 5, seed: 50 }),
       {
         base: 0x6a584a, seamDark: 0.12, toneNoise: 0.04, grain: 0.02,
         rough: { base: 0.6, seam: 0.3, centre: 0, blotch: 0.06, grain: 0.03 },
@@ -985,6 +988,39 @@ const THEME_RECIPES: Record<TextureThemeId, Record<SurfaceKind, Recipe>> = {
     tower: () => panel(0x646b75, 4, { rivets: 'corners', rivetInset: 14, rivetR: 3, rivetH: 1.5, seed: 68 }),
   },
 };
+
+let hazardCache: THREE.DataTexture | null = null;
+
+// Safety stripes: 45° yellow/black bands, lightly worn at the edges. Tiles in
+// world space (1 m per repeat, two stripe pairs), used on floor bands and
+// platform lips.
+export function getHazardTexture(): THREE.DataTexture {
+  if (hazardCache) return hazardCache;
+  const size = 128;
+  const wear = blotchField(size, 16, 991);
+  const data = new Uint8Array(size * size * 4);
+  const period = size / 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const t = ((x + y) % period) / period;
+      const edge = Math.min(Math.abs(t - 0.5), t, 1 - t);
+      const yellow = smoothstep(0.235, 0.265, Math.abs(t - 0.5)) < 0.5 ? 1 : 0;
+      const soft = smoothstep(0, 0.02, edge);
+      const w = 1 + wear[i] * 0.35 + (hash(x, y, 993) - 0.5) * 0.06;
+      const r = yellow ? 0.79 : 0.1;
+      const g = yellow ? 0.62 : 0.1;
+      const b = yellow ? 0.14 : 0.1;
+      const o = i * 4;
+      data[o] = byte(r * w * (0.85 + 0.15 * soft));
+      data[o + 1] = byte(g * w * (0.85 + 0.15 * soft));
+      data[o + 2] = byte(b * w * (0.85 + 0.15 * soft));
+      data[o + 3] = 255;
+    }
+  }
+  hazardCache = dataTexture(data, size, true);
+  return hazardCache;
+}
 
 const themeCache = new Map<TextureThemeId, ArenaTextures>();
 let themeGenMs = 0;
