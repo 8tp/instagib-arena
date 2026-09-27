@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { DecalManager } from './decals';
+import { RailBeams } from './fx/rail-beam';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared, pooled FX primitives — one FxContext per scene.
@@ -14,39 +15,43 @@ import { DecalManager } from './decals';
 //    threshold bloom pass picks them out. All materials are toneMapped:false.
 //  • Motion is evaluated in closed form each frame (p0 + v·t − ½g·t², s0·e^kt),
 //    so the look is identical at any frame rate; dt is clamped.
-//  • A small pool of camera-facing sprites (muzzle / impact flashes), two
-//    PointLights that pulse (kept in the scene permanently while enabled so
-//    toggling them never recompiles the lit materials), and the impact-decal
-//    ring buffer live here too, so weapon.ts and effects.ts share one budget.
+//  • A pool of camera-facing sprites (energy flashes, shock rings, muzzle and
+//    impact stars), two PointLights that pulse (kept in the scene permanently
+//    while enabled so toggling them never recompiles the lit materials; slot 1
+//    is shared by impacts + kills), the impact-decal ring buffer and the rail
+//    trails (fx/rail-beam.ts) live here too, so weapon.ts and effects.ts share
+//    one budget. Nothing is visible when idle: sprites/meshes hide at count 0
+//    and the lights sit at intensity 0.
 //
 // Everything in the context is tagged `userData.shared` so Game.disposeScene()
 // leaves it alone; `disposeFxContext(scene)` releases it explicitly.
 // ─────────────────────────────────────────────────────────────────────────
 
-export const FX_SHAPES = ['sphere', 'ico', 'torus', 'torusThin', 'box', 'column', 'cone', 'ring'] as const;
+// (Flashes are camera-facing glow sprites — see SpritePool — not solid spheres.)
+export const FX_SHAPES = ['ico', 'torus', 'torusThin', 'box', 'column', 'cone', 'ring'] as const;
 export type FxShape = (typeof FX_SHAPES)[number];
 
 // Max simultaneous live instances per shape. Bursts that would overflow simply
 // drop particles (never allocate), so a killstreak pile-up degrades gracefully.
 const SHAPE_CAPACITY: Record<FxShape, number> = {
-  sphere: 32,
   ico: 192,
-  torus: 24,
-  torusThin: 8,
-  box: 160,
+  torus: 32,
+  torusThin: 24,
+  box: 256,
   column: 8,
   cone: 8,
-  ring: 24,
+  ring: 32,
 };
 
 const SHAPE_INDEX = Object.fromEntries(FX_SHAPES.map((s, i) => [s, i])) as Record<FxShape, number>;
 
 const MAX_DT = 0.1;
-const SPRITE_SLOTS = 6;
+// Camera-facing flashes (muzzle, impact, kill + every style's energy flash).
+// All busy → the most-faded one is recycled, so a pile-up never allocates.
+const SPRITE_SLOTS = 24;
 
 function buildShapeGeometry(shape: FxShape): THREE.BufferGeometry {
   switch (shape) {
-    case 'sphere': return new THREE.SphereGeometry(1, 10, 8);
     case 'ico': return new THREE.IcosahedronGeometry(1, 0);
     // Torus tube is a fixed FRACTION of the ring radius; uniform scale keeps
     // the proportions, so one geometry serves every ring size.
@@ -129,6 +134,24 @@ export function flashTexture(): THREE.Texture {
     ctx.fillRect(0, 0, s, s);
   });
   return flashTex;
+}
+
+let glowTex: THREE.Texture | null = null;
+// Soft radial glow (hot centre, long smooth falloff) — energy flashes.
+export function glowTexture(): THREE.Texture {
+  if (glowTex) return glowTex;
+  glowTex = canvasTexture(64, (ctx, s) => {
+    const c = s / 2;
+    const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.15, 'rgba(255,255,255,0.75)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.22)');
+    g.addColorStop(0.7, 'rgba(255,255,255,0.05)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, s, s);
+  });
+  return glowTex;
 }
 
 let ringTex: THREE.Texture | null = null;
@@ -478,17 +501,19 @@ class LightPulses {
     }
   }
 
-  // slot 0 = muzzle, 1 = impact. Peak intensity in candela; ≤ 0.08 s.
+  // slot 0 = muzzle, 1 = world (rail impact / kill burst — a new pulse only
+  // takes the slot over from a dimmer one). Peak intensity in candela; ≤ 0.14 s.
   pulse(slot: 0 | 1, x: number, y: number, z: number, hex: number, peak: number, life: number, distance: number) {
     if (!this.attached) return;
     const p = this.pulses[slot];
+    if (p.life > 0 && p.light.intensity > peak) return;
     p.light.position.set(x, y, z);
     p.light.color.setHex(hex);
     p.light.distance = distance;
     p.light.intensity = peak;
     p.peak = peak;
     p.age = 0;
-    p.life = Math.min(life, 0.08);
+    p.life = Math.min(life, 0.14);
   }
 
   step(dt: number) {
@@ -538,6 +563,8 @@ export class FxContext {
   readonly sprites: SpritePool;
   readonly lights: LightPulses;
   readonly decals = new DecalManager();
+  // Rail trails, built on the first beam (scenes without a railgun never pay).
+  private railBeams: RailBeams | null = null;
   time = 0; // seconds since creation (drives decal ageing on the GPU)
   frame = 0;
   quality = -1;
@@ -557,6 +584,19 @@ export class FxContext {
     this.applyQuality(fxQuality);
   }
 
+  get beams(): RailBeams {
+    if (!this.railBeams) {
+      this.railBeams = new RailBeams();
+      this.railBeams.setQuality(this.quality < 0 ? fxQuality : this.quality);
+      this.group.add(this.railBeams.group);
+    }
+    return this.railBeams;
+  }
+
+  clearBeams() {
+    this.railBeams?.clear();
+  }
+
   step(dt: number) {
     dt = Math.max(0, Math.min(MAX_DT, dt));
     if (this.quality !== fxQuality) this.applyQuality(fxQuality);
@@ -565,6 +605,7 @@ export class FxContext {
     this.pool.step(dt);
     this.sprites.step(dt, this.frame);
     this.lights.step(dt);
+    this.railBeams?.step(dt);
     this.decals.setTime(this.time);
   }
 
@@ -572,6 +613,7 @@ export class FxContext {
     this.quality = q;
     this.decals.setQuality(q);
     this.lights.setEnabled(q >= 0.99);
+    this.railBeams?.setQuality(q);
   }
 
   clear() {
@@ -579,6 +621,7 @@ export class FxContext {
     this.sprites.clear();
     this.lights.clear();
     this.decals.clear();
+    this.railBeams?.clear();
   }
 
   dispose() {
@@ -588,6 +631,8 @@ export class FxContext {
     this.sprites.dispose();
     this.pool.dispose();
     this.decals.dispose();
+    this.railBeams?.dispose();
+    this.railBeams = null;
   }
 }
 
