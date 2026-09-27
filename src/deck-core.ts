@@ -75,6 +75,14 @@ export function sfxProps(sound: UiSoundName | 'none' = 'uiClick'): {
 // only honoured by the topmost entry, so a nested modal (Settings → Feedback,
 // Weekly → replay viewer) never closes or fights the one under it.
 const modalStack: object[] = [];
+const modalListeners = new Set<() => void>();
+let modalDepth = 0;
+
+function setModalDepth(n: number) {
+  if (n === modalDepth) return;
+  modalDepth = n;
+  for (const l of modalListeners) l();
+}
 
 export function useModalStack(): () => boolean {
   const token = useRef<object | null>(null);
@@ -82,12 +90,29 @@ export function useModalStack(): () => boolean {
   useEffect(() => {
     const t = token.current as object;
     modalStack.push(t);
+    setModalDepth(modalStack.length);
     return () => {
       const i = modalStack.lastIndexOf(t);
       if (i >= 0) modalStack.splice(i, 1);
+      setModalDepth(modalStack.length);
     };
   }, []);
   return useCallback(() => modalStack[modalStack.length - 1] === token.current, []);
+}
+
+function subscribeModals(l: () => void) {
+  modalListeners.add(l);
+  return () => {
+    modalListeners.delete(l);
+  };
+}
+
+const getModalOpen = () => modalDepth > 0;
+
+// True while any deck dialog is open anywhere — the live menu backdrop pauses
+// under a modal (it is mostly hidden by the dim sheet anyway).
+export function useAnyModalOpen(): boolean {
+  return useSyncExternalStore(subscribeModals, getModalOpen, getModalOpen);
 }
 
 /* ── Menu toasts ────────────────────────────────────────────────────────── */

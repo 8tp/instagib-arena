@@ -20,22 +20,20 @@ const Loading = () => (
   <div
     role='status'
     aria-live='polite'
-    className='deck-bg fixed inset-0 flex flex-col items-center justify-center text-white'
+    className='menu-root fixed inset-0 flex flex-col items-center justify-center text-white'
   >
-    <div className='deck-scan pointer-events-none absolute inset-0' aria-hidden='true' />
-    <svg viewBox='0 0 32 32' width='40' height='40' aria-hidden='true' className='deck-pulse text-cyan-300'>
-      <circle cx='16' cy='16' r='9' fill='none' stroke='currentColor' strokeWidth='2' />
-      <line x1='16' y1='3' x2='16' y2='11' stroke='currentColor' strokeWidth='2' />
-      <line x1='16' y1='21' x2='16' y2='29' stroke='currentColor' strokeWidth='2' />
-      <line x1='3' y1='16' x2='11' y2='16' stroke='currentColor' strokeWidth='2' />
-      <line x1='21' y1='16' x2='29' y2='16' stroke='currentColor' strokeWidth='2' />
-      <circle cx='16' cy='16' r='1.6' fill='currentColor' />
-    </svg>
-    <div className='mt-5 font-display text-2xl font-bold uppercase leading-none tracking-[0.3em]'>
-      Instagib <span className='text-cyan-300'>Arena</span>
+    {/* The menu's wordmark (same classes), so the hand-off reads as one screen. */}
+    <div className='menu-wordmark items-center text-center'>
+      <span className='menu-wordmark-main' style={{ fontSize: 'clamp(2.75rem, 6vw, 4.5rem)' }}>
+        Instagib
+      </span>
+      <span className='menu-wordmark-sub justify-center'>
+        <span aria-hidden='true' className='menu-beam' />
+        <span>Arena</span>
+      </span>
     </div>
-    <div className='mt-3 font-mono text-[10px] uppercase tracking-[0.3em] text-white/40'>Loading arena</div>
-    <div className='deck-loader-bar mt-6 w-48' aria-hidden='true' />
+    <div className='mt-8 font-mono text-[10px] uppercase tracking-[0.3em] text-white/45'>Loading</div>
+    <div className='deck-loader-bar mt-3 w-48' aria-hidden='true' />
   </div>
 );
 
