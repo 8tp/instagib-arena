@@ -86,8 +86,11 @@ export class Railgun {
 
   step(dt: number, scene: THREE.Scene) {
     if (this.cooldown > 0) this.cooldown = Math.max(0, this.cooldown - dt);
-    // Publish the recharge for the first-person coils. Only the gun that fired
-    // last owns the shared state, so an idle instance can't overwrite it.
+    // Publish the recharge for the first-person coils. The gun that fired last
+    // owns the shared state (an idle second instance can't overwrite it); an
+    // unowned state (fresh page, or the previous match's gun was disposed) is
+    // claimed by the first gun that steps.
+    if (localRail.owner === null) localRail.owner = this;
     if (localRail.owner === this) localRail.charge = this.charge;
     // Trails + impact sparks live in the shared FX context, normally stepped by
     // the scene's EffectsManager; step it here only when nobody else does.
@@ -213,8 +216,13 @@ export class Railgun {
     }
   }
 
-  // Clears every live trail in the scene (map switch / teardown).
+  // Clears every live trail in the scene (map switch / teardown) and releases
+  // the shared coil state so the next gun starts from a full charge.
   disposeAll(scene: THREE.Scene) {
     peekFxContext(scene)?.clearBeams();
+    if (localRail.owner === this) {
+      localRail.owner = null;
+      localRail.charge = 1;
+    }
   }
 }

@@ -8,7 +8,8 @@ import type * as THREE from 'three';
 //
 //  • `charge` 0…1 (0 = just fired, 1 = ready) — written by the Railgun that
 //    last fired a real shot (so a second, idle Railgun instance elsewhere can
-//    never overwrite it).
+//    never overwrite it); unowned, the first Railgun that steps claims it, and
+//    Railgun.disposeAll releases it back to a full charge.
 //  • `shots` bumps on every real local shot — the coils flash on a change, even
 //    when the training range zeroes the cooldown straight after the shot.
 //  • `muzzle` — the first-person viewmodel's barrel-tip marker, registered each
