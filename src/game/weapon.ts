@@ -3,7 +3,7 @@ import { RAIL_COOLDOWN, RAIL_CORE_COLOR, RAIL_HELIX_COLOR, RAIL_RANGE } from './
 import { spawnRailImpact } from './effects';
 import { getFxContext, peekFxContext } from './fx-pool';
 import { liveViewmodelMuzzle, localRail } from './fx/rail-state';
-import { rayAabb, rayAabbNormal, type ArenaMap } from './map';
+import { mapVisualTop, rayAabb, rayAabbNormal, type ArenaMap } from './map';
 import type { AABB, Vec3 } from './types';
 
 // Rail trails are pooled per scene (fx/rail-beam.ts, owned by the scene's
@@ -36,9 +36,12 @@ function resolveImpactFace(origin: THREE.Vector3, end: THREE.Vector3, map: Arena
       nx = hit.normal.x; ny = hit.normal.y; nz = hit.normal.z;
     }
   }
-  if (idx < 0 || (idx === 1 && map.openTop)) return -1;
+  if (idx < 0) return -1;
   // `t` is in units of |d|, so t ≈ 1 means the beam ends exactly on the face.
   if (Math.abs(best - 1) * len > 0.08) return -1;
+  // Not on a DRAWN surface: the undrawn ceiling of an open-sky arena, or the
+  // invisible upper part of a sky-brush perimeter wall (see mapVisualTop).
+  if (end.y > mapVisualTop(map, idx) + 0.02) return -1;
   tmpNormal.set(nx, ny, nz);
   return idx;
 }
@@ -162,7 +165,9 @@ export class Railgun {
     // The player's OWN beam uses their equipped rail colors. The impact only
     // plays on a real, drawn wall — not at max range, and not on the
     // invisible ceiling that caps open-top arenas.
-    const drawnWall = wallIdx >= 0 && !(wallIdx === 1 && surface?.openTop);
+    const drawnWall =
+      wallIdx >= 0 &&
+      (surface ? end.y <= mapVisualTop(surface, wallIdx) + 0.02 : true); // not sky / sky-brush wall
     const start = liveViewmodelMuzzle(tmpMuzzle) ? tmpMuzzle : (beamOrigin ?? origin);
     this.spawnBeamAt(
       start,
