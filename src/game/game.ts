@@ -39,6 +39,7 @@ import {
   PLAYER_HEIGHT,
   PLAYER_RADIUS,
   KILL_FLASH_DURATION_SEC,
+  RAIL_COOLDOWN,
   RAIL_RANGE,
   SHAKE_DEATH,
   SHAKE_FIRE,
@@ -121,7 +122,7 @@ import {
   SHADOW_TUNING,
   type PostFxOptions,
 } from './renderer';
-import { buildRailgun } from './weapon-model';
+import { buildRailgun, type RailgunModel } from './weapon-model';
 import { POS_FLAG_HOLD } from './netcodec';
 import { ViewmodelMotion } from './viewmodel-motion';
 import type {
@@ -428,6 +429,10 @@ export class Game {
   // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
   // so it never blocks the crosshair; user offset + hide applied on top.
   private viewmodel: THREE.Group | null = null;
+  // The viewmodel's coil driver + when the WATCHED player last fired, so a
+  // spectator's coils show their gun's recharge instead of a permanent "ready".
+  private viewmodelRail: RailgunModel | null = null;
+  private spectatedShotMs = -1e9;
   private viewmodelGlow: THREE.MeshStandardMaterial | null = null;
   private viewmodelOffset = { x: 0, y: 0, z: 0 };
   private hideViewmodel = false;
@@ -867,6 +872,7 @@ export class Game {
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
     const vm = buildRailgun(finish);
+    this.viewmodelRail = vm;
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
@@ -1311,6 +1317,12 @@ export class Game {
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
     const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
     this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map);
+    // Their discharge flash at the muzzle, in their rail colour.
+    this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
+    if (this.spectator && b.id === this.spectatedId) {
+      this.spectatedShotMs = performance.now();
+      this.viewmodelRail?.notifyFire();
+    }
     // Spatialized fire SFX at the shot's origin — HRTF-panned + distance-faded by
     // the audio listener, so you can hear which direction a shot came from.
     this.audio.playAt('fire', b.ox, b.oy, b.oz, 0.5);
@@ -1464,19 +1476,6 @@ export class Game {
     }
     this.onNetEvent({ type: 'ranked-result', result: r, won: r.won });
     this.emitHud();
-  }
-
-  // On-screen bearing to the killer at death: 0 = dead ahead, +π/2 = your right.
-  // Uses your view yaw + the death position so the killcam can draw a "shot came
-  // from here" arrow. forward = (-sin yaw,-cos yaw), right = (cos yaw,-sin yaw).
-  private killDirAngle(killerPos: { x: number; z: number }, fromPos: { x: number; z: number }): number {
-    const dx = killerPos.x - fromPos.x;
-    const dz = killerPos.z - fromPos.z;
-    if (Math.hypot(dx, dz) < 1e-3) return 0;
-    const yaw = this.player.yaw;
-    const vf = dx * -Math.sin(yaw) + dz * -Math.cos(yaw);
-    const vr = dx * Math.cos(yaw) + dz * -Math.sin(yaw);
-    return Math.atan2(vr, vf);
   }
 
   // TDM team highlight: friendlies green, foes wear their team color. Returns
@@ -1871,6 +1870,7 @@ export class Game {
       this.weapon.step(dt, this.scene);
       this.effects.step(dt, this.scene);
       this.updateSpectatedTarget();
+      this.viewmodelRail?.setCharge(Math.min(1, (performance.now() - this.spectatedShotMs) / (RAIL_COOLDOWN * 1000)));
       return;
     }
     if (!this.locked || this.matchOver) return;
@@ -2340,6 +2340,7 @@ export class Game {
     // Visible beam to the impact point (enemy fire reveals positions).
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
     this.weapon.spawnBeam(origin, end, this.scene, undefined, undefined, this.map);
+    this.effects.spawnMuzzleFlash(this.scene, origin, undefined, dir);
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },
@@ -2424,7 +2425,6 @@ export class Game {
       deathPos,
       remaining: KILLCAM_DURATION_SEC,
       total: KILLCAM_DURATION_SEC,
-      dirAngle: bot ? this.killDirAngle(bot.state.pos, deathPos) : undefined,
     };
     if (bot) {
       this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
@@ -2769,7 +2769,6 @@ export class Game {
         remaining: KILLCAM_DURATION_SEC,
         total: KILLCAM_DURATION_SEC,
         killerCard: ev.killerCard,
-        dirAngle: killer ? this.killDirAngle(killer.group.position, deathPos) : undefined,
       };
       // Initialize the killcam's smoothed look-at near the killer's
       // current position so we don't whip from origin on the first

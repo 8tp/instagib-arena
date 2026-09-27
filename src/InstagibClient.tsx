@@ -3316,22 +3316,6 @@ const KillcamCard = memo(function KillcamCard({
             'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
         }}
       />
-      {cam.dirAngle !== undefined && (
-        // Directional "the shot came from here" arrow, rotated around screen
-        // center toward the killer (0 = dead ahead, clockwise). Teaches new
-        // players where they're being picked off from.
-        <div
-          className='pointer-events-none absolute left-1/2 top-1/2'
-          style={{ transform: `translate(-50%,-50%) rotate(${cam.dirAngle}rad)` }}
-        >
-          <div
-            className='text-3xl leading-none text-rose-400'
-            style={{ transform: 'translateY(-128px)', filter: 'drop-shadow(0 0 8px rgba(244,63,94,0.85))' }}
-          >
-            ▲
-          </div>
-        </div>
-      )}
       {/* Lower third: the killcam frames the killer at centre with their
           nameplate above — the print must not sit on either. */}
       <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
