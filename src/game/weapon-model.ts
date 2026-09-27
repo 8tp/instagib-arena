@@ -256,13 +256,17 @@ class CoilDriver {
     // the coils refill one after another, front (muzzle) to back.
     const fill = Math.max(0, Math.min(1, (charge - 0.12) / 0.86));
     const n = this.coils.length;
+    const t = now / 1000;
     for (let i = 0; i < n; i++) {
       const p = Math.max(0, Math.min(1, fill * n - i));
       const level = p * p * (3 - 2 * p);
       const edge = p > 0 && p < 1 ? 4 * p * (1 - p) : 0;
+      // Charged coils carry a faint wave running back along the barrel, so a
+      // ready gun reads as live energy rather than a static light.
+      const hum = 1 + 0.09 * level * Math.sin(t * 5.2 - i * 0.9);
       const mat = this.coils[i];
       mat.emissiveIntensity =
-        COIL_DARK + (COIL_REST - COIL_DARK) * level + COIL_EDGE * edge + COIL_FLASH * flash + COIL_READY * ready;
+        (COIL_DARK + (COIL_REST - COIL_DARK) * level) * hum + COIL_EDGE * edge + COIL_FLASH * flash + COIL_READY * ready;
       const h = Math.min(1, flash * 1.4 + edge * 0.7 + ready * 0.8);
       mat.emissive.copy(this.accent).lerp(this.hot, h);
     }
@@ -518,6 +522,7 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
   // follow the shared local-rail charge unless driven explicitly.
   const driver = hi ? new CoilDriver(coilMats, mats.cap as THREE.MeshStandardMaterial, accent, accentHot) : null;
   if (driver && anchor) {
+    anchor.frustumCulled = false; // the hook must run even if the body is off-frame
     anchor.onBeforeRender = () => {
       const parent = group.parent as (THREE.Object3D & { isCamera?: boolean }) | null;
       const isViewmodel = !!parent?.isCamera;
@@ -547,6 +552,13 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
       driver.fire(nowMs());
     },
   };
+}
+
+// Third-person gun for a character's hand socket: the low-detail build in the
+// same model space (grip at the origin, barrel down -Z, metres — see the
+// convention at the top). Parent `.group` to the socket and scale it there.
+export function buildThirdPersonRailgun(finish?: RailgunFinish): RailgunModel {
+  return buildRailgun(finish, { lod: 'low' });
 }
 
 // Discharge flare mesh: one disc facing along the bore (the star) + two crossed
@@ -579,7 +591,7 @@ export function attachRailgunToSoldier(
   height = 1.8,
   finish?: RailgunFinish,
 ): THREE.Group {
-  const model = buildRailgun(finish, { lod: 'low' });
+  const model = buildThirdPersonRailgun(finish);
   const { group } = model;
   group.userData.railgun = model;
 
