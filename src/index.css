@@ -1079,6 +1079,14 @@ canvas {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(6, 8, 11, 0.86);
 }
+/* Narrow screens: the open dock overlays the menu column itself, so it must
+   be opaque (at 86% the PLAY button and menu text bled through). */
+@media (max-width: 1023px) {
+  .menu-dock {
+    background: rgb(6, 8, 11);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  }
+}
 
 @keyframes menu-in {
   from {

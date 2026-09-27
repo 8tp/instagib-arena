@@ -498,7 +498,7 @@ export class Game {
     // WebGL context loss (GPU reset, driver hiccup, backgrounded low-VRAM tab):
     // preventDefault keeps the context recoverable; we pause GL rendering and
     // tell the player, then resume automatically when it's restored.
-    this.canvas.addEventListener('webglcontextlost', (e) => {
+    this.onContextLost = (e: Event) => {
       e.preventDefault();
       this.contextLost = true;
       this.banner = {
@@ -510,12 +510,17 @@ export class Game {
         total: 999,
       };
       this.emitHud();
-    });
-    this.canvas.addEventListener('webglcontextrestored', () => {
+    };
+    this.onContextRestored = () => {
       this.contextLost = false;
       this.banner = null;
       this.emitHud();
-    });
+    };
+    // Removed in dispose(): a session-cached texture keeps a listener into each
+    // old renderer → its context → this canvas, so a canvas listener closing
+    // over `this` kept every finished match's whole Game alive (Play Again leak).
+    this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.addEventListener('webglcontextrestored', this.onContextRestored);
     this.mapMesh = buildMapMesh(this.map);
     applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
@@ -1138,6 +1143,8 @@ export class Game {
     this.tickFn = null;
     this.input.detach();
     window.removeEventListener('resize', this.resizeHandler);
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.replay?.dispose();
     this.replay = null;
     this.replaySegments = [];
@@ -1586,6 +1593,8 @@ export class Game {
   }
 
   private lastFrameErrorMs = -Infinity;
+  private onContextLost: (e: Event) => void = () => {};
+  private onContextRestored: () => void = () => {};
 
   private frame(now: number) {
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
@@ -1742,7 +1751,9 @@ export class Game {
           this.scene,
           rp.group.position,
           spawnEffectById(rp.equippedSpawnEffect).style,
-          this.spectator && id === this.spectatedId, // watched in first person
+          // Watched in first person, or materialising on top of us: no column
+          // around the camera.
+          (this.spectator && id === this.spectatedId) || this.nearCamera(rp.group.position),
         );
       }
       rp.setInvuln(snap.invulnMs);
@@ -2036,6 +2047,7 @@ export class Game {
               this.scene,
               new THREE.Vector3(b.state.pos.x, b.state.pos.y, b.state.pos.z),
               style,
+              this.nearCamera(b.state.pos), // a bot spawning on top of us: no column around the camera
             );
           }
           this.botAlive.set(b.state.id, b.state.alive);
@@ -3008,6 +3020,12 @@ export class Game {
     if (Math.random() > SPAWN_LINE_CHANCE) return;
     this.lastSpawnLine = this.elapsed;
     this.audio.play('spawn', 1);
+  }
+
+  // Within ~1.5 m (horizontally) of the local player — a spawn effect there
+  // would engulf the first-person camera.
+  private nearCamera(p: { x: number; z: number }): boolean {
+    return Math.hypot(p.x - this.player.pos.x, p.z - this.player.pos.z) < 1.5;
   }
 
   private playLocalSpawnEffect() {

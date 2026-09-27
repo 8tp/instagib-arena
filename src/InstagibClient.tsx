@@ -1075,7 +1075,9 @@ function GameView({
         setJoinError(
           ev.reason === 'full'
             ? 'That lobby is full.'
-            : 'That lobby no longer exists.',
+            : ev.reason === 'afk'
+              ? 'You were removed from the match for inactivity.'
+              : 'That lobby no longer exists.',
         );
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);

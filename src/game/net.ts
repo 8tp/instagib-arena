@@ -438,6 +438,8 @@ export class NetClient {
   // Resume token from the last welcome — kept across reconnects so we can reclaim
   // our in-match slot + score instead of re-joining fresh (zeroed).
   private resumeToken: string | null = null;
+  // Set when the server removed us (AFK kick): no auto-reconnect.
+  private noReconnect = false;
 
   constructor(opts: {
     url: string;
@@ -525,6 +527,10 @@ export class NetClient {
     this.reconnectTimer = null;
     this.stopPing();
     if (this.ws) {
+      // Tell the server we're leaving so the slot frees now — a bare close
+      // holds it for the resume grace (the room showed a ghost for ~20 s and
+      // a Duel forfeit waited on it).
+      if (this.ws.readyState === WebSocket.OPEN) this.send({ type: 'leave' });
       this.ws.onopen = null;
       this.ws.onmessage = null;
       this.ws.onclose = null;
@@ -1084,6 +1090,16 @@ export class NetClient {
       this.events.onJoinFailed?.(msg.reason);
       return;
     }
+    if (msg.type === 'error') {
+      // The server kicked us (AFK) and is closing the socket. Don't auto-
+      // reconnect — that silently rejoined as a fresh player, undoing the kick
+      // (and in a Duel re-entered the room after the forfeit).
+      if (/inactivity/i.test(msg.message ?? '')) {
+        this.noReconnect = true;
+        this.events.onJoinFailed?.('afk');
+      }
+      return;
+    }
     if (msg.type === 'spectating') {
       this.mode = msg.mode ?? 'ffa';
       this.events.onSpectating?.({ mapId: msg.mapId, mode: this.mode, state: msg.state });
@@ -1155,7 +1171,7 @@ export class NetClient {
   }
 
   private scheduleReconnect() {
-    if (this.disposed) return;
+    if (this.disposed || this.noReconnect) return;
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

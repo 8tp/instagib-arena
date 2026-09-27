@@ -350,7 +350,7 @@ export class PostFxPipeline {
   ) {
     this.lighting = getArenaLighting(scene) ?? null;
     renderer.shadowMap.enabled = true; // inert until a light casts
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoft is deprecated in r184 (it fell back to PCF anyway)
     this.syncSunBasis();
     const size = renderer.getSize(new THREE.Vector2());
     this.width = Math.max(1, size.x);
