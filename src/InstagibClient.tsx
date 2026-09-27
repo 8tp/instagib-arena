@@ -3330,13 +3330,13 @@ const KillcamCard = memo(function KillcamCard({
           </div>
         </div>
       )}
-      <div className='hud-killcam-card absolute inset-x-0 top-[18%] flex flex-col items-center text-center font-mono'>
-        <div className='text-[10px] uppercase tracking-[0.4em] text-white/55'>
-          You were killed by
-        </div>
+      {/* Lower third: the killcam frames the killer at centre with their
+          nameplate above — the print must not sit on either. */}
+      <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
+        <div className='hud-cprint-sub'>You were fragged by</div>
         <div
-          className='mt-2 text-4xl font-extrabold uppercase tracking-[0.08em] text-rose-300'
-          style={{ filter: 'drop-shadow(0 0 22px rgba(244,63,94,0.55))' }}
+          className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300'
+          style={{ textShadow: '0 3px 0 rgba(0,0,0,0.5), 0 0 24px rgba(244,63,94,0.5)' }}
         >
           {cam.killerName}
         </div>
