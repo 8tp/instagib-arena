@@ -121,6 +121,7 @@ import {
   type PostFxOptions,
 } from './renderer';
 import { buildRailgun } from './weapon-model';
+import { POS_FLAG_HOLD } from './netcodec';
 import { ViewmodelMotion } from './viewmodel-motion';
 import type {
   AABB,
@@ -329,6 +330,17 @@ export class Game {
   // instead of the local player's; cleared outside spectator mode.
   private viewmodelFinishOverride: string | null = null;
   private posSendAccumMs = 0;
+  // 64Hz simulation tick clock stamped on every position upload (see
+  // net.sendPosition / BIN_POS_TICK) so the server replays our motion on our
+  // own sim timeline, not its arrival times. Counts sim steps; re-synced forward
+  // when the loop drops time (hidden tab, a hitch past the 5-step cap).
+  private simTick = 0;
+  private simEpochMs = -1;
+  private lastSentTick = -1;
+  // The last upload carried a changed pose. Dedup sends one UNCHANGED pose after
+  // movement stops before going quiet, so the server sees the stop as zero
+  // velocity and its short late-burst extrapolation can't coast past it.
+  private lastSentMoved = false;
   // The local player's sim position at the start of the most recent sim step, so
   // render() can interpolate the camera between the last two 64Hz sim states by
   // the leftover accumulator fraction. Without this the camera translates in
@@ -1791,6 +1803,11 @@ export class Game {
   }
 
   private simStep(dt: number) {
+    const nowTickMs = performance.now();
+    if (this.simEpochMs < 0) this.simEpochMs = nowTickMs;
+    this.simTick += 1;
+    const wallTick = Math.floor((nowTickMs - this.simEpochMs) / (TICK_DT * 1000));
+    if (wallTick - this.simTick > 2) this.simTick = wallTick;
     // Spectators have no local player and never pointer-lock: just age the
     // weapon beams + effects so the watched match's visuals decay normally, and
     // keep the watched-player selection valid.
@@ -1925,8 +1942,14 @@ export class Game {
           Math.abs(this.player.yaw - this.lastSentYaw) > YAW_EPSILON ||
           Math.abs(this.player.pitch - this.lastSentPitch) > YAW_EPSILON;
         const nowMs = performance.now();
-        if (moved || nowMs - this.lastPosSentMs >= POS_HEARTBEAT_MS) {
-          this.net.sendPosition(p.x, p.y, p.z, this.player.yaw, this.player.pitch);
+        if (moved || this.lastSentMoved || nowMs - this.lastPosSentMs >= POS_HEARTBEAT_MS) {
+          this.lastSentMoved = moved;
+          // HOLD: the ticks since the last upload were skipped because nothing
+          // changed (dedup / paused / frozen sim), so the server holds the
+          // previous pose across the gap instead of gliding through it.
+          const flags = this.lastSentTick >= 0 && this.simTick - this.lastSentTick > 1 ? POS_FLAG_HOLD : 0;
+          this.net.sendPosition(p.x, p.y, p.z, this.player.yaw, this.player.pitch, this.simTick, flags);
+          this.lastSentTick = this.simTick;
           this.lastSentPos.x = p.x;
           this.lastSentPos.y = p.y;
           this.lastSentPos.z = p.z;

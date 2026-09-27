@@ -21,6 +21,7 @@ import {
   MATCH_FRAG_LIMIT,
   RAIL_COOLDOWN,
   MAX_HORIZONTAL_SPEED,
+  TICK_HZ,
   EYE_HEIGHT,
   DUEL_FRAG_LIMIT,
   RANKED_DUEL_FRAG_LIMIT,
@@ -59,7 +60,14 @@ import {
   isUnusual,
   titleById,
 } from '../src/game/cosmetics';
-import { encodeState, decodePos, quantizeStateCoord, toView, type BinStatePlayer } from '../src/game/netcodec';
+import {
+  encodeState,
+  decodePos,
+  quantizeStateCoord,
+  toView,
+  POS_FLAG_HOLD,
+  type BinStatePlayer,
+} from '../src/game/netcodec';
 import {
   findUserById,
   getRankedProfile,
@@ -150,7 +158,49 @@ const HISTORY_MS = 1_000; // how far back we keep position history for rewind
 const POS_LAG_MS = 20; // floor: minimal resample delay for a clean, steady sender
 const POS_LAG_MAX_MS = 180; // ceiling: even a very bursty sender isn't delayed past this
 const POS_LAG_JITTER_K = 2.5; // how many σ of a sender's arrival-jitter to buffer
-const POS_SAMPLE_WINDOW_MS = 300; // received-pos buffer retention
+const POS_SAMPLE_WINDOW_MS = 300; // received-pos buffer retention (legacy, receive-time stamped)
+// ── Tick-stamped uploads (BIN_POS_TICK) ──────────────────────────────────
+// A current client stamps every upload with its 64Hz simulation tick. Receive-
+// time stamping (above) bakes the sender's FRAME timing into the motion: the
+// client steps its sim inside requestAnimationFrame, so on a 60Hz display every
+// ~16th frame runs two ticks and flushes two uploads together, on 144Hz the
+// gaps alternate ~14/21ms, and any hitch flushes 2–5 at once. Stamped by
+// arrival, each flush reads as "no time passed, then a jump" and every viewer
+// sees that player micro-stutter, even at 20ms ping. Stamped by tick, samples
+// are exactly 15.625ms apart on the sender's own timeline, whatever the frame
+// pacing or the network did.
+//
+// The snapshot tick then plays each sender's timeline back at
+//   simTime = now − playoutMs
+// where playoutMs covers the 95th percentile of their recent arrival lateness
+// (arrival − sim time, over a ~2.5s window) + one tick, so the sample after the
+// playout point has almost always arrived (interpolation). The rare late ones —
+// a GC pause or long frame on the sender, flushed as a burst — are bridged by a
+// short capped extrapolation instead of raising everyone's view of that player
+// by the hitch (a rolling MAX doubled the delay for a routine 45ms hitch).
+// Clients send one unchanged sample before going quiet, so a stop is always
+// visible as zero velocity and extrapolation never runs past it. playoutMs
+// slews toward its target at a bounded rate — asymmetric: rises quickly for a
+// sender that turns bursty, relaxes slowly — and snaps only on a large
+// discontinuity, so playback speed never wobbles with arrival timing.
+const TICK_MS = 1000 / TICK_HZ;
+const POS_TICK_SAMPLE_WINDOW_MS = 600; // sample retention on the sim timeline
+const POS_LATE_WINDOW = 160; // lateness samples kept (~2.5s at 64Hz)
+const POS_LATE_PERCENTILE = 0.95;
+const POS_LATE_RECOMPUTE_MS = 250;
+const POS_EXTRAP_MAX_MS = 48; // bridge at most 3 ticks past the newest sample
+const POS_PLAYOUT_MARGIN_MS = 2;
+const POS_PLAYOUT_TICKS = 0.5; // headroom past the lateness target (the rest is bridged by extrapolation)
+const POS_PLAYOUT_RISE_MS_PER_S = 80; // ≤8% slow-down while absorbing a burstier sender
+const POS_PLAYOUT_FALL_MS_PER_S = 20; // ≤2% speed-up while relaxing
+const POS_PLAYOUT_SNAP_MS = 400; // beyond any stall the cap allows: a real discontinuity, snap once
+const POS_PLAYOUT_EXTRA_MAX_MS = 200; // max playout above the newest upload's lateness
+// Anti-speedhack for tick-stamped uploads: a client's sim clock may not run
+// ahead of the fastest lead (sim time − arrival time) it has shown, beyond this
+// slack plus a small drift allowance — so a modified client can bank at most
+// ~a quarter second, and can't move faster by claiming more elapsed ticks.
+const POS_LEAD_SLACK_MS = 250;
+const POS_LEAD_DRIFT_PER_S = 1; // ms/s the lead baseline may creep (clock drift)
 const POS_RESAMPLE_TELEPORT = 5; // m between adjacent samples above which we DON'T lerp (respawn)
 const MAX_REWIND_MS = 350; // clamp how far a shot may rewind targets
 const DEFAULT_CAPACITY = 8;
@@ -183,8 +233,23 @@ type Vec = Vec3;
 type ClientId = string;
 type RoomId = string;
 type HistorySample = { t: number; x: number; y: number; z: number };
-// Received-pos sample (RECEIVE-time stamped) used to resample to snapshot time.
+// Received-pos sample used to resample to snapshot time. `t` is the RECEIVE
+// time for legacy uploads, or the sender's SIM time (tick × TICK_MS) for
+// tick-stamped ones — see PosTimeline.
 type PosSample = { t: number; x: number; y: number; z: number; yaw: number };
+// Per-sender playback state for tick-stamped uploads (see TICK_MS above).
+type PosTimeline = {
+  lastTick: number; // last accepted sim tick (-1 = none yet → legacy path until one arrives)
+  lastArrival: number; // server ms of the last accepted upload
+  leadBase: number; // anti-speedhack baseline of (sim ms − arrival ms)
+  late: Float64Array; // ring of recent (arrival ms − sim ms)
+  lateCount: number;
+  lateIdx: number;
+  lateTarget: number; // POS_LATE_PERCENTILE of the ring, refreshed every POS_LATE_RECOMPUTE_MS
+  lateRecomputeAt: number;
+  lastLate: number; // lateness of the newest upload
+  playoutMs: number; // APPLIED offset: render the sim time now − playoutMs (0 = unseeded)
+};
 
 type ClientRecord = {
   id: ClientId;
@@ -215,7 +280,8 @@ type ClientRecord = {
   chatWindowStart: number; // global-chat rate window start
   chatCount: number; // chat messages sent in the current window
   history: HistorySample[]; // ascending by t (RESAMPLED positions — see snapshot tick)
-  posSamples: PosSample[]; // received-pos buffer (receive-time stamped) for resampling
+  posSamples: PosSample[]; // received-pos buffer (receive- or sim-time stamped) for resampling
+  posTl: PosTimeline; // tick-stamped playback timeline (unused by legacy uploads)
   renderPos: { x: number; y: number; z: number; yaw: number }; // resampled pos for snapshot + history
   posGapEma: number; // EMA of inter-arrival gap of this player's pos (while moving)
   posGapJitterEma: number; // EMA of that gap's deviation → sizes their adaptive resample lag
@@ -296,7 +362,7 @@ type ClientMessage =
   | { type: 'crosshair'; code?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'chat'; text?: string }
-  | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number }
+  | { type: 'pos'; x: number; y: number; z: number; yaw: number; pitch?: number; tick?: number; flags?: number }
   | { type: 'ping'; ts: number; rtt?: number }
   | {
       type: 'shoot';
@@ -414,6 +480,21 @@ function genId(len = 8): ClientId {
 
 // Cryptographically-strong token for slot reclaim — it's the only secret
 // guarding the resume path, so it must not come from predictable Math.random().
+function newPosTimeline(): PosTimeline {
+  return {
+    lastTick: -1,
+    lastArrival: 0,
+    leadBase: 0,
+    late: new Float64Array(POS_LATE_WINDOW),
+    lateCount: 0,
+    lateIdx: 0,
+    lateTarget: 0,
+    lateRecomputeAt: 0,
+    lastLate: 0,
+    playoutMs: 0,
+  };
+}
+
 function genToken(): string {
   return randomBytes(24).toString('base64url');
 }
@@ -598,7 +679,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const data = Array.isArray(raw) ? Buffer.concat(raw as Buffer[]) : (raw as Buffer);
     const p = decodePos(toView(data));
     if (!p) return null; // unknown/garbage binary → ignore
-    return { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+    return { type: 'pos', x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch, tick: p.tick, flags: p.flags };
   };
 
   // Fan one server→client state frame out to a single client. Backpressure: a
@@ -868,6 +949,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.deaths = 0;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS;
     record.history.length = 0;
+    resetPosTimeline(record);
     sendRaw(record.socket, {
       type: 'joined',
       roomId: room.id,
@@ -927,6 +1009,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.card = old.card;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
     record.history.length = 0;
+    resetPosTimeline(record);
     // Hand the old slot's room bookkeeping to the new id.
     room.members.delete(old.id);
     room.members.add(record.id);
@@ -1153,6 +1236,46 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (room) broadcastMeta(room);
   };
 
+  // Record a tick-stamped sender's arrival lateness; a few times a second,
+  // refresh their percentile target (one shared scratch buffer — no allocation).
+  const lateScratch = new Float64Array(POS_LATE_WINDOW);
+  const noteLateness = (tl: PosTimeline, arrival: number, late: number): void => {
+    tl.late[tl.lateIdx] = late;
+    tl.lateIdx = (tl.lateIdx + 1) % POS_LATE_WINDOW;
+    if (tl.lateCount < POS_LATE_WINDOW) tl.lateCount += 1;
+    tl.lastLate = late;
+    if (tl.lateCount === 1) tl.lateTarget = late;
+    if (arrival < tl.lateRecomputeAt) return;
+    tl.lateRecomputeAt = arrival + POS_LATE_RECOMPUTE_MS;
+    const n = tl.lateCount;
+    const view = lateScratch.subarray(0, n);
+    view.set(tl.late.subarray(0, n));
+    view.sort();
+    tl.lateTarget = view[Math.min(n - 1, Math.floor(n * POS_LATE_PERCENTILE))];
+  };
+  // Advance a sender's applied playout offset toward its target by one snapshot
+  // tick (`dtMs`), at the bounded rates above; returns the sim time to render.
+  const playoutSimTime = (tl: PosTimeline, now: number, dtMs: number): number => {
+    // A lone long stall shouldn't delay this sender for everyone: cap how far
+    // the playout may sit behind their current lateness (it then holds briefly).
+    const late = Math.min(tl.lateTarget, tl.lastLate + POS_PLAYOUT_EXTRA_MAX_MS);
+    const target = late + TICK_MS * POS_PLAYOUT_TICKS + POS_PLAYOUT_MARGIN_MS;
+    if (tl.playoutMs === 0 || Math.abs(target - tl.playoutMs) > POS_PLAYOUT_SNAP_MS) {
+      tl.playoutMs = target;
+    } else if (target > tl.playoutMs) {
+      tl.playoutMs = Math.min(target, tl.playoutMs + (POS_PLAYOUT_RISE_MS_PER_S * dtMs) / 1000);
+    } else {
+      tl.playoutMs = Math.max(target, tl.playoutMs - (POS_PLAYOUT_FALL_MS_PER_S * dtMs) / 1000);
+    }
+    return now - tl.playoutMs;
+  };
+  // Forget a sender's upload timeline (new room / resumed slot): their next
+  // upload re-seeds it.
+  const resetPosTimeline = (c: ClientRecord): void => {
+    c.posSamples.length = 0;
+    c.posTl = newPosTimeline();
+  };
+
   // Resample a received-pos buffer at server-clock time `t` — pure interpolation
   // between the two straddling samples (clamped to the ends). Across a
   // teleport-sized gap (respawn) it returns the newer sample instead of sliding.
@@ -1182,6 +1305,31 @@ export function attachInstagibWs(wss: WebSocketServer) {
     }
     return samples[n - 1];
   };
+
+  // sampleAt for a tick-stamped timeline: past the newest sample (a late burst
+  // from a sender hitch) it extrapolates from the last two samples for at most
+  // POS_EXTRAP_MAX_MS instead of freezing, then holds. A stop is always two
+  // equal samples (clients send one unchanged tick before going quiet), so this
+  // never coasts past where the player actually stopped.
+  const sampleAtTick = (samples: PosSample[], t: number, out: PosSample): PosSample | null => {
+    const n = samples.length;
+    if (n === 0) return null;
+    const b = samples[n - 1];
+    if (t <= b.t || n < 2) return sampleAt(samples, t);
+    const a = samples[n - 2];
+    const span = b.t - a.t;
+    if (span <= 0 || span > TICK_MS * 4 || Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > POS_RESAMPLE_TELEPORT) {
+      return b;
+    }
+    const k = Math.min(t - b.t, POS_EXTRAP_MAX_MS) / span;
+    out.t = t;
+    out.x = b.x + (b.x - a.x) * k;
+    out.y = b.y + (b.y - a.y) * k;
+    out.z = b.z + (b.z - a.z) * k;
+    out.yaw = b.yaw; // angle overshoot reads worse than a still head
+    return out;
+  };
+  const extrapScratch: PosSample = { t: 0, x: 0, y: 0, z: 0, yaw: 0 };
 
   // Interpolate a player's position at a past server-clock time `t`. History now
   // holds RESAMPLED positions (what viewers actually render), so the clamps must
@@ -1602,6 +1750,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       verified: !!account?.isVerified,
       history: [],
       posSamples: [],
+      posTl: newPosTimeline(),
       renderPos: { x: 0, y: 0, z: 0, yaw: 0 },
       posGapEma: 0,
       posGapJitterEma: 0,
@@ -2066,15 +2215,48 @@ export function attachInstagibWs(wss: WebSocketServer) {
             Number.isFinite(msg.z) &&
             Number.isFinite(msg.yaw)
           ) {
+            const tl = record.posTl;
+            const ticked = typeof msg.tick === 'number' && Number.isFinite(msg.tick);
+            const prevPosMs = record.lastPosMs;
+            // Elapsed time for the speed clamp. Tick-stamped uploads use the
+            // sender's exact SIM time: the old receive-time dt read a flush of
+            // several ticks landing ~1ms apart as 100+ m/s and DROPPED legitimate
+            // movement — every double-tick frame, several times a second.
+            let dtSec = (ts - prevPosMs) / 1000;
+            let simMs = ts;
+            let hold: PosSample | null = null;
+            if (ticked) {
+              const tick = msg.tick as number;
+              simMs = tick * TICK_MS;
+              const lead = simMs - ts;
+              if (tl.lastTick >= 0) {
+                if (tick <= tl.lastTick) break; // stale/duplicate (a reordered datagram)
+                // Speedhack guard: the sim clock may not run ahead of the fastest
+                // lead this sender has shown (plus slack + slow drift).
+                const creep = ((ts - tl.lastArrival) / 1000) * POS_LEAD_DRIFT_PER_S;
+                if (lead > tl.leadBase + creep + POS_LEAD_SLACK_MS) break;
+                tl.leadBase = Math.max(tl.leadBase, Math.min(lead, tl.leadBase + creep));
+                dtSec = ((tick - tl.lastTick) * TICK_MS) / 1000;
+                // The sender skipped uploads because nothing changed (or its sim
+                // froze): hold the last pose up to the tick before this one
+                // instead of gliding across the gap.
+                const last = record.posSamples[record.posSamples.length - 1];
+                if (((msg.flags ?? 0) & POS_FLAG_HOLD) !== 0 && tick - tl.lastTick > 1 && last) {
+                  hold = { t: simMs - TICK_MS, x: last.x, y: last.y, z: last.z, yaw: last.yaw };
+                }
+              } else {
+                tl.leadBase = lead;
+                dtSec = 0;
+              }
+            } else {
+              record.lastPosMs = ts;
+            }
             // Speed clamp (#3): reject implausible teleports/speedhacks — these
             // positions feed both the snapshot broadcast and lag-comp rewind, so
             // a spoof would poison what every other player sees + shoots. Skip
             // the first packet after a teleport (history cleared by a server
             // respawn/vote) so legitimate repositions aren't flagged.
-            const prevPosMs = record.lastPosMs;
-            record.lastPosMs = ts;
             if (record.history.length > 0 && prevPosMs > 0) {
-              const dtSec = (ts - prevPosMs) / 1000;
               const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
               const vert = Math.abs(msg.y - record.pos.y);
               // Clamp BOTH axes — vertical was previously untrusted, letting a
@@ -2083,16 +2265,22 @@ export function attachInstagibWs(wss: WebSocketServer) {
                 break; // drop, keep last good pos
               }
             }
+            if (ticked) {
+              tl.lastTick = msg.tick as number;
+              tl.lastArrival = ts;
+              record.lastPosMs = ts;
+              noteLateness(tl, ts, ts - simMs);
+            }
             // Count real movement as activity (resets the AFK timer; pings don't),
             // and break spawn invuln — protection lasts only while you hold still.
             const moved = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
             if (moved > 0.1) {
               record.lastActiveMs = ts;
               if (record.invulnUntilMs > ts) record.invulnUntilMs = 0;
-              // Track this sender's arrival cadence ONLY while moving (idle-dedup
-              // heartbeats would otherwise inflate the gap). Drives their adaptive
-              // resample lag at snapshot time. prevPosMs = the prior receive time.
-              if (prevPosMs > 0) {
+              // Legacy uploads: track this sender's arrival cadence ONLY while
+              // moving (idle-dedup heartbeats would otherwise inflate the gap).
+              // Drives their adaptive resample lag at snapshot time.
+              if (!ticked && prevPosMs > 0) {
                 const gap = ts - prevPosMs;
                 if (gap > 0 && gap < 500) {
                   record.posGapEma =
@@ -2108,10 +2296,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (typeof msg.pitch === 'number' && Number.isFinite(msg.pitch)) {
               record.pitch = msg.pitch;
             }
-            // Buffer the receive-time-stamped sample so the snapshot tick can
-            // resample to a consistent instant (anti-alias — see POS_LAG_MS).
-            record.posSamples.push({ t: ts, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
-            const sCut = ts - POS_SAMPLE_WINDOW_MS;
+            // Buffer the sample (sim- or receive-time stamped) so the snapshot
+            // tick can resample to a consistent instant (see POS_LAG_MS / TICK_MS).
+            if (hold) record.posSamples.push(hold);
+            record.posSamples.push({ t: simMs, x: msg.x, y: msg.y, z: msg.z, yaw: msg.yaw });
+            const sCut = simMs - (ticked ? POS_TICK_SAMPLE_WINDOW_MS : POS_SAMPLE_WINDOW_MS);
             while (record.posSamples.length > 2 && record.posSamples[0].t < sCut) {
               record.posSamples.shift();
             }
@@ -2178,6 +2367,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   const snapshotTimer = setInterval(() => {
     const now = Date.now();
+    const tickDtMs = lastTickAt > 0 ? Math.min(100, now - lastTickAt) : TICK_INTERVAL_MS;
     if (lastTickAt > 0) {
       const lag = Math.max(0, now - lastTickAt - TICK_INTERVAL_MS);
       loopLagEmaMs += (lag - loopLagEmaMs) * 0.1;
@@ -2219,11 +2409,18 @@ export function attachInstagibWs(wss: WebSocketServer) {
         // the raw latest pos until a sample buffer exists (just-joined / respawn).
         // PER-PLAYER lag: buffer a bursty sender enough to stay interpolating
         // (smooth) instead of holding-then-jumping; clean senders get the floor.
-        const lag = Math.max(
-          POS_LAG_MS,
-          Math.min(POS_LAG_MAX_MS, c.posGapEma + POS_LAG_JITTER_K * c.posGapJitterEma),
-        );
-        const sp = sampleAt(c.posSamples, now - lag);
+        let sp: PosSample | null;
+        if (c.posTl.lastTick >= 0) {
+          // Tick-stamped sender: play their own sim timeline back at a bounded-
+          // rate playout offset (see TICK_MS / playoutSimTime).
+          sp = sampleAtTick(c.posSamples, playoutSimTime(c.posTl, now, tickDtMs), extrapScratch);
+        } else {
+          const lag = Math.max(
+            POS_LAG_MS,
+            Math.min(POS_LAG_MAX_MS, c.posGapEma + POS_LAG_JITTER_K * c.posGapJitterEma),
+          );
+          sp = sampleAt(c.posSamples, now - lag);
+        }
         if (sp) {
           c.renderPos.x = sp.x; c.renderPos.y = sp.y; c.renderPos.z = sp.z; c.renderPos.yaw = sp.yaw;
         } else {

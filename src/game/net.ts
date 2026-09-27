@@ -1,6 +1,6 @@
 import type { GameMode } from './constants';
 import type { CardPayload, NetDebugStats } from './types';
-import { decodeState, encodePos, toView } from './netcodec';
+import { decodeState, encodePos, encodePosTick, toView } from './netcodec';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -291,6 +291,32 @@ const interpDelayForPlayerCount = (players: number): number => {
   return INTERP_DELAY_MIN_MS +
     (extraPlayers / (INTERP_DELAY_MAX_PLAYERS - 2)) * (INTERP_DELAY_MAX_MS - INTERP_DELAY_MIN_MS);
 };
+// Ping-aware interpolation delay (the default since the tick-stamped uplink).
+// The fixed delay above ignores the one thing that sets how far behind the
+// snapshot stream really is: this client's own one-way latency. At 20ms ping
+// 110ms was ~70ms of pure lag; at 150ms ping it underran into extrapolation.
+// Instead, measure each snapshot's AGE on arrival (estimatedServerNow − t, in
+// the same clock the delay is applied in, so clock-estimate error cancels),
+// take a robust windowed max (the 3rd-largest of the last ~4s — one lone stall
+// yields a brief extrapolation rather than raising the delay for seconds), and
+// add one snapshot interval + margin. Unlike the reverted adaptive buffer (EMAs
+// of arrival jitter that moved every frame), the target is a windowed statistic
+// and the APPLIED delay moves at a bounded, asymmetric rate: it rises ≤4%
+// (slower playback while absorbing a worse link) and falls ≤1%, so renderT never
+// wobbles with arrival timing. `?interp=fixed` restores the fixed schedule.
+const AGE_WINDOW = 256; // ~4s of 64Hz snapshots
+const AGE_ROBUST_RANK = 3; // use the Nth-largest age in the window
+const AGE_RECOMPUTE_MS = 250;
+const INTERP_ADAPTIVE_MIN_MS = 55;
+const INTERP_ADAPTIVE_MAX_MS = 220; // well under the server's 350ms rewind clamp
+const INTERP_ADAPTIVE_MARGIN_MS = 10;
+const INTERP_SNAPSHOT_MS = 1000 / 64;
+const INTERP_RISE_MS_PER_S = 40;
+const INTERP_FALL_MS_PER_S = 10;
+// Clock sync keeps this many recent pong samples and trusts the one with the
+// lowest RTT (least queueing → the most symmetric, accurate offset), NTP-style,
+// instead of an EMA that averages queueing noise into the offset.
+const CLOCK_SAMPLES = 8;
 // How fast the APPLIED interp delay moves toward the roster-scaled target
 // (ms per second). A roster change used to snap the delay, which shifts renderT
 // by up to 60ms in one frame — every remote visibly hitched on join/leave.
@@ -375,6 +401,19 @@ export class NetClient {
   // INTERP_DELAY_SLEW_MS_PER_S); only the first roster of a connection snaps.
   private interpDelayMs = INTERP_DELAY_MIN_MS;
   private interpDelayTargetMs = INTERP_DELAY_MIN_MS;
+  // Ping-aware delay state (see AGE_WINDOW). `fixedInterp` = the legacy
+  // roster-scaled schedule (`?interp=fixed`).
+  private readonly fixedInterp =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('interp') === 'fixed';
+  private ageRing = new Float32Array(AGE_WINDOW);
+  private ageCount = 0;
+  private ageIdx = 0;
+  private ageTop = new Float32Array(AGE_ROBUST_RANK);
+  private ageRecomputeAt = 0;
+  // Recent pong samples for min-RTT clock sync (ring; rtt = Infinity = empty).
+  private clockRtt = new Float64Array(CLOCK_SAMPLES).fill(Infinity);
+  private clockSample = new Float64Array(CLOCK_SAMPLES);
+  private clockIdx = 0;
   // True when the last interpolate() pass had to EXTRAPOLATE (buffer underrun):
   // the rendered remotes are then ahead of the server's truth, so the Game skips
   // predicted hitmarkers that frame (they'd "hit" something the server won't).
@@ -463,6 +502,8 @@ export class NetClient {
       this.metaById.clear();
       this.lastStatsById.clear();
       this.snapBuffer.length = 0;
+      this.ageCount = 0;
+      this.ageIdx = 0;
       this.stopPing();
       this.setStatus('closed');
       this.scheduleReconnect();
@@ -491,11 +532,17 @@ export class NetClient {
     }
   }
 
-  sendPosition(x: number, y: number, z: number, yaw: number, pitch: number) {
+  // `tick` is the sender's 64Hz simulation tick for this pose; with it the server
+  // stamps the sample on our own sim timeline instead of its arrival time (see
+  // BIN_POS_TICK). `flags` carries POS_FLAG_HOLD when uploads were skipped
+  // because nothing changed. Without a tick, the legacy frame is sent.
+  sendPosition(x: number, y: number, z: number, yaw: number, pitch: number, tick?: number, flags = 0) {
     if (this.spectate) return; // observers have no position
     // The hottest client→server message (64Hz) — a compact binary frame across
     // the transport seam (the server decodes it back to a `pos` message).
-    this.sendUnreliable(encodePos(x, y, z, yaw, pitch));
+    this.sendUnreliable(
+      tick === undefined ? encodePos(x, y, z, yaw, pitch) : encodePosTick(x, y, z, yaw, pitch, tick, flags),
+    );
   }
 
   // ── Transport seam (UDP plan Phase 1 — docs/NETCODE-UDP-PLAN.md §4) ────
@@ -643,6 +690,34 @@ export class NetClient {
     }
   }
 
+  // Record one snapshot's age on arrival and, a few times a second, retarget the
+  // ping-aware interpolation delay from the window's robust max (see AGE_WINDOW).
+  private noteSnapshotAge(ageMs: number, now: number): void {
+    if (this.fixedInterp || !Number.isFinite(ageMs)) return;
+    this.ageRing[this.ageIdx] = ageMs;
+    this.ageIdx = (this.ageIdx + 1) % AGE_WINDOW;
+    if (this.ageCount < AGE_WINDOW) this.ageCount += 1;
+    if (this.ageCount < 32 || now < this.ageRecomputeAt) return; // ~0.5s of data first
+    this.ageRecomputeAt = now + AGE_RECOMPUTE_MS;
+    const top = this.ageTop;
+    top.fill(-Infinity);
+    for (let i = 0; i < this.ageCount; i++) {
+      const a = this.ageRing[i];
+      if (a <= top[AGE_ROBUST_RANK - 1]) continue;
+      let j = AGE_ROBUST_RANK - 1;
+      while (j > 0 && top[j - 1] < a) {
+        top[j] = top[j - 1];
+        j -= 1;
+      }
+      top[j] = a;
+    }
+    const robust = top[AGE_ROBUST_RANK - 1];
+    this.interpDelayTargetMs = Math.max(
+      INTERP_ADAPTIVE_MIN_MS,
+      Math.min(INTERP_ADAPTIVE_MAX_MS, robust + INTERP_SNAPSHOT_MS + INTERP_ADAPTIVE_MARGIN_MS),
+    );
+  }
+
   // Rebuild `remotes` as the interpolated view at (serverNow - interpDelayMs).
   // Call once per render frame before reading positions; `dt` is the real frame
   // delta (s), used to slew the clock smoothly.
@@ -660,8 +735,11 @@ export class NetClient {
     // every remote by the delay delta (a constant-rate ramp caps the time-
     // dilation, unlike an exponential ease whose first frame carries most of it).
     if (dt > 0 && this.interpDelayMs !== this.interpDelayTargetMs) {
-      const step = INTERP_DELAY_SLEW_MS_PER_S * dt;
       const gap = this.interpDelayTargetMs - this.interpDelayMs;
+      const rate = this.fixedInterp
+        ? INTERP_DELAY_SLEW_MS_PER_S
+        : gap > 0 ? INTERP_RISE_MS_PER_S : INTERP_FALL_MS_PER_S;
+      const step = rate * dt;
       this.interpDelayMs += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
     }
     // Read-only diagnostics for the net-debug overlay (no behavior impact):
@@ -855,7 +933,12 @@ export class NetClient {
         // correction doesn't land as a one-frame jump. Keyed off performance.now()
         // (monotonic) to match estimatedServerNow().
         const sample = msg.serverTime + rtt / 2 - performance.now();
-        this.clockOffsetTarget = this.clockSeeded ? this.clockOffsetTarget * 0.8 + sample * 0.2 : sample;
+        this.clockRtt[this.clockIdx] = rtt;
+        this.clockSample[this.clockIdx] = sample;
+        this.clockIdx = (this.clockIdx + 1) % CLOCK_SAMPLES;
+        let best = 0;
+        for (let i = 1; i < CLOCK_SAMPLES; i++) if (this.clockRtt[i] < this.clockRtt[best]) best = i;
+        this.clockOffsetTarget = this.clockSample[best];
         if (!this.clockSeeded) this.clockOffset = this.clockOffsetTarget;
         this.clockSeeded = true;
       }
@@ -901,6 +984,7 @@ export class NetClient {
       // and interpolate()'s straddle search requires sorted entries.
       const newestT = this.snapBuffer.length > 0 ? this.snapBuffer[this.snapBuffer.length - 1].t : -Infinity;
       if (msg.t <= newestT) return;
+      if (this.clockSeeded) this.noteSnapshotAge(this.estimatedServerNow() - msg.t, arr);
       this.snapBuffer.push({ t: msg.t, players });
       const cutoff = msg.t - SNAP_BUFFER_MS;
       while (this.snapBuffer.length > 2 && this.snapBuffer[0].t < cutoff) {
@@ -919,8 +1003,10 @@ export class NetClient {
       // roster of a connection snaps — nothing has been rendered yet, and
       // metaById is empty both on a fresh join and after a reconnect (onclose
       // clears it), so a stale carried-over delay can't survive into a new room.
-      this.interpDelayTargetMs = interpDelayForPlayerCount(msg.players.length);
-      if (this.metaById.size === 0) this.interpDelayMs = this.interpDelayTargetMs;
+      if (this.fixedInterp) {
+        this.interpDelayTargetMs = interpDelayForPlayerCount(msg.players.length);
+        if (this.metaById.size === 0) this.interpDelayMs = this.interpDelayTargetMs;
+      }
       const seen = new Set<string>();
       for (const p of msg.players) {
         seen.add(p.id);
