@@ -144,8 +144,9 @@ const KillfeedRow = memo(function KillfeedRow({
 
 /* ── Tab scoreboard ─────────────────────────────────────────────────────── */
 
+// One format everywhere: two decimals (no deaths counts as one, so K/D = frags).
 function kdOf(s: PlayerScore): string {
-  return s.deaths === 0 ? s.frags.toFixed(1) : (s.frags / Math.max(1, s.deaths)).toFixed(2);
+  return (s.frags / Math.max(1, s.deaths)).toFixed(2);
 }
 
 function accOf(acc: number | null | undefined): string {

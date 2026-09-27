@@ -1052,6 +1052,24 @@ canvas {
   color: #03140d;
 }
 
+.menu-dock-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(6, 8, 11, 0.8);
+  padding: 0.55rem 0.95rem;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.62);
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+.menu-dock-chip:hover {
+  border-color: rgba(103, 232, 249, 0.5);
+  color: rgba(255, 255, 255, 0.9);
+}
 .menu-dock {
   display: flex;
   flex-direction: column;
@@ -1178,13 +1196,8 @@ canvas {
   letter-spacing: 0.1em;
   white-space: nowrap;
 }
-.landing-cta .menu-play-sub {
-  white-space: nowrap;
-}
-@media (max-width: 480px) {
-  .landing-cta .menu-play-sub {
-    display: none;
-  }
+.landing-cta {
+  max-width: 26rem;
 }
 .landing-panel {
   border: 1px solid rgba(255, 255, 255, 0.1);
