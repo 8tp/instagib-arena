@@ -496,6 +496,11 @@ const DUSK: WorldTheme = {
     { min: [13, 0, -21], max: [13.2, 0.004, 21], color: 0xcfcac0 },
   ],
   lights: [
+    // lit windows on both houses (back walls face the spawn yards)
+    ...windows('-x', -27, [-4.5, 4.5], true),
+    ...windows('+x', 27, [-4.5, 4.5], true),
+    ...windows('+z', 9, [-23.5, 23.5], false),
+    ...windows('-z', -9, [-23.5, 23.5], false),
     // porch + balcony lights
     downLight([-22.5, 3.6, 2], 0xffc070, 45, 11, { size: [1, 1] }),
     downLight([22.5, 3.6, 2], 0xffc070, 45, 11, { size: [1, 1] }),
@@ -527,6 +532,25 @@ const DUSK: WorldTheme = {
     sunColor: 0xffd2a0, sunSize: 0.035, sunGlow: 1.0,
   },
 };
+
+// Lit windows on a house facade (fixture-only panes, a warm spill below the
+// ground-floor ones) — the houses read as lived-in at dusk.
+function windows(face: Face, plane: number, spans: number[], light: boolean): LightDef[] {
+  const out: LightDef[] = [];
+  for (const u of spans) {
+    for (const y of [1.9, 5.3]) {
+      const at: V3 = face[1] === 'x' ? [plane, y, u] : [u, y, plane];
+      out.push({ at, face, size: [1.4, 1.1], color: 0xffc27a, intensity: 0, range: 1, glow: 1.35 });
+      if (light && y < 3) {
+        out.push({
+          at, face, size: [0.01, 0.01], color: 0xffb060, intensity: 14, range: 7, out: 0.7, fixture: false,
+          spot: { dir: norm([FACE_NORMAL[face][0], -0.7, FACE_NORMAL[face][2]]), angle: 1.1, penumbra: 0.6 },
+        });
+      }
+    }
+  }
+  return out;
+}
 
 function dashes(x: number, z0: number, z1: number, len: number, gap: number, w: number, color: number): Inlay[] {
   const out: Inlay[] = [];

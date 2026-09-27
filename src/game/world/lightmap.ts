@@ -96,7 +96,8 @@ function hi(b: AABB, a: number): number {
 }
 
 // Faces that can ever be seen: skips faces on the arena's outer shell facing
-// out, and faces fully capped by a neighbouring (drawn) box.
+// out and faces fully capped by a neighbouring (drawn) box, and cuts
+// coplanar overlaps so no two faces share the same pixels.
 export function extractFaces(boxes: AABB[], bounds: AABB, drawn: boolean[]): LmFace[] {
   const faces: LmFace[] = [];
   for (let i = 0; i < boxes.length; i++) {
@@ -128,7 +129,40 @@ export function extractFaces(boxes: AABB[], bounds: AABB, drawn: boolean[]): LmF
           }
         }
         if (covered) continue;
-        faces.push({ box: i, axis, sign, plane, ua, va, u0, u1, v0, v1, ax: 0, ay: 0, nu: 0, nv: 0 });
+        // Coplanar, same-facing faces of two boxes (a deck flush with a wall
+        // face) would z-fight: the lower-index box keeps the overlap and it
+        // is cut out of this face, leaving up to four rectangles.
+        let rects: Array<[number, number, number, number]> = [[u0, u1, v0, v1]];
+        for (let j = 0; j < i && rects.length; j++) {
+          if (!drawn[j]) continue;
+          const c = boxes[j];
+          const cp = sign > 0 ? hi(c, axis) : lo(c, axis);
+          if (Math.abs(cp - plane) > EPS) continue;
+          const cu0 = lo(c, ua);
+          const cu1 = hi(c, ua);
+          const cv0 = lo(c, va);
+          const cv1 = hi(c, va);
+          const next: Array<[number, number, number, number]> = [];
+          for (const r of rects) {
+            const [ru0, ru1, rv0, rv1] = r;
+            if (cu0 >= ru1 - EPS || cu1 <= ru0 + EPS || cv0 >= rv1 - EPS || cv1 <= rv0 + EPS) {
+              next.push(r);
+              continue;
+            }
+            const iu0 = Math.max(ru0, cu0);
+            const iu1 = Math.min(ru1, cu1);
+            const iv0 = Math.max(rv0, cv0);
+            const iv1 = Math.min(rv1, cv1);
+            if (iv0 > rv0 + EPS) next.push([ru0, ru1, rv0, iv0]);
+            if (iv1 < rv1 - EPS) next.push([ru0, ru1, iv1, rv1]);
+            if (iu0 > ru0 + EPS) next.push([ru0, iu0, iv0, iv1]);
+            if (iu1 < ru1 - EPS) next.push([iu1, ru1, iv0, iv1]);
+          }
+          rects = next.filter((r) => r[1] - r[0] > 0.01 && r[3] - r[2] > 0.01);
+        }
+        for (const [ru0, ru1, rv0, rv1] of rects) {
+          faces.push({ box: i, axis, sign, plane, ua, va, u0: ru0, u1: ru1, v0: rv0, v1: rv1, ax: 0, ay: 0, nu: 0, nv: 0 });
+        }
       }
     }
   }
