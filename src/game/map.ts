@@ -1,7 +1,12 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { getArenaTextures, type SurfaceKind, type SurfaceTextures } from './textures';
+import { applyWorldAtmosphere, type WorldAtmosphere } from './renderer';
+import { getThemeTextures, type SurfaceKind, type SurfaceTextures } from './textures';
 import type { AABB, Vec3 } from './types';
+import { buildDressing } from './world/dressing';
+import { bakeLightmap, faceUv, type LmFace, type LmLight, type Lightmap, type V3 } from './world/lightmap';
+import { applyMapShading, createMapShading, type MapShading } from './world/map-material';
+import { defaultSlot, FACE_NORMAL, themeForMapId, type SlotParams, type WorldTheme } from './world/themes';
 
 export type ArenaMap = {
   name: string;
@@ -101,6 +106,9 @@ export const CAUSEWAY: ArenaMap = (() => {
     spawn: { x: 0, y: 0.05, z: 19 },
     bounds: { min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 22, z: 25 } },
     accent: 0x5ce1ff,
+    // Void theme: deep space overhead. The cap (boxes[1]) still collides;
+    // it just isn't drawn, and rail impacts on it are suppressed (weapon.ts).
+    openTop: true,
   };
 })();
 
@@ -371,30 +379,39 @@ export function mapById(id: string): ArenaMap {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Rendering. Collision never touches these meshes (player/bots/weapon use the
-// AABB arrays via movePlayer/rayAabb), so the render build is free to merge.
+// AABB arrays via movePlayer/rayAabb), so the render build is free to merge,
+// cull hidden faces, and add flush decoration.
+//
+// Each map resolves to a world THEME (world/themes.ts): material set, baked
+// light rig, sky, fog, exposure. The build:
+//   1. extracts every visible box face, bakes a lightmap atlas for them
+//      (world/lightmap.ts — cached per map id for the session),
+//   2. merges faces per visual slot into one mesh each (world-space UVs for
+//      the procedural textures, uv1 into the atlas, per-box vertex tint),
+//   3. adds the accent edge trim + architectural dressing + light fixtures
+//      (world/dressing.ts) — all render-only, ≤ 0.15 m proud,
+//   4. stamps userData.theme / userData.atmosphere and, when the group is
+//      added to a scene, applies the theme's sky/fog/lights/exposure to it
+//      (renderer.ts applyWorldAtmosphere) — so Game, ReplayViewer and any
+//      other createScene() user inherit the look with no extra call.
+// ≈ 7–11 draw calls per map.
 //
 // Mesh tagging convention (for decal/impact raycasts, shadow setup, tint):
 //   group.name = 'map', group.userData.mapRoot = true
 //   every mesh: name = 'map:<kind>', userData.map = true, userData.surface =
 //   'floor' | 'ceiling' | 'wall' | 'cover' | 'platform' | 'tower' | 'trim'
-// Use isMapSurface(obj) to pick the solid surfaces and skip the trim bars.
+// Use isMapSurface(obj) to pick the solid surfaces and skip the trim bars,
+// dressing and fixtures (all tagged 'trim').
+//
+// World tint contract (game.ts applyWorldStyle): every textured surface keeps
+// emissiveMap === map and a white `color`, so the Ratz-style world colour /
+// full-bright setting still drives color + emissive. Per-box tints ride in
+// vertex colours (multiplying the albedo) and are NOT carried into full-bright
+// emissive — full-bright shows the untinted albedo. Fixtures and floor paint
+// have no emissiveMap, so they keep their colours under any world tint.
 // ─────────────────────────────────────────────────────────────────────────
 
 export const DEFAULT_ACCENT = 0x5ce1ff;
-
-// Per-surface material tuning for the PMREM RoomEnvironment + warm key light.
-// Roughness is baked into the ORM texture (material.roughness stays a ×1
-// multiplier); metalness is scalar. normalScale tames the baked ~45° bevels.
-const SURFACE_MATERIALS: Record<SurfaceKind, { metalness: number; normalScale: number; ao: number }> = {
-  floor: { metalness: 0.15, normalScale: 0.75, ao: 0.6 },
-  ceiling: { metalness: 0.1, normalScale: 0.5, ao: 0.5 },
-  wall: { metalness: 0.2, normalScale: 0.85, ao: 0.65 },
-  cover: { metalness: 0.25, normalScale: 1.0, ao: 0.7 },
-  platform: { metalness: 0.3, normalScale: 0.7, ao: 0.6 },
-  tower: { metalness: 0.3, normalScale: 0.85, ao: 0.65 },
-};
-
-const SURFACE_KINDS: SurfaceKind[] = ['floor', 'ceiling', 'wall', 'cover', 'platform', 'tower'];
 
 // Edge-light trim (metres): a thin bar wrapped around the side faces of
 // platforms + cover just below their top edge. Low intensity so bloom only
@@ -402,10 +419,10 @@ const SURFACE_KINDS: SurfaceKind[] = ['floor', 'ceiling', 'wall', 'cover', 'plat
 const TRIM_HEIGHT = 0.06;
 const TRIM_DEPTH = 0.03;
 const TRIM_DROP = 0.16;
-const TRIM_EMISSIVE = 1.9;
 
 // Size heuristic that assigns each AABB a surface kind (unchanged from the
-// original per-box build, so maps read the way they were authored).
+// original per-box build, so maps read the way they were authored). Themes
+// may remap a box to a different visual slot (world/themes.ts).
 export function surfaceKindFor(index: number, b: AABB): SurfaceKind {
   const sx = b.max.x - b.min.x;
   const sy = b.max.y - b.min.y;
@@ -419,33 +436,9 @@ export function surfaceKindFor(index: number, b: AABB): SurfaceKind {
 }
 
 // True for the solid arena surfaces — what a decal / impact raycast should
-// test against. Excludes the emissive trim bars.
+// test against. Excludes the emissive trim bars, dressing and fixtures.
 export function isMapSurface(obj: THREE.Object3D): boolean {
   return obj.userData.map === true && obj.userData.surface !== 'trim';
-}
-
-// One AABB → BoxGeometry in WORLD space with world-projected UVs: each face's
-// u/v are the world coordinates spanning it divided by `tile`, so texture
-// scale is identical on a 2 m crate and a 60 m wall, and seams run
-// continuously across adjacent boxes (ramps, stacked steps, wall segments).
-function boxGeometry(b: AABB, tile: number): THREE.BufferGeometry {
-  const sx = b.max.x - b.min.x;
-  const sy = b.max.y - b.min.y;
-  const sz = b.max.z - b.min.z;
-  const g = new THREE.BoxGeometry(sx, sy, sz);
-  g.translate((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2);
-  const pos = g.getAttribute('position');
-  const nrm = g.getAttribute('normal');
-  const uv = g.getAttribute('uv');
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    if (Math.abs(nrm.getX(i)) > 0.5) uv.setXY(i, z / tile, y / tile);
-    else if (Math.abs(nrm.getY(i)) > 0.5) uv.setXY(i, x / tile, z / tile);
-    else uv.setXY(i, x / tile, y / tile);
-  }
-  return g;
 }
 
 function pointInBox(x: number, y: number, z: number, b: AABB): boolean {
@@ -481,12 +474,177 @@ function addTrim(out: THREE.BufferGeometry[], b: AABB, solids: AABB[], bounds: A
   }
 }
 
-// Colour is baked into the albedo, so materials stay white and the world-tint
-// / full-bright control (game.ts applyWorldStyle) can drive `color` +
-// `emissive` at runtime: emissiveMap MUST stay === map for that contract.
-function surfaceMaterial(kind: SurfaceKind, t: SurfaceTextures): THREE.MeshStandardMaterial {
-  const p = SURFACE_MATERIALS[kind];
+// No emissiveMap on purpose: applyWorldStyle only retints materials that have
+// one, so the accent trim keeps its colour under any world tint.
+function trimMaterial(accent: THREE.Color, intensity: number): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
+    color: accent.clone().multiplyScalar(0.12),
+    emissive: accent,
+    emissiveIntensity: intensity,
+    roughness: 0.35,
+    metalness: 0,
+  });
+}
+
+// ── world bake (cached per map) ────────────────────────────────────────────
+
+type WorldBake = {
+  lm: Lightmap;
+  drawn: boolean[];
+  slots: SurfaceKind[];
+  tints: Array<THREE.Color | null>;
+  perimeter: boolean[];
+};
+
+const bakeCache = new Map<string, WorldBake>();
+
+function mapIdOf(map: ArenaMap): string | undefined {
+  return MAPS.find((m) => m.map === map)?.id ?? MAPS.find((m) => m.map.name === map.name)?.id;
+}
+
+// Tall boundary walls (touching the arena bounds in x or z).
+function isPerimeter(i: number, b: AABB, bounds: AABB): boolean {
+  if (i < 2 || b.max.y - b.min.y < 4) return false;
+  const e = 1e-3;
+  return (
+    b.min.x <= bounds.min.x + e || b.max.x >= bounds.max.x - e ||
+    b.min.z <= bounds.min.z + e || b.max.z >= bounds.max.z - e
+  );
+}
+
+const linear = (hex: number, k = 1): V3 => {
+  const c = new THREE.Color(hex);
+  return [c.r * k, c.g * k, c.b * k];
+};
+
+// Colour scaled so its luminance is exactly `lum` (ambient/sky irradiance are
+// authored as a hue + a brightness, independent of how saturated the hue is).
+const byLuminance = (hex: number, lum: number): V3 => {
+  const c = new THREE.Color(hex);
+  const l = Math.max(1e-4, 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b);
+  return [(c.r / l) * lum, (c.g / l) * lum, (c.b / l) * lum];
+};
+
+function toBakeLights(theme: WorldTheme): LmLight[] {
+  const out: LmLight[] = [];
+  for (const d of theme.lights) {
+    if (d.intensity <= 0) continue;
+    const n = FACE_NORMAL[d.face];
+    const o = d.out ?? 0.5;
+    const light: LmLight = {
+      p: [d.at[0] + n[0] * o, d.at[1] + n[1] * o, d.at[2] + n[2] * o],
+      color: linear(d.color, d.intensity),
+      range: d.range,
+      radius: d.radius,
+    };
+    if (d.spot) {
+      const pen = d.spot.penumbra ?? 0.5;
+      light.spot = {
+        dir: d.spot.dir,
+        cosOuter: Math.cos(d.spot.angle),
+        cosInner: Math.cos(d.spot.angle * (1 - pen)),
+      };
+    }
+    out.push(light);
+  }
+  return out;
+}
+
+function bakeWorld(map: ArenaMap, key: string, theme: WorldTheme): WorldBake {
+  const hit = bakeCache.get(key);
+  if (hit) return hit;
+  const openTop = !!map.openTop || theme.openSky;
+  const boxes = map.boxes;
+  const drawn = boxes.map((_, i) => !(i === 1 && openTop));
+  const perimeter = boxes.map((b, i) => isPerimeter(i, b, map.bounds));
+  const slots = boxes.map((b, i) => {
+    const kind = surfaceKindFor(i, b);
+    return theme.slotFor ? theme.slotFor(i, b, kind) : defaultSlot(i, b, kind);
+  });
+  const tints = boxes.map((b, i) => {
+    const t = theme.tintFor?.(i, b, slots[i]);
+    return t === null || t === undefined ? null : new THREE.Color(t);
+  });
+  const bk = theme.bake;
+  const lm = bakeLightmap(boxes, map.bounds, drawn, {
+    texel: bk.texel,
+    maxTexels: 120_000,
+    ambientUp: byLuminance(bk.ambientUp, bk.ambient),
+    ambientDown: byLuminance(bk.ambientDown, bk.ambient * 0.55),
+    aoRadius: bk.ao.radius,
+    aoStrength: bk.ao.strength,
+    aoRays: 10,
+    sky: openTop && bk.sky ? { color: byLuminance(bk.sky.color, bk.sky.intensity), rays: 8, length: 40 } : null,
+    sunDir: bk.sunShadow ? theme.sun.dir : null,
+    sunIgnore: (i) => (bk.sunIgnorePerimeter && perimeter[i]) || (bk.sunIgnoreCeiling && i === 1),
+    lights: toBakeLights(theme),
+    // The ceiling is big, flat and far: half the texel density.
+    coarse: (i) => (i === 1 ? 2 : 1),
+  });
+  const bake: WorldBake = { lm, drawn, slots, tints, perimeter };
+  bakeCache.set(key, bake);
+  if (import.meta.env?.DEV) {
+    console.info(
+      `[world] ${key}: baked ${lm.texels} texels @ ${lm.texel.toFixed(2)} m, atlas ${lm.width}×${lm.height}, ${lm.faces.length} faces, ${lm.ms.toFixed(0)} ms`,
+    );
+  }
+  return bake;
+}
+
+// One quad per face: world position, world-projected UV (/tile), atlas uv1,
+// per-box tint.
+function facesGeometry(faces: LmFace[], lm: Lightmap, tile: number, tints: Array<THREE.Color | null>): THREE.BufferGeometry {
+  const n = faces.length;
+  const pos = new Float32Array(n * 12);
+  const nrm = new Float32Array(n * 12);
+  const uv = new Float32Array(n * 8);
+  const uv1 = new Float32Array(n * 8);
+  const col = new Float32Array(n * 12);
+  const index = new Uint32Array(n * 6);
+  const p: V3 = [0, 0, 0];
+  for (let q = 0; q < n; q++) {
+    const f = faces[q];
+    const us = [f.u0, f.u1, f.u1, f.u0];
+    const vs = [f.v0, f.v0, f.v1, f.v1];
+    const tint = tints[f.box];
+    for (let c = 0; c < 4; c++) {
+      const o = q * 4 + c;
+      p[f.axis] = f.plane;
+      p[f.ua] = us[c];
+      p[f.va] = vs[c];
+      pos.set(p, o * 3);
+      nrm[o * 3 + f.axis] = f.sign;
+      uv[o * 2] = p[f.ua] / tile;
+      uv[o * 2 + 1] = p[f.va] / tile;
+      const t = faceUv(lm, f, p);
+      uv1[o * 2] = t[0];
+      uv1[o * 2 + 1] = t[1];
+      col[o * 3] = tint ? tint.r : 1;
+      col[o * 3 + 1] = tint ? tint.g : 1;
+      col[o * 3 + 2] = tint ? tint.b : 1;
+    }
+    // (u × v) · n is negative for x- and y-faces with this UV convention.
+    const flip = (f.axis === 2 ? 1 : -1) * f.sign < 0;
+    const b = q * 4;
+    if (flip) index.set([b, b + 2, b + 1, b, b + 3, b + 2], q * 6);
+    else index.set([b, b + 1, b + 2, b, b + 2, b + 3], q * 6);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setAttribute('uv1', new THREE.BufferAttribute(uv1, 2));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(new THREE.BufferAttribute(index, 1));
+  g.computeBoundingSphere();
+  g.computeBoundingBox();
+  return g;
+}
+
+function lightmappedMaterial(
+  t: SurfaceTextures, p: SlotParams, lm: Lightmap, shading: MapShading,
+): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({
     map: t.map,
     emissiveMap: t.map,
     emissive: 0x000000,
@@ -497,76 +655,169 @@ function surfaceMaterial(kind: SurfaceKind, t: SurfaceTextures): THREE.MeshStand
     aoMap: t.orm,
     aoMapIntensity: p.ao,
     metalness: p.metalness,
+    lightMap: lm.texture,
+    lightMapIntensity: lm.scale,
+    vertexColors: true,
   });
+  applyMapShading(m, shading);
+  return m;
 }
 
-// No emissiveMap on purpose: applyWorldStyle only retints materials that have
-// one, so the accent trim keeps its colour under any world tint.
-function trimMaterial(accent: THREE.Color): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
-    color: accent.clone().multiplyScalar(0.12),
-    emissive: accent,
-    emissiveIntensity: TRIM_EMISSIVE,
-    roughness: 0.35,
-    metalness: 0,
-  });
+function atmosphereFor(theme: WorldTheme): WorldAtmosphere {
+  return {
+    id: theme.id,
+    exposure: theme.exposure,
+    background: theme.background,
+    fog: theme.fog,
+    sky: theme.sky,
+    sun: { dir: theme.sun.dir, color: theme.sun.color, intensity: theme.sun.intensity },
+    hemi: { sky: theme.hemi.sky, ground: theme.hemi.ground, intensity: theme.hemi.intensity },
+    fill: { dir: theme.fill.dir, color: theme.fill.color, intensity: theme.fill.intensity },
+    envIntensity: theme.env.intensity,
+  };
 }
 
-// Builds the arena as ONE merged mesh per surface kind (+ one for the trim)
-// instead of one mesh per AABB: ≤ 7 draw calls per map. Materials are created
-// per build and disposed with the group on map switch; textures are cached.
+// Builds the themed, lightmapped arena. Materials + geometry are created per
+// build and disposed with the group on map switch (game.ts disposeGroup);
+// textures and the lightmap atlas are cached for the session.
 export function buildMapMesh(map: ArenaMap): THREE.Group {
   const group = new THREE.Group();
   group.name = 'map';
   group.userData.mapRoot = true;
-  const tex = getArenaTextures();
-  const accent = new THREE.Color(map.accent ?? DEFAULT_ACCENT);
+  const id = mapIdOf(map);
+  const theme = themeForMapId(id);
+  const tex = getThemeTextures(theme.id);
+  const world = bakeWorld(map, id ?? `anon:${map.name}`, theme);
+  const { lm, slots, tints, perimeter, drawn } = world;
 
-  const parts: Record<SurfaceKind, THREE.BufferGeometry[]> = {
-    floor: [], ceiling: [], wall: [], cover: [], platform: [], tower: [],
-  };
-  const trims: THREE.BufferGeometry[] = [];
-  // Open-air arenas keep the ceiling for collision but don't draw it, so the
-  // skybox shows overhead. It hides nothing, so it's not a trim occluder.
-  const drawn = (i: number) => !(i === 1 && map.openTop);
-  const solids = map.boxes.filter((_, i) => drawn(i));
-  for (let i = 0; i < map.boxes.length; i++) {
-    if (!drawn(i)) continue;
-    const b = map.boxes[i];
-    const kind = surfaceKindFor(i, b);
-    parts[kind].push(boxGeometry(b, tex[kind].tile));
-    if (kind === 'platform' || kind === 'cover') addTrim(trims, b, solids, map.bounds);
+  const shading = createMapShading();
+  shading.uSunScale.value = theme.sun.mapScale;
+  shading.uFillScale.value = theme.fill.mapScale;
+  shading.uHemiScale.value = theme.hemi.mapScale;
+  shading.uIblScale.value = theme.env.mapScale;
+  shading.uWorldSat.value = theme.worldSaturation;
+  shading.uShadowLift.value = theme.shadowLift ?? (theme.openSky ? 0.3 : 0.55);
+
+  // Surfaces: one mesh per visual slot. Tall boundary walls that the bake
+  // treats as not shadowing the sun get their own mesh that doesn't cast a
+  // realtime shadow either, so the two agree.
+  const splitPerimeter = theme.bake.sunIgnorePerimeter;
+  const buckets = new Map<string, LmFace[]>();
+  for (const f of lm.faces) {
+    const slot = slots[f.box];
+    const key = splitPerimeter && perimeter[f.box] ? `${slot}|perimeter` : slot;
+    const list = buckets.get(key);
+    if (list) list.push(f);
+    else buckets.set(key, [f]);
   }
-
-  for (const kind of SURFACE_KINDS) {
-    const geoms = parts[kind];
-    if (!geoms.length) continue;
-    const merged = mergeGeometries(geoms, false);
-    geoms.forEach((g) => g.dispose());
-    if (!merged) continue;
-    const mesh = new THREE.Mesh(merged, surfaceMaterial(kind, tex[kind]));
-    mesh.name = `map:${kind}`;
+  const materials = new Map<SurfaceKind, THREE.MeshStandardMaterial>();
+  for (const [key, faces] of buckets) {
+    const [slot, tag] = key.split('|') as [SurfaceKind, string | undefined];
+    let mat = materials.get(slot);
+    if (!mat) {
+      mat = lightmappedMaterial(tex[slot], theme.slots[slot], lm, shading);
+      materials.set(slot, mat);
+    }
+    const mesh = new THREE.Mesh(facesGeometry(faces, lm, tex[slot].tile, tints), mat);
+    mesh.name = `map:${slot}`;
     mesh.userData.map = true;
-    mesh.userData.surface = kind;
+    mesh.userData.surface = slot;
     mesh.receiveShadow = true;
-    // The giant floor/ceiling slabs only receive; everything else casts.
-    mesh.castShadow = kind !== 'floor' && kind !== 'ceiling';
+    mesh.castShadow = slot !== 'floor' && slot !== 'ceiling' && tag !== 'perimeter';
+    if (tag === 'perimeter') mesh.userData.noShadow = true;
     group.add(mesh);
   }
 
-  if (trims.length) {
-    const merged = mergeGeometries(trims, false);
-    trims.forEach((g) => g.dispose());
-    if (merged) {
-      const mesh = new THREE.Mesh(merged, trimMaterial(accent));
-      mesh.name = 'map:trim';
-      mesh.userData.map = true;
-      mesh.userData.surface = 'trim';
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
-      group.add(mesh);
+  // Accent edge-light trim on platforms + cover (by collision kind, as
+  // authored), for themes that use it.
+  if (theme.trim) {
+    const trims: THREE.BufferGeometry[] = [];
+    const solids = map.boxes.filter((_, i) => drawn[i]);
+    for (let i = 0; i < map.boxes.length; i++) {
+      if (!drawn[i]) continue;
+      const b = map.boxes[i];
+      const kind = surfaceKindFor(i, b);
+      if (kind === 'platform' || kind === 'cover') addTrim(trims, b, solids, map.bounds);
+    }
+    if (trims.length) {
+      const merged = mergeGeometries(trims, false);
+      trims.forEach((g) => g.dispose());
+      if (merged) {
+        const accent = new THREE.Color(theme.trim.color ?? map.accent ?? DEFAULT_ACCENT);
+        const mesh = new THREE.Mesh(merged, trimMaterial(accent, theme.trim.intensity));
+        mesh.name = 'map:trim';
+        mesh.userData.map = true;
+        mesh.userData.surface = 'trim';
+        mesh.userData.noShadow = true;
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+        group.add(mesh);
+      }
     }
   }
+
+  // Architectural dressing + light fixtures + floor paint.
+  const dressTex = tex[theme.dress.slot];
+  const dress = buildDressing({
+    boxes: map.boxes, bounds: map.bounds, drawn, slots, perimeter, lm, theme, tile: dressTex.tile, low: false,
+  });
+  if (dress.metal) {
+    const p = theme.slots[theme.dress.slot];
+    const mat = lightmappedMaterial(dressTex, { ...p, metalness: Math.min(1, p.metalness + 0.2) }, lm, shading);
+    mat.roughness = 0.8;
+    const mesh = new THREE.Mesh(dress.metal, mat);
+    mesh.name = 'map:dress';
+    mesh.userData.map = true;
+    mesh.userData.surface = 'trim';
+    mesh.userData.noShadow = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  if (dress.paint) {
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.75,
+      metalness: 0,
+      lightMap: lm.texture,
+      lightMapIntensity: lm.scale,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    applyMapShading(mat, shading);
+    const mesh = new THREE.Mesh(dress.paint, mat);
+    mesh.name = 'map:paint';
+    mesh.userData.map = true;
+    mesh.userData.surface = 'trim';
+    mesh.userData.noShadow = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  if (dress.fixtures) {
+    // Unlit HDR vertex colours: the fixtures are the visible light sources
+    // (the only static things meant to cross the bloom threshold).
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    const mesh = new THREE.Mesh(dress.fixtures, mat);
+    mesh.name = 'map:fixtures';
+    mesh.userData.map = true;
+    mesh.userData.surface = 'trim';
+    mesh.userData.noShadow = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    group.add(mesh);
+  }
+
+  const atmosphere = atmosphereFor(theme);
+  group.userData.theme = theme.id;
+  group.userData.atmosphere = atmosphere;
+  group.userData.lightmap = { ms: lm.ms, texels: lm.texels, width: lm.width, height: lm.height };
+  group.addEventListener('added', () => {
+    let root: THREE.Object3D = group;
+    while (root.parent) root = root.parent;
+    if ((root as THREE.Scene).isScene) applyWorldAtmosphere(root as THREE.Scene, atmosphere);
+  });
   return group;
 }
 

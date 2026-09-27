@@ -656,6 +656,7 @@ export class Game {
     this.applyPixelRatio();
     this.effects.setQuality(lowSpec ? 0.5 : 1);
     this.audio.setLowSpec(this.lowSpec); // shorter reverb, cheaper panning, fewer voices
+    this.postFx.setWorldQuality(this.lowSpec); // sky drops its procedural detail on the low tier
     this.applyPostFx();
   }
 
