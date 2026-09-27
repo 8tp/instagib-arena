@@ -43,6 +43,13 @@ export type ViewmodelPose = {
 
 const TWO_PI = Math.PI * 2;
 
+// Resting placement layered onto VIEWMODEL_BASE (camera-local units / rad):
+// the classic right-handed arena carry — the gun sits low and to the right and
+// is toed in so its muzzle points up toward the crosshair from the lower right,
+// keeping the coils well clear of the aim point. Applies in every pose (it is
+// placement, not motion, so the motion-intensity setting doesn't scale it).
+const PLACEMENT = { x: 0.3, y: -0.09, z: 0.02, yaw: 0.075, pitch: 0.035 } as const;
+
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
@@ -268,15 +275,15 @@ export class ViewmodelMotion {
     const i2 = Math.sin(this.t * TWO_PI * T.idle.hzB + 1.7);
 
     const p = this.pose;
-    p.x = bobX + this.swayX.x + this.dashX.x + tk * T.zoomTuck.x + T.idle.x * i2 * k;
+    p.x = PLACEMENT.x + bobX + this.swayX.x + this.dashX.x + tk * T.zoomTuck.x + T.idle.x * i2 * k;
     p.y =
-      bobY + this.swayY.x + landY + a * T.recoilA.y + b * T.recoilB.y +
+      PLACEMENT.y + bobY + this.swayY.x + landY + a * T.recoilA.y + b * T.recoilB.y +
       tk * T.zoomTuck.y + T.idle.y * i1 * k;
-    p.z = this.dashZ.x + a * T.recoilA.z + b * T.recoilB.z + tk * T.zoomTuck.z;
+    p.z = PLACEMENT.z + this.dashZ.x + a * T.recoilA.z + b * T.recoilB.z + tk * T.zoomTuck.z;
     p.rx =
-      this.swayPitch.x + landY * T.landPitch + a * T.recoilA.pitch + b * T.recoilB.pitch +
+      PLACEMENT.pitch + this.swayPitch.x + landY * T.landPitch + a * T.recoilA.pitch + b * T.recoilB.pitch +
       tk * T.zoomTuck.pitch + T.idle.pitch * i1 * k;
-    p.ry = this.swayYaw.x;
+    p.ry = PLACEMENT.yaw + this.swayYaw.x;
     p.rz =
       bobRoll + this.swayRoll.x + this.lean.x + b * T.recoilB.roll * this.kickSide +
       T.idle.roll * i2 * k;
@@ -288,7 +295,9 @@ export class ViewmodelMotion {
     // Safety net: a NaN anywhere (corrupt input) would stick the gun off-screen.
     if (!Number.isFinite(p.x + p.y + p.z + p.rx + p.ry + p.rz + p.camPitch + p.muzzle)) {
       this.reset();
-      p.x = p.y = p.z = p.rx = p.ry = p.rz = p.camPitch = p.muzzle = 0;
+      p.rz = p.camPitch = p.muzzle = 0;
+      p.x = PLACEMENT.x; p.y = PLACEMENT.y; p.z = PLACEMENT.z;
+      p.rx = PLACEMENT.pitch; p.ry = PLACEMENT.yaw;
     }
     return p;
   }
