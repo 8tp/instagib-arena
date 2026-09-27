@@ -316,3 +316,294 @@
   animation: hud-fade-out var(--hud-out) ease-in both;
   animation-delay: 0ms;
 }
+
+/* ── Quake-style readouts ─────────────────────────────────────────────────
+   Big confident numerals in the display face, hard edges, no glass. Colour
+   is information only: cyan = you, rose = you died, amber = streak/headshot,
+   team red/blue in TDM. */
+
+/* Score boxes (top-centre): you vs the best other player, or Red vs Blue. */
+.hud-sbox {
+  display: flex;
+  min-width: 5.5rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 0.9rem 0.35rem;
+  background: rgba(4, 6, 9, 0.6);
+  border-top: 2px solid rgba(255, 255, 255, 0.35);
+}
+.hud-sbox-self {
+  background: rgba(6, 46, 56, 0.72);
+  border-top-color: #67e8f9;
+}
+.hud-sbox-red {
+  background: rgba(70, 12, 14, 0.66);
+  border-top-color: #ff5a5a;
+}
+.hud-sbox-blue {
+  background: rgba(12, 30, 72, 0.66);
+  border-top-color: #5a9bff;
+}
+.hud-sbox-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2.15rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
+}
+.hud-sbox-label {
+  margin-top: 0.1rem;
+  max-width: 7.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+.hud-sbox-self .hud-sbox-label {
+  color: #a5f3fc;
+}
+.hud-sbox-limit {
+  margin-top: 3px;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 1px 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Bottom-left numerals (speed, streak). */
+.hud-num-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.hud-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2.1rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* Killfeed rows: one hard-edged strip each, the rail glyph between names. */
+.hud-kf {
+  display: flex;
+  height: 1.65rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.7rem;
+  background: rgba(3, 5, 8, 0.6);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+}
+.hud-kf-you {
+  background: rgba(6, 42, 50, 0.78);
+  box-shadow: inset 2px 0 0 #67e8f9;
+}
+.hud-kf-died {
+  background: rgba(52, 8, 16, 0.72);
+  box-shadow: inset 2px 0 0 #fb7185;
+}
+.hud-kf-name {
+  max-width: 9.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.95);
+}
+.hud-kf-victim {
+  color: rgba(255, 255, 255, 0.62);
+}
+.hud-kf-self {
+  color: #a5f3fc;
+}
+.hud-kf-self-dead {
+  color: #fecdd3;
+}
+.hud-kf-tag {
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.hud-kf-tag-hs {
+  background: #fbbf24;
+  color: #1c1003;
+}
+.hud-kf-tag-air {
+  background: #67e8f9;
+  color: #03181c;
+}
+
+/* Q3 centre-print ("You fragged Razor" / "1st place with 12") and the
+   warmup count that shares its type. */
+.hud-cprint {
+  text-shadow:
+    0 2px 0 rgba(0, 0, 0, 0.55),
+    0 0 18px rgba(0, 0, 0, 0.6);
+}
+.hud-cprint-main {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2.1rem;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  color: #fff;
+}
+.hud-cprint-sub {
+  margin-top: 0.3rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.86);
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.55);
+}
+.hud-cprint-tag {
+  margin-bottom: 0.3rem;
+  background: #fbbf24;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #1c1003;
+  text-shadow: none;
+}
+.hud-count {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 5rem;
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+  color: #ecfeff;
+  text-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.45),
+    0 0 30px rgba(103, 232, 249, 0.45);
+}
+
+/* "Fight!": stamps in, holds, fades — once. */
+.hud-fight {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 5.5rem;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.5),
+    0 0 34px rgba(251, 113, 133, 0.55);
+  animation: hud-fight 900ms linear both;
+}
+@keyframes hud-fight {
+  0% {
+    opacity: 0;
+    transform: scale(calc(1 + 0.6 * var(--hud-motion)));
+    animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  14% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  70% {
+    opacity: 1;
+    animation-timing-function: ease-in;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+/* Tab scoreboard: a solid game sheet over a light veil (no blur). */
+.hud-sb-veil {
+  background: rgba(0, 0, 0, 0.42);
+  animation: hud-fade-in 90ms ease-out both;
+}
+.hud-sb {
+  background: rgba(6, 8, 11, 0.93);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.hud-sb-grid {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 4rem 4rem 4rem 4rem;
+  column-gap: 0.75rem;
+  align-items: center;
+  padding: 0 0.75rem;
+}
+.hud-sb-grid.hud-sb-ping {
+  grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 4rem 4rem 4rem 4rem 3.5rem;
+}
+.hud-sb-head {
+  padding-top: 0.6rem;
+  padding-bottom: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+.hud-sb-row {
+  min-height: 2.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.hud-sb-self {
+  background: rgba(34, 211, 238, 0.1);
+  box-shadow: inset 3px 0 0 #67e8f9;
+}
+.hud-sb-frags {
+  text-align: right;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.45rem;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+.hud-sb-num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.66);
+}
+.hud-sb-fire {
+  background: #fbbf24;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #1c1003;
+  white-space: nowrap;
+}
+
+/* Killcam print backing: a soft dark band that holds contrast over beams,
+   the death wash and bright walls. */
+.hud-killcam-print {
+  position: relative;
+  padding: 0.9rem 3.5rem 1rem;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.55) 60%, rgba(0, 0, 0, 0));
+}

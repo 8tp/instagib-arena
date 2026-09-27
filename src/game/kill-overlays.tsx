@@ -2,43 +2,41 @@ import { memo } from 'react';
 import type { KillConfirm } from './types';
 import { hudTiming } from '../hud-store';
 
-// Prominent per-frag confirmation — the "you got a kill" callout that pops on
-// EVERY kill (the multi-kill banner only fires on streaks). Big punchy centered
-// text that slams in, holds, then fades. The slam is the HUD's one overshoot
-// and lives in the .hud-frag keyframes (src/hud.css), keyed on the confirm id:
-// it runs at display rate and React never touches the element again. Sits in
-// the upper third so it never covers the crosshair. Cyan for body kills,
-// amber for headshots — matching the kill flash + hit marker.
-export const FragPopup = memo(function FragPopup({ confirm }: { confirm: KillConfirm | null }) {
+// The Q3 centre-print on every frag:
+//
+//     You fragged Razor
+//     1st place with 12
+//
+// Pops on EVERY kill (the multi-kill banner only fires on streaks), sits in
+// the upper third so it never covers the crosshair, and is one CSS animation
+// keyed on the confirm id (.hud-frag in src/hud.css): it runs at display rate
+// and React never touches the element again. The placement line is derived
+// from the scoreboard by the caller; it may update in place for a moment
+// online, where the authoritative score lands a snapshot after the kill.
+export const FragPopup = memo(function FragPopup({
+  confirm,
+  placement,
+}: {
+  confirm: KillConfirm | null;
+  placement?: string | null;
+}) {
   if (!confirm) return null;
   const headshot = confirm.headshot;
-  const accent = headshot ? '#fcd34d' : '#7ce8ff';
-  const glow = headshot ? 'rgba(252,211,77,0.55)' : 'rgba(124,232,255,0.5)';
-  const verb = headshot ? 'HEADSHOT' : 'FRAGGED';
-
   return (
-    <div className='absolute inset-x-0 top-[30%] flex justify-center'>
+    // Anchored by its BOTTOM edge at 42% of the height and growing upward, so
+    // it can never cover the crosshair (at 50%) whatever the viewport height or
+    // UI scale — a top-anchored print overlapped it on ≤680px-tall windows.
+    <div className='absolute inset-x-0 bottom-[58%] flex justify-center px-6'>
       <div
         key={confirm.id}
-        className='hud-frag flex flex-col items-center text-center'
+        className='hud-frag hud-cprint flex flex-col items-center text-center'
         style={hudTiming(confirm.remaining, confirm.total)}
       >
-        <div
-          className='font-mono text-6xl font-black uppercase leading-none tracking-[0.06em]'
-          style={{
-            color: accent,
-            textShadow: `0 4px 26px ${glow}`,
-            WebkitTextStroke: '1px rgba(0,0,0,0.35)',
-          }}
-        >
-          {verb}
+        {headshot && <div className='hud-cprint-tag'>Headshot</div>}
+        <div className='hud-cprint-main'>
+          You fragged <span className={headshot ? 'text-amber-300' : 'text-cyan-300'}>{confirm.victimName}</span>
         </div>
-        <div
-          className='mt-2 font-mono text-lg font-bold uppercase tracking-[0.3em] text-white'
-          style={{ textShadow: '0 2px 10px rgba(0,0,0,0.65)' }}
-        >
-          {confirm.victimName}
-        </div>
+        {placement && <div className='hud-cprint-sub'>{placement}</div>}
       </div>
     </div>
   );

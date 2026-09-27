@@ -12,8 +12,17 @@
 // `toView` adapts either into a DataView. This module imports nothing.
 
 const BIN_STATE_F32 = 1; // legacy server → client state snapshot
-export const BIN_POS = 2; // client → server: a position update
+export const BIN_POS = 2; // client → server: a position update (legacy, no sim tick)
 export const BIN_STATE = 3; // quantized server → client state snapshot
+export const BIN_POS_TICK = 4; // client → server: a position update stamped with its sim tick
+
+// BIN_POS_TICK flags.
+// HOLD: every sim tick between the previous upload and this one had the
+// previous upload's pose (the client skipped sends because nothing changed, or
+// its sim was frozen). The server fills that gap with a hold instead of
+// interpolating across it; without the flag (e.g. a datagram was lost) it
+// interpolates.
+export const POS_FLAG_HOLD = 1;
 
 export type BinStatePlayer = {
   id: string;
@@ -30,6 +39,7 @@ export type BinStatePlayer = {
 
 const STATE_HEADER = 1 + 8 + 8 + 1; // tag + t(f64) + resumeAt(f64) + count(u8)
 const POS_BYTES = 1 + 5 * 4; // tag + 5×f32
+const POS_TICK_BYTES = POS_BYTES + 4 + 1; // + sim tick (u32) + flags (u8)
 const STATE_COORD_SCALE = 256; // 3.9mm precision, ±128m range (online maps are within ±40m)
 const STATE_ANGLE_SCALE = 32767 / Math.PI;
 
@@ -131,10 +141,49 @@ export function encodePos(x: number, y: number, z: number, yaw: number, pitch: n
   return new Uint8Array(dv.buffer);
 }
 
+// The pose AND the client simulation tick it belongs to. The server stamps the
+// sample on the sender's own sim timeline (tick × 1000/64 ms) instead of its
+// arrival time, so frame-quantized sends, several ticks flushed in one frame,
+// and network jitter no longer bend the motion other players see.
+export function encodePosTick(
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+  pitch: number,
+  tick: number,
+  flags: number,
+): Uint8Array {
+  const dv = new DataView(new ArrayBuffer(POS_TICK_BYTES));
+  dv.setUint8(0, BIN_POS_TICK);
+  dv.setFloat32(1, x, true);
+  dv.setFloat32(5, y, true);
+  dv.setFloat32(9, z, true);
+  dv.setFloat32(13, yaw, true);
+  dv.setFloat32(17, pitch, true);
+  dv.setUint32(21, tick >>> 0, true);
+  dv.setUint8(25, flags & 0xff);
+  return new Uint8Array(dv.buffer);
+}
+
 export function decodePos(
   dv: DataView,
-): { x: number; y: number; z: number; yaw: number; pitch: number } | null {
-  if (dv.byteLength < POS_BYTES || dv.getUint8(0) !== BIN_POS) return null;
+): { x: number; y: number; z: number; yaw: number; pitch: number; tick?: number; flags?: number } | null {
+  if (dv.byteLength < POS_BYTES) return null;
+  const tag = dv.getUint8(0);
+  if (tag === BIN_POS_TICK) {
+    if (dv.byteLength < POS_TICK_BYTES) return null;
+    return {
+      x: dv.getFloat32(1, true),
+      y: dv.getFloat32(5, true),
+      z: dv.getFloat32(9, true),
+      yaw: dv.getFloat32(13, true),
+      pitch: dv.getFloat32(17, true),
+      tick: dv.getUint32(21, true),
+      flags: dv.getUint8(25),
+    };
+  }
+  if (tag !== BIN_POS) return null;
   return {
     x: dv.getFloat32(1, true),
     y: dv.getFloat32(5, true),

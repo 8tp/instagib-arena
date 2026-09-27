@@ -16,7 +16,7 @@
 // then: tsx scripts/netcode-stress.ts --rooms 30 --per-room 8 --duration 15
 
 import { WebSocket } from 'ws';
-import { encodePos, decodeState, toView } from '../src/game/netcodec';
+import { encodePosTick, decodeState, toView } from '../src/game/netcodec';
 
 const numArg = (name: string, fallback: number): number => {
   const i = process.argv.indexOf(`--${name}`);
@@ -143,8 +143,10 @@ const startTraffic = (client: Client) => {
     if (client.ws.readyState !== WebSocket.OPEN) return;
     const t = (performance.now() - t0) / 1000;
     const a = client.phase + t * 0.6; // keep moving so AFK/idle dedup doesn't kick in
+    // Tick-stamped like the real client (exercises the server playout timeline).
+    const tick = Math.floor((performance.now() - t0) / (1000 / 64));
     client.ws.send(
-      encodePos(client.spawn.x + Math.cos(a) * 2, client.spawn.y, client.spawn.z + Math.sin(a) * 2, -a, 0),
+      encodePosTick(client.spawn.x + Math.cos(a) * 2, client.spawn.y, client.spawn.z + Math.sin(a) * 2, -a, 0, tick, 0),
     );
   }, 1000 / 64);
   client.pingTimer = setInterval(() => {

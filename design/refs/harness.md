@@ -28,3 +28,15 @@ if(ov){ov.style.backdropFilter='none';ov.style.background='transparent';[...ov.c
 3. Kill burst. 4. Viewmodel idle + after firing. 5. `/lockerlab` (hats, unusual particles).
 6. Lobby, Settings, Locker, Leaderboard, Onboarding (`localStorage.removeItem('instagib-onboarded')`).
 Name files `design/shots/<track>-r<round>-<scene>.jpg`.
+
+## Headless captures (parallel-safe): `scripts/shot.mjs`
+Launches its own headless Chrome (own profile + port, real GPU via ANGLE/Metal), so several
+agents can capture at once without sharing the MCP browser. Needs only a vite dev server.
+```
+npx vite --port 5181 --strictPort &      # any free port per worktree
+node scripts/shot.mjs --base http://localhost:5181 --out design/shots/world-r1-reactor \
+  --solo reactor --shots "spawn;wide:1.57,-0.1,20,4.7,12;up:0,0.3"
+node scripts/shot.mjs --base http://localhost:5181 --path /play --out design/shots/ui-r1-menu
+```
+`--shots` is `name[:yaw,pitch[,x,y,z]]` separated by `;`. `--no-hud` hides the React layer,
+`--mode duel|tdm`, `--eval "js"` runs before the first shot (e.g. `__ig.setPostFx({...})`).

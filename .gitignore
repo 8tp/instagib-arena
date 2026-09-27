@@ -27,3 +27,6 @@ design/shots/*.jpg
 
 # agent worktrees
 .claude/worktrees/
+
+# rendered sound previews (audio critique)
+design/sounds/

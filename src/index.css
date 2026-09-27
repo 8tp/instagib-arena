@@ -805,3 +805,411 @@ canvas {
     transition: none;
   }
 }
+
+/* ── Main menu over the live arena ────────────────────────────────────────
+   Game-menu grammar: the 3D backdrop is the ground (src/menu), a scrim keeps
+   the left column legible, one heavy wordmark, one solid Play block, a list
+   of big display-type items. One entrance for the column, one for the dock —
+   no per-row stagger. */
+.menu-root {
+  background: #05070a;
+}
+.menu-bd-canvas {
+  opacity: 0;
+  transition: opacity 900ms ease-out;
+}
+.menu-bd-canvas.menu-bd-ready {
+  opacity: 1;
+}
+.menu-scrim {
+  background:
+    linear-gradient(90deg, rgba(3, 4, 6, 0.94) 0%, rgba(3, 4, 6, 0.8) 24%, rgba(3, 4, 6, 0.32) 46%, rgba(3, 4, 6, 0) 64%),
+    linear-gradient(0deg, rgba(3, 4, 6, 0.82) 0%, rgba(3, 4, 6, 0) 24%),
+    linear-gradient(180deg, rgba(3, 4, 6, 0.6) 0%, rgba(3, 4, 6, 0) 16%);
+}
+@media (max-width: 1023px) {
+  .menu-scrim {
+    background:
+      linear-gradient(90deg, rgba(3, 4, 6, 0.9), rgba(3, 4, 6, 0.55)),
+      linear-gradient(0deg, rgba(3, 4, 6, 0.85), rgba(3, 4, 6, 0) 30%);
+  }
+}
+
+.menu-wordmark {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+}
+.menu-wordmark-main {
+  font-weight: 700;
+  font-size: clamp(3.5rem, 6.4vw, 6.6rem);
+  line-height: 0.8;
+  letter-spacing: 0.012em;
+  color: #f3f6f9;
+  text-shadow:
+    0 3px 0 rgba(0, 0, 0, 0.35),
+    0 0 42px rgba(0, 0, 0, 0.55);
+}
+.menu-wordmark-sub {
+  margin-top: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.95rem;
+  font-weight: 600;
+  font-size: clamp(0.95rem, 1.15vw, 1.15rem);
+  line-height: 1;
+  letter-spacing: 0.62em;
+  color: #67e8f9;
+}
+/* The rail beam: white-hot core, cyan falloff — the game's one signature. */
+.menu-beam {
+  display: block;
+  height: 3px;
+  width: clamp(3rem, 6.5vw, 6.25rem);
+  background: linear-gradient(90deg, rgba(103, 232, 249, 0), #67e8f9 35%, #f0feff 72%, #67e8f9);
+  box-shadow:
+    0 0 10px rgba(103, 232, 249, 0.75),
+    0 0 24px rgba(34, 211, 238, 0.35);
+}
+.menu-tagline {
+  margin-top: 1.2rem;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.menu-play {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  overflow: hidden;
+  background: #34d399;
+  color: #03140d;
+  padding: 1rem 1.5rem 1rem 1.55rem;
+  text-align: left;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
+}
+.menu-play:hover:not(:disabled) {
+  background: #6ee7b7;
+}
+.menu-play:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.menu-play:disabled {
+  cursor: not-allowed;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.5);
+}
+.menu-play[aria-busy='true']:disabled {
+  background: #1f8f69;
+  color: #03140d;
+}
+.menu-play-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2.55rem;
+  line-height: 0.9;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.menu-play-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  text-align: right;
+}
+.menu-play-sweep {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.14);
+}
+.menu-play-sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, rgba(236, 253, 245, 0.95), transparent);
+  animation: deck-loader-sweep 1.1s ease-in-out infinite;
+}
+
+.menu-item {
+  --acc: rgba(255, 255, 255, 0.85);
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  width: 100%;
+  padding: 0.4rem 0.25rem 0.4rem 1.15rem;
+  text-align: left;
+  color: rgba(255, 255, 255, 0.82);
+  transition:
+    color 0.12s,
+    background-color 0.12s;
+}
+.menu-item[data-accent='cyan'] {
+  --acc: #67e8f9;
+}
+.menu-item[data-accent='fuchsia'] {
+  --acc: #f0abfc;
+}
+.menu-item[data-accent='amber'] {
+  --acc: #fcd34d;
+}
+.menu-item[data-accent='emerald'] {
+  --acc: #6ee7b7;
+}
+.menu-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  background: var(--acc);
+  box-shadow: 0 0 10px var(--acc);
+  transform: scaleY(0);
+  transition: transform 0.14s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  color: #fff;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 75%);
+}
+.menu-item:hover:not(:disabled)::before,
+.menu-item:focus-visible::before {
+  transform: scaleY(1);
+}
+.menu-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.45);
+}
+.menu-item:disabled {
+  color: rgba(255, 255, 255, 0.28);
+  cursor: not-allowed;
+}
+.menu-item-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.5rem;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.menu-item-sub {
+  margin-left: auto;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.36);
+  transition: color 0.12s;
+}
+.menu-item:hover:not(:disabled) .menu-item-sub,
+.menu-item:focus-visible .menu-item-sub {
+  color: var(--acc);
+}
+.menu-item:disabled .menu-item-sub {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.menu-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  transition: color 0.12s;
+}
+.menu-link:hover {
+  color: rgba(255, 255, 255, 0.95);
+}
+.menu-link-badge {
+  min-width: 1.1rem;
+  background: #34d399;
+  padding: 0 0.3rem;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0;
+  text-align: center;
+  color: #03140d;
+}
+
+.menu-dock-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(6, 8, 11, 0.8);
+  padding: 0.55rem 0.95rem;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.62);
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+.menu-dock-chip:hover {
+  border-color: rgba(103, 232, 249, 0.5);
+  color: rgba(255, 255, 255, 0.9);
+}
+.menu-dock {
+  display: flex;
+  flex-direction: column;
+  width: 22.5rem;
+  max-width: calc(100vw - 2.5rem);
+  height: min(30rem, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(6, 8, 11, 0.86);
+}
+/* Narrow screens: the open dock overlays the menu column itself, so it must
+   be opaque (at 86% the PLAY button and menu text bled through). */
+@media (max-width: 1023px) {
+  .menu-dock {
+    background: rgb(6, 8, 11);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.menu-enter {
+  animation: menu-in 0.42s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.menu-enter-late {
+  animation: deck-fade-in 0.5s ease-out 0.12s both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-enter,
+  .menu-enter-late,
+  .menu-play-sweep::after {
+    animation: none;
+  }
+  .menu-bd-canvas {
+    transition: none;
+  }
+}
+
+/* ── Loading screen (Q3 levelshot) ────────────────────────────────────────
+   Fades in over the match root, pushes the levelshot in slowly, fades out
+   once the real load steps are done (src/ui/LoadingScreen.tsx). */
+.ls-root {
+  /* `backwards`, not `both`: a forwards fill pins opacity at 1 and the
+     .ls-out fade below never runs (it hard-cut instead). */
+  animation: deck-fade-in 0.22s ease-out backwards;
+  transition: opacity 0.42s ease-in;
+}
+.ls-root.ls-out {
+  opacity: 0;
+  pointer-events: none;
+}
+.ls-shot {
+  animation:
+    deck-fade-in 0.5s ease-out both,
+    ls-push 16s cubic-bezier(0.2, 0.6, 0.3, 1) both;
+  transform-origin: 58% 45%;
+}
+@keyframes ls-push {
+  from {
+    transform: scale(1.1);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+.ls-placeholder {
+  background:
+    radial-gradient(90% 70% at 60% 35%, rgba(34, 211, 238, 0.12), transparent 70%),
+    linear-gradient(180deg, #0b0f14, #040507);
+}
+.ls-scrim {
+  background:
+    linear-gradient(0deg, rgba(2, 3, 5, 0.94) 0%, rgba(2, 3, 5, 0.72) 30%, rgba(2, 3, 5, 0.12) 62%, rgba(2, 3, 5, 0.35) 100%),
+    linear-gradient(90deg, rgba(2, 3, 5, 0.55) 0%, rgba(2, 3, 5, 0) 55%);
+}
+.ls-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(3.4rem, 8.5vw, 8.5rem);
+  line-height: 0.86;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: #f4f7fa;
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.3), 0 0 50px rgba(0, 0, 0, 0.6);
+}
+.ls-tip {
+  animation: deck-fade-in 0.35s ease-out both;
+}
+.ls-leader {
+  align-self: center;
+  height: 1px;
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.22) 50%, transparent 50%);
+  background-size: 6px 1px;
+}
+.ls-progress {
+  background: linear-gradient(90deg, #22d3ee, #ecfeff);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.8);
+  transition: width 0.3s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-root,
+  .ls-shot,
+  .ls-tip {
+    animation: none;
+  }
+  .ls-progress {
+    transition: none;
+  }
+}
+.ls-reduced .ls-shot {
+  animation: deck-fade-in 0.3s ease-out both;
+}
+
+/* ── Landing: the same grammar as the menu, one size up ───────────────── */
+.landing-wordmark .menu-wordmark-main {
+  font-size: clamp(4.2rem, 10vw, 9.5rem);
+}
+.landing-wordmark .menu-wordmark-sub {
+  margin-top: 1.1rem;
+  font-size: clamp(1rem, 1.6vw, 1.4rem);
+}
+.landing-wordmark .menu-beam {
+  width: clamp(3.5rem, 9vw, 8.5rem);
+}
+.landing-cta-label {
+  font-size: clamp(1.3rem, 2.1vw, 1.7rem);
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+.landing-cta {
+  max-width: 26rem;
+}
+.landing-panel {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(6, 8, 11, 0.84);
+}

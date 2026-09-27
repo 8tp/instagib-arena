@@ -230,7 +230,7 @@ export function ModalShell({
           {hasTitleRow && (
             <div className='flex shrink-0 items-center justify-between gap-4 border-b border-white/10 px-6 pb-3 pt-4'>
               {title ? (
-                <h2 id={titleId} className={`font-display text-base font-bold uppercase tracking-[0.18em] ${t.title}`}>
+                <h2 id={titleId} className={`font-display text-xl font-bold uppercase leading-none tracking-[0.06em] ${t.title}`}>
                   {title}
                 </h2>
               ) : (

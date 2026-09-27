@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   AIR_JUMPS,
   BOOST_FORWARD_BIAS,
@@ -23,8 +22,11 @@ import {
   type BotDifficulty,
 } from './constants';
 import { movePlayer, rayAabb, type ArenaMap } from './map';
-import { CharacterAnimator, cloneCharacter, enableShadows, type CharacterModel } from './character-anim';
-import { attachRailgunToSoldier } from './weapon-model';
+import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
+import { Character, skinColorFor } from './character/character';
+import { attachRailgun, disposeRailgun } from './character/gun';
+import { floorBelow, type GibFloor } from './character/gibs';
+import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
 import { HATS, UNUSUALS } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
@@ -82,50 +84,20 @@ const BOT_MOVE: Record<BotDifficulty, BotMove> = {
 export type BotTarget = { id: string; pos: Vec3; team?: number | null };
 // A bot's decision to fire this tick — resolved by Game against the world.
 export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3; team: number | null };
-const MODEL_SCALE = 1.0;
-// Soldier.glb actually faces -Z at identity (confirmed: when camera is at
-// +Z we see the model's back). Movement direction comes back as
+// The combatant faces -Z at identity. Movement direction comes back as
 // atan2(dx, dz) which is 0 for wishdir +Z, so we add π to rotate the
 // model's natural -Z forward around to match wishdir.
 const MODEL_YAW_OFFSET = Math.PI;
 
-// The loaded character (scene + clips) — shared with remote players + replays.
-export type BotModel = CharacterModel;
+// The character "model" is now built in code (see character/): there is no
+// asset to load. BotModel stays as an opaque token so callers (Game, replays,
+// the replay viewer) keep their load-then-spawn flow unchanged.
+export type BotModel = { readonly kind: 'combatant' };
+const COMBATANT_MODEL: BotModel = Object.freeze({ kind: 'combatant' as const });
 
-// Module-level cache so React StrictMode's double-mount (and any future
-// remount) doesn't trigger two concurrent GLTFLoader runs. Two concurrent
-// loaders both create blob: URLs for the embedded textures; when the first
-// loader's promise is abandoned (game disposed), GC eventually revokes
-// those blobs while the second loader is still trying to Image.src them
-// — that's what produces "GLTFLoader: Couldn't load texture blob:…".
-let cachedModelPromise: Promise<BotModel | null> | null = null;
-let cachedModelLoadCount = 0;
-
-export async function loadBotModel(url: string): Promise<BotModel | null> {
-  if (cachedModelPromise) {
-    console.info('[instagib] bot model: reusing cached load');
-    return cachedModelPromise;
-  }
-  // Three.js's own resource cache helps when blob URLs are re-fetched.
-  THREE.Cache.enabled = true;
-  cachedModelLoadCount += 1;
-  const loadId = cachedModelLoadCount;
-  console.info(`[instagib] bot model: starting fresh load #${loadId} (${url})`);
-  cachedModelPromise = (async () => {
-    try {
-      const loader = new GLTFLoader();
-      const gltf = await loader.loadAsync(url);
-      console.info(
-        `[instagib] bot model: load #${loadId} resolved (${gltf.animations.length} animations, ${gltf.scene.children.length} root children)`,
-      );
-      return { scene: gltf.scene, animations: gltf.animations };
-    } catch (err) {
-      console.warn(`[instagib] bot model: load #${loadId} failed`, err);
-      cachedModelPromise = null; // permit retry next mount
-      return null;
-    }
-  })();
-  return cachedModelPromise;
+// Resolves immediately. The URL (the old soldier.glb path) is ignored.
+export async function loadBotModel(_url?: string): Promise<BotModel | null> {
+  return COMBATANT_MODEL;
 }
 
 function rand(lo: number, hi: number): number {
@@ -253,8 +225,9 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
-// Emissive-only enemy highlight, shared by Bot + RemotePlayer. Reversible:
-// null clears the glow without touching base colours/textures.
+// Emissive-only highlight for plain MeshStandardMaterials (the capsule
+// fallback). The combatant recolours its armour via Character.setLook().
+// Reversible: null clears the glow without touching base colours/textures.
 export function applyHighlight(
   mat: THREE.Material | THREE.Material[] | undefined,
   color: THREE.Color | null,
@@ -278,9 +251,16 @@ export class Bot {
   state: BotState;
   group: THREE.Group;
   private hat: WornHat | null = null;
-  // Shared third-person animator (gait, aim pitch, jump/land, death) — the same
+  private gun: THREE.Group | null = null; // third-person railgun (disposed with the bot)
+  // Reused animator input (no per-frame allocation).
+  private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
+  // Shared third-person animator (gait, aim, jump/land, gibs) — the same
   // implementation remote players use. Null on the capsule fallback.
   private anim: CharacterAnimator | null = null;
+  private character: Character | null = null;
+  private highlight: THREE.Color | null = null; // viewer's enemy-highlight colour
+  private teamLook: string | null = null; // TDM team colour (overrides highlight)
+  private lastMap: ArenaMap | null = null; // for the gib floor probe (visual only)
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
@@ -358,6 +338,7 @@ export class Bot {
   // `enemies` is every targetable entity (player + other bots); the bot filters
   // itself out by id.
   step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent | null {
+    this.lastMap = map;
     const intent = this.stepLogic(dt, map, enemies, frozen);
     // Animate AFTER the body's transform is final for this tick (the animator
     // measures motion from the group position). The manager re-seats the hat
@@ -382,9 +363,9 @@ export class Bot {
     if (this.decideTimer > 0) this.decideTimer -= dt;
 
     if (!this.state.alive) {
-      // Corpse phase: the death one-shot / collapse plays in place, then the
-      // body hides for the rest of the respawn delay (the delay itself is
-      // unchanged — it keeps ticking through the corpse phase).
+      // Corpse phase: the gibs fly where the body burst, then the body hides
+      // for the rest of the respawn delay (the delay itself is unchanged — it
+      // keeps ticking through the corpse phase).
       if (this.group.visible && !(this.anim?.isDying() && !this.anim.deathDone())) {
         this.group.visible = false;
       }
@@ -410,7 +391,8 @@ export class Bot {
         this.seenForSec = 0;
         this.aimSeeded = false;
         this.lastTargetId = null;
-        this.anim?.respawn(this.group.position); // clear the death pose, back to idle
+        this.anim?.respawn(this.group.position); // clear the gibs, back to idle
+        this.nameSprite.visible = true;
       }
       return null;
     }
@@ -484,13 +466,21 @@ export class Bot {
   // layers. Purely visual — the hitbox is the state.pos AABB.
   private animate(dt: number) {
     if (!this.anim || !this.group.visible) return;
+    // Safety net: a finished gib burst never lingers (e.g. a death right
+    // before a countdown freeze skips the corpse branch in stepLogic).
+    if (!this.state.alive && this.anim.deathDone()) {
+      this.group.visible = false;
+      return;
+    }
     let pitch = 0;
     if (this.state.alive && this.engagedId !== null && this.aimSeeded) {
       const eye = this.eyePos();
       const h = Math.hypot(this.aimPoint.x - eye.x, this.aimPoint.z - eye.z);
       pitch = Math.atan2(this.aimPoint.y - eye.y, h);
     }
-    this.anim.update({ dt, yaw: this.facing + MODEL_YAW_OFFSET, pitch, pos: this.group.position });
+    const ai = this.animIn;
+    ai.dt = dt; ai.yaw = this.facing + MODEL_YAW_OFFSET; ai.pitch = pitch; ai.pos = this.group.position;
+    this.anim.update(ai);
   }
 
   // Chase a smoothed aim point toward the target (low aimTrack = laggy = misses
@@ -909,6 +899,12 @@ export class Bot {
   // friendly fire is off. Rebuilds the name sprite with the new color.
   setTeam(team: number | null, color = '#ffd1d8') {
     this.team = team;
+    // TDM: the armour wears the team colour too (identification > highlight).
+    const look = team != null ? color : null;
+    if (look !== this.teamLook) {
+      this.teamLook = look;
+      this.resolveLook();
+    }
     if (color === this.nameColor) return;
     this.nameColor = color;
     const next = makeNameSprite(this.state.name, color);
@@ -927,10 +923,16 @@ export class Bot {
     if (!this.state.alive) return;
     this.state.alive = false;
     this.state.respawnTimer = BOT_RESPAWN_DELAY;
-    // The death one-shot (clip if the rig has one, else the procedural collapse)
-    // plays in place; step() hides the body once it has held its last frame.
-    // Capsule fallback or a mid-air kill: vanish at once, as before.
-    if (!this.anim?.die()) this.group.visible = false;
+    // Instagib: the body bursts into its armour chunks where it stood; step()
+    // hides it once they've shrunk away. Capsule fallback: vanish at once.
+    let floor: GibFloor = null;
+    if (this.onGround) floor = { y: this.state.pos.y };
+    else if (this.lastMap) {
+      const y = floorBelow(this.lastMap.boxes, this.state.pos.x, this.state.pos.y, this.state.pos.z);
+      if (y !== null && this.state.pos.y - y < 4) floor = { y };
+    }
+    if (!this.anim?.die(floor)) this.group.visible = false;
+    this.nameSprite.visible = false; // no floating name over the gibs
   }
 
   isHeadshot(hitY: number): boolean {
@@ -962,13 +964,24 @@ export class Bot {
     };
   }
 
-  // Re-seat the hat (+ animate its unusual) after the body's transform is final.
+  // Animate the hat's unusual effect (the hat itself rides the head socket).
   updateHat(dt: number) {
     this.hat?.update(dt);
   }
 
+  // Footfall events for synced footstep audio (see RemotePlayer).
+  get footfalls(): number {
+    return this.anim?.footfalls ?? 0;
+  }
+  set onFootfall(fn: FootfallListener | null) {
+    if (this.anim) this.anim.onFootfall = fn;
+  }
+
   dispose(scene: THREE.Scene) {
     this.hat?.dispose();
+    if (this.gun) disposeRailgun(this.gun); // per-bot gun geometry/materials
+    this.gun = null;
+    this.character?.dispose();
     scene.remove(this.group);
     if (this.fallbackBody) {
       this.fallbackBody.geometry.dispose();
@@ -984,18 +997,28 @@ export class Bot {
     this.anim?.dispose();
   }
 
-  private installModel(model: BotModel) {
-    // Shared clone path: rest transform, `userData.shared` tag (so
-    // Game.disposeScene() skips the cached source's resources), shadow casting.
-    const cloned = cloneCharacter(model, MODEL_SCALE);
-    this.group.add(cloned);
-    this.hat = new WornHat(this.group, cloned);
+  private installModel(_model: BotModel) {
+    // The code-built combatant: one skinned mesh on a clean rig, the hat on
+    // the helmet socket, the railgun in the right-hand socket.
+    const ch = new Character({ colorHex: skinColorFor(this.state.name) });
+    this.group.add(ch.root);
+    this.character = ch;
+    this.hat = new WornHat(ch.sockets.headTop);
     void this.hat.setHat(randomHatId());
     if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
-    enableShadows(attachRailgunToSoldier(cloned, BOT_HEIGHT));
-    // Clip resolution, the gait blend, the gun-carry arm pin and every
-    // procedural layer live in the animator — the same one remote players use.
-    this.anim = new CharacterAnimator(cloned, model.animations);
+    this.gun = attachRailgun(ch);
+    // Gait, aim, gun hold, jumps/landings and gibs live in the animator — the
+    // same one remote players use.
+    this.anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
+  }
+
+  // Armour colour: TDM team colour > the viewer's enemy highlight > own skin.
+  private resolveLook() {
+    const ch = this.character;
+    if (!ch) return;
+    if (this.teamLook) ch.setLook(this.teamLook, 'natural');
+    else if (this.highlight) ch.setLook(this.highlight, 'highlight');
+    else ch.setLook(skinColorFor(this.state.name), 'natural');
   }
 
   private installFallback() {
@@ -1029,13 +1052,14 @@ export class Bot {
     this.group.add(this.fallbackHead);
   }
 
-  // Bright-enemy highlight: emissive glow only (reversible, leaves base colour
-  // and textures intact). null = natural.
+  // Bright-enemy highlight (the viewer's chosen colour, full-bright armour).
+  // null = the bot's natural skin. The capsule fallback keeps the old glow.
   setHighlight(color: THREE.Color | null) {
-    this.group.traverse((obj) => {
-      const m = (obj as THREE.Mesh).material;
-      applyHighlight(m, color);
-    });
+    if (color) (this.highlight ??= new THREE.Color()).copy(color);
+    else this.highlight = null;
+    if (this.fallbackBody) applyHighlight(this.fallbackBody.material, color);
+    if (this.fallbackHead) applyHighlight(this.fallbackHead.material, color);
+    this.resolveLook();
   }
 }
 

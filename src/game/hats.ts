@@ -2,19 +2,28 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { hatById, unusualById, type UnusualKind } from './cosmetics';
 
-// Hats: a glTF model worn on a player model's head. Attachment is a world-space
-// follower — each frame we read the wearer's `mixamorigHead` transform and seat
-// an auto-fit hat on the crown. A bind-pose correction removes the Mixamo bone's
-// odd local frame while preserving its animated pitch/roll/yaw, so hats move
-// with the head instead of hovering upright above it. Auto-fit (scale to a target
-// width from the model's own bounding box) was verified across hats whose source
-// scales ranged from 3 to 300 units, so no per-hat tuning is needed.
+// Hats: a glTF model worn on the combatant's helmet. The hat container is a
+// child of the character's `headTop` socket (see character/rig.ts), so it
+// rides the head bone through every pose, emote and gib with no per-frame
+// follow code. Auto-fit scales each hat to a target width from its own
+// bounding box; per-hat `fit/sink/stretch/yaw` come from the catalog, with
+// helmet-specific corrections in HELMET_FIT below.
 
-const TARGET_WIDTH = 0.34; // metres — sits a bit wider than the head so it reads
-// Metres above the head BONE where a hat's base seats. The Soldier's head bone
-// sits ~0.25 m below the crown of the head mesh (measured), so the base lands
-// just under the crown; per-hat `sink` then drops brimmed/skull-cap styles down.
-const CROWN_OFFSET = 0.19;
+// The helmet is ~0.29 m wide x 0.33 m deep; hats sit a touch wider.
+const TARGET_WIDTH = 0.36;
+// Seat corrections for the combatant's helmet (the catalog values were tuned
+// on the old soldier's bare head): extra drop (m), size multiplier, and a
+// forward/back nudge so brims clear the visor.
+const HELMET_FIT: Record<string, { sink?: number; fit?: number; z?: number; tilt?: number }> = {
+  'hat.cap': { sink: 0.11, fit: 1.0, z: 0.0, tilt: -0.06 },
+  'hat.baseball': { sink: 0.135, fit: 0.98, z: 0.005, tilt: -0.06 },
+  'hat.hardhat': { sink: 0.125, fit: 1.0 },
+  'hat.graduation': { sink: 0.15, fit: 1.0 },
+  'hat.tophat': { sink: 0.05, fit: 0.95 },
+  'hat.propeller': { sink: 0.115, fit: 1.0 },
+  'hat.wizard': { sink: 0.085, fit: 1.0 },
+  'hat.crown': { sink: 0.055, fit: 1.05 },
+};
 
 const loader = new GLTFLoader();
 const sourceCache = new Map<string, Promise<THREE.Object3D>>();
@@ -332,47 +341,23 @@ class UnusualEffect {
   }
 }
 
-// One worn hat instance. The container is parented to the wearer's top-level
-// `group` (not the cm-scaled rig), so it inherits position/visibility — but it's
-// re-seated each frame from the head bone's WORLD transform.
+// One worn hat instance, parented to the wearer's helmet-crown socket.
 export class WornHat {
   private container = new THREE.Group();
   // Anchor the unusual effect rides in — its local Y tracks the top of the
   // equipped hat so the effect crowns the hat (not the head) regardless of height.
   private unusualAnchor = new THREE.Group();
-  private head: THREE.Object3D | null;
   private current = ''; // equipped hat id
   private token = 0; // guards against a slow load finishing after a later setHat
   private unusual: UnusualEffect | null = null;
   private unusualKind: UnusualKind = 'none';
-  private sink = 0; // per-hat downward seat offset (metres), set on setHat
-  private hatTop = 0.12; // top of the equipped hat in container-local metres
-  private readonly tmp = new THREE.Vector3();
-  private readonly crown = new THREE.Vector3();
-  private readonly headWorldQ = new THREE.Quaternion();
-  private readonly parentWorldQ = new THREE.Quaternion();
-  private readonly headToHatQ = new THREE.Quaternion();
+  private hatTop = 0.04; // top of the equipped hat in container-local metres
 
-  constructor(
-    private parent: THREE.Object3D,
-    private modelRoot: THREE.Object3D,
-  ) {
-    this.head =
-      modelRoot.getObjectByName('mixamorigHead') ??
-      modelRoot.getObjectByName('mixamorig:Head') ??
-      modelRoot.getObjectByName('Head') ??
-      null;
-    if (this.head) {
-      // At bind pose, hats should share the model root's orientation, not the
-      // Mixamo head bone's rotated local frame. Preserve that correction and
-      // apply it to the animated head transform each frame.
-      this.head.updateWorldMatrix(true, false);
-      this.head.getWorldQuaternion(this.headWorldQ);
-      this.modelRoot.getWorldQuaternion(this.headToHatQ);
-      this.headToHatQ.premultiply(this.headWorldQ.clone().invert());
-    }
+  constructor(private socket: THREE.Object3D) {
+    this.container.name = 'hat';
     this.container.add(this.unusualAnchor);
-    parent.add(this.container);
+    socket.add(this.container);
+    this.layoutUnusual();
   }
 
   // Equip a hat by cosmetic id (e.g. 'hat.tophat'); 'hat.none' / unknown = bare.
@@ -382,8 +367,8 @@ export class WornHat {
     const my = ++this.token;
     this.clearMesh();
     const hat = hatById(id);
-    this.sink = 0;
-    this.hatTop = 0.12; // bare-head baseline for the unusual anchor
+    this.hatTop = 0.04; // bare helmet: the crest
+    this.notifyHat(false);
     if (!hat.model) {
       this.layoutUnusual();
       return; // bare-headed
@@ -396,40 +381,45 @@ export class WornHat {
     }
     if (this.token !== my) return; // superseded by a later setHat
 
+    const fix = HELMET_FIT[id] ?? {};
     const mesh = src.clone(true);
     // Center on X/Z and drop the bottom to Y=0 (at native scale), then uniformly
-    // scale so the widest horizontal extent is TARGET_WIDTH. (The catalog only
-    // ships hats with clean geometry — two malformed CC0 assets whose vertices
-    // were scattered across ~500k units were dropped rather than special-cased.)
+    // scale so the widest horizontal extent is TARGET_WIDTH.
     const box = new THREE.Box3().setFromObject(mesh);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     mesh.position.set(-center.x, -box.min.y, -center.z);
     const holder = new THREE.Group();
     holder.add(mesh);
-    // Uniform fit by the widest horizontal extent (brim/blade span), then an
-    // optional vertical `stretch` so silhouette-by-height hats (top hat) aren't
-    // crushed flat by a wide brim, and a `sink` that drops brim/skull-cap style
-    // hats down around the head instead of perching on its bounding-box floor.
-    const s = ((hat.fit ?? 1) * TARGET_WIDTH) / Math.max(size.x, size.z, 1e-6);
-    holder.scale.set(s, s * (hat.stretch ?? 1), s);
-    // Per-hat yaw so the brim faces the wearer's front — the catalog's models
-    // don't agree on a forward axis (the ballcap's brim runs down −Z, the plain
-    // cap's down its own X), so each hat declares the spin that points it forward.
-    holder.rotation.y = hat.yaw ?? 0;
-    this.sink = hat.sink ?? 0;
-    this.hatTop = size.y * s * (hat.stretch ?? 1) - this.sink;
+    const s = ((hat.fit ?? 1) * (fix.fit ?? 1) * TARGET_WIDTH) / Math.max(size.x, size.z, 1e-6);
+    const stretch = hat.stretch ?? 1;
+    holder.scale.set(s, s * stretch, s);
+    // Per-hat yaw so the brim faces the wearer's front (catalog), then a small
+    // forward tilt so brims ride the helmet's slope.
+    holder.rotation.set(fix.tilt ?? 0, hat.yaw ?? 0, 0, 'XYZ');
+    const sink = (hat.sink ?? 0) + (fix.sink ?? 0);
+    holder.position.set(0, -sink, fix.z ?? 0);
+    this.hatTop = size.y * s * stretch - sink;
     // Tag shared so Game.disposeScene() never disposes the cached geometry.
     holder.traverse((o) => {
       o.userData.shared = true;
+      if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
     this.container.add(holder);
+    this.notifyHat(true);
     this.layoutUnusual();
+  }
+
+  // Tell the wearer (via the socket) whether a hat is on — the combatant hides
+  // its helmet crest under hats.
+  private notifyHat(on: boolean) {
+    const cb = this.socket.userData.onHatChange as ((on: boolean) => void) | undefined;
+    cb?.(on);
   }
 
   // Seat the unusual anchor just above the equipped hat's crown.
   private layoutUnusual() {
-    this.unusualAnchor.position.y = Math.max(this.hatTop, 0.04) + 0.05;
+    this.unusualAnchor.position.y = Math.max(this.hatTop, 0.03) + 0.05;
   }
 
   // Equip an unusual particle effect (worn above the hat). 'unusual.none' = off.
@@ -445,29 +435,9 @@ export class WornHat {
     }
   }
 
-  // Seat the hat on the wearer's head each frame. Updates the bone's world matrix
-  // first (the animation mixer only writes bone-LOCAL transforms), then converts
-  // the corrected head world transform into the parent group's local frame.
+  // Animate the unusual. (The hat itself rides the head socket — no follow.)
   update(dt: number): void {
     this.unusual?.update(dt);
-    if (!this.head) return;
-    this.head.updateWorldMatrix(true, false); // refresh head + ancestors' world matrices
-    this.head.getWorldPosition(this.tmp);
-    this.head.getWorldQuaternion(this.headWorldQ);
-    this.headWorldQ.multiply(this.headToHatQ);
-    // Move from the head bone to the crown along the animated hat-up direction.
-    // A global-Y offset is what made hats hover separately as the head tilted.
-    this.crown.set(0, CROWN_OFFSET - this.sink, 0).applyQuaternion(this.headWorldQ);
-    this.tmp.add(this.crown);
-    // worldToLocal inverts the parent's full matrixWorld, so this stays correct
-    // even when the parent group is rotated/animated (e.g. the podium + Locker
-    // preview spin/sway the group) — do NOT replace it with a raw subtraction.
-    this.parent.worldToLocal(this.tmp);
-    this.container.position.copy(this.tmp);
-    // Express the corrected world orientation in the container parent's frame.
-    // This keeps podium/Locker outer-group spins from being counted twice.
-    this.parent.getWorldQuaternion(this.parentWorldQ);
-    this.container.quaternion.copy(this.parentWorldQ).invert().multiply(this.headWorldQ);
   }
 
   setVisible(v: boolean): void {
@@ -487,7 +457,6 @@ export class WornHat {
     this.unusual?.dispose();
     this.unusual = null;
     this.clearMesh();
-    this.parent.remove(this.container);
-    this.head = null;
+    this.socket.remove(this.container);
   }
 }
