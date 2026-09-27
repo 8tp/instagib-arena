@@ -78,6 +78,60 @@ function additiveMaterial(map: THREE.Texture | null, doubleSided: boolean): THRE
   });
 }
 
+// Energy shell for the light columns / cones (spawn-in beams, the pyre): a
+// hollow, fresnel-edged cylinder with fine vertical streaks that fades toward
+// its top — bright only at the silhouette, see-through in the middle, so it
+// reads as light, never as a solid capsule. Instanced like the rest (per-
+// instance matrix + colour; the fade is baked into the colour).
+const SHELL_VERT = /* glsl */ `
+varying vec3 vN;
+varying vec3 vView;
+varying vec2 vUv;
+varying vec3 vColor;
+void main() {
+  vUv = uv;
+  #ifdef USE_INSTANCING_COLOR
+    vColor = instanceColor;
+  #else
+    vColor = vec3(1.0);
+  #endif
+  mat4 m = modelMatrix * instanceMatrix;
+  vec4 wp = m * vec4(position, 1.0);
+  vN = mat3(m) * normal;
+  vView = cameraPosition - wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+
+const SHELL_FRAG = /* glsl */ `
+varying vec3 vN;
+varying vec3 vView;
+varying vec2 vUv;
+varying vec3 vColor;
+void main() {
+  float facing = abs(dot(normalize(vN), normalize(vView)));
+  float rim = pow(1.0 - facing, 2.2);
+  float streak = pow(0.5 + 0.5 * sin(vUv.x * 6.2831853 * 11.0 + vUv.y * 3.0), 8.0);
+  float v = vUv.y; // 0 at the base, 1 at the top
+  float height = smoothstep(0.0, 0.06, v) * pow(1.0 - v, 1.4);
+  float a = (rim * 0.85 + streak * 0.3 * (1.0 - facing * 0.5)) * height;
+  gl_FragColor = vec4(vColor * a, 1.0);
+  #include <colorspace_fragment>
+}
+`;
+
+function shellMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: SHELL_VERT,
+    fragmentShader: SHELL_FRAG,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+}
+
 // ── Procedural textures (module-cached, shared by every context) ───────────
 
 function canvasTexture(size: number, draw: (ctx: CanvasRenderingContext2D, s: number) => void): THREE.Texture {
@@ -249,8 +303,10 @@ export class FxPool {
     let total = 0;
     for (const shape of FX_SHAPES) {
       const cap = SHAPE_CAPACITY[shape];
-      const doubleSided = shape === 'column' || shape === 'cone' || shape === 'ring';
-      const mat = additiveMaterial(shape === 'ring' ? ringTexture() : null, doubleSided);
+      const shell = shape === 'column' || shape === 'cone';
+      const mat = shell
+        ? shellMaterial()
+        : additiveMaterial(shape === 'ring' ? ringTexture() : null, shape === 'ring');
       const mesh = new THREE.InstancedMesh(buildShapeGeometry(shape), mat, cap);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);

@@ -67,9 +67,10 @@ void main() {
   vec4 t = texture2D(uMap, vUv);
   float age = max(vAge, 0.0);
   // The mask is authored perceptually; blending happens in linear light, where
-  // a partial darken reads far weaker, so lift it (1 − (1 − a)^2.2).
+  // a partial darken reads weaker, so lift it a little (1 − (1 − a)^1.6) and
+  // cap it well short of black so it reads as a burn on any surface.
   float scorch = t.a * clamp(1.0 - (age - uHold) / uFade, 0.0, 1.0);
-  scorch = (1.0 - pow(1.0 - scorch, 2.2)) * 0.92;
+  scorch = (1.0 - pow(1.0 - scorch, 1.6)) * 0.72;
   float rim = t.r * (exp(-age * 2.6) * 3.2 + exp(-age * 1.4) * 0.35);
   float hot = t.g * exp(-age * 9.0);
   if (scorch < 0.003 && rim + hot < 0.003) discard;
@@ -118,16 +119,21 @@ function decalTexture(): THREE.DataTexture {
       // Blast spokes: narrow radial streaks at fixed pseudo-random angles.
       const spokeRaw = Math.max(0, Math.sin(theta * 11 + 0.6) * Math.sin(theta * 7 + 2.3));
       const spoke = Math.pow(spokeRaw, 6);
-      // Scorch: a charred centre inside the rim, a heavy soot skirt that holds
-      // dark to ~0.5 and feathers out by a ragged ~0.85 edge (so the burn reads
-      // at its full ~1 m), mottled by value noise, plus blast spokes to ~0.98.
-      const edge = 0.84 + 0.08 * angularNoise(theta, edgeOct);
-      const f = Math.min(1, Math.max(0, (edge - r) / (edge - 0.42)));
-      const soot = f * f * (3 - 2 * f);
-      const mottle = 0.72 + 0.28 * valueNoise(u * 7 + 3.1, v * 7 + 1.7);
-      const char = Math.exp(-Math.pow(r / 0.34, 4)); // near-black inner burn
-      const streak = spoke * Math.max(0, 1 - r / 0.98) * Math.min(1, r / 0.25);
-      const scorch = Math.min(1, soot * 0.62 * mottle + char * 0.4 + streak * 0.4);
+      // Scorch: a charred RING just outside the molten rim (the burn), a paler
+      // seared centre inside it, and a soft, ragged soot haze that feathers out
+      // to ~0.85 with a long gradient — no hard-edged solid disc — mottled by
+      // value noise, plus faint blast spokes.
+      const edge = 0.82 + 0.08 * angularNoise(theta, edgeOct);
+      const out = Math.max(0, r - 0.37) / ((edge - 0.37) * 0.55);
+      const inner = 0.35 + 0.65 * Math.min(1, Math.max(0, (r - 0.1) / 0.27));
+      const haze = Math.exp(-out * out) * inner;
+      const mottle = 0.65 + 0.35 * valueNoise(u * 7 + 3.1, v * 7 + 1.7);
+      const dChar = (r - 0.37) / 0.11;
+      const charRing = Math.exp(-dChar * dChar);
+      const seared = 0.2 * Math.exp(-Math.pow(r / 0.3, 2));
+      const streak = spoke * Math.max(0, 1 - r / 0.95) * Math.min(1, r / 0.3);
+      // Union of the layers (1 − Π(1 − a)) so overlaps never clip to black.
+      const scorch = 1 - (1 - charRing * 0.55 * (0.8 + 0.2 * mottle)) * (1 - haze * 0.5 * mottle) * (1 - seared) * (1 - streak * 0.22);
       // Molten rim: a bright ragged (non-periodic-looking) annulus + faint spokes.
       const rr = 0.31 + 0.03 * angularNoise(theta, rimOct);
       const dRim = (r - rr) / 0.055;
