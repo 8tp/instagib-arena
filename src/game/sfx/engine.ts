@@ -124,7 +124,7 @@ export class SfxEngine {
     const v = this.voice(vol, at);
     railShot(v, this.bank, true, 1);
     this.mixer.toWorld(v, this.mixer.sendMid);
-    return this.commit(v, 'local');
+    return this.commit(v, 'self');
   }
 
   /** Another player's / bot's rail shot at its muzzle (3D). */
@@ -173,7 +173,7 @@ export class SfxEngine {
     const v = this.voice(vol, at);
     gib(v, this.bank, headshot, 1);
     this.mixer.toWorld(v, this.mixer.sendLo);
-    return this.commit(v, 'impact');
+    return this.commit(v, 'self');
   }
 
   /** Someone else's frag, heard where the body burst (3D, thinner). */
@@ -192,7 +192,7 @@ export class SfxEngine {
     const v = this.voice(vol, at);
     death(v, this.bank);
     this.mixer.toWorld(v, this.mixer.sendLo);
-    return this.commit(v, 'impact');
+    return this.commit(v, 'self');
   }
 
   medalSting(kind: StingKind, level: number, vol = 1, at?: number) {
@@ -208,6 +208,7 @@ export class SfxEngine {
    * lateral dash direction -1..1 (dash).
    */
   localMove(kind: LocalMoveKind, a = 0, at?: number) {
+    if (!Number.isFinite(a)) a = 0; // strengths feed AudioParams (non-finite throws)
     const t = at ?? this.ctx.currentTime;
     const s = this.surface;
     let v: Voice;
@@ -264,6 +265,7 @@ export class SfxEngine {
   // ── Other combatants' movement (3D) ─────────────────────────────────────────
   /** Remote player / bot movement event at their feet. `strength` = speed m/s. */
   remoteMove(kind: MotionEventKind, x: number, y: number, z: number, strength: number, at?: number) {
+    if (!Number.isFinite(strength)) return null;
     const opts = kind === 'step' ? STEP_3D : MOVE_3D;
     const d = this.mixer.audible(x, y, z, opts.max);
     if (d < 0) return null;

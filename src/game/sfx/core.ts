@@ -101,7 +101,7 @@ function makeNoise(ctx: AC, seconds: number, kind: 'white' | 'pink' | 'brown'): 
 // One sound event: every node it creates hangs off `out` (the voice's master
 // gain), and every scheduled source is tracked so the pool can steal the voice
 // (fast fade + stop) when a category is over its concurrency cap.
-export type VoiceCat = 'local' | 'hud' | 'rail' | 'impact' | 'remote';
+export type VoiceCat = 'self' | 'local' | 'hud' | 'rail' | 'impact' | 'remote';
 
 export class Voice {
   readonly out: GainNode;
@@ -117,7 +117,8 @@ export class Voice {
     gain = 1,
   ) {
     this.out = ctx.createGain();
-    this.out.gain.value = gain;
+    // A non-finite AudioParam value throws — never let a bad input reach one.
+    this.out.gain.value = Number.isFinite(gain) ? gain : 0;
     this.end = t;
   }
 

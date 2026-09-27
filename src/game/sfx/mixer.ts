@@ -15,13 +15,17 @@ import { clamp, rnd, type AC, type Voice, type VoiceCat } from './core';
 
 // Max concurrent voices per category (worst case ≈ 30 voices, ~350 nodes).
 const CAPS: Record<VoiceCat, number> = {
-  local: 7, // own rail shot + movement
+  // Your own shot / kill confirm / death — their own pool, so movement or
+  // other players' frags can never steal them (oldest-first stealing would
+  // otherwise pick your 1.2 s rail tail first).
+  self: 3,
+  local: 7, // own movement
   hud: 5, // hit tick, ready cue, charge hum, medal stings
   rail: 5, // other players' rail shots (3D)
   impact: 5, // kill confirm / gibs / death
   remote: 8, // other players' + bots' footsteps / jumps / landings (3D)
 };
-const CAPS_LOW: Record<VoiceCat, number> = { local: 5, hud: 4, rail: 3, impact: 3, remote: 4 };
+const CAPS_LOW: Record<VoiceCat, number> = { self: 2, local: 4, hud: 4, rail: 3, impact: 3, remote: 4 };
 
 export type RoomProfile = {
   /** RT60 of the generated impulse response, seconds. */
@@ -186,7 +190,8 @@ export class Mixer {
   /** Distance from the listener, or -1 when beyond `max` (cull — build nothing). */
   audible(x: number, y: number, z: number, max: number): number {
     const d = Math.hypot(x - this.lx, y - this.ly, z - this.lz);
-    return d > max ? -1 : d;
+    return d <= max ? d : -1; // NaN (a bad position) is culled, never routed
+
   }
 
   /**

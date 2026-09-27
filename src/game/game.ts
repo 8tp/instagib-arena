@@ -1349,6 +1349,7 @@ export class Game {
   }
 
   private handleVoteStart(v: { options: string[]; endsAtClient: number; durationMs: number; winnerId: string | null; winnerTeam: number | null }) {
+    this.audio.stopAmbience(); // the match is over: room tone fades under the podium/vote
     // Spectators don't vote, submit stats, or run the local Play-of-the-Match
     // cinematic (no recorded POV) — they keep watching live through the breather
     // and adopt the new map when the vote resolves.
@@ -1406,6 +1407,7 @@ export class Game {
 
   private handleVoteResult(r: { mapId: string; resumeAtClient: number; spawn?: { x: number; y: number; z: number } }) {
     this.vote = null;
+    this.audio.startAmbience(); // next match: the (new) map's bed fades back in
     // Spectators just follow the new map — no local respawn, stat reset, or lock.
     if (this.spectator) {
       const desiredSpec = mapById(r.mapId);
@@ -1555,73 +1557,88 @@ export class Game {
   private runLoop() {
     this.tickFn = (now: number) => {
       if (this.disposed) return;
-      const dt = Math.min(0.1, (now - this.lastTime) / 1000);
-      this.lastTime = now;
-      // Apply mouse look once per RENDERED frame, before stepping the sim, so
-      // aim is as smooth as the display refresh (not quantized to the 64Hz sim)
-      // and this frame's movement reads the freshly-updated yaw.
-      this.applyLook();
-      this.accumulator += dt;
-      let steps = 0;
-      while (this.accumulator >= TICK_DT && steps < 5) {
-        // Snapshot the pre-step position so render() can interpolate toward the
-        // post-step one by the leftover accumulator fraction (smooth on any refresh).
-        this.simPrevPos.x = this.player.pos.x;
-        this.simPrevPos.y = this.player.pos.y;
-        this.simPrevPos.z = this.player.pos.z;
-        this.simStep(TICK_DT);
-        this.accumulator -= TICK_DT;
-        steps += 1;
-      }
-      if (steps === 5) this.accumulator = 0;
-      this.tickHudTimers(dt);
-      this.tickFps(dt);
-      this.frameDt = dt;
-      if (this.replay) {
-        // Play-of-the-Match clip is playing: drive the replay and age its
-        // beams + bursts here, since the sim (which normally steps them) is
-        // frozen at match end. The camera is owned by the ReplayPlayer.
-        this.replay.update(dt);
-        this.weapon.step(dt, this.scene);
-        this.effects.step(dt, this.scene);
-        if (this.replay.done) this.advanceReplay();
-      } else {
-        this.syncRemotePlayers(dt);
-        // Record the match for Play of the Match + the weekly-challenge replay
-        // (downsampled; live play only). Skip the pre-match countdown so the
-        // recorder clock starts at the gun-go — that makes it the authoritative
-        // run time for the speedrun challenge and keeps warmup out of the replay.
-        // Offline also requires the warmup to be ARMED (beginLocalWarmup has run):
-        // before that, during the async bot-model load, inCountdown is false but
-        // bots don't exist yet — recording then would capture glitchy bot-less
-        // frames and start the run clock early. Spectators never record.
-        if (
-          !this.spectator &&
-          !this.matchOver &&
-          !this.vote &&
-          !this.training &&
-          !this.inCountdown &&
-          (this.net || this.localWarmupArmed)
-        ) {
-          this.recorder.tick(dt, () => this.sampleReplayFrame());
+      // One bad frame (a throw anywhere in sim / render / audio) must not stop
+      // the loop for good: log it (rate-limited) and keep scheduling frames.
+      try {
+        this.frame(now);
+      } catch (err) {
+        if (now - this.lastFrameErrorMs > 5000) {
+          this.lastFrameErrorMs = now;
+          console.error('[game] frame error', err);
         }
-      }
-      // Skip GL work while the WebGL context is lost (GPU reset / driver hiccup)
-      // — rendering to a dead context spams errors and freezes black. The sim
-      // keeps ticking so we resume cleanly once the context is restored.
-      if (!this.contextLost) this.render();
-      // Throttle HUD delivery to ~20Hz so React isn't re-rendering ~14 overlay
-      // components every animation frame (the 3D render stays full-rate). Event
-      // sites (kills, respawn, vote, lock change) still call emitHud() directly
-      // for instant feedback. (#24)
-      this.hudAccumMs += dt * 1000;
-      if (this.hudAccumMs >= 50) {
-        this.hudAccumMs = 0;
-        this.emitHud();
       }
       this.scheduleFrame();
     };
     this.scheduleFrame();
+  }
+
+  private lastFrameErrorMs = -Infinity;
+
+  private frame(now: number) {
+    const dt = Math.min(0.1, (now - this.lastTime) / 1000);
+    this.lastTime = now;
+    // Apply mouse look once per RENDERED frame, before stepping the sim, so
+    // aim is as smooth as the display refresh (not quantized to the 64Hz sim)
+    // and this frame's movement reads the freshly-updated yaw.
+    this.applyLook();
+    this.accumulator += dt;
+    let steps = 0;
+    while (this.accumulator >= TICK_DT && steps < 5) {
+      // Snapshot the pre-step position so render() can interpolate toward the
+      // post-step one by the leftover accumulator fraction (smooth on any refresh).
+      this.simPrevPos.x = this.player.pos.x;
+      this.simPrevPos.y = this.player.pos.y;
+      this.simPrevPos.z = this.player.pos.z;
+      this.simStep(TICK_DT);
+      this.accumulator -= TICK_DT;
+      steps += 1;
+    }
+    if (steps === 5) this.accumulator = 0;
+    this.tickHudTimers(dt);
+    this.tickFps(dt);
+    this.frameDt = dt;
+    if (this.replay) {
+      // Play-of-the-Match clip is playing: drive the replay and age its
+      // beams + bursts here, since the sim (which normally steps them) is
+      // frozen at match end. The camera is owned by the ReplayPlayer.
+      this.replay.update(dt);
+      this.weapon.step(dt, this.scene);
+      this.effects.step(dt, this.scene);
+      if (this.replay.done) this.advanceReplay();
+    } else {
+      this.syncRemotePlayers(dt);
+      // Record the match for Play of the Match + the weekly-challenge replay
+      // (downsampled; live play only). Skip the pre-match countdown so the
+      // recorder clock starts at the gun-go — that makes it the authoritative
+      // run time for the speedrun challenge and keeps warmup out of the replay.
+      // Offline also requires the warmup to be ARMED (beginLocalWarmup has run):
+      // before that, during the async bot-model load, inCountdown is false but
+      // bots don't exist yet — recording then would capture glitchy bot-less
+      // frames and start the run clock early. Spectators never record.
+      if (
+        !this.spectator &&
+        !this.matchOver &&
+        !this.vote &&
+        !this.training &&
+        !this.inCountdown &&
+        (this.net || this.localWarmupArmed)
+      ) {
+        this.recorder.tick(dt, () => this.sampleReplayFrame());
+      }
+    }
+    // Skip GL work while the WebGL context is lost (GPU reset / driver hiccup)
+    // — rendering to a dead context spams errors and freezes black. The sim
+    // keeps ticking so we resume cleanly once the context is restored.
+    if (!this.contextLost) this.render();
+    // Throttle HUD delivery to ~20Hz so React isn't re-rendering ~14 overlay
+    // components every animation frame (the 3D render stays full-rate). Event
+    // sites (kills, respawn, vote, lock change) still call emitHud() directly
+    // for instant feedback. (#24)
+    this.hudAccumMs += dt * 1000;
+    if (this.hudAccumMs >= 50) {
+      this.hudAccumMs = 0;
+      this.emitHud();
+    }
   }
 
   // Schedule the next frame according to the FPS-limit mode. Exactly one frame
@@ -2525,6 +2542,7 @@ export class Game {
     if (this.matchOver) return;
     this.matchOver = true;
     this.matchWon = won;
+    this.audio.stopAmbience(); // the room tone fades under the results screen
     // Release the cursor and freeze the sim; the client shows a results screen.
     if (typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();

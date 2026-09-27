@@ -103,6 +103,15 @@ export class MotionTracker {
     const dx = x - tr.x;
     const dy = y - tr.y;
     const dz = z - tr.z;
+    // Bit-identical position while airborne = the entity froze (a remote whose
+    // snapshots stalled past the extrapolation cap), not a touchdown: treat it
+    // as no observation, or the sudden vy → 0 reads as a mid-air landing.
+    // Keep the clock at the last real observation, so the velocity on resume
+    // spans the whole freeze (and > 0.2 s resets the track as before).
+    if (!tr.grounded && dx === 0 && dy === 0 && dz === 0) {
+      tr.lastT -= dt;
+      return;
+    }
     tr.x = x;
     tr.y = y;
     tr.z = z;

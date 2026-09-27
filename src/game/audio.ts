@@ -319,6 +319,10 @@ export class SoundManager {
   // level. Announcer lines stay non-positional (centered UI cues).
   playAt(name: SoundClipName, x: number, y: number, z: number, volume = 1) {
     if (!this.ctx || !this.engine) return;
+    // Passive (other players') sounds need a running context: built while it's
+    // suspended (no user gesture yet — e.g. a fresh spectate link) they'd all
+    // fire at once on resume.
+    if (this.ctx.state !== 'running' && !ANNOUNCER_CLIPS.has(name)) return;
     if (ANNOUNCER_CLIPS.has(name)) {
       this.play(name, volume);
       return;
@@ -353,6 +357,7 @@ export class SoundManager {
 
   // Someone else's frag, heard at the body (bystander awareness).
   gibAt(x: number, y: number, z: number, volume = 1) {
+    if (this.ctx?.state !== 'running') return; // see playAt
     this.engine?.gibAt(x, y, z, volume);
   }
 
@@ -379,6 +384,7 @@ export class SoundManager {
 
   // Other players' / bots' movement sounds, positional at their feet.
   remoteMove(kind: MotionEventKind, x: number, y: number, z: number, strength: number) {
+    if (this.ctx?.state !== 'running') return; // see playAt
     this.engine?.remoteMove(kind, x, y, z, strength);
   }
 
@@ -399,6 +405,11 @@ export class SoundManager {
   // Start the per-map ambience bed (call when the match starts).
   startAmbience() {
     this.engine?.startAmbience();
+  }
+
+  // Fade the ambience bed out (match over / results / map vote).
+  stopAmbience(fade = 1.5) {
+    this.engine?.stopAmbience(fade);
   }
 
   // Low-spec: shorter reverb, equal-power panning, fewer concurrent voices.
