@@ -730,6 +730,9 @@ const INITIAL_HUD: HudState = {
   killfeed: [],
   toasts: [],
   banner: null,
+  mapId: '',
+  netJoined: false,
+  mapSwitchId: 0,
   hitMarker: null,
   killConfirm: null,
   killFlash: null,
@@ -1196,8 +1199,8 @@ function GameView({
   }, [disconnected]);
 
   // ── Loading screen ────────────────────────────────────────────────────
-  // Online handshake, all from existing HudState: socket open → the join ack
-  // (the engine's "Now playing <map>" banner) → the first server round trip
+  // Online handshake, all from HudState: socket open → the join ack
+  // (netJoined; names the server's map) → the first server round trip
   // after it (ping measured / a peer in the roster). The join banner is
   // latched so a later banner can't un-complete it, and it names the real map
   // for invite joins whose config map is only a placeholder.
@@ -1206,8 +1209,7 @@ function GameView({
     hudStore,
     (s) => ({
       status: s.netStatus,
-      joinMap:
-        s.banner && (s.banner.subtitle === 'Now playing' || s.banner.subtitle === 'Spectating') ? s.banner.title : null,
+      joinMap: s.netJoined ? mapNameById(s.mapId) : null,
       live: s.netRttMs > 0 || s.netPeers > 0,
       mode: s.mode,
     }),
@@ -1253,10 +1255,10 @@ function GameView({
   const loadShot = useLevelshot(loadGone ? null : loadMapId, settings.lowSpec);
 
   // Map switch after an online vote: a short levelshot interstitial keyed on
-  // the engine's "Next map" banner (the swap itself is synchronous).
+  // HudState.mapSwitchId (the swap itself is synchronous).
   const nextMap = useStoreSlice(
     hudStore,
-    (s) => (s.banner && s.banner.subtitle === 'Next map' ? { id: s.banner.id, name: s.banner.title } : null),
+    (s) => (s.mapSwitchId > 0 ? { id: s.mapSwitchId, name: mapNameById(s.mapId) } : null),
     shallowEqual,
   );
   const [interDoneId, setInterDoneId] = useState(0);
@@ -1513,7 +1515,7 @@ function SpectatorView({
   }, []);
 
   const [specMap, setSpecMap] = useState<string | null>(null);
-  const specBanner = hud.banner && hud.banner.subtitle === 'Spectating' ? hud.banner.title : null;
+  const specBanner = hud.netJoined ? mapNameById(hud.mapId) : null;
   if (specBanner && specMap === null) setSpecMap(specBanner);
   const [specLive, setSpecLive] = useState(false);
   if (specMap !== null && !specLive && (hud.netPeers > 0 || hud.netRttMs > 0)) setSpecLive(true);

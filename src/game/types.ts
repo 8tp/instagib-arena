@@ -236,6 +236,12 @@ export type HudState = {
   killfeed: KillfeedEntry[];
   toasts: ToastEntry[];
   banner: BannerState | null;
+  // Current arena id (MAPS id), the server's join/spectate acknowledgement for
+  // an online match, and the event id of the latest post-vote map switch
+  // (0 = none) — the loading screen + scoreboard key off these.
+  mapId: string;
+  netJoined: boolean;
+  mapSwitchId: number;
   hitMarker: HitMarker | null;
   killConfirm: KillConfirm | null;
   killFlash: KillFlash | null;

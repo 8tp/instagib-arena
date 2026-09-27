@@ -341,6 +341,9 @@ export class Game {
   // net.sendPosition / BIN_POS_TICK) so the server replays our motion on our
   // own sim timeline, not its arrival times. Counts sim steps; re-synced forward
   // when the loop drops time (hidden tab, a hitch past the 5-step cap).
+  // HudState.netJoined / mapSwitchId (see types.ts).
+  private netJoined = false;
+  private mapSwitchId = 0;
   private simTick = 0;
   private simEpochMs = -1;
   private lastSentTick = -1;
@@ -1256,6 +1259,7 @@ export class Game {
     // Recolor any already-present remotes for the new mode (team colors in TDM).
     this.recolorRemotes();
     if (info.state !== 'voting') this.vote = null;
+    this.netJoined = true;
     // "Now playing: <map>" so a server map adoption on join isn't silent (#26g).
     this.banner = {
       id: this.nextEventId++,
@@ -1279,6 +1283,7 @@ export class Game {
     this.matchOver = false;
     this.recolorRemotes();
     if (info.state !== 'voting') this.vote = null;
+    this.netJoined = true;
     this.banner = {
       id: this.nextEventId++,
       tier: 'special',
@@ -1373,6 +1378,7 @@ export class Game {
     if (this.spectator) {
       const desiredSpec = mapById(r.mapId);
       if (desiredSpec !== this.map) this.setMap(desiredSpec);
+      this.mapSwitchId = this.nextEventId; // the banner below takes this id
       this.banner = {
         id: this.nextEventId++,
         tier: 'special',
@@ -1417,6 +1423,7 @@ export class Game {
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;
     this.localRespawnInvuln = LOCAL_RESPAWN_INVULN_SEC;
+    this.mapSwitchId = this.nextEventId; // the banner below takes this id
     this.banner = {
       id: this.nextEventId++,
       tier: 'special',
@@ -3093,6 +3100,9 @@ export class Game {
       killfeed: this.killfeed.map((k) => ({ ...k })),
       toasts: this.toasts.map((t) => ({ ...t })),
       banner: this.banner ? { ...this.banner } : null,
+      mapId: mapIdOf(this.map),
+      netJoined: this.netJoined,
+      mapSwitchId: this.mapSwitchId,
       hitMarker: this.hitMarker ? { ...this.hitMarker } : null,
       killConfirm: this.killConfirm ? { ...this.killConfirm } : null,
       killFlash: this.killFlash ? { ...this.killFlash } : null,
