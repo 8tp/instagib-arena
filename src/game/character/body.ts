@@ -24,17 +24,20 @@ import { B, BONE_COUNT, REST_ABS } from './rig';
 type V3 = readonly [number, number, number];
 
 // ── Surface kinds ────────────────────────────────────────────────────────────
-type Surface = { color: number; tint: number; rough: number; metal: number; emit: number };
+type Surface = { color: number; tint: number; rough: number; metal: number; emit: number; edges: boolean };
 const S = {
-  suit: { color: 0x262a31, tint: 0, rough: 0.78, metal: 0.05, emit: 0 },
-  suitDark: { color: 0x16181d, tint: 0, rough: 0.7, metal: 0.1, emit: 0 },
-  armor: { color: 0xffffff, tint: 1, rough: 0.36, metal: 0.18, emit: 0 },
-  armorDark: { color: 0x575757, tint: 1, rough: 0.44, metal: 0.25, emit: 0 },
-  trim: { color: 0x3a414c, tint: 0, rough: 0.34, metal: 0.82, emit: 0 },
-  trimDark: { color: 0x22272e, tint: 0, rough: 0.4, metal: 0.7, emit: 0 },
-  trimLight: { color: 0xd9dee5, tint: 0, rough: 0.38, metal: 0.25, emit: 0 },
-  visor: { color: 0x101010, tint: 0, rough: 0.2, metal: 0.0, emit: 1 },
-  light: { color: 0x101010, tint: 0, rough: 0.3, metal: 0.0, emit: 0.7 },
+  // Dark flexible under-suit (fabric sheen in the material).
+  suit: { color: 0x1a1d23, tint: 0, rough: 0.62, metal: 0.12, emit: 0, edges: false },
+  suitDark: { color: 0x101217, tint: 0, rough: 0.5, metal: 0.35, emit: 0, edges: false },
+  // Lacquered player-colour plates, and a darker lacquered secondary.
+  armor: { color: 0xffffff, tint: 1, rough: 0.34, metal: 0.28, emit: 0, edges: true },
+  armorDark: { color: 0x4d4d4d, tint: 1, rough: 0.4, metal: 0.4, emit: 0, edges: true },
+  // Machined gunmetal joints/trims.
+  trim: { color: 0x3e4552, tint: 0, rough: 0.26, metal: 0.92, emit: 0, edges: true },
+  trimDark: { color: 0x1d2128, tint: 0, rough: 0.34, metal: 0.85, emit: 0, edges: true },
+  trimLight: { color: 0xc9d0d8, tint: 0, rough: 0.24, metal: 0.7, emit: 0, edges: true },
+  visor: { color: 0x0c0c0c, tint: 0, rough: 0.15, metal: 0.0, emit: 1, edges: false },
+  light: { color: 0x0c0c0c, tint: 0, rough: 0.3, metal: 0.0, emit: 0.7, edges: false },
 } satisfies Record<string, Surface>;
 
 type Part = { bone: number; geo: THREE.BufferGeometry; s: Surface };
@@ -341,7 +344,7 @@ function buildParts(): Part[] {
   add(B.head, cbox(0, 1.6, -0.168, 0.05, 0.008, 0.01, 0.002), S.trimDark);
   add(B.head, cbox(0, 1.585, -0.164, 0.045, 0.008, 0.01, 0.002), S.trimDark);
   // Crest fin (light stripe over the crown).
-  add(B.head, hull([
+  add(B.crest, hull([
     [-0.017, 1.77, -0.13], [0.017, 1.77, -0.13],
     [-0.017, 1.788, 0.1], [0.017, 1.788, 0.1],
     [0, 1.791, -0.1], [0, 1.804, -0.02], [0, 1.804, 0.07],
@@ -499,6 +502,61 @@ export type BodyGeometry = {
 
 let cached: BodyGeometry | null = null;
 
+// Hard-edge mask for one flat part (non-indexed). For every triangle, flags
+// which of its three edges is a HARD crease (neighbour face bends > ~18°, or
+// no neighbour). Component j marks the edge opposite vertex j. Coplanar
+// splits and smooth-shaded surfaces stay soft, so the bevel highlight traces
+// the machined plate edges only — never the triangulation.
+const HARD_COS = Math.cos((18 * Math.PI) / 180);
+function hardEdges(pos: THREE.BufferAttribute, nor: THREE.BufferAttribute, out: Float32Array, o: number): void {
+  const tris = pos.count / 3;
+  const key = (i: number) =>
+    `${Math.round(pos.getX(i) * 1e4)},${Math.round(pos.getY(i) * 1e4)},${Math.round(pos.getZ(i) * 1e4)}`;
+  const fn: THREE.Vector3[] = [];
+  const smooth: boolean[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  for (let t = 0; t < tris; t++) {
+    a.fromBufferAttribute(pos, t * 3);
+    b.fromBufferAttribute(pos, t * 3 + 1);
+    c.fromBufferAttribute(pos, t * 3 + 2);
+    const n = new THREE.Vector3().subVectors(c, b).cross(new THREE.Vector3().subVectors(a, b)).normalize();
+    fn.push(n);
+    // A triangle whose vertex normals disagree is smooth-shaded: no creases.
+    const n0 = new THREE.Vector3().fromBufferAttribute(nor, t * 3);
+    const n1 = new THREE.Vector3().fromBufferAttribute(nor, t * 3 + 1);
+    const n2 = new THREE.Vector3().fromBufferAttribute(nor, t * 3 + 2);
+    smooth.push(n0.dot(n1) < 0.999 || n0.dot(n2) < 0.999);
+  }
+  const edgeMap = new Map<string, number[]>();
+  const ek = (i: number, j: number) => {
+    const ka = key(i);
+    const kb = key(j);
+    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  };
+  for (let t = 0; t < tris; t++) {
+    for (let j = 0; j < 3; j++) {
+      const k = ek(t * 3 + ((j + 1) % 3), t * 3 + ((j + 2) % 3));
+      const list = edgeMap.get(k);
+      if (list) list.push(t);
+      else edgeMap.set(k, [t]);
+    }
+  }
+  for (let t = 0; t < tris; t++) {
+    for (let j = 0; j < 3; j++) {
+      let hard = 0;
+      if (!smooth[t]) {
+        const list = edgeMap.get(ek(t * 3 + ((j + 1) % 3), t * 3 + ((j + 2) % 3))) ?? [];
+        let neighbour = -1;
+        for (const u of list) if (u !== t) neighbour = u;
+        hard = neighbour < 0 || fn[t].dot(fn[neighbour]) < HARD_COS ? 1 : 0;
+      }
+      for (let v = 0; v < 3; v++) out[(o + t * 3 + v) * 3 + j] = hard;
+    }
+  }
+}
+
 export function getBodyGeometry(): BodyGeometry {
   if (cached) return cached;
   const parts = buildParts();
@@ -516,6 +574,7 @@ export function getBodyGeometry(): BodyGeometry {
   const normal = new Float32Array(total * 3);
   const color = new Float32Array(total * 3);
   const mat = new Float32Array(total * 4);
+  const edge = new Float32Array(total * 3);
   const skinIndex = new Uint16Array(total * 4);
   const skinWeight = new Float32Array(total * 4);
   const comSum = new Float64Array(BONE_COUNT * 3);
@@ -524,6 +583,8 @@ export function getBodyGeometry(): BodyGeometry {
   let o = 0;
   for (const { p, pos, nor } of flat) {
     c.setHex(p.s.color); // sRGB hex → linear working colour
+    // Creases only on hard-surface kinds (armour, trim) — not the suit/visor.
+    if (p.s.edges) hardEdges(pos, nor, edge, o);
     for (let i = 0; i < pos.count; i++, o++) {
       const x = pos.getX(i);
       const y = pos.getY(i);
@@ -554,6 +615,7 @@ export function getBodyGeometry(): BodyGeometry {
   geometry.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(color, 3));
   geometry.setAttribute('aMat', new THREE.BufferAttribute(mat, 4));
+  geometry.setAttribute('aEdge', new THREE.BufferAttribute(edge, 3));
   geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndex, 4));
   geometry.setAttribute('skinWeight', new THREE.BufferAttribute(skinWeight, 4));
   // Generous static bounds (animation + emotes stay well inside).
@@ -582,75 +644,153 @@ export function getBodyGeometry(): BodyGeometry {
 }
 
 // ── Material ────────────────────────────────────────────────────────────────
+//
+// One MeshPhysicalMaterial per character, driven by the per-vertex channels:
+//   • painted armour (aMat.x = tint): player colour, clear-coat lacquer over
+//     a semi-metallic paint → sharp highlights per plate;
+//   • gunmetal trim: high metalness, no coat;
+//   • under-suit: dark, rough, with a fabric sheen;
+//   • hard plate edges (aEdge + barycentrics derived from gl_VertexID): a thin
+//     bright bevel catch-light up close, so facets read as machined plates;
+//   • visor (aMat.w = 1): a hot white core fading to a saturated player-colour
+//     edge across the band; light slits glow in the player colour;
+//   • a player-colour fresnel rim + an emissive lift for readability — the
+//     same treatment for everyone;
+//   • gib state: charred albedo (uBurn) and hot glowing seams (uGlow/uGlowCol).
 
 export type CharacterUniforms = {
   uPlayer: { value: THREE.Color };
-  uVisor: { value: THREE.Color };
+  uVisorCore: { value: THREE.Color };
+  uVisorEdge: { value: THREE.Color };
   uRim: { value: THREE.Color };
   uLift: { value: number };
   uRimStr: { value: number };
   uGlow: { value: number };
   uGlowCol: { value: THREE.Color };
+  uBurn: { value: number };
 };
+
+const VISOR_Y = 1.656; // rest-space centre of the visor band
+const VISOR_HALF = 0.023;
 
 // Defined once at module scope so every character material hashes to the same
 // compiled program (three keys custom programs on onBeforeCompile's source).
-function injectCharacterShader(this: THREE.MeshStandardMaterial, shader: THREE.WebGLProgramParametersWithUniforms) {
+function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.WebGLProgramParametersWithUniforms) {
   const u = (this.userData as { charUniforms: CharacterUniforms }).charUniforms;
   Object.assign(shader.uniforms, u);
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nattribute vec4 aMat;\nvarying vec4 vMat;')
-    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvMat = aMat;');
+    .replace(
+      '#include <common>',
+      '#include <common>\nattribute vec4 aMat;\nattribute vec3 aEdge;\nvarying vec4 vMat;\nvarying vec3 vEdge;\nvarying vec3 vBary;\nvarying vec3 vRest;',
+    )
+    .replace(
+      '#include <begin_vertex>',
+      [
+        '#include <begin_vertex>',
+        'vMat = aMat;',
+        'vEdge = aEdge;',
+        'vRest = position;',
+        'int igK = gl_VertexID % 3;',
+        'vBary = vec3(igK == 0 ? 1.0 : 0.0, igK == 1 ? 1.0 : 0.0, igK == 2 ? 1.0 : 0.0);',
+      ].join('\n'),
+    );
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
       [
         '#include <common>',
         'varying vec4 vMat;',
+        'varying vec3 vEdge;',
+        'varying vec3 vBary;',
+        'varying vec3 vRest;',
         'uniform vec3 uPlayer;',
-        'uniform vec3 uVisor;',
+        'uniform vec3 uVisorCore;',
+        'uniform vec3 uVisorEdge;',
         'uniform vec3 uRim;',
         'uniform float uLift;',
         'uniform float uRimStr;',
         'uniform float uGlow;',
         'uniform vec3 uGlowCol;',
+        'uniform float uBurn;',
       ].join('\n'),
     )
     .replace(
       '#include <color_fragment>',
-      '#include <color_fragment>\ndiffuseColor.rgb *= mix(vec3(1.0), uPlayer, vMat.x);',
+      [
+        '#include <color_fragment>',
+        // Crease distance: only hard edges count (soft edges → 1).
+        'vec3 igD = mix(vec3(1.0), vBary, vEdge);',
+        'float igM = min(min(igD.x, igD.y), igD.z);',
+        'float igW = max(fwidth(igM), 1e-4);',
+        'float igEdgeRaw = 1.0 - smoothstep(igW * 0.6, igW * 1.8, igM);',
+        // Bevel catch-light fades out with distance (sub-pixel noise at range).
+        'float igEdge = igEdgeRaw * (1.0 - smoothstep(6.0, 14.0, length(vViewPosition)));',
+        'diffuseColor.rgb *= mix(vec3(1.0), uPlayer * 1.12, vMat.x);',
+        'diffuseColor.rgb = mix(diffuseColor.rgb, min(diffuseColor.rgb * 1.7 + 0.1, vec3(1.0)), igEdge * 0.65);',
+        // Gibs: the plates char as they burst.
+        'diffuseColor.rgb *= 1.0 - 0.72 * uBurn;',
+      ].join('\n'),
     )
-    .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vMat.y;')
-    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMat.z;')
+    .replace(
+      '#include <roughnessmap_fragment>',
+      'float roughnessFactor = clamp(vMat.y - igEdge * 0.15 + uBurn * 0.3, 0.05, 1.0);',
+    )
+    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMat.z * (1.0 - 0.5 * uBurn);')
+    .replace(
+      '#include <lights_physical_fragment>',
+      [
+        '#include <lights_physical_fragment>',
+        // Lacquer only on the painted plates; fabric sheen only on the suit.
+        '#ifdef USE_CLEARCOAT',
+        'material.clearcoat *= vMat.x * (1.0 - uBurn);',
+        '#endif',
+        '#ifdef USE_SHEEN',
+        'material.sheenColor *= (1.0 - vMat.x) * (1.0 - step(0.5, vMat.z)) * (1.0 - step(0.01, vMat.w));',
+        '#endif',
+      ].join('\n'),
+    )
     .replace(
       '#include <emissivemap_fragment>',
       [
         '#include <emissivemap_fragment>',
-        'totalEmissiveRadiance += uVisor * vMat.w;',
+        // Visor: hot core → coloured edge across the band; slits: player colour.
+        `float igVy = clamp(abs(vRest.y - ${VISOR_Y.toFixed(3)}) / ${VISOR_HALF.toFixed(3)}, 0.0, 1.0);`,
+        'float igCore = 1.0 - smoothstep(0.08, 0.6, igVy);',
+        'vec3 igVisor = mix(uVisorEdge * (1.0 - 0.45 * igVy * igVy), uVisorCore, igCore);',
+        'float igIsVisor = step(0.95, vMat.w);',
+        'totalEmissiveRadiance += igIsVisor * igVisor + (1.0 - igIsVisor) * uVisorEdge * vMat.w * 0.8;',
         'totalEmissiveRadiance += uPlayer * (vMat.x * uLift);',
         'float igFres = 1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);',
-        'igFres = igFres * igFres * igFres;',
-        'totalEmissiveRadiance += uRim * (igFres * uRimStr * (0.35 + 0.65 * vMat.x));',
-        'totalEmissiveRadiance += uGlowCol * (uGlow * (0.4 + 0.6 * vMat.x));',
+        'float igRim = igFres * igFres * (0.4 + 0.6 * igFres);',
+        'totalEmissiveRadiance += uRim * (igRim * uRimStr * (0.55 + 0.45 * vMat.x) * (1.0 - uBurn));',
+        // Gib heat: glowing seams + silhouette, suit (the inside) smoulders.
+        'totalEmissiveRadiance += uGlowCol * uGlow * (igEdgeRaw * 1.1 + igFres * igFres * 1.6 + 0.22 * (1.0 - vMat.x));',
       ].join('\n'),
     );
 }
 
-export function createCharacterMaterial(): { material: THREE.MeshStandardMaterial; uniforms: CharacterUniforms } {
+export function createCharacterMaterial(): { material: THREE.MeshPhysicalMaterial; uniforms: CharacterUniforms } {
   const uniforms: CharacterUniforms = {
     uPlayer: { value: new THREE.Color(1, 0.4, 0.2) },
-    uVisor: { value: new THREE.Color(1, 0.8, 0.6) },
+    uVisorCore: { value: new THREE.Color(1, 0.9, 0.8) },
+    uVisorEdge: { value: new THREE.Color(1, 0.5, 0.3) },
     uRim: { value: new THREE.Color(1, 0.5, 0.3) },
-    uLift: { value: 0.1 },
-    uRimStr: { value: 0.5 },
+    uLift: { value: 0.2 },
+    uRimStr: { value: 1 },
     uGlow: { value: 0 },
     uGlowCol: { value: new THREE.Color(1, 1, 1) },
+    uBurn: { value: 0 },
   };
-  const material = new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshPhysicalMaterial({
     vertexColors: true,
     roughness: 1,
     metalness: 1,
-    envMapIntensity: 0.9,
+    envMapIntensity: 1.1,
+    clearcoat: 0.55,
+    clearcoatRoughness: 0.2,
+    sheen: 1,
+    sheenRoughness: 0.45,
+    sheenColor: new THREE.Color(0x5a6272),
   });
   material.userData.charUniforms = uniforms;
   material.onBeforeCompile = injectCharacterShader;

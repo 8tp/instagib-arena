@@ -368,6 +368,7 @@ export class WornHat {
     this.clearMesh();
     const hat = hatById(id);
     this.hatTop = 0.04; // bare helmet: the crest
+    this.notifyHat(false);
     if (!hat.model) {
       this.layoutUnusual();
       return; // bare-headed
@@ -405,7 +406,15 @@ export class WornHat {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
     this.container.add(holder);
+    this.notifyHat(true);
     this.layoutUnusual();
+  }
+
+  // Tell the wearer (via the socket) whether a hat is on — the combatant hides
+  // its helmet crest under hats.
+  private notifyHat(on: boolean) {
+    const cb = this.socket.userData.onHatChange as ((on: boolean) => void) | undefined;
+    cb?.(on);
   }
 
   // Seat the unusual anchor just above the equipped hat's crown.
