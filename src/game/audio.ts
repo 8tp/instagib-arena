@@ -1,4 +1,7 @@
 import { announcerVariantCount } from './announcer-lines';
+import { SfxEngine, type LocalMoveKind } from './sfx/engine';
+import type { MotionEventKind } from './sfx/motion-tracker';
+import type { StingKind } from './sfx/stings';
 
 export type SoundClipName =
   | 'fire'
@@ -108,8 +111,14 @@ const ANNOUNCER_CLIPS: ReadonlySet<SoundClipName> = new Set<SoundClipName>([
   'spawn',
 ]);
 
+// Game audio. Weapon / movement / ambience SFX are fully procedural and live in
+// ./sfx (SfxEngine: buses, reverb, limiter, voice pool, per-map ambience). This
+// class owns the AudioContext, the announcer (voice packs / legacy files / TTS)
+// and the optional user-dropped .ogg overrides, and routes everything through
+// the engine's mixer so the master limiter + volume settings cover it all.
 export class SoundManager {
   private ctx: AudioContext | null = null;
+  private engine: SfxEngine | null = null;
   private master: GainNode | null = null;
   private sfxBus: GainNode | null = null;
   private announcerBus: GainNode | null = null;
@@ -122,6 +131,8 @@ export class SoundManager {
   private announcerVolume = 1;
   private announcerEnabled = true;
   private pack: AnnouncerPackId = DEFAULT_ANNOUNCER_PACK;
+  private mapId = '';
+  private lowSpec = false;
   private lastVariant = new Map<SoundClipName, number>(); // avoid repeating a line back-to-back
   // The currently-playing announcer voice source — only ONE announcer line plays
   // at a time (a new line cuts the previous), so multi-kill + headshot + spree
@@ -137,17 +148,17 @@ export class SoundManager {
           .webkitAudioContext;
       if (!AC) return;
       this.ctx = new AC();
-      this.master = this.ctx.createGain();
-      this.master.gain.value = this.volume;
-      this.master.connect(this.ctx.destination);
-      // Separate SFX + announcer sub-buses so each has its own volume and the
-      // announcer can be muted independently.
-      this.sfxBus = this.ctx.createGain();
-      this.sfxBus.gain.value = this.sfxVolume;
-      this.sfxBus.connect(this.master);
-      this.announcerBus = this.ctx.createGain();
-      this.announcerBus.gain.value = this.announcerVolume;
-      this.announcerBus.connect(this.master);
+      // The engine builds the whole mix graph (SFX + announcer buses → limiter
+      // → master volume → destination) synchronously, so sounds work at once.
+      this.engine = new SfxEngine(this.ctx);
+      this.master = this.engine.mixer.out;
+      this.sfxBus = this.engine.mixer.sfxBus;
+      this.announcerBus = this.engine.mixer.announcerBus;
+      this.engine.setMasterVolume(this.volume);
+      this.engine.setSfxVolume(this.sfxVolume);
+      this.engine.setAnnouncerVolume(this.announcerVolume);
+      this.engine.setLowSpec(this.lowSpec);
+      if (this.mapId) this.engine.setMap(this.mapId);
       // Best-effort preload of any real audio files dropped in public/. Missing
       // files fall back to the procedural SFX / TTS announcer.
       for (const url of Object.values(SOUND_URLS)) {
@@ -210,11 +221,14 @@ export class SoundManager {
     }
   }
 
-  play(name: SoundClipName, volume = 1) {
-    if (!this.ctx || !this.master) return;
+  // Returns whether something audible was started — false when the announcer is
+  // off, or a clip has neither a file nor a fallback (callers can substitute a
+  // procedural sting so the event never lands silently).
+  play(name: SoundClipName, volume = 1): boolean {
+    if (!this.ctx || !this.master || !this.engine) return false;
     this.resume();
     const isAnnouncer = ANNOUNCER_CLIPS.has(name);
-    if (isAnnouncer && !this.announcerEnabled) return;
+    if (isAnnouncer && !this.announcerEnabled) return false;
     const bus = (isAnnouncer ? this.announcerBus : this.sfxBus) ?? this.master;
     // Pack announcer clips have N line variants → pick one (no immediate repeat);
     // everything else (legacy announcer, SFX) uses the flat SOUND_URLS file.
@@ -231,9 +245,10 @@ export class SoundManager {
       if (isAnnouncer) {
         this.announcerSrc = src;
         src.onended = () => { if (this.announcerSrc === src) this.announcerSrc = null; };
+        this.engine.duck(buf.duration); // ambience dips under the voice
       }
       src.start(0);
-      return;
+      return true;
     }
     // Not cached yet. For a pack variant, kick off a load so the next play is the
     // real voice (covers the race right after switching packs). Legacy SFX +
@@ -247,21 +262,21 @@ export class SoundManager {
     }
     switch (name) {
       case 'fire':
-        playProcRail(this.ctx, bus, volume);
-        return;
+        this.engine.railShot(volume);
+        return true;
       case 'hit':
-        playProcHit(this.ctx, bus, volume);
-        return;
+        this.engine.hitTick(false, volume);
+        return true;
       case 'kill':
-        playProcKill(this.ctx, bus, volume);
-        return;
+        this.engine.kill(false, volume);
+        return true;
       case 'reload-ready':
-        playProcReady(this.ctx, bus, volume);
-        return;
+        this.engine.ready(volume);
+        return true;
       default:
         // Announcer TTS fallback — but only if this clip HAS fallback text. A
         // pack-only clip (e.g. 'spawn') stays silent on the legacy pack.
-        if (SPOKEN_TEXT[name]) this.speak(SPOKEN_TEXT[name], volume);
+        return SPOKEN_TEXT[name] ? this.speak(SPOKEN_TEXT[name], volume) : false;
     }
   }
 
@@ -274,6 +289,7 @@ export class SoundManager {
     ux: number, uy: number, uz: number,
   ) {
     if (!this.ctx) return;
+    this.engine?.setListenerPos(px, py, pz); // distance low-pass + culling
     const L = this.ctx.listener;
     // Modern AudioParam API where available; deprecated setters as a fallback.
     if ('positionX' in L && L.positionX) {
@@ -297,71 +313,104 @@ export class SoundManager {
     }
   }
 
-  // Spatialized one-shot: same clips as play(), but routed through an HRTF panner
-  // at a world position so you can HEAR where another player is (their rail fire,
-  // a nearby frag). `volume` is the at-source level — the panner does the
-  // distance falloff. Announcer lines stay non-positional (centered UI cues).
+  // Spatialized one-shot: same clips as play(), but at a world position (HRTF
+  // panned, distance-attenuated + low-passed) so you can HEAR where another
+  // player is (their rail fire, a nearby frag). `volume` is the at-source
+  // level. Announcer lines stay non-positional (centered UI cues).
   playAt(name: SoundClipName, x: number, y: number, z: number, volume = 1) {
-    if (!this.ctx || !this.master) return;
+    if (!this.ctx || !this.engine) return;
     if (ANNOUNCER_CLIPS.has(name)) {
       this.play(name, volume);
       return;
     }
     this.resume();
-    const bus = this.sfxBus ?? this.master;
-    const panner = this.makePanner(x, y, z);
-    panner.connect(bus);
-    const buf = this.buffers.get(SOUND_URLS[name]); // playAt handles SFX only (announcer routed to play above)
-    if (buf) {
-      const src = this.ctx.createBufferSource();
-      src.buffer = buf;
-      const g = this.ctx.createGain();
-      g.gain.value = clamp01(volume);
-      src.connect(g).connect(panner);
-      src.start(0);
-      return;
-    }
     switch (name) {
-      case 'fire': playProcRail(this.ctx, panner, volume); return;
-      case 'hit': playProcHit(this.ctx, panner, volume); return;
-      case 'kill': playProcKill(this.ctx, panner, volume); return;
-      case 'reload-ready': playProcReady(this.ctx, panner, volume); return;
+      case 'fire': this.engine.railAt(x, y, z, volume); return;
+      case 'kill': this.engine.gibAt(x, y, z, volume); return;
+      case 'hit': this.engine.hitTick(false, volume); return;
+      case 'reload-ready': this.engine.ready(volume); return;
       default: this.play(name, volume); // non-spatial clips (announcer/TTS)
     }
   }
 
-  private makePanner(x: number, y: number, z: number): PannerNode {
-    const p = this.ctx!.createPanner();
-    p.panningModel = 'HRTF'; // binaural cues so direction is discernible on headphones
-    p.distanceModel = 'inverse';
-    p.refDistance = 8; // full level within ~8m
-    p.maxDistance = 100;
-    p.rolloffFactor = 1;
-    if ('positionX' in p && p.positionX) {
-      const t = this.ctx!.currentTime;
-      p.positionX.setValueAtTime(x, t);
-      p.positionY.setValueAtTime(y, t);
-      p.positionZ.setValueAtTime(z, t);
-    } else {
-      (p as unknown as { setPosition: (x: number, y: number, z: number) => void }).setPosition(x, y, z);
-    }
-    return p;
-  }
-
-  // Crisp confirm ping for landing a rail — pitched up for headshots. Layered
-  // on top of the kill sound so hits feel snappy.
+  // Crisp confirm tick for landing a rail — a higher double tick for headshots.
   hitConfirm(headshot: boolean, volume = 1) {
-    if (!this.ctx) return;
+    if (!this.engine) return;
     this.resume();
-    const bus = this.sfxBus ?? this.master;
-    if (!bus) return;
-    playProcHit(this.ctx, bus, volume, headshot ? 1.6 : 1.0);
+    this.engine.hitTick(headshot, volume);
   }
 
-  speak(text: string, volume = 1) {
-    if (!this.announcerEnabled) return;
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    if (!text) return;
+  // Kill confirm (your frag): the gib burst. Honors a user-dropped kill.ogg.
+  killConfirm(headshot: boolean, volume = 1) {
+    if (!this.engine) return;
+    if (this.buffers.has(SOUND_URLS.kill)) {
+      this.play('kill', volume);
+      return;
+    }
+    this.resume();
+    this.engine.kill(headshot, volume);
+  }
+
+  // Someone else's frag, heard at the body (bystander awareness).
+  gibAt(x: number, y: number, z: number, volume = 1) {
+    this.engine?.gibAt(x, y, z, volume);
+  }
+
+  // You got fragged (also cuts the recharge hum).
+  death(volume = 1) {
+    if (!this.engine) return;
+    this.resume();
+    this.engine.death(volume);
+  }
+
+  // Rail recharge hum over `seconds` (the cooldown just set by a shot).
+  chargeStart(seconds: number) {
+    this.engine?.chargeStart(seconds);
+  }
+
+  chargeStop() {
+    this.engine?.chargeStop();
+  }
+
+  // Local movement sounds (footsteps, jump, landing, dash, wall-jump, boost).
+  localMove(kind: LocalMoveKind, a = 0) {
+    this.engine?.localMove(kind, a);
+  }
+
+  // Other players' / bots' movement sounds, positional at their feet.
+  remoteMove(kind: MotionEventKind, x: number, y: number, z: number, strength: number) {
+    this.engine?.remoteMove(kind, x, y, z, strength);
+  }
+
+  // Procedural medal cue (used when the announcer can't voice a medal).
+  medalSting(kind: StingKind, level: number) {
+    if (!this.engine) return;
+    this.resume();
+    this.engine.medalSting(kind, level);
+  }
+
+  // Map id (map.ts registry) → room reverb, floor surface, ambience flavour.
+  // Crossfades the ambience if it's already running.
+  setMap(id: string) {
+    this.mapId = id;
+    this.engine?.setMap(id);
+  }
+
+  // Start the per-map ambience bed (call when the match starts).
+  startAmbience() {
+    this.engine?.startAmbience();
+  }
+
+  // Low-spec: shorter reverb, equal-power panning, fewer concurrent voices.
+  setLowSpec(on: boolean) {
+    this.lowSpec = on;
+    this.engine?.setLowSpec(on);
+  }
+
+  speak(text: string, volume = 1): boolean {
+    if (!this.announcerEnabled) return false;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false;
+    if (!text) return false;
     try {
       this.stopAnnouncer(); // cut any prior announcer line (TTS or buffered)
       const u = new SpeechSynthesisUtterance(text);
@@ -372,24 +421,26 @@ export class SoundManager {
       u.volume = clamp01(volume * this.volume * this.announcerVolume);
       if (this.voice) u.voice = this.voice;
       window.speechSynthesis.speak(u);
+      this.engine?.duck(1.4); // TTS length is unknown — a typical line
+      return true;
     } catch {
-      // ignore
+      return false;
     }
   }
 
   setVolume(v: number) {
     this.volume = clamp01(v);
-    if (this.master) this.master.gain.value = this.volume;
+    this.engine?.setMasterVolume(this.volume);
   }
 
   setSfxVolume(v: number) {
     this.sfxVolume = clamp01(v);
-    if (this.sfxBus) this.sfxBus.gain.value = this.sfxVolume;
+    this.engine?.setSfxVolume(this.sfxVolume);
   }
 
   setAnnouncerVolume(v: number) {
     this.announcerVolume = clamp01(v);
-    if (this.announcerBus) this.announcerBus.gain.value = this.announcerVolume;
+    this.engine?.setAnnouncerVolume(this.announcerVolume);
   }
 
   setAnnouncerEnabled(on: boolean) {
@@ -405,10 +456,14 @@ export class SoundManager {
 
   dispose() {
     this.announcerSrc = null;
+    this.engine?.dispose();
+    this.engine = null;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
       this.master = null;
+      this.sfxBus = null;
+      this.announcerBus = null;
     }
     this.buffers.clear();
     this.loading.clear();
@@ -640,96 +695,4 @@ function makeNoise(ctx: AudioContext, durSec: number): AudioBufferSourceNode {
   const src = ctx.createBufferSource();
   src.buffer = buf;
   return src;
-}
-
-function playProcRail(ctx: AudioContext, dest: AudioNode, vol = 1) {
-  const now = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(1400, now);
-  osc.frequency.exponentialRampToValueAtTime(180, now + 0.22);
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.frequency.value = 850;
-  filter.Q.value = 1.6;
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.0001, now);
-  gain.gain.exponentialRampToValueAtTime(0.5 * vol, now + 0.004);
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
-  osc.connect(filter).connect(gain).connect(dest);
-  osc.start(now);
-  osc.stop(now + 0.26);
-  const n = makeNoise(ctx, 0.08);
-  const ng = ctx.createGain();
-  ng.gain.setValueAtTime(0.22 * vol, now);
-  ng.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-  n.connect(ng).connect(dest);
-  n.start(now);
-  n.stop(now + 0.08);
-}
-
-function playProcHit(ctx: AudioContext, dest: AudioNode, vol = 1, pitch = 1) {
-  const now = ctx.currentTime;
-  const o1 = ctx.createOscillator();
-  o1.type = 'sine';
-  o1.frequency.value = 2400 * pitch;
-  const o2 = ctx.createOscillator();
-  o2.type = 'sine';
-  o2.frequency.value = 3200 * pitch;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, now);
-  g.gain.exponentialRampToValueAtTime(0.35 * vol, now + 0.002);
-  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
-  o1.connect(g);
-  o2.connect(g);
-  g.connect(dest);
-  o1.start(now);
-  o2.start(now);
-  o1.stop(now + 0.1);
-  o2.stop(now + 0.1);
-}
-
-function playProcReady(ctx: AudioContext, dest: AudioNode, vol = 1) {
-  // Subtle double-pip on the cooldown-to-ready transition. Two short sine
-  // bursts ascending — recognizable as "ready" but not intrusive.
-  const now = ctx.currentTime;
-  const tones = [1750, 2300];
-  for (let i = 0; i < tones.length; i++) {
-    const o = ctx.createOscillator();
-    o.type = 'sine';
-    o.frequency.value = tones[i];
-    const g = ctx.createGain();
-    const t0 = now + i * 0.045;
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(0.18 * vol, t0 + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
-    o.connect(g).connect(dest);
-    o.start(t0);
-    o.stop(t0 + 0.06);
-  }
-}
-
-function playProcKill(ctx: AudioContext, dest: AudioNode, vol = 1) {
-  const now = ctx.currentTime;
-  const n = makeNoise(ctx, 0.45);
-  const f = ctx.createBiquadFilter();
-  f.type = 'lowpass';
-  f.frequency.setValueAtTime(2200, now);
-  f.frequency.exponentialRampToValueAtTime(160, now + 0.4);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.55 * vol, now);
-  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-  n.connect(f).connect(g).connect(dest);
-  n.start(now);
-  n.stop(now + 0.48);
-  const o = ctx.createOscillator();
-  o.type = 'sine';
-  o.frequency.setValueAtTime(140, now);
-  o.frequency.exponentialRampToValueAtTime(45, now + 0.25);
-  const og = ctx.createGain();
-  og.gain.setValueAtTime(0.4 * vol, now);
-  og.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
-  o.connect(og).connect(dest);
-  o.start(now);
-  o.stop(now + 0.35);
 }
