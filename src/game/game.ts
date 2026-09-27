@@ -58,8 +58,9 @@ import {
 import { EffectsManager } from './effects';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
-import { buildMapMesh, DEFAULT_MAP, mapById, rayAabb, type ArenaMap } from './map';
-import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker } from './medals';
+import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, type ArenaMap } from './map';
+import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker, medalSting } from './medals';
+import { FOOTSTEP_STRIDE, MotionTracker } from './sfx/motion-tracker';
 import {
   DEFAULT_KILL_EFFECT,
   DEFAULT_RAIL_COLOR,
@@ -251,6 +252,12 @@ export class Game {
   private medals = new MedalTracker();
   private effects = new EffectsManager();
   private audio = new SoundManager();
+  // Other combatants' movement sounds (footsteps / jumps / landings), derived
+  // from their observed motion — bots in simStep, remotes in syncRemotePlayers.
+  private readonly motionSfx = new MotionTracker((kind, x, y, z, s) =>
+    this.audio.remoteMove(kind, x, y, z, s),
+  );
+  private stepDist = 0; // metres walked since the last local footstep
   private locked = false;
   private accumulator = 0;
   private lastTime = 0;
@@ -527,6 +534,7 @@ export class Game {
       },
     );
     void this.audio.init();
+    this.audio.setMap(mapIdOf(this.map));
 
     this.resizeHandler = () => this.handleResize();
     window.addEventListener('resize', this.resizeHandler);
@@ -639,6 +647,7 @@ export class Game {
     this.lowSpec = !!lowSpec;
     this.applyPixelRatio();
     this.effects.setQuality(lowSpec ? 0.5 : 1);
+    this.audio.setLowSpec(this.lowSpec); // shorter reverb, cheaper panning, fewer voices
     this.applyPostFx();
   }
 
@@ -944,6 +953,9 @@ export class Game {
     applyMapShadowFlags(this.mapMesh, map);
     this.scene.add(this.mapMesh);
     this.applyWorldStyle(); // re-tint the freshly-built materials
+    // Room reverb + floor surface + ambience bed (crossfades if running).
+    this.audio.setMap(mapIdOf(map));
+    this.motionSfx.clear();
     // Reset the local player onto the new spawn.
     this.player.pos = { ...map.spawn };
     this.player.vel = { x: 0, y: 0, z: 0 };
@@ -1069,6 +1081,7 @@ export class Game {
     if (this.disposed) return;
     this.lastTime = performance.now();
     this.runLoop();
+    this.audio.startAmbience(); // per-map room tone, fades in with the match
     let model: BotModel | null = null;
     try {
       model = await loadBotModel(BOT_MODEL_URL);
@@ -1634,8 +1647,10 @@ export class Game {
       if (!this.net.remotes.has(id)) {
         rp.dispose(this.scene);
         this.remotePlayers.delete(id);
+        this.motionSfx.forget(id);
       }
     }
+    const nowSec = performance.now() / 1000;
     // Add new + tick existing
     for (const [id, snap] of this.net.remotes) {
       let rp = this.remotePlayers.get(id);
@@ -1669,6 +1684,8 @@ export class Game {
         this.effects.spawnInBurst(this.scene, rp.group.position, spawnEffectById(rp.equippedSpawnEffect).style);
       }
       rp.setInvuln(snap.invulnMs);
+      // Their footsteps / jumps / landings, heard where they are.
+      this.motionSfx.sample(id, snap.pos.x, snap.pos.y, snap.pos.z, nowSec, true);
       // First-person spectating: hide the watched player's own avatar so we're
       // not inside our own mesh. Composes with the death-hide (see RemotePlayer).
       rp.setFirstPersonHidden(this.spectator && id === this.spectatedId);
@@ -1763,6 +1780,37 @@ export class Game {
     this.shake = Math.min(SHAKE_MAX, this.shake + amount);
   }
 
+  // Local movement audio, driven by the Player's per-step events — called right
+  // after player.step(), so a countdown-frozen player (no events, no speed) and
+  // a dead one (not stepped) stay silent. Footsteps: one per FOOTSTEP_STRIDE of
+  // ground travel (cadence follows speed); none mid-dash (the whoosh covers it).
+  private movementSfx(dt: number) {
+    const p = this.player;
+    const e = p.events;
+    if (e.boosted) this.audio.localMove('boost');
+    else if (e.wallJumped) this.audio.localMove('walljump');
+    else if (e.airJumped) this.audio.localMove('airjump');
+    else if (e.jumped) this.audio.localMove('jump');
+    if (e.dashed) {
+      // Lateral component of the dash dir in view space (+ = right) → whoosh pan.
+      this.audio.localMove('dash', e.dashX * Math.cos(p.yaw) - e.dashZ * Math.sin(p.yaw));
+    }
+    if (e.landed) {
+      this.audio.localMove('land', e.impactSpeed);
+      this.stepDist = FOOTSTEP_STRIDE * 0.5;
+    }
+    const hs = Math.hypot(p.vel.x, p.vel.z);
+    if (p.onGround && p.dashTimer <= 0 && hs > 1.5) {
+      this.stepDist += hs * dt;
+      if (this.stepDist >= FOOTSTEP_STRIDE) {
+        this.stepDist -= FOOTSTEP_STRIDE;
+        this.audio.localMove('step', hs);
+      }
+    } else if (!p.onGround) {
+      this.stepDist = FOOTSTEP_STRIDE * 0.5;
+    }
+  }
+
   // Spawn the kill burst at `at`, honoring the reduced-effects setting: the full
   // 3D explosion is replaced by a small, non-flashing spark.
   private spawnKillEffect(at: THREE.Vector3, headshot: boolean, style: KillEffectStyle) {
@@ -1854,6 +1902,7 @@ export class Game {
           (v.x * Math.cos(yaw) - v.z * Math.sin(yaw)) / sp, // lateral (+ = right)
         );
       }
+      this.movementSfx(dt);
     }
 
     // Self-heal the local sim: a NaN (degenerate collision) or falling out of
@@ -1897,6 +1946,11 @@ export class Game {
         if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam() });
       }
       const intents = this.bots.step(dt, this.map, enemies, this.inCountdown);
+      // Bots' footsteps / jumps / landings (3D), from their sim motion.
+      for (const b of this.bots.bots) {
+        const p = b.state.pos;
+        this.motionSfx.sample(b.state.id, p.x, p.y, p.z, this.elapsed, b.state.alive);
+      }
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
       // Spawn-in effect when a bot materializes (dead→alive), so solo play shows
@@ -2080,6 +2134,7 @@ export class Game {
       killerId: 'you',
     });
     this.audio.play('fire', 0.55);
+    if (!trainingShot) this.audio.chargeStart(this.weapon.cooldown); // coils recharge hum
     this.addShake(SHAKE_FIRE);
     // Weapon feedback: two-stage gun kick + muzzle bloom (viewmodelMotion), punch
     // the view up, flash the muzzle, and spike the gun's energy glow (all decay
@@ -2186,7 +2241,7 @@ export class Game {
       );
       this.playerFrags += 1;
       if (hit.headshot) this.playerHeadshots += 1;
-      this.audio.play('kill', 0.7);
+      this.audio.killConfirm(hit.headshot, 0.7);
       this.audio.hitConfirm(hit.headshot, 0.5);
       this.pushKillfeed({
         killer: this.playerName,
@@ -2312,6 +2367,7 @@ export class Game {
         );
         victim.kill();
         this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
+        this.audio.gibAt(victim.state.pos.x, victim.centerY(), victim.state.pos.z, 0.6);
       }
       this.pushKillfeed({
         killer: intent.botName,
@@ -2347,7 +2403,7 @@ export class Game {
     this.player.onGround = false;
     this.weapon.cooldown = 0;
     this.weaponWasReady = true;
-    this.audio.play('hit', 0.6);
+    this.audio.death(0.6); // (also cuts the recharge hum)
     this.addShake(SHAKE_DEATH);
     if (!this.reducedEffects) this.damageFlash = 1;
     this.medals.onDeath();
@@ -2647,7 +2703,7 @@ export class Game {
       // played instantly — don't replay the tick now (a full RTT later); the
       // 'kill' gib SFX still fires here as the authoritative confirmation.
       const wasPredicted = performance.now() - this.predictedHitMs < 1000;
-      this.audio.play('kill', 0.7);
+      this.audio.killConfirm(ev.headshot, 0.7);
       if (!wasPredicted) this.audio.hitConfirm(ev.headshot, 0.5);
       this.fireKillFeedback(ev.headshot);
       // Crosshair hitmarker — refreshed here as the authoritative confirmation
@@ -2693,7 +2749,7 @@ export class Game {
       this.player.vel = { x: 0, y: 0, z: 0 };
       this.weapon.cooldown = 0;
       this.weaponWasReady = true;
-      this.audio.play('hit', 0.6);
+      this.audio.death(0.6); // (also cuts the recharge hum)
       this.addShake(SHAKE_DEATH);
       if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
@@ -2724,6 +2780,7 @@ export class Game {
       // Bystander — just hide the dead remote player briefly.
       const rp = this.remotePlayers.get(ev.victimId);
       if (rp) rp.markDead();
+      this.audio.gibAt(burstAt.x, burstAt.y, burstAt.z, 0.6); // hear frags around you
     }
 
     // For non-victim clients that are local-rendering the victim, hide them.
@@ -2779,7 +2836,12 @@ export class Game {
     }
     if (BANNER_MEDALS.has(headline)) this.showMedalBanner(headline);
     const voice = MEDAL_VOICE[headline];
-    if (voice) this.audio.play(voice, 1); // audio layer also enforces one-at-a-time
+    // Voice line (the audio layer enforces one-at-a-time). If it can't be voiced
+    // (announcer off / no clip or TTS), a procedural sting stands in for it.
+    if (!voice || !this.audio.play(voice, 1)) {
+      const sting = medalSting(headline);
+      this.audio.medalSting(sting.kind, sting.level);
+    }
   }
 
   private addMedalToast(medal: Medal) {
@@ -3370,6 +3432,11 @@ export class Game {
 // Dispose every geometry + material under a group (used when swapping the
 // arena mesh on a map change). Map meshes aren't tagged `shared`, so their
 // resources are ours to free.
+// Registry id of a map (drives the per-map audio: room, surface, ambience).
+function mapIdOf(map: ArenaMap): string {
+  return MAPS.find((m) => m.map === map)?.id ?? map.name.toLowerCase().replace(/\s+/g, '');
+}
+
 // Small stable string hash (for picking a per-bot spawn-effect style).
 function hashStr(s: string): number {
   let h = 2166136261;

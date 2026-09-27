@@ -44,6 +44,20 @@ export class Player {
   boostInRange = false;
   didBoost = false;
   boostContact: Vec3 = { x: 0, y: 0, z: 0 };
+  // Per-step movement events for audio / game feel. Reset at the start of every
+  // step() and read by the Game right after it. Pure outputs — nothing here
+  // feeds back into the simulation.
+  readonly events = {
+    jumped: false, // ground jump
+    airJumped: false, // double jump
+    wallJumped: false,
+    boosted: false,
+    dashed: false,
+    dashX: 0, // dash direction (unit, horizontal) when `dashed`
+    dashZ: 0,
+    landed: false, // touched down this step
+    impactSpeed: 0, // downward speed at touchdown, m/s (when `landed`)
+  };
   // Post-boost window of extra air-control (the Soldier "rocket then carve").
   private boostAirCtrlTimer = 0;
   private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
@@ -58,6 +72,9 @@ export class Player {
     // NOTE: yaw/pitch are applied per render frame in Game.applyLook(), not here,
     // so aim stays smooth above the fixed sim rate. step() only reads the current
     // yaw for movement direction below.
+
+    const ev = this.events;
+    ev.jumped = ev.airJumped = ev.wallJumped = ev.boosted = ev.dashed = ev.landed = false;
 
     // Countdown freeze: you can look around, but you can't move/jump/boost yet.
     if (frozen) {
@@ -150,6 +167,7 @@ export class Player {
       if (this.onGround) {
         this.vel.y = JUMP_SPEED;
         this.onGround = false;
+        ev.jumped = true;
       } else if (this.wallNormal && this.wallTimer > 0) {
         this.vel.x = this.wallNormal.x * WALL_JUMP_NORMAL;
         this.vel.z = this.wallNormal.z * WALL_JUMP_NORMAL;
@@ -157,9 +175,11 @@ export class Player {
         this.wallNormal = null;
         this.wallTimer = 0;
         this.airJumpsLeft = AIR_JUMPS;
+        ev.wallJumped = true;
       } else if (this.airJumpsLeft > 0) {
         this.vel.y = JUMP_SPEED;
         this.airJumpsLeft -= 1;
+        ev.airJumped = true;
       }
     }
 
@@ -198,6 +218,7 @@ export class Player {
       this.boostCooldown = BOOST_COOLDOWN;
       this.boostAirCtrlTimer = BOOST_AIRCTRL_TIME;
       this.didBoost = true;
+      ev.boosted = true;
       this.boostContact = {
         x: eye.x + look.x * boostProbe.t,
         y: eye.y + look.y * boostProbe.t,
@@ -221,6 +242,9 @@ export class Player {
       this.dashDir = { x: ddx, y: 0, z: ddz };
       this.dashTimer = DASH_DURATION;
       this.dashCooldown = DASH_COOLDOWN;
+      ev.dashed = true;
+      ev.dashX = ddx;
+      ev.dashZ = ddz;
     }
 
     if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
@@ -234,6 +258,7 @@ export class Player {
 
     const size: Vec3 = { x: PLAYER_RADIUS * 2, y: PLAYER_HEIGHT, z: PLAYER_RADIUS * 2 };
     const delta: Vec3 = { x: this.vel.x * dt, y: this.vel.y * dt, z: this.vel.z * dt };
+    const preMoveVy = this.vel.y; // for the touchdown impact event (collision zeroes vel.y)
     const result = movePlayer(this.pos, size, delta, map.boxes);
     this.pos = result.position;
 
@@ -245,6 +270,8 @@ export class Player {
     this.onGround = result.groundContact;
     if (this.onGround && !wasOnGround) {
       this.airJumpsLeft = AIR_JUMPS;
+      ev.landed = true;
+      ev.impactSpeed = Math.max(0, -preMoveVy);
     }
 
     if (!this.onGround && (result.blocked.x || result.blocked.z) && result.wallNormal) {

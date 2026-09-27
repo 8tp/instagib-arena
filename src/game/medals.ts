@@ -70,6 +70,26 @@ export const MEDAL_LABELS: Record<
   'comeback':       { title: 'Comeback',        subtitle: 'against the odds', tier: 'special' },
 };
 
+// Procedural sting level per medal (sfx/stings.ts), keyed by tier: the multi-kill
+// arpeggio has one note per kill in the chain; the streak swell climbs with the
+// streak. Played when the announcer can't voice the headline medal (announcer
+// off / no clip or TTS), so no medal ever lands silently.
+const MEDAL_STING_LEVEL: Partial<Record<Medal, number>> = {
+  'double-kill': 2,
+  'multi-kill': 3,
+  'ultra-kill': 4,
+  'monster-kill': 5,
+  'killing-spree': 1,
+  'rampage': 2,
+  'dominating': 3,
+  'unstoppable': 4,
+  'godlike': 5,
+};
+
+export function medalSting(medal: Medal): { kind: MedalTier; level: number } {
+  return { kind: MEDAL_LABELS[medal].tier, level: MEDAL_STING_LEVEL[medal] ?? 1 };
+}
+
 // Medals that warrant the big center-screen banner (vs. just a toast)
 export const BANNER_MEDALS = new Set<Medal>([
   'first-blood',
