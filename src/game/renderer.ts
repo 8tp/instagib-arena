@@ -9,6 +9,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { VignetteShader } from 'three/examples/jsm/shaders/VignetteShader.js';
 import { FOV_DEG } from './constants';
 import type { ArenaMap } from './map';
+import { applySky, createSkyMesh, setSkyDetail, type SkyParams, type SkyUniforms } from './world/sky';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tuning. All bloom numbers are in LINEAR scene radiance (the composer's
@@ -88,154 +89,84 @@ export function createCamera(canvas: HTMLCanvasElement): THREE.PerspectiveCamera
   return cam;
 }
 
-// three.js ACESFilmicToneMapping fit matrices (tonemapping_pars_fragment),
-// written row-major here; Matrix3 uploads column-major exactly like the GLSL
-// mat3 constructors in that chunk. Inverted once so the sky dome can undo the
-// tone map (see createSky).
-const ACES_INPUT = new THREE.Matrix3().set(
-  0.59719, 0.35458, 0.04823,
-  0.07600, 0.90834, 0.01566,
-  0.02840, 0.13383, 0.83777,
-);
-const ACES_OUTPUT = new THREE.Matrix3().set(
-  1.60475, -0.53108, -0.07367,
-  -0.10208, 1.10813, -0.00605,
-  -0.00327, -0.07276, 1.07602,
-);
-const ACES_INPUT_INV = ACES_INPUT.clone().invert();
-const ACES_OUTPUT_INV = ACES_OUTPUT.clone().invert();
-
-type SkyUniforms = {
-  topColor: { value: THREE.Color };
-  bottomColor: { value: THREE.Color };
-  offset: { value: number };
-  exponent: { value: number };
-  uInvTonemap: { value: number };
-  uExposure: { value: number };
-  uInvIn: { value: THREE.Matrix3 };
-  uInvOut: { value: THREE.Matrix3 };
-};
-
-// Classic three.js vertical-gradient sky dome (sky-blue zenith → pale horizon).
-//
-// The shader writes its gradient raw — no tone map, no sRGB encode — which is
-// what the arena's look was tuned against when rendering straight to the
-// canvas. Under the post chain every pixel goes through OutputPass (ACES +
-// sRGB) instead, which would lift this deep blue to a pale sky. With
-// uInvTonemap=1 the shader pre-applies the exact inverse (sRGB EOTF → inverse
-// ACES output matrix → inverse RRT/ODT fit → inverse input matrix → ÷ exposure)
-// so the dome lands on the same on-screen values either way, and its
-// pre-inverted radiance (≤ ~0.4) sits far below the bloom threshold.
-function createSky(): THREE.Mesh {
-  const geo = new THREE.SphereGeometry(500, 32, 15);
-  const uniforms: SkyUniforms = {
-    topColor: { value: new THREE.Color(0x4a86c8) },
-    bottomColor: { value: new THREE.Color(0xdce9f4) },
-    offset: { value: 30 },
-    exponent: { value: 0.7 },
-    uInvTonemap: { value: 0 },
-    uExposure: { value: 1.15 },
-    uInvIn: { value: ACES_INPUT_INV },
-    uInvOut: { value: ACES_OUTPUT_INV },
-  };
-  const mat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    fog: false,
-    uniforms,
-    vertexShader: /* glsl */ `
-      varying vec3 vWorldPosition;
-      void main() {
-        vec4 worldPos = modelMatrix * vec4(position, 1.0);
-        vWorldPosition = worldPos.xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      uniform vec3 topColor;
-      uniform vec3 bottomColor;
-      uniform float offset;
-      uniform float exponent;
-      uniform float uInvTonemap;
-      uniform float uExposure;
-      uniform mat3 uInvIn;
-      uniform mat3 uInvOut;
-      varying vec3 vWorldPosition;
-
-      // Inverse of three's RRTAndODTFit: y = (x(x+a) - b) / (x(cx+d) + e)
-      // → (1 - cy) x² + (a - dy) x - (b + ey) = 0, positive root.
-      vec3 invRRTAndODTFit(vec3 y) {
-        const float a = 0.0245786;
-        const float b = 0.000090537;
-        const float c = 0.983729;
-        const float d = 0.4329510;
-        const float e = 0.238081;
-        vec3 A = 1.0 - c * y;
-        vec3 B = a - d * y;
-        vec3 C = -(b + e * y);
-        return (-B + sqrt(max(B * B - 4.0 * A * C, vec3(0.0)))) / (2.0 * A);
-      }
-
-      void main() {
-        float h = normalize(vWorldPosition + vec3(0.0, offset, 0.0)).y;
-        float t = pow(max(h, 0.0), exponent);
-        vec3 col = mix(bottomColor, topColor, t);
-        if (uInvTonemap > 0.5) {
-          // sRGB EOTF (what the canvas shows for the raw write) ...
-          vec3 lin = mix(
-            pow(col * 0.9478672986 + vec3(0.0521327014), vec3(2.4)),
-            col * 0.0773993808,
-            vec3(lessThanEqual(col, vec3(0.04045))));
-          // ... then undo ACESFilmicToneMapping so OutputPass re-creates it.
-          vec3 y = clamp(uInvOut * lin, 0.0, 1.0);
-          vec3 x = invRRTAndODTFit(y);
-          col = max(uInvIn * x, vec3(0.0)) * (0.6 / uExposure);
-        }
-        gl_FragColor = vec4(col, 1.0);
-      }
-    `,
-  });
-  const sky = new THREE.Mesh(geo, mat);
-  sky.name = 'sky';
-  return sky;
-}
-
 export type ArenaLighting = {
   sun: THREE.DirectionalLight;
   hemi: THREE.HemisphereLight;
   fill: THREE.DirectionalLight;
   sky: THREE.Mesh;
+  // Unit vector toward the sun (the world theme sets it; the shadow rig and
+  // the baked map shading both follow it). `version` bumps on every change.
+  sunDir: THREE.Vector3;
+  version: number;
+  // Theme-owned light levels (null → the SHADOW_TUNING defaults, which lift
+  // the sun and dim the hemisphere when realtime shadows turn on).
+  tuning: { sun: number; hemi: number } | null;
+  lowDetail: boolean;
 };
 const lightingByScene = new WeakMap<THREE.Scene, ArenaLighting>();
+const rendererByScene = new WeakMap<THREE.Scene, THREE.WebGLRenderer>();
 
 export function getArenaLighting(scene: THREE.Scene): ArenaLighting | undefined {
   return lightingByScene.get(scene);
 }
 
+// Per-map atmosphere: everything about a world theme that lives on the scene
+// rather than on the map's materials. Produced by map.ts buildMapMesh
+// (group.userData.atmosphere) and applied automatically when that group is
+// added to a scene built by createScene().
+export type WorldAtmosphere = {
+  id: string;
+  exposure: number;
+  background: number;
+  fog: { color: number; near: number; far: number };
+  sky: SkyParams;
+  sun: { dir: [number, number, number]; color: number; intensity: number };
+  hemi: { sky: number; ground: number; intensity: number };
+  fill: { dir: [number, number, number]; color: number; intensity: number };
+  envIntensity: number;
+};
+
+// The pre-theme look (also what a scene shows before any map is added).
+const DEFAULT_ATMOSPHERE: WorldAtmosphere = {
+  id: 'default',
+  exposure: 0.95,
+  background: 0x9fc0dd,
+  fog: { color: 0xb6cadb, near: 90, far: 280 },
+  sky: { mode: 'lab', top: 0x2f6fb8, horizon: 0xc8dcec },
+  sun: {
+    dir: [SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z],
+    color: 0xfff2d8,
+    intensity: SHADOW_TUNING.sunIntensityUnshadowed,
+  },
+  hemi: { sky: 0xcfe2f2, ground: 0x7d8088, intensity: SHADOW_TUNING.hemiIntensityUnshadowed },
+  fill: { dir: [-0.575, 0.69, -0.46], color: 0x88a6ff, intensity: 0.35 },
+  envIntensity: 0.4,
+};
+
 export function createScene(renderer: THREE.WebGLRenderer): THREE.Scene {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x9fc0dd);
-  // Light haze that fades distant geometry into the horizon colour. Far enough
-  // not to murk up small duel maps.
-  scene.fog = new THREE.Fog(0xb6cadb, 90, 280);
+  scene.background = new THREE.Color(DEFAULT_ATMOSPHERE.background);
+  scene.fog = new THREE.Fog(DEFAULT_ATMOSPHERE.fog.color, DEFAULT_ATMOSPHERE.fog.near, DEFAULT_ATMOSPHERE.fog.far);
 
-  const sky = createSky();
+  const sky = createSkyMesh();
   scene.add(sky);
 
-  // Soft image-based fill so PBR surfaces look lit-from-everywhere and bright.
+  // Image-based fill for the PBR surfaces + players. The world's own share of
+  // it is scaled per theme inside the lightmapped map material.
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  // RoomEnvironment fill was ~equal to the sun; dim it so shadows read (critic r1).
-  scene.environmentIntensity = 0.4;
+  scene.environmentIntensity = DEFAULT_ATMOSPHERE.envIntensity;
   pmrem.dispose();
 
-  // Sky/ground hemisphere + a warm key "sun" + a cool fill. Brighter than the
-  // old setup so the arena isn't murky. Intensities here are the unshadowed
-  // look; PostFxPipeline lifts sun/hemi when it turns shadows on.
+  // Sky/ground hemisphere + a key "sun" + a fill. The map's static lighting
+  // is baked (world/lightmap.ts); these light players, bots and the
+  // viewmodel, and add normal-mapped direct light to the world at a
+  // per-theme fraction. Order matters: the map material treats directional
+  // light 0 as the sun and 1 as the fill (add sun before fill).
   const hemi = new THREE.HemisphereLight(0xcfe2f2, 0x7d8088, SHADOW_TUNING.hemiIntensityUnshadowed);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff2d8, SHADOW_TUNING.sunIntensityUnshadowed);
-  sun.position.set(20, 40, 12);
+  sun.position.copy(SUN_DIRECTION).multiplyScalar(SHADOW_TUNING.lightDistance);
   scene.add(sun);
   // Shadow rig is configured but inert (castShadow=false) until the pipeline
   // arms it — ReplayViewer shares this scene builder and stays shadow-free.
@@ -258,29 +189,76 @@ export function createScene(renderer: THREE.WebGLRenderer): THREE.Scene {
   fill.position.set(-15, 18, -12);
   scene.add(fill);
 
-  lightingByScene.set(scene, { sun, hemi, fill, sky });
+  lightingByScene.set(scene, {
+    sun,
+    hemi,
+    fill,
+    sky,
+    sunDir: SUN_DIRECTION.clone(),
+    version: 0,
+    tuning: null,
+    lowDetail: false,
+  });
+  rendererByScene.set(scene, renderer);
+  applyWorldAtmosphere(scene, DEFAULT_ATMOSPHERE);
   return scene;
 }
 
-// Shadow flags for a freshly built arena mesh: every box casts and receives,
-// except a drawn ceiling (closed maps, boxes[1]) — it sits between the sun and
-// the whole arena and would black it out.
-export function applyMapShadowFlags(group: THREE.Object3D, map: ArenaMap): void {
-  const ceil = map.openTop ? null : map.boxes[1];
-  const cx = ceil ? (ceil.min.x + ceil.max.x) / 2 : 0;
-  const cy = ceil ? (ceil.min.y + ceil.max.y) / 2 : 0;
-  const cz = ceil ? (ceil.min.z + ceil.max.z) / 2 : 0;
+// Apply a world theme's atmosphere to a createScene() scene: fog, sky dome,
+// dynamic light colours/intensities/direction, IBL level and exposure.
+export function applyWorldAtmosphere(scene: THREE.Scene, atm: WorldAtmosphere): void {
+  if (scene.background instanceof THREE.Color) scene.background.setHex(atm.background);
+  if (scene.fog instanceof THREE.Fog) {
+    scene.fog.color.setHex(atm.fog.color);
+    scene.fog.near = atm.fog.near;
+    scene.fog.far = atm.fog.far;
+  }
+  scene.environmentIntensity = atm.envIntensity;
+  const renderer = rendererByScene.get(scene);
+  if (renderer) renderer.toneMappingExposure = atm.exposure;
+  const l = lightingByScene.get(scene);
+  if (!l) return;
+  l.tuning = atm.id === DEFAULT_ATMOSPHERE.id ? null : { sun: atm.sun.intensity, hemi: atm.hemi.intensity };
+  l.sunDir.set(atm.sun.dir[0], atm.sun.dir[1], atm.sun.dir[2]).normalize();
+  l.version++;
+  l.sun.color.setHex(atm.sun.color);
+  l.hemi.color.setHex(atm.hemi.sky);
+  l.hemi.groundColor.setHex(atm.hemi.ground);
+  applyLightLevels(l);
+  l.sun.position.copy(l.sun.target.position).addScaledVector(l.sunDir, SHADOW_TUNING.lightDistance);
+  l.fill.color.setHex(atm.fill.color);
+  l.fill.intensity = atm.fill.intensity;
+  l.fill.position.set(atm.fill.dir[0], atm.fill.dir[1], atm.fill.dir[2]).multiplyScalar(30);
+  applySky(l.sky, atm.sky, l.sunDir);
+  setSkyDetail(l.sky, !l.lowDetail);
+}
+
+// Sun + hemisphere levels for the current shadow state: theme-owned when a
+// world theme is active (the bake already carries the map's shadows, so the
+// level doesn't change with realtime shadows), else the SHADOW_TUNING pair.
+function applyLightLevels(l: ArenaLighting) {
+  const on = l.sun.castShadow;
+  if (l.tuning) {
+    l.sun.intensity = l.tuning.sun;
+    l.hemi.intensity = l.tuning.hemi;
+  } else {
+    l.sun.intensity = on ? SHADOW_TUNING.sunIntensity : SHADOW_TUNING.sunIntensityUnshadowed;
+    l.hemi.intensity = on ? SHADOW_TUNING.hemiIntensity : SHADOW_TUNING.hemiIntensityUnshadowed;
+  }
+}
+
+// Shadow flags for a freshly built arena group: every solid surface casts and
+// receives, except a drawn ceiling (it sits between the sun and the whole
+// arena and would black it out), the floor (nothing is under it), and
+// anything the build tagged noShadow (boundary walls the bake treats as not
+// blocking the sun, trim, dressing, fixtures).
+export function applyMapShadowFlags(group: THREE.Object3D, _map?: ArenaMap): void {
   group.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
-    const p = mesh.position;
-    const isCeiling =
-      !!ceil &&
-      Math.abs(p.x - cx) < 1e-3 &&
-      Math.abs(p.y - cy) < 1e-3 &&
-      Math.abs(p.z - cz) < 1e-3;
-    mesh.castShadow = !isCeiling;
-    mesh.receiveShadow = true;
+    const surface = mesh.userData.surface;
+    mesh.castShadow = surface !== 'ceiling' && surface !== 'floor' && mesh.userData.noShadow !== true;
+    mesh.receiveShadow = mesh.name !== 'map:fixtures' && mesh.name !== 'map:trim';
   });
 }
 
@@ -348,6 +326,9 @@ export class PostFxPipeline {
   private readonly tmpFwd = new THREE.Vector3();
   private readonly tmpTarget = new THREE.Vector3();
   private readonly tmpCamPos = new THREE.Vector3();
+  private readonly basis = new THREE.Matrix4();
+  private sunVersion = -1;
+  private lowDetailExplicit: boolean | null = null;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -357,8 +338,7 @@ export class PostFxPipeline {
     this.lighting = getArenaLighting(scene) ?? null;
     renderer.shadowMap.enabled = true; // inert until a light casts
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    const basis = new THREE.Matrix4().lookAt(SUN_DIRECTION, ORIGIN, UP);
-    basis.extractBasis(this.lightU, this.lightV, this.tmpFwd);
+    this.syncSunBasis();
     const size = renderer.getSize(new THREE.Vector2());
     this.width = Math.max(1, size.x);
     this.height = Math.max(1, size.y);
@@ -404,6 +384,26 @@ export class PostFxPipeline {
     this.opts = { ...this.opts, ...opts };
     this.applyPassFlags();
     this.applyShadows();
+    // Until the host says otherwise (setWorldQuality), "every post effect
+    // off" is the low-spec tier: drop the sky's procedural detail.
+    if (this.lowDetailExplicit === null) {
+      const o = this.opts;
+      this.applyWorldQuality(!o.bloom && !o.shadows && !o.aa && !o.vignette);
+    }
+  }
+
+  // Low-spec world tier: the sky dome drops its fbm octaves (nebula, clouds).
+  // Lightmaps stay (they cost nothing at runtime).
+  setWorldQuality(low: boolean) {
+    this.lowDetailExplicit = low;
+    this.applyWorldQuality(low);
+  }
+
+  private applyWorldQuality(low: boolean) {
+    const l = this.lighting;
+    if (!l || l.lowDetail === low) return;
+    l.lowDetail = low;
+    setSkyDetail(l.sky, !low);
   }
 
   // Accessibility hook: reduced-effects drops the vignette (a static screen-edge
@@ -490,8 +490,7 @@ export class PostFxPipeline {
     const on = this.opts.shadows;
     if (l.sun.castShadow === on) return;
     l.sun.castShadow = on;
-    l.sun.intensity = on ? SHADOW_TUNING.sunIntensity : SHADOW_TUNING.sunIntensityUnshadowed;
-    l.hemi.intensity = on ? SHADOW_TUNING.hemiIntensity : SHADOW_TUNING.hemiIntensityUnshadowed;
+    applyLightLevels(l);
     if (!on) {
       l.sun.shadow.map?.dispose();
       l.sun.shadow.map = null;
@@ -505,6 +504,7 @@ export class PostFxPipeline {
   private updateShadowFollow() {
     const l = this.lighting;
     if (!l || !l.sun.castShadow) return;
+    if (l.version !== this.sunVersion) this.syncSunBasis();
     const cam = this.camera;
     cam.getWorldPosition(this.tmpCamPos);
     cam.getWorldDirection(this.tmpFwd);
@@ -518,6 +518,14 @@ export class PostFxPipeline {
     target.addScaledVector(this.lightU, Math.round(du / texel) * texel - du);
     target.addScaledVector(this.lightV, Math.round(dv / texel) * texel - dv);
     l.sun.target.position.copy(target);
-    l.sun.position.copy(target).addScaledVector(SUN_DIRECTION, SHADOW_TUNING.lightDistance);
+    l.sun.position.copy(target).addScaledVector(l.sunDir, SHADOW_TUNING.lightDistance);
+  }
+
+  // Light-space basis for the texel snap; follows the theme's sun direction.
+  private syncSunBasis() {
+    const dir = this.lighting?.sunDir ?? SUN_DIRECTION;
+    this.basis.lookAt(dir, ORIGIN, UP);
+    this.basis.extractBasis(this.lightU, this.lightV, this.tmpFwd);
+    this.sunVersion = this.lighting?.version ?? 0;
   }
 }
