@@ -147,7 +147,13 @@ export class CharacterLab {
     } else if (zoom === 'far') {
       dist = Number(this.params.get('dist') ?? 30);
     }
-    if (grid) {
+    if (grid && zoom === 'head') {
+      // Head sheets: frame just the helmets.
+      const w = cols * spacing;
+      const vfov = (this.camera.fov * Math.PI) / 180;
+      const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
+      dist = Math.max(w / 2 / Math.tan(hfov / 2), 0.7 / Math.tan(vfov / 2)) * 1.05;
+    } else if (grid) {
       const w = cols * spacing;
       const vfov = (this.camera.fov * Math.PI) / 180;
       const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);

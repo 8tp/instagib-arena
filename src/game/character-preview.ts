@@ -94,7 +94,7 @@ export class CharacterPreview {
       // The combatant's PBR armour wants tone mapping + an environment to
       // reflect (the weapon view keeps its original look).
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.0;
+      this.renderer.toneMappingExposure = 0.82;
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
       this.scene.environmentIntensity = 0.45;

@@ -98,8 +98,8 @@ export class PodiumScene {
     this.resize();
     this.scene.background = null;
     this.camera = new THREE.PerspectiveCamera(38, this.aspect(), 0.1, 100);
-    this.camera.position.set(0, 2.2, 6.4);
-    this.camera.lookAt(0, 1.55, 0);
+    this.camera.position.set(0, 2.45, 6.9);
+    this.camera.lookAt(0, 1.86, 0);
 
     // Image-based fill so the painted armour and gunmetal read as materials.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -128,7 +128,7 @@ export class PodiumScene {
     rim.position.set(-4, 4, -3);
     this.scene.add(rim);
     // A spotlight on the champion.
-    const spot = new THREE.SpotLight(0xfff4d0, 10, 14, Math.PI / 7, 0.6, 1.2);
+    const spot = new THREE.SpotLight(0xfff4d0, 5.5, 14, Math.PI / 7, 0.6, 1.2);
     spot.position.set(0, 6.5, 3);
     spot.target.position.set(0, 1.6, 0);
     this.scene.add(spot, spot.target);
@@ -181,25 +181,50 @@ export class PodiumScene {
   private buildPedestals() {
     for (let i = 0; i < 3; i++) {
       const { x, h } = SLOTS[i];
+      const medal = new THREE.Color(MEDAL[i]);
+      // Gunmetal block with a medal-coloured cap trim.
       const geo = new RoundedBoxGeometry(1.25, h, 1.25, 2, 0.035);
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x232a35,
-        emissive: new THREE.Color(MEDAL[i]).multiplyScalar(0.08),
-        roughness: 0.55,
-        metalness: 0.35,
-      });
+      const mat = new THREE.MeshStandardMaterial({ color: 0x1d232c, roughness: 0.45, metalness: 0.6 });
       const ped = new THREE.Mesh(geo, mat);
       ped.position.set(x, h / 2, 0);
       ped.receiveShadow = true;
       ped.castShadow = true;
       this.scene.add(ped);
-      // a glowing accent strip on the front face + a thin cap trim
-      const sGeo = new THREE.PlaneGeometry(1.0, 0.1);
-      const sMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(MEDAL[i]).multiplyScalar(1.6), toneMapped: false });
+      const capGeo = new RoundedBoxGeometry(1.29, 0.05, 1.29, 2, 0.015);
+      const capMat = new THREE.MeshStandardMaterial({
+        color: medal,
+        emissive: medal.clone().multiplyScalar(0.25),
+        roughness: 0.3,
+        metalness: 0.8,
+      });
+      const cap = new THREE.Mesh(capGeo, capMat);
+      cap.position.set(x, h - 0.02, 0);
+      cap.receiveShadow = true;
+      this.scene.add(cap);
+      // Glowing place numeral + accent strip on the front face.
+      const cv = document.createElement('canvas');
+      cv.width = 128;
+      cv.height = 128;
+      const ctx = cv.getContext('2d')!;
+      ctx.fillStyle = '#' + medal.getHexString();
+      ctx.font = 'bold 108px "JetBrains Mono", ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), 64, 70);
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const size = Math.min(0.36, h * 0.6);
+      const nGeo = new THREE.PlaneGeometry(size, size);
+      const nMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false, color: 0xffffff });
+      const num = new THREE.Mesh(nGeo, nMat);
+      num.position.set(x, (h - 0.09) / 2 - 0.01, 0.628);
+      this.scene.add(num);
+      const sGeo = new THREE.PlaneGeometry(1.0, 0.035);
+      const sMat = new THREE.MeshBasicMaterial({ color: medal.clone().multiplyScalar(1.6), toneMapped: false });
       const strip = new THREE.Mesh(sGeo, sMat);
-      strip.position.set(x, h * 0.7, 0.627);
+      strip.position.set(x, h - 0.09, 0.628);
       this.scene.add(strip);
-      this.owned.push(geo, mat, sGeo, sMat);
+      this.owned.push(geo, mat, capGeo, capMat, tex, nGeo, nMat, sGeo, sMat);
     }
     // floor
     const fGeo = new THREE.CircleGeometry(6, 48);
@@ -235,7 +260,8 @@ export class PodiumScene {
 
       const accent = '#' + new THREE.Color(MEDAL[idx]).getHexString();
       const label = makeLabel(w.name, `#${w.place} · ${w.score}`, accent);
-      label.position.set(0, 2.38, 0);
+      // Clear of overhead arms and hops (cheer jumps ~0.3 m with arms up).
+      label.position.set(0, 2.82, 0);
       group.add(label);
 
       this.chars.push({ group, character, anim, hat, gun, label });

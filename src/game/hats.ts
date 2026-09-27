@@ -15,14 +15,14 @@ const TARGET_WIDTH = 0.36;
 // on the old soldier's bare head): extra drop (m), size multiplier, and a
 // forward/back nudge so brims clear the visor.
 const HELMET_FIT: Record<string, { sink?: number; fit?: number; z?: number; tilt?: number }> = {
-  'hat.cap': { sink: 0.035, fit: 1.0, z: 0.0, tilt: -0.06 },
-  'hat.baseball': { sink: 0.04, fit: 0.98, z: 0.005, tilt: -0.06 },
-  'hat.hardhat': { sink: 0.045, fit: 1.0 },
-  'hat.graduation': { sink: 0.035, fit: 1.0 },
-  'hat.tophat': { sink: 0.02, fit: 0.95 },
-  'hat.propeller': { sink: 0.045, fit: 1.0 },
-  'hat.wizard': { sink: 0.035, fit: 1.0 },
-  'hat.crown': { sink: 0.02, fit: 1.05 },
+  'hat.cap': { sink: 0.11, fit: 1.0, z: 0.0, tilt: -0.06 },
+  'hat.baseball': { sink: 0.135, fit: 0.98, z: 0.005, tilt: -0.06 },
+  'hat.hardhat': { sink: 0.125, fit: 1.0 },
+  'hat.graduation': { sink: 0.15, fit: 1.0 },
+  'hat.tophat': { sink: 0.05, fit: 0.95 },
+  'hat.propeller': { sink: 0.115, fit: 1.0 },
+  'hat.wizard': { sink: 0.085, fit: 1.0 },
+  'hat.crown': { sink: 0.055, fit: 1.05 },
 };
 
 const loader = new GLTFLoader();

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import type { EmoteKind } from '../cosmetics';
+import { HATS, type EmoteKind } from '../cosmetics';
+import { WornHat } from '../hats';
 import { CharacterAnimator } from '../character-anim';
 import { EMOTE_KINDS } from '../emotes';
 import { attachRailgun } from './gun';
@@ -139,6 +140,29 @@ export function labDriverFromParams(params: URLSearchParams): LabDriver {
   const emote = params.get('emote') as EmoteKind | null;
   const play = params.get('play') === '1';
 
+  if (grid === 'hats') {
+    // Every hat on the helmet (idle pose), for fit review.
+    const anims = new Map<Character, CharacterAnimator>();
+    const yaw = Number(params.get('yaw') ?? 0.5);
+    const from = Number(params.get('from') ?? 0);
+    const list = HATS.slice(from, from + Number(params.get('n') ?? HATS.length));
+    return {
+      count: list.length,
+      label: (i) => list[i].name,
+      drive(ch, _clock, _dt, j, slot) {
+        const i = HATS.indexOf(list[j]);
+        if (anims.has(ch)) return;
+        slot.rotation.y = yaw;
+        const a = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
+        a.playEmote('idle');
+        a.setEmoteTime(0.5);
+        a.updateStatic(0);
+        anims.set(ch, a);
+        const hat = new WornHat(ch.sockets.headTop);
+        void hat.setHat(HATS[i].id);
+      },
+    };
+  }
   if (grid === 'views') {
     // One pose from four sides: front, right side, back, 3/4.
     const yaws = [0, -Math.PI / 2, Math.PI, -Math.PI / 4];
