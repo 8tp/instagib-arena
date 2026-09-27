@@ -106,7 +106,11 @@ export function buildDressing(inp: DressingInput): DressingBuild {
   for (const def of theme.lights) {
     if (def.fixture === false || def.size[0] < 0.05) continue;
     const f = findFace(lm, faceAxis(def.face), faceSign(def.face), def.at);
-    if (!f) continue;
+    if (!f) {
+      // A fixture must hang on a real, visible face (flush-mount rule).
+      if (import.meta.env?.DEV) console.warn(`[world] ${theme.id}: no ${def.face} face at`, def.at);
+      continue;
+    }
     fixtureFaces.push({ def, face: f });
     const span: [number, number] = [def.at[f.ua] - def.size[0] / 2 - 0.25, def.at[f.ua] + def.size[0] / 2 + 0.25];
     const list = fixtureSpans.get(f);

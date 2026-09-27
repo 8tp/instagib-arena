@@ -286,12 +286,12 @@ const REACTOR: WorldTheme = {
     { at: [0, 14.6, 0], face: '+y', size: [2, 2], color: 0x3fdcff, intensity: 70, range: 16, out: 1.4, radius: 0.6, glow: 2.0 },
     // perimeter floodlights (tight, high pools) + low sconces between them
     ...[-26, 0, 26].flatMap((x) => [
-      wallLamp([x, 9, -26], '+z', REACTOR_FLOOD, 320, 30, { size: [1.4, 0.7], down: 1.7, angle: 0.75, radius: 0.5 }),
-      wallLamp([x, 9, 26], '-z', REACTOR_FLOOD, 320, 30, { size: [1.4, 0.7], down: 1.7, angle: 0.75, radius: 0.5 }),
+      wallLamp([x, 9, -26], '+z', REACTOR_FLOOD, 300, 30, { size: [1.4, 0.7], down: 1.9, angle: 0.62, radius: 0.5 }),
+      wallLamp([x, 9, 26], '-z', REACTOR_FLOOD, 300, 30, { size: [1.4, 0.7], down: 1.9, angle: 0.62, radius: 0.5 }),
     ]),
     ...[-14, 14].flatMap((z) => [
-      wallLamp([-38, 9, z], '+x', REACTOR_FLOOD, 320, 30, { size: [1.4, 0.7], down: 1.7, angle: 0.75, radius: 0.5 }),
-      wallLamp([38, 9, z], '-x', REACTOR_FLOOD, 320, 30, { size: [1.4, 0.7], down: 1.7, angle: 0.75, radius: 0.5 }),
+      wallLamp([-38, 9, z], '+x', REACTOR_FLOOD, 300, 30, { size: [1.4, 0.7], down: 1.9, angle: 0.62, radius: 0.5 }),
+      wallLamp([38, 9, z], '-x', REACTOR_FLOOD, 300, 30, { size: [1.4, 0.7], down: 1.9, angle: 0.62, radius: 0.5 }),
     ]),
     ...[-33, -19, -6, 6, 19, 33].flatMap((x) => [
       sconce([x, 4.2, -26], '+z', 0xffcf98, 60, 11),
