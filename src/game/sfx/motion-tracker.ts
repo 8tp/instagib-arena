@@ -63,6 +63,17 @@ export class MotionTracker {
     this.tracks.clear();
   }
 
+  /**
+   * A gait footfall from the character animator (a foot planted): emit a step
+   * at the entity's tracked speed if it's on the ground and moving. Used when
+   * `cadenceSteps` is off, so steps land exactly on the animated foot plants.
+   */
+  footfall(id: string, x: number, y: number, z: number) {
+    const tr = this.tracks.get(id);
+    if (!tr || !tr.has || !tr.grounded) return;
+    if (tr.lastHs > 2 && tr.lastHs < 16) this.sink('step', x, y, z, tr.lastHs);
+  }
+
   /** Drop an entity's track (disconnected player). */
   forget(id: string) {
     this.tracks.delete(id);

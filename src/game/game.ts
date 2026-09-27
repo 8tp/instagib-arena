@@ -62,6 +62,7 @@ import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker, medalSting } from './medals';
 import { FOOTSTEP_STRIDE, MotionTracker } from './sfx/motion-tracker';
+import { floorBelow, setCharacterFxQuality, setGibFloorProbe } from './character/gibs';
 import {
   DEFAULT_KILL_EFFECT,
   DEFAULT_RAIL_COLOR,
@@ -169,7 +170,6 @@ export type NetMatchEvent =
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
-const BOT_MODEL_URL = '/models/instagib/soldier.glb';
 // Stream our position at the sim-tick rate (64Hz) rather than the 32Hz snapshot
 // rate. The server samples whatever pos it last received when it builds each
 // 32Hz snapshot; if we only send at 32Hz those two unsynchronized clocks beat
@@ -259,6 +259,9 @@ export class Game {
     this.audio.remoteMove(kind, x, y, z, s),
   );
   private stepDist = 0; // metres walked since the last local footstep
+  // Last seen gait footfall count per remote/bot (their animated foot plants
+  // drive their footstep sounds — see MotionTracker.footfall).
+  private footfallSeen = new Map<string, number>();
   private locked = false;
   private accumulator = 0;
   private lastTime = 0;
@@ -516,6 +519,9 @@ export class Game {
     applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
     this.player = new Player(this.map.spawn);
+    // Gibs bounce on the real floor under the victim (closure reads the current map).
+    setGibFloorProbe((x, y, z) => floorBelow(this.map.boxes, x, y, z));
+    this.motionSfx.cadenceSteps = false; // steps come from the animated foot plants
 
     this.input = new InputManager(
       canvas,
@@ -657,6 +663,7 @@ export class Game {
     this.effects.setQuality(lowSpec ? 0.5 : 1);
     this.audio.setLowSpec(this.lowSpec); // shorter reverb, cheaper panning, fewer voices
     this.postFx.setWorldQuality(this.lowSpec); // sky drops its procedural detail on the low tier
+    setCharacterFxQuality({ lowSpec: this.lowSpec }); // fewer gib chunks
     this.applyPostFx();
   }
 
@@ -943,6 +950,7 @@ export class Game {
   // hit marker, kill-confirm text, killfeed, and SFX still fire (informational).
   setReducedEffects(v: boolean) {
     this.reducedEffects = v;
+    setCharacterFxQuality({ reducedEffects: v }); // fewer gib chunks, no bounce
   }
 
   private applyEnemyStyle() {
@@ -966,6 +974,7 @@ export class Game {
     // Room reverb + floor surface + ambience bed (crossfades if running).
     this.audio.setMap(mapIdOf(map));
     this.motionSfx.clear();
+    this.footfallSeen.clear();
     // Reset the local player onto the new spawn.
     this.player.pos = { ...map.spawn };
     this.player.vel = { x: 0, y: 0, z: 0 };
@@ -1094,7 +1103,7 @@ export class Game {
     this.audio.startAmbience(); // per-map room tone, fades in with the match
     let model: BotModel | null = null;
     try {
-      model = await loadBotModel(BOT_MODEL_URL);
+      model = await loadBotModel(); // the code-built combatant (no download)
     } catch {
       model = null;
     }
@@ -1111,6 +1120,7 @@ export class Game {
 
   dispose() {
     this.disposed = true;
+    setGibFloorProbe(null);
     if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
     this.rafHandle = null;
     if (this.frameTimeout !== null) clearTimeout(this.frameTimeout);
@@ -1655,6 +1665,7 @@ export class Game {
         rp.dispose(this.scene);
         this.remotePlayers.delete(id);
         this.motionSfx.forget(id);
+        this.footfallSeen.delete(id);
       }
     }
     const nowSec = performance.now() / 1000;
@@ -1693,6 +1704,7 @@ export class Game {
       rp.setInvuln(snap.invulnMs);
       // Their footsteps / jumps / landings, heard where they are.
       this.motionSfx.sample(id, snap.pos.x, snap.pos.y, snap.pos.z, nowSec, true);
+      this.heardFootfalls(id, rp.footfalls, snap.pos.x, snap.pos.y, snap.pos.z);
       // First-person spectating: hide the watched player's own avatar so we're
       // not inside our own mesh. Composes with the death-hide (see RemotePlayer).
       rp.setFirstPersonHidden(this.spectator && id === this.spectatedId);
@@ -1816,6 +1828,13 @@ export class Game {
     } else if (!p.onGround) {
       this.stepDist = FOOTSTEP_STRIDE * 0.5;
     }
+  }
+
+  // A remote/bot's animated foot planted since we last looked → a step sound.
+  private heardFootfalls(id: string, count: number, x: number, y: number, z: number) {
+    const prev = this.footfallSeen.get(id);
+    this.footfallSeen.set(id, count);
+    if (prev !== undefined && count > prev) this.motionSfx.footfall(id, x, y, z);
   }
 
   // Spawn the kill burst at `at`, honoring the reduced-effects setting: the full
@@ -1958,6 +1977,7 @@ export class Game {
       for (const b of this.bots.bots) {
         const p = b.state.pos;
         this.motionSfx.sample(b.state.id, p.x, p.y, p.z, this.elapsed, b.state.alive);
+        this.heardFootfalls(b.state.id, b.footfalls, p.x, p.y, p.z);
       }
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);

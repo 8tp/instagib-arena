@@ -1843,6 +1843,7 @@ function LockerPreview({ settings, view }: { settings: Settings; view: LockerVie
     railColor: settings.railColor,
     railgunFinish: settings.railgunFinish,
     killEffect: settings.killEffect,
+    skinSeed: settings.playerName || undefined, // the armour colour others see you in
     view,
   });
   useEffect(() => {

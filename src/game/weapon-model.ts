@@ -24,7 +24,7 @@ import { localRail, nowMs } from './fx/rail-state';
 //   • up       = +Y; the gun is symmetric about X = 0;
 //   • scale    = 1 unit ≈ 1 m at scale 1: ~1.33 long (butt +0.44 → tip -0.9),
 //                muzzle marker at (0, 0.03, -0.9). Callers scale the group
-//                (first person 0.8, the old soldier hand bone 60 → ~0.6 m).
+//                (first person 0.8; the combatant hand socket ~0.6, see character/gun.ts).
 //
 // Parts are merged per material (≈ 12 draw calls first person, 7 third person)
 // and every geometry/material here belongs to the returned group — the caller
@@ -575,96 +575,4 @@ function buildFlareGeometry(): THREE.BufferGeometry {
   jetA.dispose();
   jetB.dispose();
   return g;
-}
-
-// Third-person attach. Seats the railgun in the soldier's right hand so it
-// tracks the hand through idle/walk/run instead of floating at the hip. The
-// hand bone's local frame is offset/rotated, so the constants below were tuned
-// to point the barrel down the soldier's forward (-Z) in the idle pose. Falls
-// back to a fixed body offset if the rig has no recognisable hand bone. Uses
-// the low-detail build (third person); the model-space convention is the one
-// documented at the top of this file.
-const HAND_BONE_CANDIDATES = ['mixamorig:RightHand', 'RightHand', 'Hand.R', 'mixamorigRightHand'];
-
-export function attachRailgunToSoldier(
-  root: THREE.Object3D,
-  height = 1.8,
-  finish?: RailgunFinish,
-): THREE.Group {
-  const model = buildThirdPersonRailgun(finish);
-  const { group } = model;
-  group.userData.railgun = model;
-
-  let hand: THREE.Object3D | null = null;
-  for (const name of HAND_BONE_CANDIDATES) {
-    hand = root.getObjectByName(name) ?? null;
-    if (hand) break;
-  }
-
-  if (hand) {
-    // soldier.glb's right-hand bone lives in a cm-scaled, rotated local frame
-    // (world scale ~0.01). These constants — tuned in that bone space — seat the
-    // grip in the palm with the barrel pointing forward and slightly down, a
-    // relaxed "railgun at the ready" carry. The gun then tracks the hand through
-    // idle/walk/run instead of floating beside the body. localScale 60 → ~0.6
-    // world units → a ~0.57 m gun on the 1.8 m soldier.
-    group.scale.setScalar(60);
-    group.position.set(-2.317, -4.008, 10.329);
-    group.rotation.set(2.469, 0.423, -0.021);
-    hand.add(group);
-  } else {
-    // Fallback: park it at the right-hand area on the body root.
-    group.scale.setScalar(0.42);
-    group.position.set(0.26, height * 0.62, -0.2);
-    root.add(group);
-  }
-  return group;
-}
-
-// The soldier's idle/walk/run clips swing the arms freely, so a hand-attached
-// gun flails. soldier.glb has no weapon-carry animation, so we pin the arm
-// chains to a fixed two-handed "rifle at the ready" pose every frame AFTER the
-// mixer runs. The legs + torso keep animating (the locomotion still reads), but
-// the upper body holds the gun steady. The RIGHT arm is the model's own
-// idle-arm pose — which is what attachRailgunToSoldier's gun transform was
-// tuned against, so the barrel keeps pointing forward — and the LEFT arm was
-// solved (numeric IK) to bring the support hand onto the gun's foregrip. Skip
-// this while the death clip is playing so the ragdoll-ish death still flails.
-const HOLD_POSE: ReadonlyArray<{
-  names: readonly string[];
-  e: [number, number, number];
-}> = [
-  { names: ['mixamorigRightShoulder', 'mixamorig:RightShoulder', 'RightShoulder', 'Shoulder.R'], e: [0.031, 0.125, 1.679] },
-  { names: ['mixamorigRightArm', 'mixamorig:RightArm', 'RightArm', 'Arm.R'], e: [-0.392, -0.069, 1.103] },
-  { names: ['mixamorigRightForeArm', 'mixamorig:RightForeArm', 'RightForeArm', 'ForeArm.R'], e: [0.746, 0.042, 0.121] },
-  { names: ['mixamorigRightHand', 'mixamorig:RightHand', 'RightHand', 'Hand.R'], e: [0.197, -0.071, 0.241] },
-  // Left arm: support hand on the foregrip (solved IK, residual ~3 mm).
-  { names: ['mixamorigLeftShoulder', 'mixamorig:LeftShoulder', 'LeftShoulder', 'Shoulder.L'], e: [-3.113, -0.025, -0.198] },
-  { names: ['mixamorigLeftArm', 'mixamorig:LeftArm', 'LeftArm', 'Arm.L'], e: [0.263, -0.796, 1.428] },
-  { names: ['mixamorigLeftForeArm', 'mixamorig:LeftForeArm', 'LeftForeArm', 'ForeArm.L'], e: [-0.022, 0.123, 0.045] },
-  { names: ['mixamorigLeftHand', 'mixamorig:LeftHand', 'LeftHand', 'Hand.L'], e: [0.005, 0.273, -0.202] },
-];
-
-function findBone(root: THREE.Object3D, names: readonly string[]): THREE.Object3D | null {
-  for (const name of names) {
-    const obj = root.getObjectByName(name);
-    if (obj) return obj;
-  }
-  return null;
-}
-
-export class WeaponHold {
-  private readonly bones: Array<{ obj: THREE.Object3D; e: [number, number, number] }> = [];
-
-  constructor(root: THREE.Object3D) {
-    for (const { names, e } of HOLD_POSE) {
-      const obj = findBone(root, names);
-      if (obj) this.bones.push({ obj, e });
-    }
-  }
-
-  // Call once per frame, AFTER mixer.update(dt), while the entity is alive.
-  apply(): void {
-    for (const { obj, e } of this.bones) obj.rotation.set(e[0], e[1], e[2]);
-  }
 }

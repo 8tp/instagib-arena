@@ -129,8 +129,8 @@ export class Locomotion {
   landed(impactSpeed: number): void {
     this.landAmp = clamp((impactSpeed - 2.5) / 10, 0.18, 1);
     this.landT = 0;
-    this.footfalls++;
-    this.onFootfall?.(SIDE_L, impactSpeed);
+    // No footfall here: the landing thud comes from the audio motion tracker,
+    // so footfalls are foot plants only (a step sound each).
   }
   // Mid-air relaunch. A big horizontal redirect reads as a wall jump: kick
   // off the wall, which lies opposite the new horizontal velocity change.
