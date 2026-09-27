@@ -1699,7 +1699,12 @@ export class Game {
       const respawned = rp.apply(snap, dt);
       if (respawned && !this.reducedEffects) {
         // This remote just materialized at its new spawn — play its effect.
-        this.effects.spawnInBurst(this.scene, rp.group.position, spawnEffectById(rp.equippedSpawnEffect).style);
+        this.effects.spawnInBurst(
+          this.scene,
+          rp.group.position,
+          spawnEffectById(rp.equippedSpawnEffect).style,
+          this.spectator && id === this.spectatedId, // watched in first person
+        );
       }
       rp.setInvuln(snap.invulnMs);
       // Their footsteps / jumps / landings, heard where they are.
@@ -2972,6 +2977,7 @@ export class Game {
       this.scene,
       new THREE.Vector3(p.x, p.y, p.z),
       spawnEffectById(this.localSpawnEffect).style,
+      true, // first person: no column around the camera
     );
   }
 

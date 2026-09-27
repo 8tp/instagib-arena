@@ -323,13 +323,13 @@ function killSingularity(ctx: FxContext, at: THREE.Vector3, headshot: boolean) {
 // A materialize burst at a (re)spawn point. `at` is the player's FEET.
 
 // Teleport: a tall light column + an expanding ground ring + rising motes.
-function spawnBeamIn(ctx: FxContext, at: THREE.Vector3) {
+function spawnBeamIn(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const pool = ctx.pool;
   const hot = 0xa8f0ff;
   const col = 0x37a6ff;
-  column(pool, at.x, at.y, at.z, hot, 0.16, 2.2, 0.4, 1.0, 1.6);
+  if (!fp) column(pool, at.x, at.y, at.z, hot, 0.16, 2.2, 0.4, 1.0, 1.6);
   ring(pool, at.x, at.y + 0.05, at.z, col, 0.2, 0.045, 0.42, 7, 1.3);
-  flash(ctx, at.x, at.y + 0.9, at.z, hot, 0.22, 0.22, 4, 1.8);
+  if (!fp) flash(ctx, at.x, at.y + 0.9, at.z, hot, 0.22, 0.22, 4, 1.8);
   spray(pool, at.x, at.y, at.z, hot, { count: 12, y: 0.1, radial: [0.5, 0.6], up: [4.5, 2.5], size: 0.05, life: 0.5, gravity: 5, fadePow: 1.2 });
 }
 
@@ -345,22 +345,22 @@ function spawnRing(ctx: FxContext, at: THREE.Vector3) {
 }
 
 // Cinder: a warm column + a dense cone of rising embers.
-function spawnEmberIn(ctx: FxContext, at: THREE.Vector3) {
+function spawnEmberIn(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const pool = ctx.pool;
   const core = 0xffb15a;
   const spark = 0xff7b3a;
-  column(pool, at.x, at.y, at.z, core, 0.13, 1.8, 0.36, 0.8, 1.7);
+  if (!fp) column(pool, at.x, at.y, at.z, core, 0.13, 1.8, 0.36, 0.8, 1.7);
   flash(ctx, at.x, at.y + 0.2, at.z, core, 0.2, 0.2, 4, 1.8);
   spray(pool, at.x, at.y, at.z, spark, { count: 18, y: 0.1, radial: [0.3, 0.9], up: [3.5, 3.5], size: 0.045, life: 0.7, gravity: 7, fadePow: 1.1 });
 }
 
 // Rift: a violet vertical tear that flares, with motes drawn inward then out.
-function spawnRift(ctx: FxContext, at: THREE.Vector3) {
+function spawnRift(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const pool = ctx.pool;
   const core = 0xe9d5ff;
   const halo = 0xa855f7;
   // A thin tall slab (the tear) that widens and fades.
-  const slab = pool.alloc('box');
+  const slab = fp ? null : pool.alloc('box');
   if (slab) {
     slab.x = at.x; slab.y = at.y + 1.05; slab.z = at.z;
     slab.setScale(0.08, 2.1, 0.08);
@@ -606,14 +606,17 @@ export class EffectsManager {
   }
 
   // Cosmetic-only materialize burst at a (re)spawn point; `beam` is the default.
-  spawnInBurst(scene: THREE.Scene, at: THREE.Vector3, style: SpawnEffectStyle = 'beam') {
+  // `firstPerson`: the LOCAL player's own spawn, seen from eye height inside
+  // it — skip the tall column/slab and the torso flash (from inside they fill
+  // the whole screen as a translucent prism); the ground ring + sparks remain.
+  spawnInBurst(scene: THREE.Scene, at: THREE.Vector3, style: SpawnEffectStyle = 'beam', firstPerson = false) {
     const ctx = getFxContext(scene);
     switch (style) {
       case 'ring': return spawnRing(ctx, at);
-      case 'ember': return spawnEmberIn(ctx, at);
-      case 'rift': return spawnRift(ctx, at);
+      case 'ember': return spawnEmberIn(ctx, at, firstPerson);
+      case 'rift': return spawnRift(ctx, at, firstPerson);
       case 'beam':
-      default: return spawnBeamIn(ctx, at);
+      default: return spawnBeamIn(ctx, at, firstPerson);
     }
   }
 
