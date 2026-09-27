@@ -54,6 +54,7 @@ export function MenuBackdropView({
               onMap: (id, name) => onMapRef.current?.(id, name),
             });
             backdropRef.current = bd;
+            if (import.meta.env.DEV) (window as unknown as { __menuBackdrop?: MenuBackdrop }).__menuBackdrop = bd;
             bd.setActive(activeRef.current);
             setReady(true);
           } catch (err) {

@@ -104,7 +104,13 @@ function scoreShot(map: ArenaMap, s: Shot, solids: AABB[]): number {
     orbitPoint(s, s.a0 + (s.span * i) / (N - 1), p);
     if (p.x < b.min.x + 1.5 || p.x > b.max.x - 1.5 || p.z < b.min.z + 1.5 || p.z > b.max.z - 1.5) return -1;
     if (p.y > ceil - 1.2) return -1;
-    for (const box of solids) if (inside(p, box, 0.9)) return -1;
+    for (const box of solids) {
+      if (inside(p, box, 0.9)) return -1;
+      // A platform edge at lens height slices the frame into a flat line.
+      const hx = Math.max(box.min.x - p.x, 0, p.x - box.max.x);
+      const hz = Math.max(box.min.z - p.z, 0, p.z - box.max.z);
+      if (Math.hypot(hx, hz) < 14 && (Math.abs(p.y - box.max.y) < 1.1 || Math.abs(p.y - box.min.y) < 1.1)) return -1;
+    }
     const dx = s.target.x - p.x;
     const dy = s.target.y - p.y;
     const dz = s.target.z - p.z;
@@ -123,11 +129,30 @@ function scoreShot(map: ArenaMap, s: Shot, solids: AABB[]): number {
       open += free / dist;
     }
     score += open / 5;
+    // Frame clutter: every third sample, sweep a grid across the frame
+    // (±34° yaw, ±16° pitch). Nothing may sit right against the lens, and
+    // near geometry anywhere in frame costs score — a slab sliced at eye level
+    // across the wordmark is the look to avoid.
+    if (i % 4 === 0) {
+      let near = 0;
+      for (const oy of [-0.6, -0.3, 0, 0.3, 0.6]) {
+        for (const op of [-0.28, 0, 0.28]) {
+          const cy = Math.cos(pitch + op);
+          d.x = Math.cos(yaw + oy) * cy;
+          d.z = Math.sin(yaw + oy) * cy;
+          d.y = Math.sin(pitch + op);
+          const free = freeDistance(p, d, solids, 12);
+          if (free < 3.2) return -1;
+          if (free < 8) near++;
+        }
+      }
+      score -= near * 0.04;
+    }
   }
   return score / N;
 }
 
-function planShot(map: ArenaMap, rand: () => number, best = false): Shot {
+function planShot(map: ArenaMap, rand: () => number, best = false): Shot | null {
   const b = map.bounds;
   const cx = (b.min.x + b.max.x) / 2;
   const cz = (b.min.z + b.max.z) / 2;
@@ -158,8 +183,8 @@ function planShot(map: ArenaMap, rand: () => number, best = false): Shot {
   const coverTop = tops.length ? tops[Math.min(tops.length - 1, Math.floor(tops.length * 0.8))] : 2;
   const baseH = Math.min(ceil - 2.5, Math.max(3.6, coverTop + 2.4));
   const candidates: { s: Shot; score: number }[] = [];
-  const heights = [baseH, baseH + 1.8, baseH - 1.3].map((h) => Math.min(ceil - 1.6, Math.max(3.2, h)));
-  for (const rf of [0.62, 0.5, 0.74]) {
+  const heights = [baseH, baseH + 1.8, baseH - 1.3, baseH + 3.6].map((h) => Math.min(ceil - 1.6, Math.max(3.2, h)));
+  for (const rf of [0.62, 0.5, 0.74, 0.4]) {
     for (const y of heights) {
       for (let k = 0; k < 16; k++) {
         const a0 = (k / 16) * Math.PI * 2;
@@ -172,21 +197,7 @@ function planShot(map: ArenaMap, rand: () => number, best = false): Shot {
     }
     if (candidates.length >= 6) break;
   }
-  if (candidates.length === 0) {
-    // Nothing clean: stand at the spawn and pan slowly across the arena.
-    const sp = map.spawn;
-    const r = Math.max(0.5, Math.hypot(sp.x - cx, sp.z - cz));
-    return {
-      cx,
-      cz,
-      rx: r,
-      rz: r,
-      y: sp.y + 2.4,
-      a0: Math.atan2(sp.z - cz, sp.x - cx),
-      span: 0.001,
-      target,
-    };
-  }
+  if (candidates.length === 0) return null; // no clean shot: the rotation skips it
   candidates.sort((a, b2) => b2.score - a.score);
   if (best) return candidates[0].s;
   const top = candidates.slice(0, Math.min(4, candidates.length));
@@ -300,15 +311,37 @@ class Stage {
 /* ── Levelshots ─────────────────────────────────────────────────────────── */
 
 const levelshots = new Map<string, string>();
+// The arena the last backdrop showed, so landing → menu (a remount) carries on
+// in the same place instead of cutting to a random map.
+let lastMapId: string | null = null;
 const pendingShots = new Map<string, Promise<string | null>>();
 
 export function cachedLevelshot(mapId: string): string | null {
   return levelshots.get(mapId) ?? null;
 }
 
+// Last resort when no orbit is clean: the spawn, raised, looking across.
+function spawnShot(map: ArenaMap): Shot {
+  const b = map.bounds;
+  const cx = (b.min.x + b.max.x) / 2;
+  const cz = (b.min.z + b.max.z) / 2;
+  const sp = map.spawn;
+  const r = Math.max(0.5, Math.hypot(sp.x - cx, sp.z - cz));
+  return {
+    cx,
+    cz,
+    rx: r,
+    rz: r,
+    y: sp.y + 2.6,
+    a0: Math.atan2(sp.z - cz, sp.x - cx),
+    span: 0.001,
+    target: { x: cx, y: 1, z: cz },
+  };
+}
+
 function captureLevelshot(stage: Stage): string | null {
   if (!stage.map) return null;
-  const shot = planShot(stage.map, () => 0, true);
+  const shot = planShot(stage.map, () => 0, true) ?? spawnShot(stage.map);
   const look = new THREE.Vector3();
   const cam = stage.camera;
   const film = cam.filmOffset;
@@ -369,7 +402,7 @@ export function renderLevelshot(mapId: string, opts: { lowSpec?: boolean } = {})
 
 export class MenuBackdrop {
   private stage: Stage;
-  private readonly maps: string[];
+  private readonly maps: readonly string[];
   private readonly still: boolean;
   private readonly frameMs: number;
   private readonly scale: number;
@@ -398,15 +431,19 @@ export class MenuBackdrop {
     private readonly fadeCanvas: HTMLCanvasElement | null,
     opts: BackdropOptions = {},
   ) {
-    this.maps = (opts.maps ?? BACKDROP_MAPS).filter((id) => MAPS.some((m) => m.id === id));
-    if (this.maps.length === 0) this.maps = ['reactor'];
+    const pool = (opts.maps ?? BACKDROP_MAPS).filter((id) => MAPS.some((m) => m.id === id));
+    // Only arenas with a clean orbit make the rotation (cramped duel maps can
+    // fail it; they still get a spawn-view levelshot for the loading screen).
+    const clean = pool.filter((id) => planShot(mapById(id), () => 0, true) !== null);
+    this.maps = clean.length ? clean : pool.length ? pool : ['reactor'];
     this.still = !!opts.still;
     this.frameMs = 1000 / Math.max(10, opts.fps ?? 30);
     this.scale = opts.scale ?? (opts.lowSpec ? 0.55 : 0.75);
     this.onMap = opts.onMap;
     this.shift = opts.shift ?? 0.26;
     this.stage = new Stage(canvas, { shadows: !opts.lowSpec, bloom: true });
-    const start = opts.startMap ? this.maps.indexOf(opts.startMap) : -1;
+    const want = opts.startMap ?? lastMapId;
+    const start = want ? this.maps.indexOf(want) : -1;
     this.mapIndex = start >= 0 ? start : Math.floor(this.rand() * this.maps.length);
     this.resize();
     this.enterMap(this.maps[this.mapIndex]);
@@ -433,6 +470,18 @@ export class MenuBackdrop {
 
   get currentMap(): string {
     return this.stage.mapId;
+  }
+
+  // Dev probe (critique harness): mean ms per backdrop frame over n renders.
+  benchmark(n = 30): number {
+    const gl = this.stage.renderer.getContext();
+    const t0 = performance.now();
+    const px = new Uint8Array(4);
+    for (let i = 0; i < n; i++) {
+      this.renderFrame();
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); // force GPU sync per frame
+    }
+    return (performance.now() - t0) / n;
   }
 
   dispose() {
@@ -486,9 +535,10 @@ export class MenuBackdrop {
 
   private enterMap(id: string) {
     this.stage.loadMap(id);
+    lastMapId = id;
     const map = this.stage.map;
     if (!map) return;
-    this.shot = planShot(map, this.rand);
+    this.shot = planShot(map, this.rand) ?? spawnShot(map);
     this.shotT = 0;
     // Pre-fill the loading screen's levelshot for this map while we're here
     // (landscape canvases only — a portrait phone frame would crop badly).

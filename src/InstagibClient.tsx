@@ -34,7 +34,7 @@ import { useLevelshot } from './ui/levelshot';
 import { NameBadges } from './ui/badges';
 import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './ui/hud-const';
 import { FightCall, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
-import { fragLimitFor, mapIdByName, mapNameById, modeLine, placementLine, type MatchFlavor } from './ui/match-info';
+import { fragLimitFor, mapIdByName, mapNameById, modeLine, modeTitle, placementLine, type MatchFlavor } from './ui/match-info';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, setUiVolume, type AnnouncerPackId } from './game/audio';
@@ -1419,6 +1419,7 @@ function GameView({
           steps={loadSteps}
           complete={loadDone}
           minMs={loadAbort ? 0 : 900}
+          reduced={settings.reducedEffects}
           onGone={() => setLoadGone(true)}
         />
       )}
@@ -1436,6 +1437,7 @@ function GameView({
           complete
           minMs={1500}
           tips={false}
+          reduced={settings.reducedEffects}
           onGone={() => setInterDoneId(nextMap.id)}
         />
       )}
@@ -1466,6 +1468,11 @@ function SpectatorView({
   const [showScores, setShowScores] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Loading screen (same real signals as GameView; the join ack here is the
+  // engine's "Spectating <map>" banner).
+  const [boot, setBoot] = useState({ geometry: false, lighting: false, models: false });
+  const [loadGone, setLoadGone] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1482,13 +1489,46 @@ function SpectatorView({
     });
     applySettingsToGame(game, settings);
     applyMatchConfig(game, config);
-    void game.start();
+    setBoot((b) => ({ ...b, geometry: true }));
+    let alive = true;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (alive) setBoot((b) => ({ ...b, lighting: true }));
+      });
+    });
+    void game.start().then(() => {
+      if (alive) setBoot((b) => ({ ...b, models: true }));
+    });
+    const timeout = window.setTimeout(() => setLoadTimedOut(true), 15000); // fail open
     return () => {
+      alive = false;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      window.clearTimeout(timeout);
       gameRef.current?.dispose();
       gameRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once; settings re-applied below
   }, []);
+
+  const [specMap, setSpecMap] = useState<string | null>(null);
+  const specBanner = hud.banner && hud.banner.subtitle === 'Spectating' ? hud.banner.title : null;
+  if (specBanner && specMap === null) setSpecMap(specBanner);
+  const [specLive, setSpecLive] = useState(false);
+  if (specMap !== null && !specLive && (hud.netPeers > 0 || hud.netRttMs > 0)) setSpecLive(true);
+  const specSteps: LoadStep[] = [
+    { id: 'geometry', label: 'Map geometry', done: boot.geometry },
+    { id: 'lighting', label: 'Lighting', done: boot.lighting },
+    { id: 'models', label: 'Models', done: boot.models },
+    { id: 'sounds', label: 'Sounds', done: boot.geometry },
+    { id: 'connect', label: 'Connecting', done: hud.netStatus === 'open' || specMap !== null },
+    { id: 'gamestate', label: 'Awaiting gamestate', done: specMap !== null },
+    { id: 'snapshot', label: 'Awaiting snapshot', done: specLive },
+  ];
+  const specAbort = !!error || loadTimedOut || hud.netStatus === 'error';
+  const specMapId = specMap ? mapIdByName(specMap) : config.mapId;
+  const specShot = useLevelshot(loadGone ? null : specMapId, settings.lowSpec);
 
   // Live preference changes (sensitivity is irrelevant here, but FOV / volume /
   // quality still apply to the spectated view).
@@ -1655,6 +1695,20 @@ function SpectatorView({
           settings={settings}
           onChange={onChangeSettings}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
+      {!loadGone && (
+        <LoadingScreen
+          levelshot={specShot}
+          kicker={specMap ? `Spectating · ${modeTitle({ mode: hud.mode })}` : 'Spectating'}
+          title={specMapId ? mapNameById(specMapId) : 'Joining'}
+          sub={`Room ${config.roomId}`}
+          steps={specSteps}
+          complete={specSteps.every((st) => st.done) || specAbort}
+          minMs={specAbort ? 0 : 900}
+          reduced={settings.reducedEffects}
+          onGone={() => setLoadGone(true)}
         />
       )}
     </div>
@@ -5380,7 +5434,7 @@ function Lobby({
                   onClick={() => setCreateOnlineOpen(true)}
                   disabled={!online || playDisabled}
                   accent='cyan'
-                  sub='FFA · Duel · TDM'
+                  sub='Host FFA, duel or TDM'
                 >
                   Create match
                 </MenuItem>
@@ -5388,11 +5442,11 @@ function Lobby({
                   onClick={() => setRankedOpen(true)}
                   disabled={!online || playDisabled}
                   accent='fuchsia'
-                  sub='1v1 · Elo ladder'
+                  sub='1v1 on the Elo ladder'
                 >
                   Ranked duel
                 </MenuItem>
-                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline · your rules'>
+                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline, your rules'>
                   Solo vs bots
                 </MenuItem>
                 <MenuItem
@@ -5407,11 +5461,11 @@ function Lobby({
                   }
                   disabled={playDisabled}
                   accent='amber'
-                  sub='Targets · no pressure'
+                  sub='Aim drills, no pressure'
                 >
                   Training range
                 </MenuItem>
-                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8p FFA speedrun'>
+                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8-player speedrun'>
                   Weekly challenge
                 </MenuItem>
               </nav>
@@ -5473,7 +5527,6 @@ function Lobby({
               </>
             )}
           </span>
-          <span className='hidden sm:inline'>Quick match · up to {MAX_PLAYERS} players</span>
         </footer>
       </div>
       {soloOpen && (

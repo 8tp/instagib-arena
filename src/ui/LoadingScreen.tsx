@@ -33,6 +33,7 @@ export const LoadingScreen = memo(function LoadingScreen({
   holdMs = 0,
   onGone,
   tips = true,
+  reduced = false,
 }: {
   levelshot: string | null;
   kicker: string; // mode line above the map name
@@ -44,6 +45,7 @@ export const LoadingScreen = memo(function LoadingScreen({
   holdMs?: number; // extra hold after complete (interstitials)
   onGone: () => void;
   tips?: boolean;
+  reduced?: boolean; // reducedEffects: no levelshot push-in
 }) {
   const mountedAt = useRef(performance.now());
   const [leaving, setLeaving] = useState(false);
@@ -80,7 +82,9 @@ export const LoadingScreen = memo(function LoadingScreen({
       role='status'
       aria-live='polite'
       aria-label={`Loading ${title}`}
-      className={`ls-root absolute inset-0 z-[70] overflow-hidden bg-[#040507] text-white${leaving ? ' ls-out' : ''}`}
+      className={`ls-root absolute inset-0 z-[70] overflow-hidden bg-[#040507] text-white${leaving ? ' ls-out' : ''}${
+        reduced ? ' ls-reduced' : ''
+      }`}
     >
       {levelshot ? (
         <img src={levelshot} alt='' aria-hidden='true' className='ls-shot absolute inset-0 h-full w-full object-cover' />
