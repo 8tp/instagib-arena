@@ -104,8 +104,10 @@ server's sanity checks, so honest movement never trips anti-cheat.
 
 On connect the server sends `welcome { clientId, serverTime }`. The client
 periodically `ping { ts }` / receives `pong { ts, serverTime }` to estimate RTT
-and align to the **server clock**. Everything time-related (snapshot
-interpolation, lag-comp rewind) is expressed in server-clock milliseconds.
+and align to the **server clock**, trusting the lowest-RTT of the last 8 pongs
+(the least-queued, most symmetric sample) and slewing toward it. Everything
+time-related (snapshot interpolation, lag-comp rewind) is expressed in
+server-clock milliseconds.
 
 ### Snapshots & interpolation
 
@@ -116,15 +118,20 @@ player per tick, no `JSON.parse` on the hot path. Slow-changing identity
 (name, team, cosmetics, badges) rides a separate **`meta` channel** sent only
 on change, so the per-tick row is all numbers.
 
-The client buffers snapshots and **renders remote players in the past** — at a
-**fixed** interpolation delay (110 ms at 2 players, scaling to 170 ms at 8,
-because bigger rooms push more bytes through a constrained link). Fixed is the
-key word: a delay derived from arrival timing wobbles under TCP burst delivery
-and becomes jitter itself. Roster changes **slew** the delay at a bounded
-120 ms/s rather than snapping, so a join/leave doesn't hitch every remote. On
-buffer underrun (loss / a stall) remotes **dead-reckon** from their last
-velocity for up to 120 ms instead of freezing. The local player is **not**
-interpolated — it's simulated immediately for responsiveness.
+The client buffers snapshots and **renders remote players in the past** by a
+**ping-aware** interpolation delay: each snapshot's *age on arrival*
+(estimated server now − its timestamp, measured in the same clock the delay is
+applied in, so clock-estimate error cancels) goes into a ~4 s window; the
+target is the window's 3rd-largest age + one snapshot interval + 10 ms,
+clamped to 55–220 ms. The applied delay moves toward the target at a bounded,
+asymmetric rate (rises ≤ 4 %, falls ≤ 1 % playback speed), so the render clock
+never wobbles with arrival timing — the failure mode of the earlier EMA-driven
+buffer. A 20 ms-ping player renders remotes ~50 ms closer to real time than
+the old fixed 110–170 ms; a 150 ms-ping player no longer underruns.
+`?interp=fixed` restores the fixed, roster-scaled schedule. On buffer underrun
+(loss / a stall) remotes **dead-reckon** from their last velocity for up to
+120 ms instead of freezing. The local player is **not** interpolated — it's
+simulated immediately for responsiveness.
 
 Both hot messages cross a **transport seam** (`sendUnreliable` /
 `onUnreliableBytes`) rather than touching the WebSocket directly. Today the
@@ -135,16 +142,36 @@ reordered frame is simply skipped.
 
 ### Position updates
 
-The client uploads `pos` at **64 Hz** as a 21-byte binary frame. The server
-does NOT snapshot the last-received position directly — independent client and
-server clocks would make that sample 0–16 ms stale by a *varying* amount,
-which renders as wobble at rocket-jump speeds. Instead it keeps a short
-received-pos buffer per player and **resamples everyone to a single consistent
-instant** (`now − lag`, where lag adapts per sender: clean 64 Hz senders get
-the 20 ms floor, bursty/high-ping senders are buffered up to 180 ms so they
-stay smoothly interpolated). The resampled-and-quantized pose is what goes
-into BOTH the snapshot and the lag-comp **position history** — so what a
-shooter renders and what the server rewinds to are equal *by construction*.
+The client uploads `pos` every sim tick (**64 Hz**) as a 26-byte binary frame
+(`BIN_POS_TICK`) that carries the pose **and the client's sim tick**. That tick
+is the point: the client steps its sim inside `requestAnimationFrame`, so on a
+60 Hz display every ~16th frame flushes two uploads together, 144 Hz alternates
+~14/21 ms gaps, and any hitch flushes several at once. Stamped by *arrival*,
+each flush read as "no time passed, then a jump" and every viewer saw that
+player micro-stutter even at 20 ms ping (and the speed clamp, dividing by the
+arrival gap, dropped real movement). Stamped by *tick*, samples sit exactly
+15.625 ms apart on the sender's own timeline whatever the frame pacing or the
+network did.
+
+The server plays each sender's timeline back at `now − playout`, where
+`playout` covers the 95th percentile of that sender's recent arrival lateness
+(~2.5 s window) + half a tick, slewed at bounded asymmetric rates. Rare late
+bursts (a sender's GC pause) are bridged by ≤ 48 ms of extrapolation instead
+of raising everyone's view of that player; clients send one unchanged pose
+before going quiet, so a stop is always zero velocity and extrapolation can't
+coast past it. A `HOLD` flag marks gaps where sends were skipped because
+nothing changed. The speed clamp uses exact sim time, and a lead-baseline
+guard stops a client banking more than ~250 ms of sim time (speedhack).
+Legacy `BIN_POS` uploads (no tick) still use the older arrival-time resampler.
+
+The resampled-and-quantized pose is what goes into BOTH the snapshot and the
+lag-comp **position history** — so what a shooter renders and what the server
+rewinds to are equal *by construction*.
+
+Harnesses: `scripts/netcode-jitter.ts` (uplink smoothness, legacy vs tick
+stamping, emulated frame pacing/hitches/jitter), `scripts/netcode-view.ts`
+(end-to-end through the real `NetClient`, emulated downlink stalls),
+`scripts/netcode-stress.ts` (server load), `scripts/netcode-load.ts`.
 
 ---
 
