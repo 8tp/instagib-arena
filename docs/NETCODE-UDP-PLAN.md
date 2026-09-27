@@ -13,6 +13,47 @@
 > pairing, lean+meta snapshot split, adaptive jitter buffer, and `TCP_NODELAY` —
 > is genuinely good; this is about the *tail* (lossy wifi/mobile), not the median.
 
+## 0. Update (2026-09-27): the low-ping jitter was not TCP
+
+Players with < 30 ms ping reported remotes as "very jittery". A clean,
+low-ping TCP link almost never head-of-line stalls, so that symptom pointed
+elsewhere — and it was the **uplink timestamping**: the server stamped each
+position upload with its *arrival* time, while the client flushes uploads in
+frame-paced bursts (60 Hz displays run two sim ticks every ~16th frame; hitches
+flush 2–5). The speed clamp also divided by that arrival gap and dropped real
+movement. Fixed by tick-stamped uploads (`BIN_POS_TICK`) played back on each
+sender's own sim timeline, plus a ping-aware interpolation delay (see
+`ARCHITECTURE.md` §4). Measured with `scripts/netcode-jitter.ts`:
+
+| link | hitch intervals, legacy → tick | speed error RMS |
+| --- | --- | --- |
+| clean (12 ms, 60 Hz sender) | 7.9 % → 0 % | 2.93 → 0.21 m/s |
+| 12 + U(0,6) ms, 45 ms hitches / 2 s | 14–19 % → 0.2 % | 4.46 → 0.48 m/s |
+| harsh (40 + U(0,25) ms, 80 ms hitches / 1 s, 144 Hz) | 63 % → 0.8 % | 7.64 → 1.16 m/s |
+
+A UDP transport would not have fixed this: bursty sends arrive bursty over UDP
+too. What UDP still buys is the **lossy tail** (wifi/cellular packet loss →
+TCP retransmit stalls), which the ping-aware delay now absorbs at the cost of a
+larger delay for those players.
+
+**Recommendation.** Ship the tick fix and measure in real matches first (F3
+overlay: extrap %, buffer, delay; `/api/live` loopLag). If lossy-link players
+still stutter, move the **whole** game server to a UDP-capable host and enable
+the WebTransport channel (branch `netcode/udp-webtransport`) — don't split WS on
+Railway and datagrams elsewhere: rooms, lag-comp history, and the snapshot loop
+live in one process, so a split host needs a relay that re-introduces TCP on
+the backbone and doubles the ops surface. Options:
+- **Fly.io** — closest to Railway's workflow (Dockerfile deploy, volumes for
+  SQLite). UDP needs a dedicated IPv4 and the app terminates TLS for QUIC
+  itself (Fly's proxy only terminates TCP/HTTP), so HTTPS/WS can stay behind
+  Fly's proxy while `udp/443` goes straight to the app.
+- **A small VPS** (e.g. Hetzner/OVH in a US-central/east DC) — cheapest and
+  simplest for one stateful process: Caddy for HTTPS/WS + the ACME cert, the
+  same cert files handed to the QUIC endpoint (`WT_CERT_FILE`/`WT_KEY_FILE`).
+- Either way Cloudflare can't proxy arbitrary UDP (Spectrum is paid): serve
+  the WebTransport endpoint on a DNS-only hostname (e.g. `rt.instagib.win`)
+  via `PUBLIC_WT_URL`, keep the site/WS behind Cloudflare.
+
 ## 1. The ceiling: TCP head-of-line blocking
 
 We run the game over **WebSocket, which is TCP**. TCP guarantees reliable,

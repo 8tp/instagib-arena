@@ -26,7 +26,15 @@ import {
   ToastStack as MenuToasts, // the in-match HUD has its own ToastStack below
   UtilButton,
 } from './deck';
-import { prefersReducedMotion, sfxProps, toast, useModalStack } from './deck-core';
+import { prefersReducedMotion, sfxProps, toast, useAnyModalOpen, useModalStack } from './deck-core';
+import { MenuBackdropView } from './menu/MenuBackdropView';
+import { MenuItem, MenuLink, MenuPlayButton, MenuWordmark, SocialDock, type DockTabId } from './ui/menu-parts';
+import { LoadingScreen, type LoadStep } from './ui/LoadingScreen';
+import { useLevelshot } from './ui/levelshot';
+import { NameBadges } from './ui/badges';
+import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './ui/hud-const';
+import { FightCall, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
+import { fragLimitFor, mapIdByName, mapNameById, modeLine, modeTitle, placementLine, type MatchFlavor } from './ui/match-info';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, setUiVolume, type AnnouncerPackId } from './game/audio';
@@ -63,7 +71,6 @@ import {
   HIT_MARKER_DURATION_SEC,
   HIT_MARKER_KILL_DURATION_SEC,
   M_YAW_DEG,
-  MATCH_FRAG_LIMIT,
   MAX_DPI,
   MAX_FOV,
   MAX_ZOOM_FOV,
@@ -80,8 +87,6 @@ import {
   KEYBIND_ACTIONS,
   RAIL_COOLDOWN,
   SENSITIVITY_STEP,
-  TEAM_COLORS,
-  TEAM_NAMES,
   TOAST_FADE_SEC,
   rankedTier,
   rankedTierName,
@@ -102,7 +107,6 @@ import type {
   HudState,
   KillFlash,
   KillcamState,
-  KillfeedEntry,
   MapVoteState,
   MedalTier,
   PlayerScore,
@@ -317,7 +321,9 @@ export type MatchConfig =
       gameMode?: GameMode; // ffa (default) / duel / tdm for Solo vs Bots
       challenge?: boolean; // weekly-challenge run (8p FFA speedrun vs easy bots → weekly board, not career)
     }
-  | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string }
+  // pendingMap: the map is a placeholder until the server confirms the join
+  // (invite links) — the loading screen waits for the real one.
+  | { mode: 'multiplayer'; mapId: string; serverUrl: string; roomId: string; pendingMap?: boolean }
   // Watch a live match read-only (first-person POV). mapId is a placeholder until
   // the server confirms which room/map we're spectating (Game adopts it then).
   | { mode: 'spectator'; mapId: string; serverUrl: string; roomId: string };
@@ -533,61 +539,6 @@ function CardStatsEditor({
 
 // The kill banner: an unlockable card graphic + the player's level + their chosen
 // stats. Shown on the killcam (the killer's card) and as your own kill-confirm flex.
-/* ── Player badges: staff crown + verified blue check. Server-authoritative —
-   these components are purely presentational. Shown beside player names on the
-   scoreboard, the leaderboard, and the playercard. (Extensible: future badges
-   slot in here.) ── */
-function VerifiedBadge({ size = 13 }: { size?: number }) {
-  return (
-    <svg
-      width={size} height={size} viewBox='0 0 24 24' role='img' aria-label='Verified'
-      className='inline-block shrink-0 align-[-0.15em]'
-    >
-      <title>Verified</title>
-      <circle cx='12' cy='12' r='11' fill='#3b9eff' />
-      <path
-        d='M6.5 12.5l3.4 3.4L17.6 8.4' fill='none' stroke='#fff' strokeWidth='2.5'
-        strokeLinecap='round' strokeLinejoin='round'
-      />
-    </svg>
-  );
-}
-function AdminBadge({ size = 13 }: { size?: number }) {
-  return (
-    <svg
-      width={size} height={size} viewBox='0 0 24 24' role='img' aria-label='Staff'
-      className='inline-block shrink-0 align-[-0.15em]'
-    >
-      <title>Staff</title>
-      <path
-        d='M2.6 8.4l4 3.3L12 4.6l5.4 7.1 4-3.3-1.7 10H4.3z'
-        fill='#ffcf3f' stroke='#7a5a10' strokeWidth='1.1' strokeLinejoin='round'
-      />
-      <circle cx='2.6' cy='8.4' r='1.4' fill='#ffe79a' stroke='#7a5a10' strokeWidth='0.7' />
-      <circle cx='21.4' cy='8.4' r='1.4' fill='#ffe79a' stroke='#7a5a10' strokeWidth='0.7' />
-      <circle cx='12' cy='4.6' r='1.5' fill='#ffe79a' stroke='#7a5a10' strokeWidth='0.7' />
-    </svg>
-  );
-}
-// Crown (admin) then check (verified), placed to the right of a player name.
-function NameBadges({
-  admin,
-  verified,
-  size,
-}: {
-  admin?: boolean;
-  verified?: boolean;
-  size?: number;
-}) {
-  if (!admin && !verified) return null;
-  return (
-    <span className='inline-flex shrink-0 items-center gap-0.5'>
-      {admin && <AdminBadge size={size} />}
-      {verified && <VerifiedBadge size={size} />}
-    </span>
-  );
-}
-
 function PlayerCard({
   card,
   size = 'normal',
@@ -779,6 +730,9 @@ const INITIAL_HUD: HudState = {
   killfeed: [],
   toasts: [],
   banner: null,
+  mapId: '',
+  netJoined: false,
+  mapSwitchId: 0,
   hitMarker: null,
   killConfirm: null,
   killFlash: null,
@@ -846,6 +800,7 @@ export default function InstagibClient() {
           mapId: randomMapId(),
           serverUrl: loaded.serverUrl || defaultServerUrl(),
           roomId: code.toUpperCase(),
+          pendingMap: true,
         };
         // On a first-run invite, hold the join until onboarding finishes so the
         // newcomer isn't dropped straight into pointer-lock with no primer.
@@ -1063,6 +1018,11 @@ function GameView({
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
   // weekly board, NOT career K/D. The engine owns the authoritative run time.
   const isChallenge = config.mode === 'local' && config.challenge === true;
+  // Q3-style loading screen: the real engine load steps (set in the effect
+  // below) + the online handshake read from the HUD stream.
+  const [boot, setBoot] = useState({ geometry: false, sounds: false, lighting: false, models: false });
+  const [loadGone, setLoadGone] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1116,11 +1076,28 @@ function GameView({
     });
     applySettingsToGame(game, settings);
     applyMatchConfig(game, config);
-    void game.start();
+    // Loading-screen signals, all real: the arena mesh + audio graph are built
+    // synchronously above; "lighting" = the first frame (and its shader
+    // compile) has rendered — two rAFs after start() queues the loop; "models"
+    // = start() resolved (it awaits the combatant model).
+    setBoot((b) => ({ ...b, geometry: true, sounds: true }));
+    let alive = true;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (alive) setBoot((b) => ({ ...b, lighting: true }));
+      });
+    });
+    void game.start().then(() => {
+      if (alive) setBoot((b) => ({ ...b, models: true }));
+    });
     // Bulletproof activation: ?netdebug in the URL turns the overlay on with no
     // keypress (so a macOS F3/Mission-Control conflict can't block it).
     if (new URLSearchParams(window.location.search).has('netdebug')) game.toggleNetDebug();
     return () => {
+      alive = false;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
       window.removeEventListener('keydown', onDebugKey);
       gameRef.current?.dispose();
       gameRef.current = null;
@@ -1221,6 +1198,100 @@ function GameView({
     }
   }, [disconnected]);
 
+  // ── Loading screen ────────────────────────────────────────────────────
+  // Online handshake, all from HudState: socket open → the join ack
+  // (netJoined; names the server's map) → the first server round trip
+  // after it (ping measured / a peer in the roster). The join banner is
+  // latched so a later banner can't un-complete it, and it names the real map
+  // for invite joins whose config map is only a placeholder.
+  const online = config.mode === 'multiplayer';
+  const netLoad = useStoreSlice(
+    hudStore,
+    (s) => ({
+      status: s.netStatus,
+      joinMap: s.netJoined ? mapNameById(s.mapId) : null,
+      live: s.netRttMs > 0 || s.netPeers > 0,
+      mode: s.mode,
+    }),
+    shallowEqual,
+  );
+  const [joinedMap, setJoinedMap] = useState<string | null>(null);
+  if (netLoad.joinMap && joinedMap === null) setJoinedMap(netLoad.joinMap);
+  const joined = joinedMap !== null;
+  const [snapSeen, setSnapSeen] = useState(false);
+  if (joined && netLoad.live && !snapSeen) setSnapSeen(true);
+  useEffect(() => {
+    const t = window.setTimeout(() => setLoadTimedOut(true), 15000); // fail open
+    return () => window.clearTimeout(t);
+  }, []);
+  const loadSteps: LoadStep[] = [
+    { id: 'geometry', label: 'Map geometry', done: boot.geometry },
+    { id: 'lighting', label: 'Lighting', done: boot.lighting },
+    { id: 'models', label: 'Models', done: boot.models },
+    { id: 'sounds', label: 'Sounds', done: boot.sounds },
+  ];
+  if (online) {
+    loadSteps.push(
+      { id: 'connect', label: 'Connecting', done: netLoad.status === 'open' || joined },
+      { id: 'gamestate', label: 'Awaiting gamestate', done: joined },
+      { id: 'snapshot', label: 'Awaiting snapshot', done: snapSeen },
+    );
+  }
+  const loadAbort = !!joinError || disconnected || loadTimedOut;
+  const loadDone = loadSteps.every((st) => st.done) || loadAbort;
+  const loadMapId =
+    config.mode === 'multiplayer' && config.pendingMap
+      ? joinedMap
+        ? mapIdByName(joinedMap)
+        : null
+      : config.mapId;
+  const flavor: MatchFlavor = online
+    ? { mode: netLoad.mode, ranked: joined && gameRef.current?.getMatchModeTag() === 'ranked' }
+    : {
+        mode: config.mode === 'local' ? (config.gameMode ?? 'ffa') : 'ffa',
+        training: config.mode === 'local' && config.training,
+        challenge: isChallenge,
+      };
+  const loadShot = useLevelshot(loadGone ? null : loadMapId, settings.lowSpec);
+
+  // Map switch after an online vote: a short levelshot interstitial keyed on
+  // HudState.mapSwitchId (the swap itself is synchronous).
+  const nextMap = useStoreSlice(
+    hudStore,
+    (s) => (s.mapSwitchId > 0 ? { id: s.mapSwitchId, name: mapNameById(s.mapId) } : null),
+    shallowEqual,
+  );
+  const [interDoneId, setInterDoneId] = useState(0);
+  // The map on the Tab scoreboard: the latest join / next-map announcement
+  // online, else the configured map.
+  const [latestNext, setLatestNext] = useState<string | null>(null);
+  if (nextMap && nextMap.name !== latestNext) setLatestNext(nextMap.name);
+  const currentMapName = latestNext ?? joinedMap ?? (loadMapId ? mapNameById(loadMapId) : '');
+  const infoLine = modeLine(flavor);
+  const infoLimit = fragLimitFor(flavor);
+  const hudInfo = useMemo<HudMatchInfo>(
+    () => ({ mapName: currentMapName, modeLine: infoLine, fragLimit: infoLimit }),
+    [currentMapName, infoLine, infoLimit],
+  );
+  const showInter = online && loadGone && nextMap !== null && nextMap.id !== interDoneId;
+  const interShot = useLevelshot(showInter && nextMap ? mapIdByName(nextMap.name) : null, settings.lowSpec);
+  // Warm the levelshots of the ballot while the vote runs, so the interstitial
+  // opens on a finished image.
+  const voteKey = hud.vote ? hud.vote.options.join(',') : '';
+  useEffect(() => {
+    if (!voteKey) return;
+    let alive = true;
+    void import('./menu/menu-backdrop').then(async (m) => {
+      for (const id of voteKey.split(',')) {
+        if (!alive) return;
+        await m.renderLevelshot(id, { lowSpec: settings.lowSpec });
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [voteKey, settings.lowSpec]);
+
   // Match's over (results / online results screen): always free the cursor so
   // the buttons are clickable without the player having to hit Esc first.
   useEffect(() => {
@@ -1237,7 +1308,7 @@ function GameView({
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
-      {!hud.pom && <HudOverlay store={hudStore} settings={settings} />}
+      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1290,6 +1361,7 @@ function GameView({
           // paused card shows changes (only while unlocked, i.e. while it's shown).
           hud={hudStore.getState()}
           settings={settings}
+          info={hudInfo}
         />
       )}
       {rankedResult && (
@@ -1340,6 +1412,37 @@ function GameView({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      {!loadGone && (
+        <LoadingScreen
+          levelshot={loadShot}
+          kicker={online && !joined ? 'Online match' : modeLine(flavor)}
+          title={loadMapId ? mapNameById(loadMapId) : 'Joining'}
+          sub={config.mode === 'multiplayer' ? `Room ${config.roomId}` : undefined}
+          steps={loadSteps}
+          complete={loadDone}
+          minMs={loadAbort ? 0 : 900}
+          reduced={settings.reducedEffects}
+          onGone={() => setLoadGone(true)}
+        />
+      )}
+      {showInter && nextMap && (
+        <LoadingScreen
+          key={nextMap.id}
+          levelshot={interShot}
+          kicker={modeLine(flavor)}
+          title={nextMap.name}
+          sub='Next map'
+          steps={[
+            { id: 'geometry', label: 'Map geometry', done: true },
+            { id: 'gamestate', label: 'Gamestate', done: true },
+          ]}
+          complete
+          minMs={1500}
+          tips={false}
+          reduced={settings.reducedEffects}
+          onGone={() => setInterDoneId(nextMap.id)}
+        />
+      )}
     </div>
   );
 }
@@ -1367,6 +1470,11 @@ function SpectatorView({
   const [showScores, setShowScores] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Loading screen (same real signals as GameView; the join ack here is the
+  // engine's "Spectating <map>" banner).
+  const [boot, setBoot] = useState({ geometry: false, lighting: false, models: false });
+  const [loadGone, setLoadGone] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1383,13 +1491,46 @@ function SpectatorView({
     });
     applySettingsToGame(game, settings);
     applyMatchConfig(game, config);
-    void game.start();
+    setBoot((b) => ({ ...b, geometry: true }));
+    let alive = true;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (alive) setBoot((b) => ({ ...b, lighting: true }));
+      });
+    });
+    void game.start().then(() => {
+      if (alive) setBoot((b) => ({ ...b, models: true }));
+    });
+    const timeout = window.setTimeout(() => setLoadTimedOut(true), 15000); // fail open
     return () => {
+      alive = false;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      window.clearTimeout(timeout);
       gameRef.current?.dispose();
       gameRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once; settings re-applied below
   }, []);
+
+  const [specMap, setSpecMap] = useState<string | null>(null);
+  const specBanner = hud.netJoined ? mapNameById(hud.mapId) : null;
+  if (specBanner && specMap === null) setSpecMap(specBanner);
+  const [specLive, setSpecLive] = useState(false);
+  if (specMap !== null && !specLive && (hud.netPeers > 0 || hud.netRttMs > 0)) setSpecLive(true);
+  const specSteps: LoadStep[] = [
+    { id: 'geometry', label: 'Map geometry', done: boot.geometry },
+    { id: 'lighting', label: 'Lighting', done: boot.lighting },
+    { id: 'models', label: 'Models', done: boot.models },
+    { id: 'sounds', label: 'Sounds', done: boot.geometry },
+    { id: 'connect', label: 'Connecting', done: hud.netStatus === 'open' || specMap !== null },
+    { id: 'gamestate', label: 'Awaiting gamestate', done: specMap !== null },
+    { id: 'snapshot', label: 'Awaiting snapshot', done: specLive },
+  ];
+  const specAbort = !!error || loadTimedOut || hud.netStatus === 'error';
+  const specMapId = specMap ? mapIdByName(specMap) : config.mapId;
+  const specShot = useLevelshot(loadGone ? null : specMapId, settings.lowSpec);
 
   // Live preference changes (sensitivity is irrelevant here, but FOV / volume /
   // quality still apply to the spectated view).
@@ -1539,9 +1680,9 @@ function SpectatorView({
       )}
 
       {showScores && (
-        <FullScoreboard
+        <QuakeScoreboard
           scores={hud.scores}
-          netStatus={hud.netStatus}
+          online
           mode={hud.mode}
           showPing={settings.showPing && hud.netStatus !== 'off'}
         />
@@ -1556,6 +1697,20 @@ function SpectatorView({
           settings={settings}
           onChange={onChangeSettings}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
+      {!loadGone && (
+        <LoadingScreen
+          levelshot={specShot}
+          kicker={specMap ? `Spectating · ${modeTitle({ mode: hud.mode })}` : 'Spectating'}
+          title={specMapId ? mapNameById(specMapId) : 'Joining'}
+          sub={`Room ${config.roomId}`}
+          steps={specSteps}
+          complete={specSteps.every((st) => st.done) || specAbort}
+          minMs={specAbort ? 0 : 900}
+          reduced={settings.reducedEffects}
+          onGone={() => setLoadGone(true)}
         />
       )}
     </div>
@@ -2855,14 +3010,7 @@ function JoinErrorOverlay({
 
 /* ───────────────────────── HUD layout ───────────────────────── */
 
-// Must match --hud-out in src/hud.css: the fade-only exit every HUD element uses.
-const HUD_EXIT_MS = 240;
-// How long before the engine drops a timed entry its pre-scheduled CSS fade
-// starts: the fade itself plus slack so it has finished by the time the next
-// HudState push unmounts the element.
-const HUD_EXIT_LEAD_MS = HUD_EXIT_MS + 120;
-
-function HudOverlay({ store, settings }: { store: HudStore; settings: Settings }) {
+function HudOverlay({ store, settings, info }: { store: HudStore; settings: Settings; info: HudMatchInfo }) {
   const s = settings.uiScale || 1;
   // UI scale: a counter-sized wrapper rendered at 1/s then transform-scaled by s,
   // so corner-anchored HUD elements keep their anchors while everything resizes.
@@ -2879,7 +3027,7 @@ function HudOverlay({ store, settings }: { store: HudStore; settings: Settings }
           className='absolute left-0 top-0 origin-top-left'
           style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
         >
-          <HudLayout settings={settings} />
+          <HudLayout settings={settings} info={info} />
         </div>
       </div>
     </HudStoreContext.Provider>
@@ -2889,7 +3037,7 @@ function HudOverlay({ store, settings }: { store: HudStore; settings: Settings }
 // Static layout. Each piece below subscribes to its own slice of the store, so
 // a HudState push only re-renders the pieces whose slice actually changed (a
 // push with only `speed` changed re-renders the speed readout alone).
-const HudLayout = memo(function HudLayout({ settings }: { settings: Settings }) {
+const HudLayout = memo(function HudLayout({ settings, info }: { settings: Settings; info: HudMatchInfo }) {
   const dead = useHudSlice((s) => s.killcam !== null);
   return (
     <>
@@ -2902,7 +3050,7 @@ const HudLayout = memo(function HudLayout({ settings }: { settings: Settings }) 
       <HudKillfeed />
       <HudToasts />
       <HudMiniLeaderboard />
-      <HudTeamScoreBar />
+      <HudScoreBoxes fragLimit={info.fragLimit} />
       <HudNetDebug />
       <HudTraining />
       <HudBanner />
@@ -2917,7 +3065,7 @@ const HudLayout = memo(function HudLayout({ settings }: { settings: Settings }) 
       <HudNetStatus />
       <HudInvuln />
       <HudWarmup />
-      <HudScoreboard showPing={settings.showPing} />
+      <HudScoreboard showPing={settings.showPing} info={info} />
     </>
   );
 });
@@ -2954,7 +3102,9 @@ function HudHitMarker() {
 }
 
 function HudKillfeed() {
-  return <Killfeed entries={useHudSlice((s) => s.killfeed)} />;
+  const entries = useHudSlice((s) => s.killfeed);
+  const localName = useHudSlice((s) => s.scores.find((p) => p.isLocal)?.name ?? '');
+  return <Killfeed entries={entries} localName={localName} />;
 }
 
 function HudToasts() {
@@ -2965,13 +3115,27 @@ function HudMiniLeaderboard() {
   return <MiniLeaderboard scores={useHudSlice((s) => s.scores)} />;
 }
 
-function HudTeamScoreBar() {
-  const t = useHudSlice(
-    (s) => ({ tdm: s.mode === 'tdm', scores: s.teamScores, localTeam: s.localTeam }),
+function HudScoreBoxes({ fragLimit }: { fragLimit: number | null }) {
+  const b = useHudSlice(
+    (s) => ({
+      scores: s.scores,
+      mode: s.mode,
+      teamScores: s.teamScores,
+      localTeam: s.localTeam,
+      hidden: s.training !== null || s.spectator !== null,
+    }),
     shallowEqual,
   );
-  if (!t.tdm || !t.scores) return null;
-  return <TeamScoreBar scores={t.scores} localTeam={t.localTeam} />;
+  if (b.hidden) return null;
+  return (
+    <ScoreBoxes
+      scores={b.scores}
+      mode={b.mode}
+      teamScores={b.teamScores}
+      localTeam={b.localTeam}
+      fragLimit={fragLimit}
+    />
+  );
 }
 
 function HudNetDebug() {
@@ -2997,7 +3161,13 @@ function HudCaptions({ captions }: { captions: boolean }) {
 }
 
 function HudFragPopup() {
-  return <FragPopup confirm={useHudSlice((s) => s.killConfirm)} />;
+  const confirm = useHudSlice((s) => s.killConfirm);
+  // Only reads the board while a centre-print is up (a string → re-renders
+  // only when the line's text changes).
+  const placement = useHudSlice((s) =>
+    s.killConfirm ? placementLine(s.scores, s.mode, s.teamScores) : null,
+  );
+  return <FragPopup confirm={confirm} placement={placement} />;
 }
 
 function HudKillcam({ reduced }: { reduced: boolean }) {
@@ -3032,21 +3202,30 @@ function HudWarmup() {
       ? Math.max(1, Math.ceil(s.warmupMsLeft / 1000))
       : 0,
   );
-  return secs > 0 ? <WarmupOverlay secs={secs} /> : null;
+  // The countdown's last word: "Fight!" the moment the gun goes live.
+  const [fight, setFight] = useState(false);
+  const [prevSecs, setPrevSecs] = useState(secs);
+  if (secs !== prevSecs) {
+    setPrevSecs(secs);
+    if (prevSecs > 0 && secs === 0) setFight(true);
+  }
+  if (secs > 0) return <WarmupOverlay secs={secs} />;
+  return fight ? <FightCall onDone={() => setFight(false)} /> : null;
 }
 
-function HudScoreboard({ showPing }: { showPing: boolean }) {
+function HudScoreboard({ showPing, info }: { showPing: boolean; info: HudMatchInfo }) {
   const b = useHudSlice(
     (s) => (s.showScoreboard ? { scores: s.scores, netStatus: s.netStatus, mode: s.mode } : null),
     shallowEqual,
   );
   if (!b) return null;
   return (
-    <FullScoreboard
+    <QuakeScoreboard
       scores={b.scores}
-      netStatus={b.netStatus}
+      online={b.netStatus !== 'off'}
       mode={b.mode}
       showPing={showPing && b.netStatus !== 'off'}
+      info={info}
     />
   );
 }
@@ -3055,20 +3234,11 @@ function HudScoreboard({ showPing }: { showPing: boolean }) {
 // window (resumeAt), so it's a fair start — nobody can be fragged on the bell.
 const WarmupOverlay = memo(function WarmupOverlay({ secs }: { secs: number }) {
   return (
-    <div className='pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center'>
-      <div className='text-[11px] font-semibold uppercase tracking-[0.4em] text-cyan-200/80'>
-        Get ready
-      </div>
+    <div className='pointer-events-none absolute inset-x-0 top-[max(34%,17rem)] z-20 flex flex-col items-center'>
+      <div className='hud-cprint-sub'>Match starts in</div>
       {/* Keyed on the second so each count ticks in (CSS .hud-tick). */}
-      <div
-        key={secs}
-        className='hud-tick hud-tick-center mt-1 font-mono text-7xl font-extrabold tabular-nums text-cyan-100'
-        style={{ filter: 'drop-shadow(0 0 22px rgba(103,232,249,0.55))' }}
-      >
+      <div key={secs} className='hud-tick hud-tick-center hud-count'>
         {secs}
-      </div>
-      <div className='mt-1 text-[10px] uppercase tracking-[0.3em] text-white/45'>
-        Match starting
       </div>
     </div>
   );
@@ -3085,9 +3255,9 @@ const InvulnPill = memo(function InvulnPill({ secs }: { secs: string }) {
             'radial-gradient(circle at center, transparent 55%, rgba(103,232,249,0.18) 100%)',
         }}
       />
-      <div className='absolute left-1/2 top-6 -translate-x-1/2 flex items-center gap-2 rounded-full border border-cyan-300/60 bg-cyan-300/15 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-100 backdrop-blur-sm'>
-        <span className='inline-block h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_rgba(103,232,249,0.85)]' />
-        <span>Invuln</span>
+      {/* Under the score boxes (top-centre belongs to them). */}
+      <div className='absolute left-1/2 top-[5.75rem] flex -translate-x-1/2 items-center gap-2 border-t-2 border-cyan-300 bg-black/55 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-100'>
+        <span>Spawn shield</span>
         <span className='tabular-nums text-white/90'>{secs}s</span>
       </div>
     </>
@@ -3146,29 +3316,13 @@ const KillcamCard = memo(function KillcamCard({
             'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
         }}
       />
-      {cam.dirAngle !== undefined && (
-        // Directional "the shot came from here" arrow, rotated around screen
-        // center toward the killer (0 = dead ahead, clockwise). Teaches new
-        // players where they're being picked off from.
+      {/* Lower third: the killcam frames the killer at centre with their
+          nameplate above — the print must not sit on either. */}
+      <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
+        <div className='hud-cprint-sub'>You were fragged by</div>
         <div
-          className='pointer-events-none absolute left-1/2 top-1/2'
-          style={{ transform: `translate(-50%,-50%) rotate(${cam.dirAngle}rad)` }}
-        >
-          <div
-            className='text-3xl leading-none text-rose-400'
-            style={{ transform: 'translateY(-128px)', filter: 'drop-shadow(0 0 8px rgba(244,63,94,0.85))' }}
-          >
-            ▲
-          </div>
-        </div>
-      )}
-      <div className='hud-killcam-card absolute inset-x-0 top-[18%] flex flex-col items-center text-center font-mono'>
-        <div className='text-[10px] uppercase tracking-[0.4em] text-white/55'>
-          You were killed by
-        </div>
-        <div
-          className='mt-2 text-4xl font-extrabold uppercase tracking-[0.08em] text-rose-300'
-          style={{ filter: 'drop-shadow(0 0 22px rgba(244,63,94,0.55))' }}
+          className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300'
+          style={{ textShadow: '0 3px 0 rgba(0,0,0,0.5), 0 0 24px rgba(244,63,94,0.5)' }}
         >
           {cam.killerName}
         </div>
@@ -3220,63 +3374,8 @@ const NetStatusPill = memo(function NetStatusPill({
   // Bottom-left (above the Speed readout): the top-right column is the killfeed +
   // FPS, and the pill used to paint over the 2nd killfeed row in any live match (#12).
   return (
-    <div className={`absolute left-6 bottom-28 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] ${color}`}>
+    <div className={`absolute bottom-[5.5rem] left-6 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] ${color}`}>
       {label}
-    </div>
-  );
-});
-
-/* ───────────────────────── TDM team score bar (top-center) ───────────────────────── */
-
-// Compact Red vs Blue total-frag readout. Your team gets a "YOU" tag + a glowing
-// outline so it's obvious which side you're on.
-const TeamScoreBar = memo(function TeamScoreBar({
-  scores,
-  localTeam,
-}: {
-  scores: [number, number];
-  localTeam: number | null;
-}) {
-  return (
-    <div className='absolute left-1/2 top-4 -translate-x-1/2'>
-      <div className='flex items-stretch overflow-hidden rounded-lg border border-white/15 bg-black/60 font-mono backdrop-blur-sm'>
-        {([0, 1] as const).map((team) => {
-          const mine = localTeam === team;
-          return (
-            <div
-              key={team}
-              className='flex min-w-[88px] flex-col items-center px-4 py-1.5'
-              style={{
-                backgroundColor: mine ? `${TEAM_COLORS[team]}26` : 'transparent',
-                boxShadow: mine ? `inset 0 0 0 1.5px ${TEAM_COLORS[team]}` : undefined,
-              }}
-            >
-              <div className='flex items-center gap-1.5'>
-                <span
-                  className='text-[10px] font-bold uppercase tracking-[0.18em]'
-                  style={{ color: TEAM_COLORS[team] }}
-                >
-                  {TEAM_NAMES[team]}
-                </span>
-                {mine && (
-                  <span
-                    className='rounded px-1 text-[8px] font-bold uppercase tracking-[0.1em] text-black'
-                    style={{ backgroundColor: TEAM_COLORS[team] }}
-                  >
-                    You
-                  </span>
-                )}
-              </div>
-              <div
-                className='text-2xl font-extrabold tabular-nums leading-none'
-                style={{ color: TEAM_COLORS[team] }}
-              >
-                {scores[team]}
-              </div>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 });
@@ -3614,62 +3713,6 @@ function InGameChat({
   );
 }
 
-/* ───────────────────────── Killfeed (top-right) ───────────────────────── */
-
-const Killfeed = memo(function Killfeed({ entries }: { entries: KillfeedEntry[] }) {
-  const rows = useExitList(entries, { exitMs: HUD_EXIT_MS, leadMs: HUD_EXIT_LEAD_MS });
-  return (
-    <div className='absolute right-6 top-6 flex w-72 flex-col items-end gap-1.5 font-mono text-[13px]'>
-      {rows.map(({ item, leaving }) => (
-        <KillfeedRow key={item.id} entry={item} leaving={leaving} />
-      ))}
-    </div>
-  );
-});
-
-// Slides in from the right, holds, and fades on a pre-scheduled CSS delay (see
-// hudTiming) — no React updates between mount and unmount. `leaving` plays the
-// fade now when the engine dropped the row early (feed cap / reset).
-const KillfeedRow = memo(function KillfeedRow({
-  entry,
-  leaving,
-}: {
-  entry: KillfeedEntry;
-  leaving: boolean;
-}) {
-  const specialBadge =
-    entry.special === 'headshot'
-      ? { text: 'HS', color: 'bg-amber-400/85 text-amber-950' }
-      : entry.special === 'mid-air'
-        ? { text: 'AIR', color: 'bg-cyan-300/85 text-cyan-950' }
-        : null;
-  return (
-    <div
-      className={`hud-chip flex items-center gap-2 rounded-md bg-black/55 px-2.5 py-1.5 backdrop-blur-sm${
-        leaving ? ' hud-leaving' : ''
-      }`}
-      style={hudTiming(entry.remaining, entry.total, HUD_EXIT_LEAD_MS)}
-    >
-      <span
-        className={
-          entry.killerLocal ? 'font-bold text-emerald-300' : 'text-white/85'
-        }
-      >
-        {entry.killer}
-      </span>
-      <span className='text-rose-300/85'>◤</span>
-      <span className='text-white/65'>{entry.victim}</span>
-      {specialBadge && (
-        <span
-          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-extrabold tracking-wider ${specialBadge.color}`}
-        >
-          {specialBadge.text}
-        </span>
-      )}
-    </div>
-  );
-});
-
 /* ───────────── Toast stack (top-right, under killfeed) ───────────── */
 
 // Medal toasts fade over the engine's TOAST_FADE_SEC window: the fade itself is
@@ -3679,7 +3722,7 @@ const TOAST_FADE_LEAD_MS = TOAST_FADE_SEC * 1000;
 const ToastStack = memo(function ToastStack({ toasts }: { toasts: ToastEntry[] }) {
   const chips = useExitList(toasts, { exitMs: HUD_EXIT_MS, leadMs: TOAST_FADE_LEAD_MS });
   return (
-    <div className='absolute right-6 top-40 flex flex-col items-end gap-1.5'>
+    <div className='absolute right-5 top-[13.5rem] flex flex-col items-end gap-[3px]'>
       {chips.map(({ item, leaving }) => (
         <ToastChip key={item.id} toast={item} leaving={leaving} />
       ))}
@@ -3697,7 +3740,7 @@ const ToastChip = memo(function ToastChip({
   const colors = tierColors(toast.tier);
   return (
     <div
-      className={`hud-chip flex items-center gap-2 rounded-full border ${colors.border} bg-black/60 px-3 py-1 font-mono text-xs backdrop-blur-sm${
+      className={`hud-chip flex items-center gap-2 border-l-2 ${colors.border} bg-black/60 px-3 py-1 font-mono text-xs${
         leaving ? ' hud-leaving' : ''
       }`}
       style={hudTiming(toast.remaining, toast.total, TOAST_FADE_LEAD_MS)}
@@ -3747,71 +3790,34 @@ const TrainingPanel = memo(function TrainingPanel({ t }: { t: TrainingHud }) {
 /* ───────────────────────── Mini leaderboard (top-left) ───────────────────────── */
 
 const MiniLeaderboard = memo(function MiniLeaderboard({ scores }: { scores: PlayerScore[] }) {
+  if (scores.length < 2) return null;
   const top = scores.slice(0, 5);
-  // If you're not in the top 5, show your own rank in a pinned extra row.
+  // If you're not in the top 5, pin your own row under a gap.
   const localIndex = scores.findIndex((s) => s.isLocal);
   const you = localIndex >= 5 ? scores[localIndex] : null;
+  const row = (s: PlayerScore, rank: number) => (
+    <div
+      key={s.id}
+      className={`flex items-center gap-2 px-2.5 py-[3px] ${
+        s.isLocal ? 'bg-cyan-400/15 shadow-[inset_2px_0_0_#67e8f9]' : 'bg-black/40'
+      }`}
+    >
+      <span className='w-4 shrink-0 text-right tabular-nums text-white/40'>{rank}</span>
+      <span className={`min-w-0 flex-1 truncate ${s.isLocal ? 'font-semibold text-cyan-100' : 'text-white/80'}`}>
+        {s.name}
+      </span>
+      <NameBadges admin={s.admin} verified={s.verified} size={11} />
+      {s.currentStreak >= 3 && (
+        <span className='bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>{s.currentStreak}</span>
+      )}
+      <span className='w-6 shrink-0 text-right font-semibold tabular-nums text-white'>{s.frags}</span>
+    </div>
+  );
   return (
-    <div className='absolute left-6 top-6 w-64 rounded-md border border-white/10 bg-black/55 px-3 py-2.5 font-mono text-[12px] backdrop-blur-sm'>
-      <div className='mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-white/55'>
-        <span>Leaderboard</span>
-        <span>F · D · Acc</span>
-      </div>
-      <div className='flex flex-col gap-1'>
-        {top.map((s, i) => (
-          <div key={s.id} className='flex items-center justify-between gap-2'>
-            <div className='flex min-w-0 items-center gap-2'>
-              {/* '▸' marks your row without relying on color (colorblind + the
-                  bright-enemy recolor both wash out the emerald tint). */}
-              <span className='w-4 text-right text-white/40'>{s.isLocal ? '▸' : `${i + 1}.`}</span>
-              <span
-                className={`truncate ${
-                  s.isLocal ? 'font-bold text-emerald-300' : 'text-white/85'
-                }`}
-              >
-                {s.name}
-              </span>
-              <NameBadges admin={s.admin} verified={s.verified} size={11} />
-              {s.currentStreak >= 3 && (
-                <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
-                  {s.currentStreak}
-                </span>
-              )}
-            </div>
-            <div className='shrink-0 tabular-nums'>
-              <span className='text-white'>{s.frags}</span>
-              <span className='mx-1 text-white/30'>·</span>
-              <span className='text-white/55'>{s.deaths}</span>
-              <span className='mx-1 text-white/30'>·</span>
-              <span className='text-cyan-200/80'>{formatAccuracy(s.accuracy)}</span>
-            </div>
-          </div>
-        ))}
-        {you && (
-          <div className='mt-0.5 flex items-center justify-between gap-2 border-t border-white/10 pt-1'>
-            <div className='flex min-w-0 items-center gap-2'>
-              <span className='w-4 text-right text-emerald-300/70'>{localIndex + 1}.</span>
-              <span className='truncate font-bold text-emerald-300'>{you.name}</span>
-              <NameBadges admin={you.admin} verified={you.verified} size={11} />
-              {you.currentStreak >= 3 && (
-                <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
-                  {you.currentStreak}
-                </span>
-              )}
-            </div>
-            <div className='shrink-0 tabular-nums'>
-              <span className='text-white'>{you.frags}</span>
-              <span className='mx-1 text-white/30'>·</span>
-              <span className='text-white/55'>{you.deaths}</span>
-              <span className='mx-1 text-white/30'>·</span>
-              <span className='text-cyan-200/80'>{formatAccuracy(you.accuracy)}</span>
-            </div>
-          </div>
-        )}
-      </div>
-      <div className='mt-2 border-t border-white/10 pt-1.5 text-[10px] uppercase tracking-[0.16em] text-white/40'>
-        Tab — full scoreboard
-      </div>
+    <div className='absolute left-5 top-5 flex w-56 flex-col gap-px font-mono text-[12px]' aria-label='Leaderboard'>
+      {top.map((s) => row(s, scores.filter((o) => o.frags > s.frags).length + 1))}
+      {you && <div className='mt-1'>{row(you, localIndex + 1)}</div>}
+      <div className='mt-1 px-2.5 text-[9px] uppercase tracking-[0.2em] text-white/30'>Tab · scoreboard</div>
     </div>
   );
 });
@@ -3869,7 +3875,7 @@ const BannerOverlay = memo(function BannerOverlay({ banner }: { banner: BannerSt
   });
   if (items.length === 0) return null;
   return (
-    <div className='absolute inset-x-0 top-[12%]'>
+    <div className='absolute inset-x-0 top-[max(13%,8.75rem)]'>
       {items.map(({ item, leaving }) => (
         <BannerCard key={item.id} banner={item} leaving={leaving} />
       ))}
@@ -3896,17 +3902,16 @@ const BannerCard = memo(function BannerCard({
         style={hudTiming(banner.remaining, banner.total, HUD_EXIT_LEAD_MS)}
       >
         <div
-          className={`bg-gradient-to-b ${colors.gradient} bg-clip-text font-mono text-[88px] font-black uppercase leading-[0.95] tracking-[0.04em] text-transparent`}
+          className={`bg-gradient-to-b ${colors.gradient} bg-clip-text font-display text-[72px] font-bold uppercase leading-[0.9] tracking-[0.03em] text-transparent`}
           style={{
-            textShadow: `0 4px 28px ${colors.glow}`,
-            WebkitTextStroke: `1px ${colors.stroke}`,
+            filter: `drop-shadow(0 3px 0 rgba(0,0,0,0.45)) drop-shadow(0 0 22px ${colors.glow})`,
           }}
         >
           {banner.title}
         </div>
-        <div className={`hud-banner-bar mt-2 h-[3px] w-28 rounded-full ${colors.bar}`} />
+        <div className={`hud-banner-bar mt-2 h-[3px] w-32 ${colors.bar}`} />
         {banner.subtitle && (
-          <div className='hud-banner-sub mt-2 font-mono text-sm uppercase tracking-[0.4em] text-white/75'>
+          <div className='hud-banner-sub mt-2 font-mono text-[13px] font-semibold uppercase tracking-[0.34em] text-white/80'>
             {banner.subtitle}
           </div>
         )}
@@ -3919,7 +3924,7 @@ const BannerCard = memo(function BannerCard({
 
 function HudSpeedAndStreak() {
   return (
-    <div className='absolute bottom-6 left-6 font-mono'>
+    <div className='absolute bottom-6 left-6 flex items-end gap-6'>
       <SpeedReadout />
       <StreakReadout />
     </div>
@@ -3932,15 +3937,15 @@ function SpeedReadout() {
   const text = useHudSlice((s) => s.speed.toFixed(1));
   const dashId = useHudSlice((s) => s.dashId);
   return (
-    <>
-      <div className='text-[10px] uppercase tracking-[0.25em] text-white/55'>Speed</div>
-      <div className='text-3xl font-bold tabular-nums leading-none'>
+    <div>
+      <div className='hud-num-label'>Speed</div>
+      <div className='hud-num'>
         <span key={dashId} className={dashId > 0 ? 'hud-tick' : undefined}>
           {text}
         </span>
-        <span className='ml-1 text-sm font-normal text-white/40'>m/s</span>
+        <span className='ml-1 font-mono text-xs font-normal text-white/45'>m/s</span>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -3948,12 +3953,12 @@ function StreakReadout() {
   const streak = useHudSlice((s) => s.currentStreak);
   if (streak < 2) return null;
   return (
-    <div className='mt-3 flex items-center gap-2'>
-      <span className='text-[10px] uppercase tracking-[0.25em] text-amber-300/85'>Streak</span>
+    <div>
+      <div className='hud-num-label text-amber-300/90'>Streak</div>
       {/* Keyed on the count so every increment ticks in. */}
-      <span key={streak} className='hud-tick text-xl font-bold tabular-nums text-amber-200'>
+      <div key={streak} className='hud-tick hud-num text-amber-200'>
         {streak}
-      </span>
+      </div>
     </div>
   );
 }
@@ -4105,118 +4110,7 @@ const FpsCounter = memo(function FpsCounter({ fps }: { fps: number }) {
   );
 });
 
-/* ───────────────────────── Full scoreboard (Tab held) ───────────────────────── */
-
-const FullScoreboard = memo(function FullScoreboard({
-  scores,
-  netStatus,
-  mode,
-  showPing = false,
-}: {
-  scores: PlayerScore[];
-  netStatus: HudState['netStatus'];
-  mode: GameMode;
-  showPing?: boolean;
-}) {
-  const title = netStatus !== 'off' ? 'Instagib Arena — Online' : 'Instagib Arena';
-  const tag = mode === 'tdm' ? 'TDM' : mode === 'duel' ? 'Duel' : 'FFA';
-  const isTeam = mode === 'tdm';
-  return (
-    <div className='absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm'>
-      <div className='w-[640px] max-w-[92vw] rounded-xl border border-white/15 bg-zinc-950/85 p-6 font-mono shadow-2xl'>
-        <div className='mb-4 flex items-end justify-between'>
-          <div>
-            <div className='text-[10px] uppercase tracking-[0.3em] text-white/55'>{tag}</div>
-            <div className='text-xl font-semibold'>{title}</div>
-          </div>
-          <div className='text-[10px] uppercase tracking-[0.25em] text-white/45'>Hold Tab</div>
-        </div>
-        {isTeam ? (
-          <div className='flex flex-col gap-5'>
-            {([0, 1] as const).map((team) => (
-              <TeamScoreSection
-                key={team}
-                team={team}
-                players={scores.filter((s) => s.team === team)}
-                showPing={showPing}
-              />
-            ))}
-            {scores.some((s) => s.team == null) && (
-              <ScoreTable players={scores.filter((s) => s.team == null)} showPing={showPing} />
-            )}
-          </div>
-        ) : (
-          <ScoreTable players={scores} showPing={showPing} />
-        )}
-      </div>
-    </div>
-  );
-});
-
-// A scoreboard table body (header + rows). Reused for the flat FFA/Duel
-// scoreboard and each TDM team section.
-function ScoreTable({
-  players,
-  teamColor,
-  showPing = false,
-}: {
-  players: PlayerScore[];
-  teamColor?: string;
-  showPing?: boolean;
-}) {
-  const cols = showPing
-    ? 'grid-cols-[1fr_auto_auto_auto_auto_auto_auto]'
-    : 'grid-cols-[1fr_auto_auto_auto_auto_auto]';
-  return (
-    <div className={`grid ${cols} gap-x-6 gap-y-1 text-[12px]`}>
-      <Th>Player</Th>
-      <Th align='right'>Frags</Th>
-      <Th align='right'>Deaths</Th>
-      <Th align='right'>K/D</Th>
-      <Th align='right'>Acc</Th>
-      <Th align='right'>Best Streak</Th>
-      {showPing && <Th align='right'>Ping</Th>}
-      {players.map((s) => (
-        <ScoreboardRow key={s.id} score={s} nameColor={teamColor} showPing={showPing} />
-      ))}
-    </div>
-  );
-}
-
-// A TDM team block: a colored header with the team's total frags, then the
-// roster (names tinted in the team color).
-function TeamScoreSection({
-  team,
-  players,
-  showPing = false,
-}: {
-  team: number;
-  players: PlayerScore[];
-  showPing?: boolean;
-}) {
-  const color = TEAM_COLORS[team] ?? '#ffffff';
-  const total = players.reduce((sum, s) => sum + s.frags, 0);
-  return (
-    <div>
-      <div
-        className='mb-2 flex items-center justify-between rounded-md px-3 py-1.5'
-        style={{ backgroundColor: `${color}22`, boxShadow: `inset 0 0 0 1px ${color}55` }}
-      >
-        <span
-          className='text-sm font-bold uppercase tracking-[0.2em]'
-          style={{ color }}
-        >
-          {TEAM_NAMES[team] ?? `Team ${team}`}
-        </span>
-        <span className='text-sm font-bold tabular-nums' style={{ color }}>
-          {total}
-        </span>
-      </div>
-      <ScoreTable players={players} teamColor={color} showPing={showPing} />
-    </div>
-  );
-}
-
+// Table header cell (leaderboards / ladders).
 function Th({
   children,
   align = 'left',
@@ -4235,71 +4129,6 @@ function Th({
   );
 }
 
-// Ping → connection-quality colour (green good / amber ok / rose poor).
-function pingColor(ping: number): string {
-  return ping <= 60 ? 'text-emerald-300' : ping <= 120 ? 'text-amber-300' : 'text-rose-300';
-}
-
-function ScoreboardRow({
-  score,
-  nameColor,
-  showPing = false,
-}: {
-  score: PlayerScore;
-  nameColor?: string;
-  showPing?: boolean;
-}) {
-  const kd =
-    score.deaths === 0
-      ? score.frags.toFixed(1)
-      : (score.frags / Math.max(1, score.deaths)).toFixed(2);
-  // Local player always stays emerald + bold (so "you" reads at a glance); other
-  // players use the team tint in TDM, falling back to the neutral default.
-  const useTeamTint = !score.isLocal && nameColor != null;
-  return (
-    <>
-      <div className='flex min-w-0 flex-col py-1.5'>
-        <div className='flex items-center gap-2'>
-          <span
-            className={`truncate ${
-              score.isLocal ? 'font-bold text-emerald-300' : useTeamTint ? 'font-semibold' : 'text-white/90'
-            }`}
-            style={useTeamTint ? { color: nameColor } : undefined}
-          >
-            {score.name}
-          </span>
-          <NameBadges admin={score.admin} verified={score.verified} size={13} />
-          {score.currentStreak >= 3 && (
-            <span className='rounded bg-amber-400/85 px-1 text-[9px] font-bold text-amber-950'>
-              ON FIRE
-            </span>
-          )}
-        </div>
-        {score.title && (
-          <span className='truncate text-[9px] font-semibold uppercase tracking-[0.16em] text-white/40'>
-            {score.title}
-          </span>
-        )}
-      </div>
-      <div className='py-1.5 text-right tabular-nums'>{score.frags}</div>
-      <div className='py-1.5 text-right tabular-nums text-white/65'>{score.deaths}</div>
-      <div className='py-1.5 text-right tabular-nums text-white/65'>{kd}</div>
-      <div className='py-1.5 text-right tabular-nums text-white/65'>{formatAccuracy(score.accuracy)}</div>
-      <div className='py-1.5 text-right tabular-nums text-white/65'>{score.bestStreak}</div>
-      {showPing && (
-        <div className={`py-1.5 text-right tabular-nums ${score.ping == null ? 'text-white/30' : pingColor(score.ping)}`}>
-          {score.ping == null ? '—' : `${score.ping}ms`}
-        </div>
-      )}
-    </>
-  );
-}
-
-// Accuracy as a compact percent, or an em-dash when unknown (remotes) / no shots.
-function formatAccuracy(acc: number | null | undefined): string {
-  return acc == null ? '—' : `${Math.round(acc)}%`;
-}
-
 /* ───────────────────────── Click to play / paused ───────────────────────── */
 
 function ClickToPlay({
@@ -4308,14 +4137,15 @@ function ClickToPlay({
   onLeave,
   hud,
   settings,
+  info,
 }: {
   onPlay: () => void;
   onOpenSettings: () => void;
   onLeave: () => void;
   hud: HudState;
   settings: Settings;
+  info: HudMatchInfo;
 }) {
-  const inMatch = hud.netStatus !== 'off' ? 'Live match' : `First to ${MATCH_FRAG_LIMIT} frags`;
   const kb = settings.keybinds;
   // Build the controls hint from the actual bindings so it stays correct after a
   // rebind (#26f). Move = the 4 movement keys; the rest follow their bindings.
@@ -4326,12 +4156,13 @@ function ClickToPlay({
   // pointer; the buttons are the explicit paths. Menu toasts (e.g. from the
   // in-match Settings sheet) rail here — never over live gameplay.
   return (
-    <div className='deck-scan absolute inset-0 flex flex-col items-center justify-center bg-black/70 text-white pointer-events-auto'>
+    <div className='absolute inset-0 flex flex-col items-center justify-center bg-black/70 text-white pointer-events-auto'>
       <div className='relative flex flex-col items-center px-6 text-center'>
-        <div className='font-mono text-[11px] uppercase tracking-[0.35em] text-cyan-300/80'>
-          Instagib Arena · {inMatch}
+        <div className='font-mono text-[11px] font-semibold uppercase tracking-[0.3em] text-cyan-300'>
+          {info.mapName ? `${info.mapName} · ` : ''}
+          {info.modeLine}
         </div>
-        <div className='mt-3 font-display text-4xl font-bold uppercase tracking-[0.16em] sm:text-5xl'>
+        <div className='mt-3 font-display text-5xl font-bold uppercase tracking-[0.06em] sm:text-6xl'>
           Click to play
         </div>
         <div className='mt-3 font-mono text-[11px] uppercase tracking-[0.12em] text-white/50'>{controls}</div>
@@ -4519,7 +4350,7 @@ function ChallengeTimer({ gameRef }: { gameRef: { current: Game | null } }) {
   const m = Math.floor(s / 60);
   const clock = `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`;
   return (
-    <div className='clip-deck-sm pointer-events-none absolute left-1/2 top-3 z-[60] -translate-x-1/2 border border-cyan-400/30 bg-[#0b0c0f]/85 px-4 py-1.5 text-center font-mono'>
+    <div className='clip-deck-sm pointer-events-none absolute left-1/2 top-[5.75rem] z-[60] -translate-x-1/2 border border-cyan-400/30 bg-[#0b0c0f]/85 px-4 py-1.5 text-center font-mono'>
       <div className='text-[9px] uppercase tracking-[0.22em] text-cyan-300/80'>Run time</div>
       <div className='mt-0.5 font-display text-xl font-bold tabular-nums tracking-wide text-white'>{clock}</div>
     </div>
@@ -5431,219 +5262,259 @@ function Lobby({
   }, []);
   const playDisabled = touchOnly;
 
+  // Live 3D backdrop pauses under any open dialog (it's mostly dimmed out).
+  const modalOpen = useAnyModalOpen();
+  const [arenaName, setArenaName] = useState('');
+  const onBackdropMap = useCallback((_id: string, name: string) => setArenaName(name), []);
+  // Social dock (lobbies / chat / who's online): open by default on wide
+  // screens, remembered per browser. Secondary to the ways to play.
+  const [dockOpen, setDockOpen] = useState<boolean>(() => {
+    try {
+      const v = window.localStorage.getItem('instagib-social-dock');
+      if (v === '1' || v === '0') return v === '1';
+    } catch {
+      /* storage blocked */
+    }
+    return typeof window !== 'undefined' && window.innerWidth >= 1500;
+  });
+  const toggleDock = useCallback(() => {
+    setDockOpen((o) => {
+      try {
+        window.localStorage.setItem('instagib-social-dock', o ? '0' : '1');
+      } catch {
+        /* storage blocked */
+      }
+      return !o;
+    });
+  }, []);
+  const [dockTab, setDockTab] = useState<DockTabId>('lobbies');
+  const offline = lobbyStatus === 'closed' || lobbyStatus === 'error';
+
+  const playNow = () => {
+    if (playDisabled) return;
+    // Server unreachable: Play still plays — offline vs bots.
+    if (offline) {
+      setSoloOpen(true);
+      return;
+    }
+    if (searching || !online) return; // double-fire guard
+    setSearching(true);
+    // "Play" = mode-agnostic super-queue: join whatever's live so a small
+    // population concentrates instead of splitting 3 ways. Create Match picks
+    // a specific mode.
+    lobbyRef.current?.quickMatch('any');
+    window.setTimeout(() => setSearching(false), 6000);
+  };
+  const playSub = searching
+    ? 'Finding a live arena…'
+    : offline
+      ? 'Server offline · play vs bots'
+      : !online
+        ? 'Linking to server…'
+        : 'Quick match · any mode';
+
   return (
-    <div className='deck-bg deck-scan fixed inset-0 z-50 overflow-hidden text-white'>
+    <div className='menu-root fixed inset-0 z-50 overflow-hidden text-white'>
+      <MenuBackdropView
+        active={!modalOpen}
+        still={settings.lowSpec || settings.reducedEffects}
+        lowSpec={settings.lowSpec}
+        onMap={onBackdropMap}
+      />
+      <div aria-hidden='true' className='menu-scrim pointer-events-none absolute inset-0' />
       <a href='#lobby-main' className='deck-skip-link'>
         Skip to content
       </a>
       <MenuToasts />
-      <div className='relative mx-auto flex h-full w-full max-w-6xl flex-col gap-4 px-5 py-5 sm:px-8 sm:py-6'>
-        {/* ── Top status bar ─────────────────────────────────────────── */}
-        <header className='deck-rise flex items-center gap-3' style={{ animationDelay: '0ms' }}>
-          <h1
-            className='font-display text-3xl font-bold uppercase leading-none tracking-[0.16em] text-cyan-300 sm:text-[2.5rem]'
-            style={{ filter: 'drop-shadow(0 0 18px rgba(34,211,238,0.45))' }}
-          >
-            Instagib
-          </h1>
-          <span className='font-display mt-0.5 text-xs font-semibold uppercase tracking-[0.55em] text-white/35'>
-            Arena
-          </span>
-          <div className='ml-auto flex items-center gap-3'>
-            {account ? (
-              <span className='hidden items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
-                <span className='inline-flex items-center gap-1 text-cyan-200'>
-                  {account.username}
-                  <NameBadges admin={account.isAdmin} verified={account.isVerified} size={12} />
-                </span>
-                {account.isAdmin && (
-                  <button
-                    type='button'
-                    onClick={() => setAdminOpen(true)}
-                    {...sfxProps('uiClick')}
-                    className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-                  >
-                    Admin
-                  </button>
-                )}
+      <div className='relative flex h-full w-full flex-col px-5 pb-4 pt-4 sm:px-10 sm:pt-6 lg:px-14'>
+        {/* ── Top bar: account + wallet + server, quiet ─────────────── */}
+        <header className='flex shrink-0 items-center justify-end gap-3'>
+          {account ? (
+            <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
+              <span className='inline-flex items-center gap-1 text-white/85'>
+                {account.username}
+                <NameBadges admin={account.isAdmin} verified={account.isVerified} size={12} />
+              </span>
+              {account.isAdmin && (
                 <button
                   type='button'
-                  onClick={onLogout}
-                  {...sfxProps('uiBack')}
-                  className='text-white/35 transition hover:text-white/70'
+                  onClick={() => setAdminOpen(true)}
+                  {...sfxProps('uiClick')}
+                  className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
                 >
-                  Log&nbsp;out
+                  Admin
                 </button>
-              </span>
-            ) : (
+              )}
               <button
                 type='button'
-                onClick={onOpenLogin}
-                title='Save your progress across devices'
-                {...sfxProps('uiClick')}
-                className='clip-deck-sm inline-flex items-center gap-1.5 border border-cyan-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:border-cyan-300/70 hover:text-cyan-100'
+                onClick={onLogout}
+                {...sfxProps('uiBack')}
+                className='text-white/40 transition hover:text-white/80'
               >
-                <span className='text-white/40'>Guest ·</span> Log in / Register
+                Log&nbsp;out
               </button>
-            )}
-            {lobbyProfile && account && (
-              <button
-                type='button'
-                onClick={() => setLockerOpen(true)}
-                title='Open the Locker — spend credits on cosmetics'
-                {...sfxProps('uiClick')}
-                className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-              >
-                <span className='text-white/45'>Lv {lobbyProfile.level}</span>
-                <span>{lobbyProfile.credits.toLocaleString()} CR</span>
-              </button>
-            )}
-            <ServerStatusChip status={lobbyStatus} />
-          </div>
-        </header>
-        <div className='h-px w-full shrink-0 bg-gradient-to-r from-cyan-400/50 via-white/10 to-transparent' />
-
-        {/* ── Main grid: actions (left) · live feed (right). Scrolls as one
-            page on mobile; splits into two fixed columns on desktop. ─────── */}
-        <main
-          id='lobby-main'
-          tabIndex={-1}
-          className='grid min-h-0 flex-1 gap-4 overflow-y-auto outline-none lg:grid-cols-[1.15fr_0.85fr] lg:overflow-visible'
-        >
-          {/* Left — mode + actions */}
-          <section className='deck-scroll flex min-h-0 flex-col gap-3 pr-1 lg:overflow-y-auto'>
-            <p className='deck-rise max-w-md text-sm leading-relaxed text-white/50' style={{ animationDelay: '60ms' }}>
-              One railgun. One shot. One kill — the whole game is aim and movement.
-            </p>
-
-            {touchOnly && (
-              <div className='clip-deck-sm border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-center text-[12px] text-amber-100'>
-                Instagib needs a <span className='font-bold'>mouse + keyboard</span>. Open this on a
-                desktop to play.
-              </div>
-            )}
-
-            <div className='deck-rise' style={{ animationDelay: '120ms' }}>
-              <ModePicker value={selectedMode} onChange={setSelectedMode} />
-            </div>
-
-            {/* Primary CTA */}
+            </span>
+          ) : (
             <button
               type='button'
-              onClick={() => {
-                if (searching || !online || playDisabled) return; // double-fire guard
-                setSearching(true);
-                // "Play Now" = mode-agnostic super-queue: join whatever's live so a
-                // small population concentrates instead of splitting 3 ways. The
-                // mode picker drives Create Match for players who want a specific one.
-                lobbyRef.current?.quickMatch('any');
-                window.setTimeout(() => setSearching(false), 6000);
-              }}
-              disabled={!online || playDisabled || searching}
-              aria-busy={searching}
-              {...sfxProps('uiConfirm')}
-              className='clip-deck deck-rise group bg-emerald-400 px-6 py-5 text-left font-display text-lg font-bold uppercase tracking-[0.18em] text-zinc-950 transition hover:bg-emerald-300 active:translate-y-px disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40'
-              style={{ animationDelay: '180ms' }}
+              onClick={onOpenLogin}
+              title='Save your progress across devices'
+              {...sfxProps('uiClick')}
+              className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/80 transition hover:border-cyan-300/60 hover:text-cyan-100'
             >
-              <span className='flex items-center gap-3'>
-                {searching ? 'Searching…' : 'Play Now'}
-                <span aria-hidden className='transition-transform group-hover:translate-x-1'>→</span>
-                <span className='ml-auto font-mono text-[11px] font-semibold tracking-[0.1em] text-zinc-950/60'>
-                  {searching ? 'Looking for a live lobby' : 'Any mode · fastest'}
-                </span>
-              </span>
+              <span className='text-white/40'>Guest ·</span> Log in
             </button>
+          )}
+          {lobbyProfile && account && (
+            <button
+              type='button'
+              onClick={() => setLockerOpen(true)}
+              title='Open the Locker — spend credits on cosmetics'
+              {...sfxProps('uiClick')}
+              className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
+            >
+              <span className='text-white/45'>Lv {lobbyProfile.level}</span>
+              <span>{lobbyProfile.credits.toLocaleString()} CR</span>
+            </button>
+          )}
+          <ServerStatusChip status={lobbyStatus} />
+          {!dockOpen && (
+            <button
+              type='button'
+              onClick={toggleDock}
+              aria-expanded={false}
+              {...sfxProps('uiToggle')}
+              className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/70 transition hover:border-cyan-300/60 hover:text-cyan-100'
+            >
+              Lobbies &amp; chat
+              {online && rooms.length > 0 && <span className='tabular-nums text-cyan-300'>{rooms.length}</span>}
+            </button>
+          )}
+        </header>
 
-            {/* Ways to play — online first, then offline practice. */}
-            <div className='deck-rise grid grid-cols-2 gap-3' style={{ animationDelay: '240ms' }}>
-              <DeckButton onClick={() => setCreateOnlineOpen(true)} disabled={!online || playDisabled} accent='cyan'>
-                Create Match
-              </DeckButton>
-              <DeckButton onClick={() => setRankedOpen(true)} disabled={!online || playDisabled} accent='fuchsia' sub='1v1 · Elo ladder'>
-                Ranked Duel
-              </DeckButton>
-              <DeckButton
-                onClick={() =>
-                  onStart({
-                    mode: 'local',
-                    mapId: 'training',
-                    botCount: 0, // targets, not a firefight — practice aim + movement safely
-                    difficulty: settings.difficulty,
-                    training: true,
-                  })
-                }
-                disabled={playDisabled}
-                accent='amber'
-              >
-                Training Range
-              </DeckButton>
-              <DeckButton onClick={() => setSoloOpen(true)} disabled={playDisabled}>
-                Solo vs Bots
-              </DeckButton>
-              <div className='col-span-2'>
-                <DeckButton onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8p FFA speedrun' full>
-                  Weekly Challenge
-                </DeckButton>
+        <main id='lobby-main' tabIndex={-1} className='flex min-h-0 flex-1 gap-8 outline-none'>
+          {/* ── Left: identity + ways to play ─────────────────────────── */}
+          <section className='menu-enter deck-scroll flex min-h-0 w-full max-w-[31rem] shrink-0 flex-col overflow-y-auto'>
+            <div className='my-auto flex flex-col py-4'>
+              <MenuWordmark />
+              <p className='menu-tagline'>One railgun. One shot. One kill.</p>
+
+              {touchOnly && (
+                <div className='clip-deck-sm mt-6 border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-[12px] text-amber-100'>
+                  Instagib needs a <span className='font-bold'>mouse + keyboard</span>. Open this on a
+                  desktop to play.
+                </div>
+              )}
+
+              <div className='mt-8'>
+                <MenuPlayButton
+                  onClick={playNow}
+                  disabled={playDisabled || searching || (!online && !offline)}
+                  busy={searching}
+                  sub={playSub}
+                />
               </div>
-            </div>
 
-            {/* Utility row — meta surfaces kept visually subordinate to the ways
-                to play, so the menu reads top-down: queue → host → practice →
-                profile / settings. */}
-            <div className='deck-rise flex flex-wrap gap-2' style={{ animationDelay: '300ms' }}>
-              <UtilButton onClick={() => setStatsOpen(true)}>Stats</UtilButton>
-              <UtilButton onClick={() => setChallengesOpen(true)}>
-                <span className='inline-flex items-center gap-1.5'>
+              <nav aria-label='Ways to play' className='mt-4 flex flex-col'>
+                <MenuItem
+                  onClick={() => setCreateOnlineOpen(true)}
+                  disabled={!online || playDisabled}
+                  accent='cyan'
+                  sub='Host FFA, duel or TDM'
+                >
+                  Create match
+                </MenuItem>
+                <MenuItem
+                  onClick={() => setRankedOpen(true)}
+                  disabled={!online || playDisabled}
+                  accent='fuchsia'
+                  sub='1v1 on the Elo ladder'
+                >
+                  Ranked duel
+                </MenuItem>
+                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline, your rules'>
+                  Solo vs bots
+                </MenuItem>
+                <MenuItem
+                  onClick={() =>
+                    onStart({
+                      mode: 'local',
+                      mapId: 'training',
+                      botCount: 0, // targets, not a firefight — practice aim + movement safely
+                      difficulty: settings.difficulty,
+                      training: true,
+                    })
+                  }
+                  disabled={playDisabled}
+                  accent='amber'
+                  sub='Aim drills, no pressure'
+                >
+                  Training range
+                </MenuItem>
+                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8-player speedrun'>
+                  Weekly challenge
+                </MenuItem>
+              </nav>
+
+              {/* Meta surfaces: quiet links, visually subordinate to playing. */}
+              <div className='mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4'>
+                <MenuLink onClick={() => setStatsOpen(true)}>Stats</MenuLink>
+                <MenuLink onClick={() => setChallengesOpen(true)} badge={claimable}>
                   Challenges
-                  {claimable > 0 && (
-                    <span
-                      title={`${claimable} reward${claimable > 1 ? 's' : ''} ready to claim`}
-                      className='clip-deck-sm inline-flex h-4 min-w-4 items-center justify-center bg-emerald-400 px-1.5 text-[10px] font-bold tabular-nums text-emerald-950'
-                    >
-                      {claimable}
-                    </span>
-                  )}
-                </span>
-              </UtilButton>
-              <UtilButton onClick={() => setLeaderboardOpen(true)}>Leaderboard</UtilButton>
-              <UtilButton onClick={() => setLockerOpen(true)}>Locker</UtilButton>
-              <UtilButton onClick={() => openSettingsAt('controls')}>Settings</UtilButton>
-            </div>
+                </MenuLink>
+                <MenuLink onClick={() => setLeaderboardOpen(true)}>Leaderboard</MenuLink>
+                <MenuLink onClick={() => setLockerOpen(true)}>Locker</MenuLink>
+                <MenuLink onClick={() => openSettingsAt('controls')}>Settings</MenuLink>
+              </div>
 
-            {lastResult && <LastMatchBanner result={lastResult} />}
+              {lastResult && <LastMatchBanner result={lastResult} />}
+            </div>
           </section>
 
-          {/* Right — social column: who's online, open lobbies, global chat */}
-          <aside className='deck-rise flex min-h-0 flex-col gap-3' style={{ animationDelay: '200ms' }}>
-            <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
-            <div className='min-h-[10rem] flex-1'>
-              <OpenLobbies
-                rooms={rooms}
-                online={online}
-                onJoin={(r) => startOnline(r.id, r.mapId)}
-                onSpectate={(r) => startSpectate(r.id, r.mapId)}
-                onRefresh={() => lobbyRef.current?.refresh()}
-              />
-            </div>
-            <div className='min-h-[13rem] flex-1'>
-              <GlobalChatPanel
-                messages={chatLog}
-                online={online}
-                canChat={!!account}
-                youName={account?.username ?? null}
-                onSend={(text) => lobbyRef.current?.sendChat(text)}
-              />
-            </div>
-          </aside>
+          {/* ── Right: lobbies / chat / online, demoted to a dock ─────── */}
+          <div className='menu-enter-late ml-auto flex min-h-0 items-end pb-2 max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10 max-lg:ml-0 max-lg:justify-end max-lg:pointer-events-none max-lg:[&>*]:pointer-events-auto'>
+            <SocialDock
+              open={dockOpen}
+              onToggle={toggleDock}
+              tab={dockTab}
+              onTab={setDockTab}
+              lobbies={online ? rooms.length : 0}
+              online={presence?.online ?? null}
+            >
+              {dockTab === 'lobbies' ? (
+                <OpenLobbies
+                  rooms={rooms}
+                  online={online}
+                  onJoin={(r) => startOnline(r.id, r.mapId)}
+                  onSpectate={(r) => startSpectate(r.id, r.mapId)}
+                  onRefresh={() => lobbyRef.current?.refresh()}
+                />
+              ) : dockTab === 'chat' ? (
+                <GlobalChatPanel
+                  messages={chatLog}
+                  online={online}
+                  canChat={!!account}
+                  youName={account?.username ?? null}
+                  onSend={(text) => lobbyRef.current?.sendChat(text)}
+                />
+              ) : (
+                <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
+              )}
+            </SocialDock>
+          </div>
         </main>
 
-        {/* ── Footer ─────────────────────────────────────────────────── */}
-        <footer className='flex shrink-0 items-center justify-between border-t border-white/10 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
-          <span>Quick match · up to {MAX_PLAYERS} players</span>
-          <span className='text-white/25'>Instagib Arena</span>
+        {/* ── Footer: what you're looking at + the pitch, whisper-quiet ─ */}
+        <footer className='flex shrink-0 items-center justify-between gap-4 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
+          <span className='truncate'>
+            {arenaName && (
+              <>
+                Arena <span className='text-white/65'>{arenaName}</span>
+              </>
+            )}
+          </span>
         </footer>
       </div>
-
       {soloOpen && (
         <CreateMatchModal
           settings={settings}
@@ -5766,42 +5637,6 @@ function ModeBadge({ mode }: { mode: GameMode }) {
   return <span className={`deck-chip ${color}`}>{short}</span>;
 }
 
-// Segmented game-mode picker for the main menu, mirroring the
-// ButtonGroup/DifficultyPicker patterns used elsewhere.
-function ModePicker({
-  value,
-  onChange,
-}: {
-  value: GameMode;
-  onChange: (m: GameMode) => void;
-}) {
-  const blurb = GAME_MODES.find((m) => m.id === value)?.blurb ?? '';
-  return (
-    <div className='flex flex-col gap-1.5'>
-      <span className='font-mono text-[10px] uppercase tracking-[0.22em] text-white/45'>Mode</span>
-      <div className='grid grid-cols-3 gap-2'>
-        {GAME_MODES.map((m) => {
-          const active = value === m.id;
-          return (
-            <button
-              key={m.id}
-              onClick={() => onChange(m.id)}
-              className={`clip-deck-sm border px-3 py-2.5 font-display text-[11px] font-semibold uppercase tracking-[0.1em] transition ${
-                active
-                  ? 'border-cyan-300/70 bg-cyan-300/15 text-cyan-100'
-                  : 'border-white/12 bg-white/[0.03] text-white/55 hover:bg-white/10 hover:text-white/80'
-              }`}
-            >
-              {m.label}
-            </button>
-          );
-        })}
-      </div>
-      <div className='font-mono text-[10px] normal-case tracking-normal text-white/40'>{blurb}</div>
-    </div>
-  );
-}
-
 function ServerStatusChip({ status }: { status: LobbyStatus }) {
   const map = {
     open: { dot: 'bg-emerald-400', ring: 'border-emerald-400/40 text-emerald-200', t: 'Online', title: 'Connected — online play available' },
@@ -5834,33 +5669,30 @@ function OpenLobbies({
   onSpectate: (r: LobbyRoom) => void;
   onRefresh: () => void;
 }) {
+  // Body of the menu's social dock (the dock supplies the frame + tabs).
   return (
-    <div className='clip-deck deck-panel flex h-full min-h-0 flex-col'>
-      <div className='flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3'>
-        <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
-          Live Lobbies
-          {online && rooms.length > 0 && (
-            <span className='ml-2 font-mono text-white/40'>[{rooms.length}]</span>
-          )}
-        </span>
+    <>
+      <div className='flex shrink-0 items-center justify-between px-4 pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40'>
+        <span>{online ? `${rooms.length} open ${rooms.length === 1 ? 'lobby' : 'lobbies'}` : 'Linking to server…'}</span>
         <button
           type='button'
           onClick={onRefresh}
           disabled={!online}
           {...sfxProps('uiClick')}
-          className='font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
+          className='text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
         >
           Refresh
         </button>
       </div>
-      <div className='deck-scroll min-h-0 flex-1 overflow-y-auto p-3'>
+      <div className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1'>
         {!online ? (
           <div className='flex h-full items-center justify-center px-4 py-10 text-center font-mono text-[11px] uppercase tracking-[0.14em] text-white/30'>
             Linking to server…
           </div>
         ) : rooms.length === 0 ? (
-          <div className='flex h-full items-center justify-center px-6 py-10 text-center font-mono text-[11px] uppercase leading-relaxed tracking-[0.12em] text-white/30'>
-            No open lobbies — start one with Quick&nbsp;Match or Create.
+          <div className='flex h-full flex-col items-center justify-center gap-1 px-6 py-10 text-center'>
+            <span className='font-display text-sm font-semibold uppercase tracking-[0.14em] text-white/55'>No open lobbies</span>
+            <span className='text-[12px] text-white/35'>Hit Play to start one, or create a match.</span>
           </div>
         ) : (
           <div className='flex flex-col gap-2'>
@@ -5901,12 +5733,12 @@ function OpenLobbies({
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
-// Expandable "who's online" panel. Registered players are listed by name (with
-// staff/verified badges + an in-match dot); guests are shown only as an
+// "Who's online" tab of the social dock. Registered players are listed by name
+// (with staff/verified badges + an in-match dot); guests are shown only as an
 // aggregate count (never named — they're anonymous and a name list would be a
 // slur vector). All values are server-authoritative.
 function OnlinePlayersPanel({
@@ -5916,60 +5748,44 @@ function OnlinePlayersPanel({
   presence: PresenceState | null;
   youName: string | null;
 }) {
-  const [open, setOpen] = useState(false);
   const players: PresencePlayer[] = presence?.players ?? [];
   const guests = presence?.guests ?? 0;
   return (
-    <div className='clip-deck deck-panel shrink-0'>
-      <button
-        type='button'
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        {...sfxProps('uiToggle')}
-        className='flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03]'
-      >
-        <span className='flex items-center gap-2 font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
-          <span className='deck-pulse h-1.5 w-1.5 rounded-full bg-emerald-400' />
-          {presence ? `${presence.online} Online` : 'Online…'}
-        </span>
-        <span className='font-mono text-[10px] uppercase tracking-[0.16em] text-white/40'>
-          {open ? 'Hide ▾' : 'Show ▸'}
-        </span>
-      </button>
-      {open && (
-        <div className='deck-scroll max-h-44 overflow-y-auto border-t border-white/10 px-3 py-2'>
-          {players.length === 0 && guests === 0 ? (
-            <div className='px-1 py-3 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-white/30'>
-              No one online
-            </div>
-          ) : (
-            <div className='flex flex-col gap-0.5'>
-              {players.map((p) => {
-                const you = !!youName && p.name === youName;
-                return (
-                  <div
-                    key={p.name}
-                    className={`flex items-center gap-1.5 px-1.5 py-1 text-[12px] ${you ? 'text-cyan-100' : 'text-white/85'}`}
-                  >
-                    <span
-                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${p.inMatch ? 'bg-amber-400' : 'bg-emerald-400/70'}`}
-                      title={p.inMatch ? 'In a match' : 'In the menu'}
-                    />
-                    <span className='truncate'>{p.name}</span>
-                    <NameBadges admin={p.admin} verified={p.verified} size={11} />
-                    {you && (
-                      <span className='ml-0.5 shrink-0 text-[9px] uppercase tracking-[0.1em] text-cyan-300/80'>
-                        you
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-              {guests > 0 && (
-                <div className='mt-1 border-t border-white/8 px-1.5 pt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-white/40'>
-                  + {guests} {guests === 1 ? 'guest' : 'guests'}
-                </div>
-              )}
+    <div className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3'>
+      <div className='mb-2 flex items-center gap-2 px-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40'>
+        <span className='deck-pulse h-1.5 w-1.5 rounded-full bg-emerald-400' />
+        {presence ? `${presence.online} online` : 'Linking…'}
+      </div>
+      {players.length === 0 && guests === 0 ? (
+        <div className='px-1 py-6 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-white/30'>
+          No one online
+        </div>
+      ) : (
+        <div className='flex flex-col gap-0.5'>
+          {players.map((p) => {
+            const you = !!youName && p.name === youName;
+            return (
+              <div
+                key={p.name}
+                className={`flex items-center gap-1.5 px-1.5 py-1 text-[12px] ${you ? 'text-cyan-100' : 'text-white/85'}`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${p.inMatch ? 'bg-amber-400' : 'bg-emerald-400/70'}`}
+                  title={p.inMatch ? 'In a match' : 'In the menu'}
+                />
+                <span className='truncate'>{p.name}</span>
+                <NameBadges admin={p.admin} verified={p.verified} size={11} />
+                {you && (
+                  <span className='ml-0.5 shrink-0 text-[9px] uppercase tracking-[0.1em] text-cyan-300/80'>
+                    you
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          {guests > 0 && (
+            <div className='mt-1 border-t border-white/8 px-1.5 pt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-white/40'>
+              + {guests} {guests === 1 ? 'guest' : 'guests'}
             </div>
           )}
         </div>
@@ -5978,9 +5794,10 @@ function OnlinePlayersPanel({
   );
 }
 
-// Live global chat (one room). Identity + content are server-authoritative and
-// server-moderated (sanitized, length-capped, profanity-filtered, rate-limited);
-// we render names/text as React text nodes, so they're escaped — no raw HTML.
+// Live global chat (one room) — the social dock's Chat tab. Identity + content
+// are server-authoritative and server-moderated (sanitized, length-capped,
+// profanity-filtered, rate-limited); we render names/text as React text nodes,
+// so they're escaped — no raw HTML.
 function GlobalChatPanel({
   messages,
   online,
@@ -6011,16 +5828,10 @@ function GlobalChatPanel({
   };
 
   return (
-    <div className='clip-deck deck-panel flex h-full min-h-0 flex-col'>
-      <div className='flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3'>
-        <span className='font-display text-[11px] font-bold uppercase tracking-[0.22em] text-cyan-200/90'>
-          Global Chat
-        </span>
-        <span className='font-mono text-[9px] uppercase tracking-[0.16em] text-white/30'>keep it clean</span>
-      </div>
-      <div ref={scrollRef} className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 py-2'>
+    <>
+      <div ref={scrollRef} className='deck-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3'>
         {messages.length === 0 ? (
-          <div className='flex h-full items-center justify-center px-6 py-8 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.12em] text-white/25'>
+          <div className='flex h-full items-center justify-center px-6 py-8 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.12em] text-white/30'>
             {online ? 'No messages yet — say hi.' : 'Linking to server…'}
           </div>
         ) : (
@@ -6074,7 +5885,7 @@ function GlobalChatPanel({
           Send
         </DeckButton>
       </div>
-    </div>
+    </>
   );
 }
 

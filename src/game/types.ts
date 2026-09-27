@@ -169,10 +169,6 @@ export type KillcamState = {
   remaining: number;
   total: number;
   killerCard?: CardPayload; // the killer's playercard (shown on the death screen)
-  // On-screen bearing (radians) from your view-forward to the killer at the
-  // moment of death: 0 = dead ahead, +π/2 = your right. Drives the directional
-  // "shot came from here" arrow so you learn where you're getting picked from.
-  dirAngle?: number;
 };
 
 export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -236,6 +232,12 @@ export type HudState = {
   killfeed: KillfeedEntry[];
   toasts: ToastEntry[];
   banner: BannerState | null;
+  // Current arena id (MAPS id), the server's join/spectate acknowledgement for
+  // an online match, and the event id of the latest post-vote map switch
+  // (0 = none) — the loading screen + scoreboard key off these.
+  mapId: string;
+  netJoined: boolean;
+  mapSwitchId: number;
   hitMarker: HitMarker | null;
   killConfirm: KillConfirm | null;
   killFlash: KillFlash | null;

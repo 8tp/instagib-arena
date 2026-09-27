@@ -147,7 +147,14 @@ async function main() {
     source: `try{localStorage.setItem('instagib-onboarded','1');if(!localStorage.getItem('instagib-name'))localStorage.setItem('instagib-name','shot');}catch(e){}`,
   });
   await send('Page.navigate', { url: base + path });
-  await sleep(2500);
+  // Wait for the app to mount (a cold vite can take a while to serve the first
+  // module graph) rather than a fixed sleep.
+  for (let i = 0; i < 120; i++) {
+    await sleep(250);
+    const ready = await evaluate(`document.readyState === 'complete' && document.querySelectorAll('button,a,canvas').length > 0`).catch(() => false);
+    if (ready) break;
+  }
+  await sleep(800);
 
   const clickByText = async (re) => {
     const ok = await evaluate(`(() => {
