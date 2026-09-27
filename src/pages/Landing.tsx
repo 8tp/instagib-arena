@@ -53,7 +53,7 @@ function CrosshairMark({ size = 22 }: { size?: number }) {
 // edge — the command-deck idiom, no card chrome.
 function PanelHeading({ children }: { children: string }) {
   return (
-    <h2 className="mb-4 flex items-center gap-3 font-display text-[11px] font-bold uppercase tracking-[0.26em] text-cyan-200/90">
+    <h2 className="mb-4 flex items-center gap-3 font-display text-[12px] font-bold uppercase tracking-[0.14em] text-cyan-200/90">
       {children}
       <span className="h-px flex-1 bg-white/10" aria-hidden="true" />
     </h2>
@@ -115,13 +115,13 @@ export default function Landing() {
         <header className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-5 pt-5 sm:px-10">
           <div className="flex items-center gap-2.5">
             <CrosshairMark />
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.32em] text-white/55">
+            <span className="font-display text-[13px] font-semibold uppercase tracking-[0.1em] text-white/75">
               Instagib Arena
             </span>
           </div>
           <nav
             aria-label="External links"
-            className="flex items-center gap-4 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-white/50"
+            className="flex items-center gap-5 text-[13px] text-white/55"
           >
             {DISCORD_URL && (
               <a href={DISCORD_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
@@ -132,7 +132,7 @@ export default function Landing() {
             <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
               Source ↗
             </a>
-            <button type="button" onClick={() => setShowFeedback(true)} className="uppercase tracking-[0.18em] transition hover:text-white/90">
+            <button type="button" onClick={() => setShowFeedback(true)} className="transition hover:text-white/90">
               Feedback
             </button>
           </nav>
@@ -148,12 +148,14 @@ export default function Landing() {
                 <span>Arena</span>
               </span>
             </h1>
-            <p className="mt-7 font-display text-base font-semibold uppercase tracking-[0.22em] text-white/90">
-              One railgun. One shot. One kill.
+            {/* Sentences never split: if the line must wrap, it wraps between them. */}
+            <p className="mt-7 font-display text-[14px] font-semibold uppercase tracking-[0.12em] text-white/90 sm:text-base sm:tracking-[0.22em]">
+              <span className="whitespace-nowrap">One railgun.</span> <span className="whitespace-nowrap">One shot.</span>{' '}
+              <span className="whitespace-nowrap">One kill.</span>
             </p>
             <p className="mt-3 max-w-md text-[15px] leading-relaxed text-white/65">
-              Quake-style instagib, free in the browser. The railgun always kills —
-              so the whole game is <span className="text-white/90">aim and movement</span>.
+              Quake-style instagib, free in the browser and server-authoritative. The railgun
+              always kills — so the whole game is <span className="text-white/90">aim and movement</span>.
               Strafe, dash, double-jump, wall-jump.
             </p>
 
@@ -168,7 +170,7 @@ export default function Landing() {
                 </p>
                 <Link
                   to="/play"
-                  className="mt-3 inline-flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-200/90 underline-offset-4 hover:underline"
+                  className="mt-3 inline-flex items-center gap-2 text-[13px] font-semibold text-amber-200/90 underline-offset-4 hover:underline"
                 >
                   Continue anyway
                 </Link>
@@ -177,18 +179,17 @@ export default function Landing() {
               <div className="mt-9 flex max-w-[30rem] flex-col gap-3">
                 <Link to="/play" className="menu-play landing-cta clip-deck">
                   <span className="menu-play-label landing-cta-label">Enter the arena</span>
-                  <span className="menu-play-sub">Free · no download</span>
                 </Link>
-                <span className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-white/40 sm:block">
+                <span className="hidden text-[12px] text-white/45 sm:block">
                   or press{' '}
-                  <kbd className="border border-white/20 bg-white/5 px-1.5 py-0.5 text-white/65">Enter</kbd>
+                  <kbd className="border border-white/20 bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/70">Enter</kbd>
                 </span>
               </div>
             )}
 
             {/* Status strip: live population when there is one, otherwise the
                 zero-friction pitch. Hard rule, mono readouts — no badges. */}
-            <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4 font-mono text-[11px] uppercase tracking-[0.16em] text-white/45">
+            <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4 text-[13px] text-white/55">
               {live && live.online > 0 ? (
                 <span className="inline-flex items-center gap-2 text-white/65">
                   <span className="deck-pulse inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
@@ -201,14 +202,21 @@ export default function Landing() {
                   Free · no download · no account
                 </span>
               )}
-              <span className="text-white/35">Server-authoritative · mouse + keyboard</span>
             </div>
           </section>
 
           {/* Field manual: the two things a new player needs before deploying —
               how to move, and what to queue for. */}
           <aside className="menu-enter-late flex flex-col gap-3 lg:justify-self-end">
-            <section className="landing-panel clip-deck p-5">
+            {/* Narrow screens: the controls card would fill the fold, and
+                there's no keyboard here anyway — one line instead. (The full
+                list stays in the DOM for crawlers.) */}
+            {!coarse && (
+              <p className="landing-panel clip-deck-sm px-4 py-3 text-[13px] text-white/70 sm:hidden">
+                Play on desktop with <span className="text-white">mouse + keyboard</span>.
+              </p>
+            )}
+            <section className={`landing-panel clip-deck p-5 max-sm:hidden ${coarse ? 'hidden' : ''}`}>
               <PanelHeading>Controls</PanelHeading>
               <dl className="grid grid-cols-1 gap-x-5 gap-y-2 sm:grid-cols-2 lg:grid-cols-1">
                 {CONTROLS.map(([key, action]) => (
@@ -238,7 +246,7 @@ export default function Landing() {
           </aside>
         </main>
 
-        <footer className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-4 font-mono text-[10px] uppercase tracking-[0.18em] text-white/35 sm:px-10">
+        <footer className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-4 text-[12px] text-white/40 sm:px-10">
           <span>Desktop · best in Chrome / Edge</span>
           {arena && (
             <span className="hidden sm:inline">

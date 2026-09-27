@@ -31,6 +31,7 @@ export const LoadingScreen = memo(function LoadingScreen({
   complete,
   minMs = 900,
   holdMs = 0,
+  shotWaitMs = 600,
   onGone,
   tips = true,
   reduced = false,
@@ -41,20 +42,42 @@ export const LoadingScreen = memo(function LoadingScreen({
   sub?: string; // e.g. "Room ABC123" / "Next map"
   steps: LoadStep[];
   complete: boolean;
-  minMs?: number; // never flash: stay at least this long
+  minMs?: number; // never flash: stay at least this long after first paint
   holdMs?: number; // extra hold after complete (interstitials)
+  shotWaitMs?: number; // max extra wait for the levelshot to land
   onGone: () => void;
   tips?: boolean;
   reduced?: boolean; // reducedEffects: no levelshot push-in
 }) {
-  const mountedAt = useRef(performance.now());
   const [leaving, setLeaving] = useState(false);
   const onGoneRef = useRef(onGone);
   onGoneRef.current = onGone;
 
+  // The minimum hold counts from the first frame the player actually SAW,
+  // not from mount: the match boot (arena build, lightmap bake, shader
+  // compile) blocks the main thread right after mount, and timing from mount
+  // let a fast offline start spend its whole minimum frozen and then vanish.
+  const [shownAt, setShownAt] = useState<number | null>(null);
   useEffect(() => {
-    if (!complete) return;
-    const wait = Math.max(0, mountedAt.current + minMs - performance.now()) + holdMs;
+    let r2 = 0;
+    const r1 = requestAnimationFrame(() => {
+      r2 = requestAnimationFrame(() => setShownAt(performance.now()));
+    });
+    return () => {
+      cancelAnimationFrame(r1);
+      cancelAnimationFrame(r2);
+    };
+  }, []);
+
+  // Give the levelshot a short window to land so the screen reads as a
+  // levelshot, never longer than shotWaitMs past the minimum.
+  const hasShot = levelshot !== null;
+  useEffect(() => {
+    if (!complete || shownAt === null) return;
+    const now = performance.now();
+    const minLeft = Math.max(0, shownAt + minMs - now);
+    const shotLeft = hasShot || minMs === 0 ? 0 : Math.max(0, shownAt + minMs + shotWaitMs - now);
+    const wait = Math.max(minLeft, shotLeft) + holdMs;
     let gone = 0;
     const t = window.setTimeout(() => {
       setLeaving(true);
@@ -64,7 +87,7 @@ export const LoadingScreen = memo(function LoadingScreen({
       window.clearTimeout(t);
       window.clearTimeout(gone);
     };
-  }, [complete, minMs, holdMs]);
+  }, [complete, shownAt, minMs, holdMs, hasShot, shotWaitMs]);
 
   const [tip, setTip] = useState(() => Math.floor(Math.random() * TIPS.length));
   useEffect(() => {

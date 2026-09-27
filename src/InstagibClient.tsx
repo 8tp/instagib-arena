@@ -1420,7 +1420,10 @@ function GameView({
           sub={config.mode === 'multiplayer' ? `Room ${config.roomId}` : undefined}
           steps={loadSteps}
           complete={loadDone}
-          minMs={loadAbort ? 0 : 900}
+          // Offline boots in a blink — hold long enough to read; online the
+          // handshake itself usually takes longer, so the floor is lower.
+          minMs={loadAbort ? 0 : online ? 500 : 900}
+          shotWaitMs={online ? 0 : 600}
           reduced={settings.reducedEffects}
           onGone={() => setLoadGone(true)}
         />
@@ -1708,7 +1711,8 @@ function SpectatorView({
           sub={`Room ${config.roomId}`}
           steps={specSteps}
           complete={specSteps.every((st) => st.done) || specAbort}
-          minMs={specAbort ? 0 : 900}
+          minMs={specAbort ? 0 : 500}
+          shotWaitMs={0}
           reduced={settings.reducedEffects}
           onGone={() => setLoadGone(true)}
         />
@@ -3307,7 +3311,7 @@ const KillcamCard = memo(function KillcamCard({
   const { cam } = item;
   return (
     <div
-      className={`hud-killcam absolute inset-0${leaving ? ' hud-leaving' : ''}`}
+      className={`hud-killcam absolute inset-0 z-10${leaving ? ' hud-leaving' : ''}`}
       style={hudTiming(item.remaining, item.total, KILLCAM_FADE_LEAD_MS)}
     >
       <div
@@ -3320,19 +3324,20 @@ const KillcamCard = memo(function KillcamCard({
       {/* Lower third: the killcam frames the killer at centre with their
           nameplate above — the print must not sit on either. */}
       <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
-        <div className='hud-cprint-sub'>You were fragged by</div>
-        <div
-          className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300'
-          style={{ textShadow: '0 3px 0 rgba(0,0,0,0.5), 0 0 24px rgba(244,63,94,0.5)' }}
-        >
-          {cam.killerName}
+        {/* A dark band behind the print: rail beams and bright walls cross
+            this part of the frame, and the print must read over all of it. */}
+        <div className='hud-killcam-print'>
+          <div className='hud-cprint-sub'>You were fragged by</div>
+          <div className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
+            {cam.killerName}
+          </div>
         </div>
         {cam.killerCard && (
           <div className='mt-5'>
             <PlayerCard card={cam.killerCard} reduced={reduced} />
           </div>
         )}
-        <div className='mt-6 text-[11px] uppercase tracking-[0.3em] text-white/55'>
+        <div className='mt-4 bg-black/55 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-white/75'>
           Respawning in{' '}
           <span className='text-white'>
             <KillcamCountdown />s
@@ -3549,7 +3554,7 @@ const DamageVignette = memo(function DamageVignette({ id }: { id: number }) {
       className='hud-damage pointer-events-none absolute inset-0'
       style={{
         background:
-          'radial-gradient(circle at center, transparent 35%, rgba(220,38,38,0.55) 100%)',
+          'radial-gradient(circle at center, transparent 40%, rgba(220,38,38,0.25) 100%)',
       }}
     />
   );
@@ -3818,7 +3823,10 @@ const MiniLeaderboard = memo(function MiniLeaderboard({ scores }: { scores: Play
     <div className='absolute left-5 top-5 flex w-56 flex-col gap-px font-mono text-[12px]' aria-label='Leaderboard'>
       {top.map((s) => row(s, scores.filter((o) => o.frags > s.frags).length + 1))}
       {you && <div className='mt-1'>{row(you, localIndex + 1)}</div>}
-      <div className='mt-1 px-2.5 text-[9px] uppercase tracking-[0.2em] text-white/30'>Tab · scoreboard</div>
+      <div className='mt-1 flex items-center gap-1.5 self-start bg-black/40 px-2 py-[2px] font-sans text-[11px] text-white/60'>
+        <kbd className='border border-white/25 px-1 font-mono text-[9px] font-bold leading-[1.4] text-white/80'>Tab</kbd>
+        scoreboard
+      </div>
     </div>
   );
 });
@@ -4037,54 +4045,75 @@ const CooldownPip = memo(function CooldownPip({
   elapsedMs: number;
   accent: string;
 }) {
-  const R = 14;
+  // A charge gauge, not a hollow ring: a dim track, and while cooling a pie
+  // that fills (a stroke as wide as its radius) under a bright rim arc. Both
+  // are the same CSS dashoffset animation over the cooldown, keyed on the use
+  // and joined mid-way via --cd-elapsed — React never drives the fill. When
+  // charged the whole disc lights up and pops once.
+  const R = 14; // rim radius
   const C = 2 * Math.PI * R;
+  const P = R / 2; // pie radius (stroke-width R covers 0..R)
+  const CP = 2 * Math.PI * P;
+  const timing = {
+    '--cd-total': `${total}s`,
+    '--cd-elapsed': `${Math.max(0, Math.round(elapsedMs))}ms`,
+  } as const;
   return (
-    <div className='flex flex-col items-center gap-1 font-mono'>
-      <div className='relative h-12 w-12'>
-        <svg viewBox='0 0 32 32' className='h-full w-full -rotate-90'>
-          <circle cx='16' cy='16' r={R} fill='none' stroke='rgba(255,255,255,0.12)' strokeWidth='3' />
+    <div className='flex flex-col items-center gap-1'>
+      <div className='relative h-[52px] w-[52px]'>
+        <svg viewBox='0 0 32 32' overflow='visible' className='h-full w-full -rotate-90' aria-hidden>
+          <circle cx='16' cy='16' r={R} fill='rgba(0,0,0,0.45)' stroke={accent} strokeOpacity='0.22' strokeWidth='3' />
           {ready ? (
-            <circle cx='16' cy='16' r={R} fill='none' stroke={accent} strokeWidth='3' strokeLinecap='round' />
+            <g key={eventId} className='hud-tick hud-tick-center'>
+              {/* Soft halo as a wide faint stroke (a CSS filter on SVG
+                  groups paints a boxy bounding region in Chrome). */}
+              <circle cx='16' cy='16' r={R + 1.2} fill='none' stroke={accent} strokeOpacity='0.22' strokeWidth='2.5' />
+              <circle cx='16' cy='16' r={R - 1.5} fill={accent} fillOpacity='0.32' />
+              <circle cx='16' cy='16' r={R} fill='none' stroke={accent} strokeWidth='3' />
+            </g>
           ) : (
-            <circle
-              key={eventId}
-              className='hud-cd-ring'
-              cx='16'
-              cy='16'
-              r={R}
-              fill='none'
-              stroke='rgba(255,255,255,0.4)'
-              strokeWidth='3'
-              strokeDasharray={C}
-              strokeLinecap='round'
-              style={cssVars({
-                '--cd-c': C,
-                '--cd-total': `${total}s`,
-                '--cd-elapsed': `${Math.max(0, Math.round(elapsedMs))}ms`,
-              })}
-            />
+            <g key={eventId}>
+              <circle
+                className='hud-cd-ring'
+                cx='16'
+                cy='16'
+                r={P}
+                fill='none'
+                stroke={accent}
+                strokeOpacity='0.38'
+                strokeWidth={R}
+                strokeDasharray={CP}
+                style={cssVars({ '--cd-c': CP, ...timing })}
+              />
+              <circle
+                className='hud-cd-ring'
+                cx='16'
+                cy='16'
+                r={R}
+                fill='none'
+                stroke={accent}
+                strokeWidth='3'
+                strokeDasharray={C}
+                style={cssVars({ '--cd-c': C, ...timing })}
+              />
+            </g>
           )}
         </svg>
-        <div className='absolute inset-0 flex items-center justify-center text-[11px] font-bold'>
-          {ready ? (
-            <span key={eventId} className='hud-tick hud-tick-center'>
-              ●
-            </span>
-          ) : (
-            text
-          )}
-        </div>
+        {!ready && (
+          <div className='absolute inset-0 flex items-center justify-center font-mono text-[11px] font-bold tabular-nums text-white'>
+            {text}
+          </div>
+        )}
       </div>
-      <div className='text-[10px] uppercase tracking-[0.16em] text-white/55'>{label}</div>
+      <div className='font-display text-[11px] font-semibold uppercase tracking-[0.12em] text-white/70'>{label}</div>
     </div>
   );
 });
 
 const AirJumpPip = memo(function AirJumpPip({ left, max }: { left: number; max: number }) {
   return (
-    <div className='flex flex-col items-center gap-1 font-mono'>
-      <div className='flex h-12 items-end gap-1 pb-1'>
+    <div className='flex flex-col items-center gap-1'>
+      <div className='flex h-[52px] items-center gap-1'>
         {Array.from({ length: max }).map((_, i) => (
           <div
             key={i}
@@ -4094,7 +4123,7 @@ const AirJumpPip = memo(function AirJumpPip({ left, max }: { left: number; max: 
           />
         ))}
       </div>
-      <div className='text-[10px] uppercase tracking-[0.16em] text-white/55'>Air</div>
+      <div className='font-display text-[11px] font-semibold uppercase tracking-[0.12em] text-white/70'>Air</div>
     </div>
   );
 });
@@ -5279,6 +5308,7 @@ function Lobby({
     return typeof window !== 'undefined' && window.innerWidth >= 1500;
   });
   const toggleDock = useCallback(() => {
+    setDockExpanded((e) => !e);
     setDockOpen((o) => {
       try {
         window.localStorage.setItem('instagib-social-dock', o ? '0' : '1');
@@ -5289,6 +5319,12 @@ function Lobby({
     });
   }, []);
   const [dockTab, setDockTab] = useState<DockTabId>('lobbies');
+  // An empty dock (no lobbies, no chat) is just a one-line chip until asked.
+  const [dockExpanded, setDockExpanded] = useState(false);
+  const dockEmpty = rooms.length === 0 && chatLog.length === 0;
+  const dockCompact = dockOpen && dockEmpty && !dockExpanded;
+  const lobbyCount = online ? rooms.length : 0;
+  const onlineCount = presence?.online ?? 0;
   const offline = lobbyStatus === 'closed' || lobbyStatus === 'error';
 
   const playNow = () => {
@@ -5474,8 +5510,28 @@ function Lobby({
 
           {/* ── Right: lobbies / chat / online, demoted to a dock ─────── */}
           <div className='menu-enter-late ml-auto flex min-h-0 items-end pb-2 max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10 max-lg:ml-0 max-lg:justify-end max-lg:pointer-events-none max-lg:[&>*]:pointer-events-auto'>
+            {dockCompact && (
+              <button
+                type='button'
+                onClick={() => setDockExpanded(true)}
+                aria-expanded={false}
+                {...sfxProps('uiToggle')}
+                className='menu-dock-chip clip-deck-sm'
+              >
+                <span aria-hidden='true' className={`h-1.5 w-1.5 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
+                {online ? (
+                  <span>
+                    {lobbyCount} {lobbyCount === 1 ? 'lobby' : 'lobbies'} · {onlineCount} online · <span className='text-white'>Chat</span>
+                  </span>
+                ) : (
+                  <span>
+                    Linking to server · <span className='text-white'>Chat</span>
+                  </span>
+                )}
+              </button>
+            )}
             <SocialDock
-              open={dockOpen}
+              open={dockOpen && !dockCompact}
               onToggle={toggleDock}
               tab={dockTab}
               onTab={setDockTab}

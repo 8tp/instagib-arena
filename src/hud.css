@@ -599,3 +599,11 @@
   color: #1c1003;
   white-space: nowrap;
 }
+
+/* Killcam print backing: a soft dark band that holds contrast over beams,
+   the death wash and bright walls. */
+.hud-killcam-print {
+  position: relative;
+  padding: 0.9rem 3.5rem 1rem;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.55) 60%, rgba(0, 0, 0, 0));
+}
