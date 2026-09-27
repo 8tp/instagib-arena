@@ -1,12 +1,44 @@
 import { useEffect, useRef, useState } from 'react';
 import { CharacterPreview, type PreviewCosmetics } from './game/character-preview';
 import { EMOTES, HATS, RAIL_COLORS, RAILGUN_FINISHES, KILL_EFFECTS } from './game/cosmetics';
+import { CharacterLab } from './game/character/lab';
+import { labDriverFromParams } from './game/character/lab-drivers';
 
 // Dev-only harness for the Locker character preview. /lockerlab. Keys: E cycles
 // emote, H cycles hat, R rail colour, K kill effect, V cycles the view
 // (character / emote / weapon). Not linked anywhere.
 const VIEWS = ['character', 'emote', 'weapon'] as const;
 export default function LockerLab() {
+  // Pose-lab mode (?lab=1 …): deterministic combatant contact sheets for
+  // animation review. See game/character/lab.ts for the params.
+  const labParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  if (labParams?.has('lab')) return <PoseLab params={labParams} />;
+  return <LockerPreviewLab />;
+}
+
+function PoseLab({ params }: { params: URLSearchParams }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const lab = new CharacterLab(canvas, params);
+    lab.setDriver(labDriverFromParams(params));
+    lab.start();
+    const onResize = () => lab.resize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      lab.dispose();
+    };
+  }, [params]);
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#0a0d13' }}>
+      <canvas ref={ref} style={{ display: 'block', width: '100%', height: '100%' }} />
+    </div>
+  );
+}
+
+function LockerPreviewLab() {
   const ref = useRef<HTMLCanvasElement>(null);
   const previewRef = useRef<CharacterPreview | null>(null);
   const idx = useRef({ e: 0, h: 1, r: 0, k: 0, v: 0, g: 0 });

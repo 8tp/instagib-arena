@@ -1,189 +1,240 @@
-import * as THREE from 'three';
 import type { EmoteKind } from './cosmetics';
+import { B, REST_ABS } from './character/rig';
+import { PoseSpec, SIDE_L, SIDE_R } from './character/pose';
+import { compileClip, type Clip, type ClipDef } from './character/clip';
 
-// Procedural emotes for the soldier (Mixamo) rig. The idle clip plays underneath;
-// each frame we OVERRIDE a small set of arm bones from a mixer-sampled
-// idle reference pose and move the whole outer group (bob/spin/sway). Kept here
-// so the podium and the Locker preview share one tuned implementation.
+// ── Authored emotes / taunts ─────────────────────────────────────────────────
 //
-// The rig faces -Z at identity; model-space +X is the soldier's right side.
-// Explicit limb directions were tuned against the /lockerlab harness.
+// Full-body keyframe clips on the combatant's own skeleton (see
+// character/clip.ts for the DSL). Conventions (model space, facing −Z,
+// right = +X; angles in degrees):
+//   spine/chest/neck/head  +X leans back / looks up, −X folds forward
+//                          +Y turns to the character's LEFT, +Z rolls left
+//   hL/hR   wrist targets in rest-model coords riding the chest
+//           (shoulders at x ±0.235, y 1.415; reach ≈ 0.55 m)
+//   fL/fR   ankle targets on the ground (y 0.095 = planted)
+//   root    [x, y, z, yaw] whole-body hop/spin
+// Every clip loops (2–4 s) with anticipation → action → overshoot → settle,
+// and keeps the feet planted unless it deliberately hops.
 
-const BONE_NAMES = {
-  spine2: ['mixamorigSpine2', 'mixamorig:Spine2', 'Spine2'],
-  rightArm: ['mixamorigRightArm', 'mixamorig:RightArm', 'RightArm', 'Arm.R'],
-  leftArm: ['mixamorigLeftArm', 'mixamorig:LeftArm', 'LeftArm', 'Arm.L'],
-  rightForeArm: ['mixamorigRightForeArm', 'mixamorig:RightForeArm', 'RightForeArm', 'ForeArm.R'],
-  leftForeArm: ['mixamorigLeftForeArm', 'mixamorig:LeftForeArm', 'LeftForeArm', 'ForeArm.L'],
-} as const;
-type BoneName = keyof typeof BONE_NAMES;
+const Y0 = REST_ABS[B.footL][1]; // planted ankle height
+const HIP_DIP = -0.025;
 
-export type EmoteRig = {
-  model: THREE.Object3D;
-  bones: Partial<Record<BoneName, THREE.Bone>>;
-  base: Partial<Record<BoneName, THREE.Quaternion>>;
-  axes: Partial<Record<BoneName, THREE.Vector3>>;
-  phase: number; // per-instance so two characters don't move in lockstep
+// Base stance for every emote (the clip keys only what moves).
+export function emoteStance(spec: PoseSpec): void {
+  spec.reset();
+  spec.handSpace = 'chest';
+  spec.foot[SIDE_L].set(-0.13, Y0, 0.0);
+  spec.foot[SIDE_R].set(0.13, Y0, 0.01);
+  spec.setR(B.footL, 0, 8 * (Math.PI / 180), 0);
+  spec.setR(B.footR, 0, -8 * (Math.PI / 180), 0);
+  spec.knee[SIDE_L].set(-0.1, 0, -1);
+  spec.knee[SIDE_R].set(0.1, 0, -1);
+  spec.hips.set(0, HIP_DIP, 0);
+  spec.hand[SIDE_L].set(-0.265, 0.9, -0.02);
+  spec.hand[SIDE_R].set(0.265, 0.9, -0.02);
+  spec.elbow[SIDE_L].set(-0.3, 0, 1);
+  spec.elbow[SIDE_R].set(0.3, 0, 1);
+}
+
+// Relaxed arms, reused as the neutral key in several clips.
+const HL_REST = [-0.265, 0.9, -0.02] as const;
+const HR_REST = [0.265, 0.9, -0.02] as const;
+
+const DEFS: Record<EmoteKind, ClipDef> = {
+  // Locker "character" view idle: weight on one hip, breathing, a glance.
+  idle: {
+    duration: 4,
+    loop: true,
+    keys: [
+      { t: 0, hips: [0.02, -0.03, 0], r: { hips: [0, 0, -3], spine: [1, 0, 2], chest: [0, 0, 1], head: [0, 6, 0] }, hL: HL_REST, hR: [0.255, 0.91, -0.05] },
+      { t: 2, hips: [-0.018, -0.03, 0], r: { hips: [0, 0, 3], spine: [1, 0, -2], chest: [0, 0, -1], head: [2, -7, 0] }, hL: [-0.255, 0.91, -0.05], hR: HR_REST },
+    ],
+    osc: [
+      { ch: 'r.chest', i: 0, amp: 1.2, cycles: 1 },
+      { ch: 'hips', i: 1, amp: 0.004, cycles: 2 },
+    ],
+  },
+
+  // Victory Cheer: crouch, explode up into a V, land, pump each fist, reset.
+  cheer: {
+    duration: 2.4,
+    loop: true,
+    keys: [
+      // anticipation
+      { t: 0, hips: [0, -0.13, 0.02], r: { spine: [-14, 0, 0], chest: [-6, 0, 0], head: [-10, 0, 0] }, hL: [-0.28, 0.98, 0.1], hR: [0.28, 0.98, 0.1], eL: [-0.3, -0.2, 1], eR: [0.3, -0.2, 1], root: [0, 0, 0, 0], fL: [-0.14, Y0, 0], fR: [0.14, Y0, 0.01] },
+      // launch
+      { t: 0.24, e: 'out', hips: [0, 0.01, 0], root: [0, 0.3, 0, 0], r: { spine: [8, 0, 0], chest: [6, 0, 0], head: [16, 0, 0] }, hL: [-0.5, 2.15, -0.05], hR: [0.5, 2.15, -0.05], eL: [-1, 0.2, 0.3], eR: [1, 0.2, 0.3], fL: [-0.12, Y0 + 0.06, 0.08], fR: [0.12, Y0 + 0.03, 0.1] },
+      { t: 0.46, e: 'in', root: [0, 0, 0, 0], fL: [-0.14, Y0, 0], fR: [0.14, Y0, 0.01] },
+      // land + absorb
+      { t: 0.58, e: 'out', hips: [0, -0.12, 0.02], r: { spine: [-6, 0, 0], chest: [0, 0, 0], head: [6, 0, 0] }, hL: [-0.48, 2.02, -0.02], hR: [0.48, 2.02, -0.02] },
+      { t: 0.8, hips: [0, -0.03, 0], r: { spine: [4, 0, 0], chest: [4, 0, 0], head: [12, 0, 0] }, hL: [-0.46, 2.08, -0.05], hR: [0.46, 2.08, -0.05], eL: [-1, 0.2, 0.3], eR: [1, 0.2, 0.3] },
+      // fist pumps: yank each fist down to the shoulder, punch it back up
+      { t: 1.02, e: 'inBack', hR: [0.24, 1.36, -0.16], eR: [0.5, -1, 0.3], hL: [-0.46, 2.06, -0.05], hips: [0, -0.07, 0], r: { chest: [-2, 10, 0], head: [6, 6, 0] } },
+      { t: 1.22, e: 'outBack', hR: [0.4, 2.1, -0.1], eR: [1, 0.2, 0.3], hips: [0, -0.02, 0], r: { chest: [4, 0, 0], head: [14, 0, 0] } },
+      { t: 1.46, e: 'inBack', hL: [-0.24, 1.36, -0.16], eL: [-0.5, -1, 0.3], hR: [0.4, 2.08, -0.1], hips: [0, -0.07, 0], r: { chest: [-2, -10, 0], head: [6, -6, 0] } },
+      { t: 1.66, e: 'outBack', hL: [-0.4, 2.1, -0.1], eL: [-1, 0.2, 0.3], hips: [0, -0.02, 0], r: { chest: [4, 0, 0], head: [14, 0, 0] } },
+      // arms drop, settle into the next anticipation
+      { t: 2.05, hL: [-0.36, 1.2, -0.12], hR: [0.36, 1.2, -0.12], eL: [-0.4, -0.6, 0.8], eR: [0.4, -0.6, 0.8], hips: [0, -0.06, 0], r: { spine: [-4, 0, 0], chest: [0, 0, 0], head: [2, 0, 0] } },
+    ],
+  },
+
+  // Wave: weight onto the left leg, elbow out, open palm to the crowd,
+  // forearm and wrist swinging.
+  wave: {
+    duration: 3,
+    loop: true,
+    keys: [
+      { t: 0, hR: HR_REST, eR: [0.3, 0, 1], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { hips: [0, 0, 0], spine: [0, 0, 0], head: [0, 0, 0] } },
+      { t: 0.2, e: 'in', hR: [0.32, 1.3, -0.22], eR: [0.8, -0.6, 0.4], oR: [110, -40, 0] },
+      { t: 0.44, e: 'outBack', hR: [0.44, 1.8, -0.14], eR: [1, -0.55, 0.15], oR: [180, -90, 0], hips: [-0.035, -0.03, 0], r: { hips: [0, 4, 4], spine: [0, -4, -3], head: [4, -8, 7] } },
+      { t: 2.3, hR: [0.44, 1.79, -0.14], oR: [180, -90, 0] },
+      { t: 2.55, e: 'in', hR: [0.33, 1.2, -0.16], eR: [0.6, -0.5, 0.5], oR: [80, -30, 0] },
+      { t: 3, e: 'out', hR: HR_REST, eR: [0.3, 0, 1], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { hips: [0, 0, 0], spine: [0, 0, 0], head: [0, 0, 0] } },
+    ],
+    osc: [
+      { ch: 'hR', i: 0, amp: 0.13, hz: 2.4, from: 0.5, to: 2.35, fade: 0.2 },
+      { ch: 'oR', i: 1, amp: 24, hz: 2.4, phase: 0.18, from: 0.5, to: 2.35, fade: 0.2 },
+      { ch: 'r.head', i: 2, amp: 3, hz: 1.2, from: 0.5, to: 2.35 },
+      { ch: 'r.chest', i: 2, amp: 2, hz: 2.4, phase: 0.5, from: 0.5, to: 2.35 },
+    ],
+  },
+
+  // Flex: hunch (anticipation) → snap into a double biceps → side chest.
+  flex: {
+    duration: 3.4,
+    loop: true,
+    keys: [
+      { t: 0, hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0], hips: [0, 0, 0] } },
+      { t: 0.4, hL: [-0.14, 1.02, -0.24], hR: [0.14, 1.02, -0.24], eL: [-1, 0, 0.3], eR: [1, 0, 0.3], oL: [70, 0, 0], oR: [70, 0, 0], hips: [0, -0.09, 0], r: { spine: [-12, 0, 0], chest: [-8, 0, 0], head: [-8, 0, 0] } },
+      { t: 0.62, e: 'outBack', hL: [-0.48, 1.74, -0.05], hR: [0.48, 1.74, -0.05], eL: [-1, -0.45, 0.05], eR: [1, -0.45, 0.05], oL: [186, 0, 0], oR: [186, 0, 0], hips: [0, -0.01, 0], r: { spine: [6, 0, 0], chest: [9, 0, 0], head: [8, 0, 0] } },
+      { t: 1.5, hL: [-0.47, 1.72, -0.05], hR: [0.47, 1.72, -0.05], hips: [0, -0.02, 0] },
+      // side chest: twist right, left fist to the right palm, chest out
+      { t: 1.85, e: 'outBack', hL: [0.06, 1.2, -0.24], hR: [0.14, 1.12, -0.2], eL: [-0.6, -0.5, 0.4], eR: [0.8, -0.3, 0.6], oL: [90, 0, 0], oR: [90, 0, 0], hips: [0.02, -0.05, 0], r: { hips: [0, -12, 0], spine: [2, -10, 0], chest: [8, -14, 0], head: [6, 22, 0] } },
+      { t: 2.8, hL: [0.05, 1.21, -0.24], hR: [0.14, 1.13, -0.2], hips: [0.02, -0.05, 0] },
+      { t: 3.4, hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { hips: [0, 0, 0], spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+    ],
+    osc: [
+      { ch: 'hips', i: 1, amp: 0.008, hz: 3, from: 0.7, to: 1.5 },
+      { ch: 'r.chest', i: 0, amp: 1.5, hz: 3, from: 0.7, to: 1.5 },
+    ],
+  },
+
+  // Spin: wind up, pirouette with arms flung out and a hop, stick it — ta-da.
+  spin: {
+    duration: 2.6,
+    loop: true,
+    keys: [
+      { t: 0, root: [0, 0, 0, 0], hips: [0, HIP_DIP, 0], hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], r: { spine: [0, 0, 0], head: [0, 0, 0], chest: [0, 0, 0] } },
+      { t: 0.35, root: [0, 0, 0, -30], hips: [0, -0.1, 0], hL: [-0.12, 1.08, -0.2], hR: [0.2, 1.05, 0.12], r: { spine: [-8, -12, 0], chest: [-4, -14, 0], head: [-4, 20, 0] } },
+      { t: 0.55, e: 'out', root: [0, 0.16, 0, 40], hips: [0, 0.0, 0], hL: [-0.78, 1.46, 0.02], hR: [0.78, 1.46, 0.02], eL: [-0.2, -1, 0.2], eR: [0.2, -1, 0.2], r: { spine: [4, 0, 0], chest: [2, 0, 0], head: [8, 0, 0] } },
+      { t: 1.05, e: 'linear', root: [0, 0.2, 0, 260] },
+      { t: 1.35, e: 'out', root: [0, 0, 0, 372], hips: [0, -0.1, 0], hL: [-0.62, 1.3, -0.1], hR: [0.62, 1.3, -0.1], r: { spine: [-6, 0, 0], head: [-2, 0, 0] } },
+      // ta-da: arms up and out, chest proud
+      { t: 1.6, e: 'outBack', root: [0, 0, 0, 360], hips: [0, -0.02, 0], hL: [-0.66, 1.78, -0.22], hR: [0.66, 1.78, -0.22], eL: [-0.4, -1, 0.3], eR: [0.4, -1, 0.3], r: { spine: [5, 0, 0], chest: [6, 0, 0], head: [12, 0, 0] } },
+      { t: 2.2, hL: [-0.64, 1.76, -0.22], hR: [0.64, 1.76, -0.22], hips: [0, -0.03, 0] },
+      { t: 2.6, root: [0, 0, 0, 360], hips: [0, HIP_DIP, 0], hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+    ],
+  },
+
+  // Disco: Travolta point on the beat, hips swinging, left hand on the hip.
+  dance: {
+    duration: 2,
+    loop: true,
+    keys: [
+      { t: 0, e: 'outBack', hR: [0.58, 1.98, -0.22], eR: [0.6, -1, 0.3], hL: [-0.2, 1.0, 0.03], eL: [-1, 0, 0.2], hips: [0.045, -0.04, 0], r: { hips: [0, -6, -7], spine: [0, 4, 5], chest: [2, 6, 3], head: [10, -18, 5], 'hand.R': [0, 0, 20] }, fL: [-0.15, Y0, 0], fR: [0.15, Y0 + 0.0, 0.02] },
+      { t: 0.5, e: 'inOut', hR: [-0.22, 0.98, -0.26], eR: [0.6, -1, 0.5], hips: [-0.045, -0.06, 0], r: { hips: [0, 6, 7], spine: [-4, -4, -5], chest: [-4, -8, -3], head: [-10, 10, -5], 'hand.R': [0, 0, -10] } },
+      { t: 1, e: 'outBack', hR: [0.58, 1.98, -0.22], hips: [0.045, -0.04, 0], r: { hips: [0, -6, -7], spine: [0, 4, 5], chest: [2, 6, 3], head: [10, -18, 5], 'hand.R': [0, 0, 20] } },
+      { t: 1.5, e: 'inOut', hR: [-0.22, 0.98, -0.26], hips: [-0.045, -0.06, 0], r: { hips: [0, 6, 7], spine: [-4, -4, -5], chest: [-4, -8, -3], head: [-10, 10, -5], 'hand.R': [0, 0, -10] } },
+    ],
+    osc: [
+      { ch: 'hips', i: 1, amp: 0.022, cycles: 8, phase: 0.25 },
+      { ch: 'r.neck', i: 0, amp: 5, cycles: 8, phase: 0.1 },
+      { ch: 'fL', i: 1, amp: 0.02, cycles: 2, phase: 0.75 },
+    ],
+  },
+
+  // Salute: snap to attention, flat hand to the brow, hold, snap down.
+  salute: {
+    duration: 2.8,
+    loop: true,
+    keys: [
+      { t: 0, hR: HR_REST, eR: [0.3, 0, 1], hL: HL_REST, oR: [0, 0, 0], hips: [0, HIP_DIP, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+      // heels together, stand tall
+      { t: 0.22, e: 'out', fL: [-0.085, Y0, 0], fR: [0.085, Y0, 0], hips: [0, 0.0, 0], hL: [-0.235, 0.88, 0.0], r: { spine: [3, 0, 0], chest: [4, 0, 0], head: [4, 0, 0] } },
+      { t: 0.3, e: 'in', hR: [0.36, 1.35, -0.16], eR: [1, -0.4, 0.1], oR: [-20, 50, 70] },
+      { t: 0.46, e: 'outBack', hR: [0.15, 1.7, -0.15], eR: [1, 0.15, -0.1], oR: [-53, 112, 146] },
+      { t: 1.9, hR: [0.15, 1.7, -0.15], hL: [-0.235, 0.88, 0.0], oR: [-53, 112, 146], r: { head: [5, 0, 0] } },
+      { t: 2.1, e: 'inBack', hR: [0.3, 1.1, -0.1], eR: [0.6, -0.3, 0.6], oR: [-10, 30, 40] },
+      { t: 2.35, e: 'out', hR: [0.245, 0.88, 0.0], eR: [0.3, 0, 1], oR: [0, 0, 0] },
+      { t: 2.8, fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], hR: HR_REST, hL: HL_REST, hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+    ],
+  },
+
+  // Come get some: palm up, fingers curl twice, then arms spread wide.
+  beckon: {
+    duration: 2.8,
+    loop: true,
+    keys: [
+      { t: 0, hR: HR_REST, hL: HL_REST, eR: [0.3, 0, 1], eL: [-0.3, 0, 1], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+      { t: 0.35, e: 'outBack', hR: [0.18, 1.3, -0.47], eR: [0.7, -1, 0.2], oR: [0, -90, -100], fL: [-0.15, Y0, -0.1], fR: [0.15, Y0, 0.1], hips: [0, -0.06, 0.02], r: { spine: [4, 8, 0], chest: [6, 10, 0], head: [-6, -14, 0] } },
+      { t: 1.35, hR: [0.18, 1.3, -0.45], oR: [0, -90, -100] },
+      { t: 1.65, e: 'outBack', hR: [0.64, 1.38, -0.24], hL: [-0.64, 1.38, -0.24], eR: [0.2, -1, 0.4], eL: [-0.2, -1, 0.4], oR: [0, -163, -95], hips: [0, -0.02, 0], r: { spine: [8, 0, 0], chest: [10, 0, 0], head: [12, 0, 0] } },
+      { t: 2.3, hR: [0.62, 1.37, -0.24], hL: [-0.62, 1.37, -0.24], oR: [0, -163, -95] },
+      { t: 2.8, hR: HR_REST, hL: HL_REST, eR: [0.3, 0, 1], eL: [-0.3, 0, 1], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+    ],
+    osc: [
+      { ch: 'oR', i: 2, amp: 32, hz: 2, phase: 0.25, from: 0.45, to: 1.4, fade: 0.1 },
+      { ch: 'r.head', i: 0, amp: 4, hz: 2, from: 0.45, to: 1.4 },
+    ],
+  },
+
+  // Slow clap: weight back on one hip, three slow claps, head shaking.
+  slowclap: {
+    duration: 3.3,
+    loop: true,
+    keys: [
+      { t: 0, hL: [-0.19, 1.3, -0.3], hR: [0.19, 1.3, -0.3], eL: [-1, -1, 0.3], eR: [1, -1, 0.3], oL: [115, 0, 0], oR: [115, 0, 0], hips: [0.03, -0.035, 0], r: { hips: [0, 0, -4], spine: [4, 0, 3], chest: [2, 0, 0], head: [-4, 0, 0] }, fL: [-0.13, Y0, -0.02], fR: [0.15, Y0, 0.04] },
+      { t: 0.55, e: 'in', hL: [-0.045, 1.3, -0.34], hR: [0.045, 1.3, -0.34] },
+      { t: 1.1, e: 'out', hL: [-0.19, 1.31, -0.3], hR: [0.19, 1.31, -0.3] },
+      { t: 1.65, e: 'in', hL: [-0.045, 1.3, -0.34], hR: [0.045, 1.3, -0.34] },
+      { t: 2.2, e: 'out', hL: [-0.19, 1.31, -0.3], hR: [0.19, 1.31, -0.3] },
+      { t: 2.75, e: 'in', hL: [-0.045, 1.3, -0.34], hR: [0.045, 1.3, -0.34] },
+      { t: 3.3, e: 'out', hL: [-0.19, 1.3, -0.3], hR: [0.19, 1.3, -0.3] },
+    ],
+    osc: [
+      { ch: 'r.head', i: 1, amp: 7, cycles: 3, phase: 0 },
+      { ch: 'r.chest', i: 0, amp: 1.5, cycles: 6, phase: 0.1 },
+    ],
+  },
+
+  // Present arms: twirl the railgun beside the body, catch it barrel-up in
+  // front of the chest, hold at attention, snap back to the ready.
+  flourish: {
+    duration: 3.4,
+    loop: true,
+    gun: true,
+    keys: [
+      { t: 0, hR: [0.22, 1.12, -0.24], eR: [0.5, -1, 0.4], hL: HL_REST, eL: [-0.3, 0, 1], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+      { t: 0.3, e: 'out', hR: [0.44, 1.3, -0.14], eR: [0.8, -1, 0.1], oR: [25, 0, 0], r: { head: [-6, -14, 0] } },
+      { t: 1.15, e: 'linear', hR: [0.45, 1.32, -0.12], oR: [-600, 0, 0] },
+      { t: 1.35, e: 'out', hR: [0.03, 1.04, -0.36], eR: [0.9, -1, 0.3], hL: [0.02, 1.36, -0.3], eL: [-0.9, -1, 0.2], oR: [-630, 0, 0], fL: [-0.09, Y0, 0], fR: [0.09, Y0, 0], r: { head: [3, 0, 0], chest: [5, 0, 0], spine: [2, 0, 0] } },
+      { t: 1.5, e: 'outBack', hR: [0.03, 1.05, -0.35], hL: [0.02, 1.37, -0.29] },
+      { t: 2.7, hR: [0.03, 1.05, -0.35], hL: [0.02, 1.37, -0.29], oR: [-630, 0, 0], fL: [-0.09, Y0, 0], fR: [0.09, Y0, 0] },
+      { t: 3.0, e: 'inOut', hR: [0.22, 1.12, -0.24], eR: [0.5, -1, 0.4], hL: HL_REST, eL: [-0.3, 0, 1], oR: [-720, 0, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], r: { head: [0, 0, 0], chest: [0, 0, 0], spine: [0, 0, 0] } },
+      { t: 3.4, oR: [-720, 0, 0] },
+    ],
+  },
 };
 
-function findBone(model: THREE.Object3D, names: readonly string[]): THREE.Bone | undefined {
-  for (const name of names) {
-    const b = model.getObjectByName(name);
-    if (b instanceof THREE.Bone) return b;
+const compiled = new Map<EmoteKind, Clip>();
+export function emoteClip(kind: EmoteKind): Clip {
+  let c = compiled.get(kind);
+  if (!c) {
+    c = compileClip(DEFS[kind] ?? DEFS.idle);
+    compiled.set(kind, c);
   }
-  return undefined;
+  return c;
 }
 
-export function buildEmoteRig(model: THREE.Object3D, phase = 0): EmoteRig {
-  const bones: EmoteRig['bones'] = {};
-  const axes: EmoteRig['axes'] = {};
-  for (const [name, candidates] of Object.entries(BONE_NAMES) as Array<[BoneName, readonly string[]]>) {
-    const b = findBone(model, candidates);
-    if (!b) continue;
-    bones[name] = b;
-    const child = b.children.find((c): c is THREE.Bone => c instanceof THREE.Bone);
-    if (child && child.position.lengthSq() > 1e-8) axes[name] = child.position.clone().normalize();
-  }
-  return { model, bones, base: {}, axes, phase };
-}
-
-const _modelWorldQ = new THREE.Quaternion();
-const _parentWorldQ = new THREE.Quaternion();
-const _deltaQ = new THREE.Quaternion();
-const _desired = new THREE.Vector3();
-const _reference = new THREE.Vector3();
-
-// Aim a bone's child toward a direction expressed in soldier-model space. The
-// delta is applied to the sampled idle quaternion, preserving the natural twist
-// around the limb while avoiding brittle guesses about each Mixamo bone's local
-// Euler axes.
-function aimBone(rig: EmoteRig, name: BoneName, x: number, y: number, z: number) {
-  const b = rig.bones[name];
-  const base = rig.base[name];
-  const axis = rig.axes[name];
-  if (!b || !base || !axis || !b.parent) return;
-
-  b.parent.updateWorldMatrix(true, false);
-  rig.model.getWorldQuaternion(_modelWorldQ);
-  b.parent.getWorldQuaternion(_parentWorldQ);
-
-  _desired.set(x, y, z).normalize().applyQuaternion(_modelWorldQ);
-  _desired.applyQuaternion(_parentWorldQ.invert());
-  _reference.copy(axis).applyQuaternion(base);
-  _deltaQ.setFromUnitVectors(_reference, _desired);
-  b.quaternion.copy(base).premultiply(_deltaQ);
-}
-
-function arm(rig: EmoteRig, side: 'left' | 'right', x: number, y: number, z = 0) {
-  aimBone(rig, side === 'right' ? 'rightArm' : 'leftArm', x, y, z);
-}
-
-function foreArm(rig: EmoteRig, side: 'left' | 'right', x: number, y: number, z = 0) {
-  aimBone(rig, side === 'right' ? 'rightForeArm' : 'leftForeArm', x, y, z);
-}
-
-const _torsoQ = new THREE.Quaternion();
-const _torsoE = new THREE.Euler(0, 0, 0, 'XYZ');
-
-function torso(rig: EmoteRig, x = 0, y = 0, z = 0) {
-  const b = rig.bones.spine2;
-  const base = rig.base.spine2;
-  if (!b || !base) return;
-  _torsoE.set(x, y, z, 'XYZ');
-  _torsoQ.setFromEuler(_torsoE);
-  b.quaternion.copy(base).multiply(_torsoQ);
-}
-
-// Drive one emote frame. `group` is the outer follower (yaw/position); `baseYaw`
-// is its resting facing; `baseY` its resting height; `t` seconds.
-//
-// INVARIANT: call this AFTER mixer.update() each frame. We only override the
-// bones an emote explicitly poses; every other bone is reset to the idle clip by
-// mixer.update, so switching emotes never strands a bone. The current set poses
-// spine2 + arms/forearms, all keyed by idle. A future emote that poses an
-// un-keyed bone (e.g. a finger) would need an explicit reset here.
-export function applyEmote(
-  rig: EmoteRig,
-  group: THREE.Object3D,
-  baseYaw: number,
-  baseY: number,
-  t: number,
-  kind: EmoteKind,
-) {
-  const p = rig.phase;
-  // buildEmoteRig runs before the first mixer tick. Capture the first
-  // mixer-written idle pose here so arm overrides start from a natural stance,
-  // not the GLB's bind T-pose or a different live arm swing every frame.
-  for (const name of Object.keys(BONE_NAMES) as BoneName[]) {
-    const b = rig.bones[name];
-    if (b && !rig.base[name]) rig.base[name] = b.quaternion.clone();
-  }
-  // Reset the group each frame (the mixer never touches it).
-  group.position.y = baseY;
-  group.rotation.set(0, baseYaw, 0);
-  const bob = (amp: number, freq: number, off = 0) => baseY + Math.abs(Math.sin(t * freq + off)) * amp;
-
-  switch (kind) {
-    case 'cheer': {
-      // Both arms up in a celebratory V, forearms straight, energetic jumps.
-      group.position.y = bob(0.14, 6.5, p);
-      const wiggle = Math.sin(t * 8 + p) * 0.15;
-      torso(rig, -0.04, 0, wiggle * 0.08);
-      arm(rig, 'right', 0.55 + wiggle * 0.1, 0.84, 0);
-      arm(rig, 'left', -0.55 - wiggle * 0.1, 0.84, 0);
-      foreArm(rig, 'right', 0.55, 0.84 + wiggle * 0.1, 0);
-      foreArm(rig, 'left', -0.55, 0.84 - wiggle * 0.1, 0);
-      break;
-    }
-    case 'wave': {
-      // Right arm up to the side, forearm waving; left arm relaxed at idle.
-      const wave = Math.sin(t * 7 + p);
-      torso(rig, 0, 0.06, -0.04);
-      arm(rig, 'right', 0.78, 0.63, 0);
-      foreArm(rig, 'right', 0.2 + wave * 0.22, 0.98, 0);
-      group.rotation.z = Math.sin(t * 3 + p) * 0.02;
-      break;
-    }
-    case 'flex': {
-      // Double-biceps: upper arms out to the sides, forearms curled beside the
-      // head, and a slow show-off turn.
-      group.rotation.y = baseYaw + Math.sin(t * 0.9) * 0.5;
-      torso(rig, -0.02, 0, 0);
-      arm(rig, 'right', 0.95, 0.28, 0);
-      arm(rig, 'left', -0.95, 0.28, 0);
-      foreArm(rig, 'right', -0.28, 0.96, 0.04);
-      foreArm(rig, 'left', 0.28, 0.96, 0.04);
-      break;
-    }
-    case 'spin': {
-      // Full-body spin with a bouncing hop; arms flung out for flair.
-      group.rotation.y = baseYaw + t * 3.2;
-      group.position.y = bob(0.06, 6.4, p);
-      torso(rig, 0, 0, Math.sin(t * 6 + p) * 0.04);
-      arm(rig, 'right', 1, 0.08, 0);
-      arm(rig, 'left', -1, 0.08, 0);
-      foreArm(rig, 'right', 1, 0.08, 0);
-      foreArm(rig, 'left', -1, 0.08, 0);
-      break;
-    }
-    case 'dance': {
-      // Hip sway + bob + disco point: one hand high, the other low for a
-      // silhouette that stays distinct from cheer even at a single frame.
-      const sway = Math.sin(t * 5 + p);
-      group.rotation.z = sway * 0.1;
-      group.rotation.y = baseYaw + sway * 0.22;
-      group.position.y = bob(0.07, 5, p);
-      torso(rig, 0.02, sway * 0.08, -sway * 0.08);
-      arm(rig, 'right', 0.6 + sway * 0.08, 0.82, 0.02);
-      arm(rig, 'left', -0.95, 0.14 + Math.abs(sway) * 0.08, 0);
-      foreArm(rig, 'right', 0.18 + sway * 0.22, 0.98, 0);
-      foreArm(rig, 'left', -0.98, 0.08, 0);
-      break;
-    }
-    case 'idle':
-    default:
-      // Let the idle clip play; just a barely-there breathing bob.
-      group.position.y = baseY + Math.sin(t * 1.6 + p) * 0.01;
-      break;
-  }
-}
+export const EMOTE_KINDS = Object.keys(DEFS) as EmoteKind[];

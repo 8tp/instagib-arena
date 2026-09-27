@@ -1,14 +1,15 @@
 import * as THREE from 'three';
-import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { WornHat } from './hats';
-import { loadSoldier, pickClip } from './podium';
-import { applyEmote, buildEmoteRig, type EmoteRig } from './emotes';
+import { CharacterAnimator } from './character-anim';
+import { Character, skinColorFor } from './character/character';
+import { attachRailgun, disposeRailgun } from './character/gun';
 import { EffectsManager } from './effects';
 import { buildRailgun, type RailgunModel } from './weapon-model';
 import { emoteById, railColorById, railgunFinishById, type KillEffectStyle } from './cosmetics';
 
 // Live Locker preview, focused per tab so each slot is shown the best way:
-//   character → the soldier wearing the equipped hat + unusual, zoomed in on the
+//   character → the combatant wearing the equipped hat + unusual, zoomed in on the
 //               head and slowly turning so you can read the hat from every angle.
 //   emote     → the whole player model playing the equipped emote, framed head-
 //               to-toe (emotes throw the arms overhead, so the body must be in
@@ -27,9 +28,20 @@ export type PreviewCosmetics = {
   railgunFinish: string; // railgun-finish cosmetic id
   killEffect: KillEffectStyle;
   view: PreviewView;
+  // Seed for the armour colour (the player's name) so the preview wears the
+  // same bright skin other players see. Falls back to the saved profile name.
+  skinSeed?: string;
 };
 
-const FACE_CAMERA = Math.PI; // soldier faces -Z; turn it to face the +Z camera
+const FACE_CAMERA = Math.PI; // the combatant faces -Z; turn it to face the +Z camera
+
+function savedName(): string {
+  try {
+    return localStorage.getItem('instagib-name') ?? '';
+  } catch {
+    return '';
+  }
+}
 const FIRE_PERIOD = 2.2; // seconds between showcase rail shots (weapon view)
 
 export class CharacterPreview {
@@ -37,8 +49,9 @@ export class CharacterPreview {
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private effects = new EffectsManager();
-  private mixer: THREE.AnimationMixer | null = null;
-  private rig: EmoteRig | null = null;
+  private character: Character | null = null;
+  private anim: CharacterAnimator | null = null;
+  private emoteGun: THREE.Group | null = null;
   private hat: WornHat | null = null;
   private group = new THREE.Group();
   private gun: RailgunModel | null = null;
@@ -77,6 +90,16 @@ export class CharacterPreview {
     this.frameCamera();
     this.resize();
 
+    if (this.view !== 'weapon') {
+      // The combatant's PBR armour wants tone mapping + an environment to
+      // reflect (the weapon view keeps its original look).
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = 0.82;
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      this.scene.environmentIntensity = 0.45;
+      pmrem.dispose();
+    }
     this.scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x202028, 1.1));
     const key = new THREE.DirectionalLight(0xfff2d8, 1.85);
     key.position.set(2.5, 5, 4);
@@ -104,7 +127,7 @@ export class CharacterPreview {
     }
     this.scene.add(this.group);
 
-    void this.build();
+    this.build();
   }
 
   // Per-view camera placement (re-applied on resize via aspect only).
@@ -128,22 +151,36 @@ export class CharacterPreview {
     this.camera.updateProjectionMatrix();
   }
 
-  private async build() {
+  private build() {
     if (this.view === 'weapon') {
       this.buildGun();
       return;
     }
-    const src = await loadSoldier().catch(() => null);
-    if (this.disposed || !src) return;
-    const model = SkeletonUtils.clone(src.scene);
-    this.group.add(model);
+    if (this.disposed) return;
+    const ch = new Character({ colorHex: skinColorFor(this.cos.skinSeed || savedName() || 'you') });
+    this.character = ch;
+    this.group.add(ch.root);
     this.group.rotation.y = FACE_CAMERA;
-    this.mixer = new THREE.AnimationMixer(model);
-    this.mixer.clipAction(pickClip(src.animations, ['idle'], 0)).play();
-    this.rig = buildEmoteRig(model, 0);
-    this.hat = new WornHat(this.group, model);
+    this.anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
+    this.applyEmoteView();
+    this.hat = new WornHat(ch.sockets.headTop);
     void this.hat.setHat(this.cos.hatId);
     this.hat.setUnusual(this.cos.unusualId);
+  }
+
+  // The character view idles; the emote view plays the equipped emote (with
+  // the railgun in hand when the clip calls for it).
+  private applyEmoteView() {
+    if (!this.anim || !this.character) return;
+    const kind = this.view === 'emote' ? emoteById(this.cos.emoteId).kind : 'idle';
+    this.anim.playEmote(kind);
+    const wantsGun = kind === 'flourish';
+    if (wantsGun && !this.emoteGun) {
+      this.emoteGun = attachRailgun(this.character, railgunFinishById(this.cos.railgunFinish).data);
+    } else if (!wantsGun && this.emoteGun) {
+      disposeRailgun(this.emoteGun);
+      this.emoteGun = null;
+    }
   }
 
   private buildGun() {
@@ -160,7 +197,9 @@ export class CharacterPreview {
   setCosmetics(cos: PreviewCosmetics) {
     const hatChanged = cos.hatId !== this.cos.hatId;
     const unusualChanged = cos.unusualId !== this.cos.unusualId;
+    const emoteChanged = cos.emoteId !== this.cos.emoteId;
     this.cos = cos;
+    if (emoteChanged) this.applyEmoteView();
     if (this.hat) {
       if (hatChanged) void this.hat.setHat(cos.hatId);
       if (unusualChanged) this.hat.setUnusual(cos.unusualId);
@@ -233,14 +272,11 @@ export class CharacterPreview {
       if (this.view === 'weapon') {
         this.stepWeapon(dt);
       } else {
-        this.mixer?.update(dt);
         if (this.view === 'character') {
           // Gentle turntable sway so the hat reads from the front and both sides.
           this.group.rotation.y = FACE_CAMERA + Math.sin(this.t * 0.55) * 0.7;
-          if (this.rig) applyEmote(this.rig, this.group, this.group.rotation.y, 0, now, 'idle');
-        } else if (this.rig) {
-          applyEmote(this.rig, this.group, FACE_CAMERA, 0, now, emoteById(this.cos.emoteId).kind);
         }
+        this.anim?.updateStatic(dt);
         this.hat?.update(dt);
       }
 
@@ -291,11 +327,15 @@ export class CharacterPreview {
     if (this.raf !== null) cancelAnimationFrame(this.raf);
     this.raf = null;
     this.hat?.dispose();
-    this.mixer?.stopAllAction();
+    disposeRailgun(this.emoteGun);
+    this.emoteGun = null;
+    this.anim?.dispose();
+    this.character?.dispose();
+    (this.scene.environment as THREE.Texture | null)?.dispose();
     this.effects.dispose(this.scene);
     for (const b of this.beams) this.scene.remove(b.mesh);
     this.beams = [];
-    // Per-instance scenery (the soldier + hat clones share CACHED geometry, so we
+    // Per-instance scenery (the combatant + hat clones share CACHED geometry, so we
     // must NOT dispose those). The gun is procedural and unique → dispose it.
     this.floor?.geometry.dispose();
     (this.floor?.material as THREE.Material | undefined)?.dispose();
