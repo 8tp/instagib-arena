@@ -83,6 +83,11 @@ export function MenuBackdropView({
   return (
     <div aria-hidden='true' className={`pointer-events-none absolute inset-0 overflow-hidden ${className}`}>
       <canvas
+        // Fresh canvas per backdrop instance: the old one's context is
+        // force-lost on dispose and a lost context can't be re-acquired, so
+        // re-creating on the same element (toggling lowSpec / reduced effects
+        // in Settings) left the menu black.
+        key={`bd-${still ? 1 : 0}-${lowSpec ? 1 : 0}`}
         ref={canvasRef}
         className={`menu-bd-canvas absolute inset-0 h-full w-full ${ready ? 'menu-bd-ready' : ''}`}
       />

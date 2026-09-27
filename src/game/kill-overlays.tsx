@@ -23,7 +23,10 @@ export const FragPopup = memo(function FragPopup({
   if (!confirm) return null;
   const headshot = confirm.headshot;
   return (
-    <div className='absolute inset-x-0 top-[max(31%,15.5rem)] flex justify-center px-6'>
+    // Anchored by its BOTTOM edge at 42% of the height and growing upward, so
+    // it can never cover the crosshair (at 50%) whatever the viewport height or
+    // UI scale — a top-anchored print overlapped it on ≤680px-tall windows.
+    <div className='absolute inset-x-0 bottom-[58%] flex justify-center px-6'>
       <div
         key={confirm.id}
         className='hud-frag hud-cprint flex flex-col items-center text-center'

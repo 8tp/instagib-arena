@@ -72,8 +72,12 @@ export const LoadingScreen = memo(function LoadingScreen({
   // Give the levelshot a short window to land so the screen reads as a
   // levelshot, never longer than shotWaitMs past the minimum.
   const hasShot = levelshot !== null;
+  // Latch completion: an input can flip back (e.g. a disconnect → reconnect
+  // inside the fade), which used to cancel onGone and leave the screen opaque.
+  const [completed, setCompleted] = useState(false);
+  if (complete && !completed) setCompleted(true);
   useEffect(() => {
-    if (!complete || shownAt === null) return;
+    if (!completed || shownAt === null) return;
     const now = performance.now();
     const minLeft = Math.max(0, shownAt + minMs - now);
     const shotLeft = hasShot || minMs === 0 ? 0 : Math.max(0, shownAt + minMs + shotWaitMs - now);
@@ -87,7 +91,7 @@ export const LoadingScreen = memo(function LoadingScreen({
       window.clearTimeout(t);
       window.clearTimeout(gone);
     };
-  }, [complete, shownAt, minMs, holdMs, hasShot, shotWaitMs]);
+  }, [completed, shownAt, minMs, holdMs, hasShot, shotWaitMs]);
 
   const [tip, setTip] = useState(() => Math.floor(Math.random() * TIPS.length));
   useEffect(() => {
@@ -103,7 +107,6 @@ export const LoadingScreen = memo(function LoadingScreen({
   return (
     <div
       role='status'
-      aria-live='polite'
       aria-label={`Loading ${title}`}
       className={`ls-root absolute inset-0 z-[70] overflow-hidden bg-[#040507] text-white${leaving ? ' ls-out' : ''}${
         reduced ? ' ls-reduced' : ''
@@ -115,6 +118,9 @@ export const LoadingScreen = memo(function LoadingScreen({
         <div aria-hidden='true' className='ls-placeholder absolute inset-0' />
       )}
       <div aria-hidden='true' className='ls-scrim absolute inset-0' />
+      <span className='sr-only' aria-live='polite'>
+        {completed ? `${title} ready` : `Loading ${title}`}
+      </span>
 
       <div className='absolute left-6 top-5 flex items-center gap-2.5 font-mono text-[10px] font-semibold uppercase tracking-[0.3em] text-white/55 sm:left-12 sm:top-8'>
         <svg viewBox='0 0 32 32' width='16' height='16' aria-hidden='true' className='text-cyan-300'>

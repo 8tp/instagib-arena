@@ -1111,7 +1111,9 @@ canvas {
    Fades in over the match root, pushes the levelshot in slowly, fades out
    once the real load steps are done (src/ui/LoadingScreen.tsx). */
 .ls-root {
-  animation: deck-fade-in 0.22s ease-out both;
+  /* `backwards`, not `both`: a forwards fill pins opacity at 1 and the
+     .ls-out fade below never runs (it hard-cut instead). */
+  animation: deck-fade-in 0.22s ease-out backwards;
   transition: opacity 0.42s ease-in;
 }
 .ls-root.ls-out {

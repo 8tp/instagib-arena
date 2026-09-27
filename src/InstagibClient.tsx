@@ -715,6 +715,13 @@ function applyMatchConfig(game: Game, config: MatchConfig) {
   }
 }
 
+// Touch-first or Save-Data devices get a still backdrop frame instead of the
+// live 30 fps arena (the Landing page skips 3D on these entirely).
+const LIGHT_DEVICE =
+  typeof window !== 'undefined' &&
+  ((window.matchMedia?.('(pointer: coarse)').matches ?? false) ||
+    (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData === true);
+
 const INITIAL_HUD: HudState = {
   frags: 0,
   railCooldown: 0,
@@ -1278,11 +1285,21 @@ function GameView({
   // Warm the levelshots of the ballot while the vote runs, so the interstitial
   // opens on a finished image.
   const voteKey = hud.vote ? hud.vote.options.join(',') : '';
+  // Each uncached shot is a ~250ms main-thread render (+ a lightmap bake), so
+  // skip the warm-up on low-spec and spread the rest out between idle frames.
   useEffect(() => {
-    if (!voteKey) return;
+    if (!voteKey || settings.lowSpec) return;
     let alive = true;
+    const idle = () =>
+      new Promise<void>((r) => {
+        const ric = (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+          .requestIdleCallback;
+        if (ric) ric(() => r(), { timeout: 1500 });
+        else window.setTimeout(r, 300);
+      });
     void import('./menu/menu-backdrop').then(async (m) => {
       for (const id of voteKey.split(',')) {
+        await idle();
         if (!alive) return;
         await m.renderLevelshot(id, { lowSpec: settings.lowSpec });
       }
@@ -1534,7 +1551,9 @@ function SpectatorView({
     { id: 'gamestate', label: 'Awaiting gamestate', done: specMap !== null },
     { id: 'snapshot', label: 'Awaiting snapshot', done: specLive },
   ];
-  const specAbort = !!error || loadTimedOut || hud.netStatus === 'error';
+  // 'error' is immediately followed by 'closed' (net.ts), and the HUD samples
+  // status at 20 Hz — so 'closed' is the state that sticks when unreachable.
+  const specAbort = !!error || loadTimedOut || hud.netStatus === 'error' || hud.netStatus === 'closed';
   const specMapId = specMap ? mapIdByName(specMap) : config.mapId;
   const specShot = useLevelshot(loadGone ? null : specMapId, settings.lowSpec);
 
@@ -5358,7 +5377,7 @@ function Lobby({
     <div className='menu-root fixed inset-0 z-50 overflow-hidden text-white'>
       <MenuBackdropView
         active={!modalOpen}
-        still={settings.lowSpec || settings.reducedEffects}
+        still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
         onMap={onBackdropMap}
       />

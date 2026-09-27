@@ -260,7 +260,8 @@ export const QuakeScoreboard = memo(function QuakeScoreboard({
         </div>
         <div className='deck-scroll min-h-0 overflow-y-auto px-4 pb-3 pt-2'>
           {isTeam ? (
-            ([0, 1] as const).map((team) => {
+            <>
+            {([0, 1] as const).map((team) => {
               const players = scores.filter((s) => s.team === team);
               const total = players.reduce((sum, s) => sum + s.frags, 0);
               const color = TEAM_COLORS[team];
@@ -283,7 +284,19 @@ export const QuakeScoreboard = memo(function QuakeScoreboard({
                   ))}
                 </div>
               );
-            })
+            })}
+            {/* Anyone not (yet) on a team — e.g. mid-assignment — still gets a row. */}
+            {scores.some((s) => s.team !== 0 && s.team !== 1) && (
+              <div className='mt-3'>
+                <SbHead showPing={showPing} />
+                {scores
+                  .filter((s) => s.team !== 0 && s.team !== 1)
+                  .map((s) => (
+                    <SbRow key={s.id} s={s} rank={rankOf(scores, s)} showPing={showPing} />
+                  ))}
+              </div>
+            )}
+            </>
           ) : (
             <>
               <SbHead showPing={showPing} />
