@@ -344,10 +344,21 @@ export function isCard(id: string): boolean {
 
 // ── Emote slot ───────────────────────────────────────────────────────────────
 // A celebratory animation your character plays on the end-of-match podium (and,
-// later, as an in-lobby/taunt). Procedural (bone-driven) — see podium.ts.
+// later, as an in-lobby/taunt). Authored full-body keyframe clips on the code-
+// built combatant's skeleton — see game/emotes.ts.
 export const DEFAULT_EMOTE = 'emote.cheer';
 
-export type EmoteKind = 'idle' | 'cheer' | 'wave' | 'flex' | 'spin' | 'dance';
+export type EmoteKind =
+  | 'idle'
+  | 'cheer'
+  | 'wave'
+  | 'flex'
+  | 'spin'
+  | 'dance'
+  | 'salute'
+  | 'beckon'
+  | 'slowclap'
+  | 'flourish';
 
 export type EmoteCosmetic = {
   id: string;
@@ -364,6 +375,11 @@ export const EMOTES: readonly EmoteCosmetic[] = [
   { id: 'emote.flex',  name: 'Flex',          blurb: 'Show off those gains.',      rarity: 'rare',   source: { type: 'credits', price: 500 },  kind: 'flex' },
   { id: 'emote.spin',  name: 'Spin',          blurb: 'Round and round.',           rarity: 'rare',   source: { type: 'level', level: 8 },      kind: 'spin' },
   { id: 'emote.dance', name: 'Disco',         blurb: 'Hips and hands, all night.', rarity: 'epic',   source: { type: 'credits', price: 1200 }, kind: 'dance' },
+  // Quake-flavoured taunts (authored full-body clips — see game/emotes.ts).
+  { id: 'emote.salute',   name: 'Salute',        blurb: 'Snap to attention.',                     rarity: 'common', source: { type: 'level', level: 4 },      kind: 'salute' },
+  { id: 'emote.beckon',   name: 'Come Get Some', blurb: 'Palm up, fingers curl. Bring it.',       rarity: 'rare',   source: { type: 'level', level: 10 },     kind: 'beckon' },
+  { id: 'emote.slowclap', name: 'Slow Clap',     blurb: 'Deeply, deeply unimpressed.',            rarity: 'rare',   source: { type: 'credits', price: 700 },  kind: 'slowclap' },
+  { id: 'emote.flourish', name: 'Present Arms',  blurb: 'A railgun twirl, snapped to attention.', rarity: 'epic',   source: { type: 'level', level: 16 },     kind: 'flourish' },
 ];
 
 export function emoteById(id: string): EmoteCosmetic {
