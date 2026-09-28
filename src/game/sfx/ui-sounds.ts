@@ -73,8 +73,9 @@ const GESTURE_CUES: ReadonlySet<UiSoundName> = new Set<UiSoundName>([
   'uiToggle',
   'tabSwitch',
   'equip',
-  'purchase',
 ]);
+// ('purchase' is not here: it plays on the server's reply and from the rewards
+// reveal's timers — never inside the click itself.)
 
 export function isGestureUiSound(name: UiSoundName): boolean {
   return GESTURE_CUES.has(name);

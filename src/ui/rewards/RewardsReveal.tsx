@@ -386,7 +386,7 @@ function LevelTakeover({ m }: { m: RevealModel }) {
             {rewardCount > 0 && <span className='text-white/50'> · {rewardCount} reward{rewardCount === 1 ? '' : 's'}</span>}
           </div>
           {m.catchUp && <div className='rw-to-sub mt-2 max-w-[22rem] text-[14px] text-white/55'>{CATCH_UP_REASON}</div>}
-          {!m.saved && <div className='rw-to-sub mt-2 text-[14px] text-amber-200/80'>Not saved · log in to keep it</div>}
+          {!m.saved && <div className='rw-to-sub mt-2 text-[14px] text-amber-200/80'>Not saved · log in so your next matches count</div>}
         </div>
         {m.spotlight.length > 0 && (
           <div className='flex flex-col items-center gap-3'>
@@ -667,10 +667,10 @@ export function RewardsReveal({
           </p>
           {onLogin ? (
             <DeckButton solid accent='cyan' size='sm' center full onClick={onLogin}>
-              Log in to keep your progress
+              Log in to save your next matches
             </DeckButton>
           ) : (
-            <p className='text-[13px] text-cyan-200/80'>Log in from the main menu to keep your progress.</p>
+            <p className='text-[13px] text-cyan-200/80'>Log in from the main menu so your next matches count.</p>
           )}
         </div>
       )}

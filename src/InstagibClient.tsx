@@ -574,7 +574,10 @@ export default function InstagibClient() {
     setSettings((s) => (s.playerName === name ? s : { ...s, playerName: name }));
   }, [auth.ready, auth.account]);
 
+  // Bumped per match so a late offline-stats reply can't land on a newer one.
+  const exitToken = useRef(0);
   const startMatch = useCallback((cfg: MatchConfig) => {
+    exitToken.current++;
     setLastResult(null);
     setLastProgression(null);
     setConfig(cfg);
@@ -584,11 +587,22 @@ export default function InstagibClient() {
 
   // Leave to the lobby. GameView already submitted stats; we only carry the
   // result through for the lobby's "last match" banner (no re-submit here).
-  const exitToLobby = useCallback((result: MatchResult | null, progression?: ProgressionResp | null) => {
-    if (result) setLastResult(result);
-    setLastProgression(progression ?? null);
-    setView('lobby');
-  }, []);
+  // `pending` = an offline POST /api/stats still in flight: its reply fills in
+  // the lobby's last-match rewards when it lands (the lobby is already up).
+  const exitToLobby = useCallback(
+    (result: MatchResult | null, progression?: ProgressionResp | null, pending?: Promise<ProgressionResp | null> | null) => {
+      if (result) setLastResult(result);
+      setLastProgression(progression ?? null);
+      setView('lobby');
+      if (!progression && pending) {
+        const token = exitToken.current;
+        void pending.then((p) => {
+          if (p && token === exitToken.current) setLastProgression(p);
+        });
+      }
+    },
+    [],
+  );
 
   const playAgain = useCallback(() => {
     if (config) startMatch(config);
@@ -625,6 +639,7 @@ export default function InstagibClient() {
         onChangeSettings={setSettings}
         onExit={exitToLobby}
         onPlayAgain={playAgain}
+        loggedIn={!!auth.account}
         onLogin={(r) => {
           exitToLobby(r);
           setLoginOpen(true);
@@ -721,13 +736,19 @@ function GameView({
   onExit,
   onPlayAgain,
   onLogin,
+  loggedIn,
 }: {
   config: MatchConfig;
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
-  onExit: (result: MatchResult | null, progression?: ProgressionResp | null) => void;
+  onExit: (
+    result: MatchResult | null,
+    progression?: ProgressionResp | null,
+    pending?: Promise<ProgressionResp | null> | null,
+  ) => void;
   onPlayAgain: () => void;
   onLogin: (result: MatchResult | null) => void; // guest → back to the lobby with the login sheet open
+  loggedIn: boolean; // the in-match +XP ticker only means something with an account
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -758,7 +779,10 @@ function GameView({
     shallowEqual,
   );
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
+  const statsPending = useRef<Promise<ProgressionResp | null> | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  // Already in this room in another tab: retrying would hit the same refusal.
+  const [joinDuplicate, setJoinDuplicate] = useState(false);
   // Ranked Duel end-of-match result (rating delta) → full-screen overlay.
   const [rankedResult, setRankedResult] = useState<RankedResult | null>(null);
   // Weekly-challenge end-of-run standing (rank/best) → small result banner.
@@ -805,7 +829,9 @@ function GameView({
           });
         }
       } else if (reportsOwnStats) {
-        void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
+        const pending = submitMatchStats(result, offlineMatch, game.getMatchModeTag());
+        statsPending.current = pending;
+        void pending.then((p) => {
           if (p) setEndProgression(p);
         });
       }
@@ -826,6 +852,7 @@ function GameView({
     window.addEventListener('keydown', onDebugKey);
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
+        setJoinDuplicate(ev.reason === 'duplicate');
         setJoinError(
           ev.reason === 'full'
             ? 'That lobby is full.'
@@ -930,10 +957,11 @@ function GameView({
     // A weekly-challenge run only counts when it FINISHES (match-end); leaving
     // mid-run abandons it. Other matches submit the partial run to career stats.
     if (!isChallenge && reportsOwnStats && r && game?.hasRecordableStats()) {
-      void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
+      statsPending.current = submitMatchStats(r, offlineMatch, game.getMatchModeTag());
     }
-    // Leaving from the post-match vote still carries this match's rewards.
-    onExit(r, endProgression);
+    // Leaving from the post-match vote still carries this match's rewards (or
+    // the in-flight offline reply, which lands after the lobby is up).
+    onExit(r, endProgression, statsPending.current);
   }, [onExit, offlineMatch, isChallenge, reportsOwnStats, endProgression]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
@@ -1093,7 +1121,7 @@ function GameView({
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
-      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge} />}
+      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge && loggedIn} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1131,7 +1159,14 @@ function GameView({
           onLeave={() => onExit(null)}
           // Re-attempt the same room (the invite room gets a 5-min grace, so a
           // friend joining a bit late can retry without a fresh link — #17).
-          onRetry={config.mode === 'multiplayer' ? () => { setJoinError(null); onPlayAgain(); } : undefined}
+          onRetry={
+            config.mode === 'multiplayer' && !joinDuplicate
+              ? () => {
+                  setJoinError(null);
+                  onPlayAgain();
+                }
+              : undefined
+          }
         />
       )}
       {waiting && (
@@ -1161,7 +1196,7 @@ function GameView({
           progression={endProgression}
           onLobby={() => {
             exitFullscreen();
-            onExit(endResult, endProgression);
+            onExit(endResult, endProgression, statsPending.current);
           }}
         />
       )}
@@ -1192,7 +1227,7 @@ function GameView({
           }}
           onLobby={() => {
             exitFullscreen();
-            onExit(endResult, endProgression);
+            onExit(endResult, endProgression, statsPending.current);
           }}
           onLogin={() => {
             exitFullscreen();

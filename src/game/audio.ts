@@ -551,11 +551,12 @@ export type { UiSoundName } from './sfx/ui-sounds';
 const UI_TRIM = 0.55;
 
 // True while the page holds transient user activation (inside a click / key
-// handler). Browsers without the API are treated as "yes" (the old behaviour).
+// handler). Browsers without the API answer "no": the first pointerdown/keydown
+// still unlocks the bank (unlockUiAudio, wired in deck-core), so they lose nothing.
 function inUserGesture(): boolean {
   if (typeof navigator === 'undefined') return false;
   const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-  return ua ? ua.isActive : true;
+  return ua ? ua.isActive : false;
 }
 
 class UiSoundBank {
