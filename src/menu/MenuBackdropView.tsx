@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { MenuBackdrop } from './menu-backdrop';
+import type { HeroLoadout } from './menu-hero';
 
 // React host for the live 3D menu backdrop. The engine module (and Three.js
 // with it) is imported lazily, so the landing page can mount this without
@@ -8,6 +9,11 @@ import type { MenuBackdrop } from './menu-backdrop';
 //
 // `active` pauses the loop (modal open, match starting). `still` renders a
 // single frame and never loops (lowSpec / reducedEffects).
+//
+// Hero (menu only): `hero` is the loadout your combatant wears and `heroSlot`
+// the DOM box it stands in — measured here and handed to the backdrop, which
+// frames the character into it. `heroHover` squares it up to the camera;
+// bumping `heroEmote` plays the equipped emote now.
 export function MenuBackdropView({
   active = true,
   still = false,
@@ -15,6 +21,10 @@ export function MenuBackdropView({
   delayMs = 0,
   className = '',
   onMap,
+  hero = null,
+  heroSlot,
+  heroHover = false,
+  heroEmote = 0,
 }: {
   active?: boolean;
   still?: boolean;
@@ -22,12 +32,19 @@ export function MenuBackdropView({
   delayMs?: number; // defer the 3D import (landing: let the page paint first)
   className?: string;
   onMap?: (id: string, name: string) => void;
+  hero?: HeroLoadout | null;
+  heroSlot?: RefObject<HTMLElement | null>;
+  heroHover?: boolean;
+  heroEmote?: number;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fadeRef = useRef<HTMLCanvasElement>(null);
   const backdropRef = useRef<MenuBackdrop | null>(null);
   const activeRef = useRef(active);
   const onMapRef = useRef(onMap);
+  const heroRef = useRef(hero);
+  const hoverRef = useRef(heroHover);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -52,10 +69,12 @@ export function MenuBackdropView({
               lowSpec,
               startMap: pinned,
               onMap: (id, name) => onMapRef.current?.(id, name),
+              hero: heroRef.current,
             });
             backdropRef.current = bd;
             if (import.meta.env.DEV) (window as unknown as { __menuBackdrop?: MenuBackdrop }).__menuBackdrop = bd;
             bd.setActive(activeRef.current);
+            bd.setHeroHover(hoverRef.current);
             setReady(true);
           } catch (err) {
             // No WebGL (or it failed to init): the CSS ground behind stays.
@@ -80,8 +99,61 @@ export function MenuBackdropView({
     backdropRef.current?.setActive(active);
   }, [active]);
 
+  useEffect(() => {
+    heroRef.current = hero;
+    backdropRef.current?.setHero(hero);
+  }, [hero, ready]);
+
+  useEffect(() => {
+    hoverRef.current = heroHover;
+    backdropRef.current?.setHeroHover(heroHover);
+  }, [heroHover]);
+
+  useEffect(() => {
+    if (heroEmote > 0) backdropRef.current?.heroEmote();
+  }, [heroEmote]);
+
+  // Measure the hero slot (relative to the canvas) and hand it to the 3D.
+  useEffect(() => {
+    if (!ready || !heroSlot) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const bd = backdropRef.current;
+      const slot = heroSlot.current;
+      const root = rootRef.current;
+      if (!bd || !root) return;
+      if (!slot) {
+        bd.setHeroFrame(null);
+        return;
+      }
+      const r = slot.getBoundingClientRect();
+      const c = root.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || c.width < 2) {
+        bd.setHeroFrame(null);
+        return;
+      }
+      bd.setHeroFrame({ x: r.left - c.left, y: r.top - c.top, w: r.width, h: r.height, vw: c.width, vh: c.height });
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    schedule();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null;
+    if (ro) {
+      if (heroSlot.current) ro.observe(heroSlot.current);
+      if (rootRef.current) ro.observe(rootRef.current);
+    }
+    window.addEventListener('resize', schedule);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+      window.removeEventListener('resize', schedule);
+    };
+  }, [ready, heroSlot, hero]);
+
   return (
-    <div aria-hidden='true' className={`pointer-events-none absolute inset-0 overflow-hidden ${className}`}>
+    <div ref={rootRef} aria-hidden='true' className={`pointer-events-none absolute inset-0 overflow-hidden ${className}`}>
       <canvas
         // Fresh canvas per backdrop instance: the old one's context is
         // force-lost on dispose and a lost context can't be re-acquired, so
