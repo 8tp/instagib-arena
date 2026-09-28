@@ -213,7 +213,8 @@ statsRouter.post('/shop/buy', (req, res) => {
   res.status(result.ok ? 200 : 400).json(result);
 });
 
-// Open a hat case (credits-funded, server-authoritative roll). Rate-limited.
+// Open a hat case (a free Career Road key if the player has one, else credits;
+// server-authoritative, never a duplicate — see db.ts openCase). Rate-limited.
 statsRouter.post('/shop/open-case', (req, res) => {
   const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {

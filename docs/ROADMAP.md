@@ -68,19 +68,42 @@ The spine everything else hangs off. Spec in
 - [x] Online cosmetics are **ownership-checked** server-side (the `igpid` cookie
       rides the WS upgrade); the killcam card uses the server-known name.
 
+## Phase 2.5 — Progression 2.0  ✅ shipped
+
+Spec (as built) in [`docs/progression.md`](./progression.md).
+
+- [x] **Server-authoritative online XP:** the game server records every online
+      match from its own counters (shots, hits, headshots, streaks, win) and
+      pushes a WS `progression` message; `POST /api/stats` is offline-only
+      (×0.3, 1,500 XP/day cap, training rejected).
+- [x] **Flatter curve** (`200 + 45·n`): L10 ≈ 20 matches, L50 ≈ 325, L100 ≈ 1,200.
+      Level is always derived from total XP.
+- [x] **Career Road:** every level 2–100 grants a reward — 36 cosmetics (legendary
+      capstones at 50/75/100), a hat-case key every 10 levels, scaling credits,
+      milestone bonuses; paid exactly once, with catch-up for existing players.
+- [x] **Hat case without dupes:** un-owned case hats only, a real 5% jackpot,
+      keys spent before credits, consolation once the hats are collected.
+- [x] **Challenges auto-pay** on completion (nothing lost at reset); the weekly
+      set rolls Monday 00:00 UTC like the weekly board; the UI gets `resetsAt`.
+- [x] **Itemized rewards** (`xpLines`, road steps, challenge completions) for
+      the results screen; guests see a `saved: false` preview.
+- [x] Economy fixes: admin items never persisted, best accuracy needs ≥ 20
+      shots, killcard level server-forced, rarity/price bands across the catalog.
+
 ## Phase 3 — Competitive layer
 
 - [x] **Leaderboard time windows** — All-time / Weekly / Daily (`instagib_period_stats`),
       sortable by kills / wins / accuracy, with your own rank pinned and an
       accuracy min-games floor.
-- [ ] Hidden MMR per mode (Glicko-2/Elo) updated from match results.
-- [ ] Ranked queue with placement matches + visible rank tiers (Bronze →
-      Grandmaster). Rank is **separate** from account level.
+- [x] **Ranked Duel** — Elo rating (provisional for the first 5 games, diminishing
+      returns vs a repeat opponent), a login-only first-to-15 1v1 queue with
+      rating-gap pairing, visible tiers + a live "#N" ranked title, a ranked
+      ladder with live-match spectating. Rank is **separate** from account level.
 - [ ] Seasonal leaderboards (rank + season reset).
-- [ ] Mode-specific leaderboards (Duel ladder is the natural flagship).
+- [ ] Ranked for other modes (TDM/FFA MMR) if population supports it.
 
-**Risk:** matchmaking quality needs population; gate ranked behind a min level so
-new players learn first. Keep casual queues unranked and always available.
+**Risk:** matchmaking quality needs population. Keep casual queues unranked and
+always available.
 
 ## Phase 4 — Identity, social & retention
 
@@ -109,8 +132,10 @@ new players learn first. Keep casual queues unranked and always available.
 - **Anti-cheat / integrity:** all scoring is server-authoritative; server sanity
   checks on fire-rate, shot origin, horizontal **and vertical** movement speed,
   plus a rolling **aimbot heuristic** (hit/headshot-rate throttle) — done. WS
-  cosmetics are ownership-checked. Progression writes are rate-limited (30/min).
-  Still open: impossible-angle/snap detection.
+  cosmetics are ownership-checked. Online XP is recorded by the game server;
+  the only client-reported path (offline) is scaled, day-capped and
+  rate-limited. Still open: impossible-angle/snap detection; diminishing XP for
+  repeatedly fragging the same victim (kill-trading between alts).
 - **Telemetry:** lightweight, privacy-respecting match/event metrics to tune XP
   curves, mode popularity, and matchmaking — no PII (we have none).
 - **Performance & polish:** keep the 3D render full-rate, HUD throttled (already
