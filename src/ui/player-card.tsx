@@ -67,7 +67,7 @@ export function CardStatsEditor({
 
   return (
     <div className='mt-1 border-t border-white/10 pt-4'>
-      <div className='mb-3 text-[10px] font-bold uppercase tracking-[0.2em] text-white/55'>Card Stats</div>
+      <div className='mb-3 font-sans text-[14px] font-medium text-white/70'>Card stats</div>
       <div className='flex flex-col gap-4'>
       {showPreview && (
         <div className='flex justify-center py-1'>
@@ -81,7 +81,7 @@ export function CardStatsEditor({
           </SegButton>
         ))}
       </div>
-      <p className='text-[10px] normal-case tracking-normal text-white/40'>
+      <p className='font-sans text-[12px] normal-case tracking-normal text-white/45'>
         Pick up to {MAX_CARD_STATS}. This card is shown to a player on their killcam
         when you frag them — your graphic, level, and stats.
       </p>

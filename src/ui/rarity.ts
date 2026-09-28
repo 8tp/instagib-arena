@@ -1,7 +1,7 @@
 // Rarity colour language + the thumbnail hook shared by item tiles.
 import { useEffect, useState } from 'react';
 import type { Rarity } from '../game/cosmetics';
-import { getThumbnail, peekThumbnail } from '../game/thumbs';
+import { getThumbnail, peekThumbnail, thumbnailPending } from '../game/thumbs';
 
 // Fortnite-style tiers: grey / blue / purple / gold. `from`/`to` = the tile's
 // radial backdrop, `edge` = the rim / bar / glow, `text` = label on the tile.
@@ -35,4 +35,11 @@ export function useThumbnail(id: string): string | null {
     };
   }, [id]);
   return url;
+}
+
+// Same, plus whether it is still rendering (so a tile can hold a quiet
+// placeholder rather than flash its no-thumbnail fallback).
+export function useThumbnailState(id: string): { url: string | null; pending: boolean } {
+  const url = useThumbnail(id);
+  return { url, pending: !url && thumbnailPending(id) };
 }

@@ -8,7 +8,7 @@ import { RARITY_RANK } from '../ui/rarity';
 import { HAT_CASE_COST, cosmeticById, type Rarity } from '../game/cosmetics';
 import { ItemTile } from '../ui/item-tile';
 import { RARITY_COLOR, RARITY_LABEL } from '../ui/rarity';
-import { caseJackpotItems, casePool, type LockerItem } from './slots';
+import { caseJackpotItems, casePool, credits as fmtCredits, type LockerItem } from './slots';
 
 // `won` is the server-decided item (a case hat or a jackpot unusual). Older
 // servers can still report a duplicate + refund; the finalized one never does.
@@ -47,8 +47,8 @@ export function HatCaseCard({
           : keys > 0
             ? `Open · 1 key`
             : short > 0
-              ? `Need ${short.toLocaleString()} more ⛁`
-              : `Open · ${HAT_CASE_COST} ⛁`;
+              ? `Need ${fmtCredits(short)} more`
+              : `Open · ${fmtCredits(HAT_CASE_COST)}`;
   const pool = casePool();
   const jackpots = caseJackpotItems();
   return (
@@ -81,7 +81,7 @@ export function HatCaseCard({
         disabled={disabled}
         {...sfxProps('uiConfirm')}
         className={`lk-action shrink-0 ${disabled ? 'lk-action-muted' : 'lk-action-buy'}`}
-        title={short > 0 ? `Need ${short} more credits — earn them by playing online matches` : undefined}
+        title={short > 0 ? `Need ${fmtCredits(short)} more — earn credits by playing online matches` : undefined}
       >
         {label}
       </button>
@@ -171,7 +171,7 @@ export function CaseSpinner({
     >
       {({ close }) => (
         <>
-          <div className='-mb-1 text-center font-mono text-[11px] uppercase tracking-[0.3em] text-amber-200/80' aria-live='polite'>
+          <div className='-mb-1 text-center font-sans text-[14px] font-medium text-amber-200/85' aria-live='polite'>
             {revealed ? (win.jackpot ? 'Jackpot!' : win.dupe ? 'Duplicate' : 'Unboxed!') : 'Opening case…'}
           </div>
           <div
@@ -206,12 +206,12 @@ export function CaseSpinner({
               >
                 {item?.name ?? win.won}
               </div>
-              <div className='font-mono text-[10px] uppercase tracking-[0.2em] text-white/50'>
+              <div className='font-sans text-[13px] text-white/55'>
                 {RARITY_LABEL[rarity]} {item?.slot === 'unusual' ? 'unusual' : 'hat'}
               </div>
               {win.dupe && (
                 <div className='mt-1 text-sm font-semibold text-amber-300'>
-                  Already owned · refunded {win.refund} ⛁
+                  Already owned · refunded {fmtCredits(win.refund)}
                 </div>
               )}
               <div className='mt-3 flex gap-3'>
