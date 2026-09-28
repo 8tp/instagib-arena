@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { RailgunFinish } from './cosmetics';
 import type { CustomGunBuild } from './gun/custom/types';
+import { SheenOverlay, StrangeCounter, festiveKit } from './gun/gun-extras';
 import { flashTexture } from './fx-pool';
 import { localRail, nowMs } from './fx/rail-state';
 import { BARREL_Y, COIL_COUNT, MUZZLE_Z, railgunGeometry, type GunLod } from './gun/gun-geometry';
@@ -88,6 +89,20 @@ export type RailgunModel = {
   setFinish(finish?: RailgunFinish): void;
   // Low-spec tier: drop the per-pixel extras (pattern relief, bounce light).
   setLowSpec(low: boolean): void;
+  // ── Item qualities (economy v3) — cosmetic overlays, all cheap and off by default ──
+  // Current killstreak of the owner. ≥ 5 lights the sheen (and, on a custom
+  // model, is passed through as CustomGunState.streak). Call whenever it changes.
+  setStreak(n: number): void;
+  // Killstreak sheen: a KS_SHEENS id (glow colour sweeping along the gun) and,
+  // for Professional Killstreak, the KS_EFFECTS id (null = plain Killstreak; the
+  // sheen is then a touch stronger — the eye effects live on the CHARACTER,
+  // see fx/killstreak-eyes.ts). Pass null/null to remove.
+  setKillstreak(sheen: string | null, ksEffect: string | null): void;
+  // Festive: string lights round the barrel + a small bow.
+  setFestive(on: boolean): void;
+  // Strange: a tiny glowing odometer on the left flank (first-person viewmodel
+  // only — a 'low' third-person build ignores it). null hides it.
+  setStrangeKills(n: number | null): void;
   // Free this gun's own resources (materials). The geometry is shared.
   dispose(): void;
 };
@@ -246,10 +261,12 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     driver.update(now, isViewmodel);
   };
 
+  const extras = buildExtras(group, [mesh], lod, f.accentHot);
   const model: RailgunModel = {
     group,
     muzzle,
     glow: material,
+    ...extras.api,
     muzzleFlash,
     modelKey: null,
     setCharge(charge: number) {
@@ -265,17 +282,63 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     setFinish(next?: RailgunFinish) {
       const nf = next ?? STOCK_FINISH;
       material.setFinish(nf);
+      extras.setAccent(nf.accentHot);
       muzzleFlash.material.color.copy(flareColor(nf.accentHot));
     },
     setLowSpec(low: boolean) {
       if (lod === 'high') material.setHighDetail(!low);
     },
     dispose() {
+      extras.dispose();
       material.dispose();
       muzzleFlash.material.dispose();
     },
   };
   return model;
+}
+
+// The quality overlays shared by the standard and custom builds.
+function buildExtras(group: THREE.Group, sources: THREE.Mesh[], lod: RailgunLod, accentHot: number) {
+  const sheen = new SheenOverlay(group, sources, lod === 'high' ? 1 : 0.75);
+  const counter = lod === 'high' ? new StrangeCounter() : null;
+  if (counter) {
+    counter.setColor(accentHot);
+    group.add(counter.mesh);
+  }
+  let festive: THREE.Mesh | null = null;
+  let streak = 0;
+  return {
+    get streak() { return streak; },
+    api: {
+      setStreak(n: number) {
+        streak = Number.isFinite(n) ? n : 0;
+        sheen.setStreak(streak);
+      },
+      setKillstreak(s: string | null, k: string | null) {
+        sheen.set(s, !!k);
+      },
+      setFestive(on: boolean) {
+        if (on && !festive) {
+          festive = festiveKit();
+          group.add(festive);
+        } else if (!on && festive) {
+          festive.removeFromParent();
+          festive = null;
+        }
+      },
+      setStrangeKills(n: number | null) {
+        counter?.set(n);
+      },
+    },
+    setAccent(hex: number) {
+      counter?.setColor(hex);
+    },
+    dispose() {
+      sheen.dispose();
+      counter?.dispose();
+      festive?.removeFromParent();
+    },
+  };
 }
 
 // Discharge flare: a camera-facing-ish star (disc across the bore) plus two
@@ -321,6 +384,11 @@ function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: Railgu
   muzzle.add(muzzleFlash);
   const glow = new THREE.MeshStandardMaterial(); // never drawn: the Game's glow knob has nothing to pop here
   const driver = new CoilDriver(null);
+  const meshes: THREE.Mesh[] = [];
+  inst.group.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh && meshes.length < 24) meshes.push(o as THREE.Mesh);
+  });
+  const extras = buildExtras(group, meshes, lod, f.accentHot);
   let lowSpec = false;
   let last = nowMs();
   group.add(
@@ -338,7 +406,7 @@ function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: Railgu
       inst.update(dt, {
         charge: driver.charge,
         firing: driver.firing,
-        streak: 0,
+        streak: extras.streak,
         reduced: gunFx.reduced,
         lowSpec: lowSpec || fxFlags.low,
       });
@@ -349,6 +417,7 @@ function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: Railgu
     muzzle,
     glow,
     muzzleFlash,
+    ...extras.api,
     modelKey: f.model ?? null,
     setCharge(charge: number) {
       driver.external = true;
@@ -363,12 +432,14 @@ function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: Railgu
     setFinish(next?: RailgunFinish) {
       const nf = next ?? STOCK_FINISH;
       inst.setFinish?.(nf);
+      extras.setAccent(nf.accentHot);
       muzzleFlash.material.color.copy(flareColor(nf.accentHot));
     },
     setLowSpec(low: boolean) {
       lowSpec = low;
     },
     dispose() {
+      extras.dispose();
       inst.dispose();
       glow.dispose();
       muzzleFlash.material.dispose();
