@@ -139,6 +139,9 @@ function ResultsPanel({
     let swallowUp = false;
     const onDown = (e: KeyboardEvent) => {
       if (e.code !== 'Space' || e.repeat) return;
+      // Typing (the in-game chat composer survives the results screen).
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
       e.preventDefault();
       swallowUp = true;
       setSkipped(true);
