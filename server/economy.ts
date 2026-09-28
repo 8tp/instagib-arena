@@ -11,8 +11,9 @@
 // lazily (see `q`) because the tables it touches are created by db.ts / here.
 
 import { randomBytes, randomInt } from 'node:crypto';
+import path from 'node:path';
 import type { Statement } from 'better-sqlite3';
-import { sqlite } from './sqlite';
+import { databasePath, sqlite } from './sqlite';
 import { containsProfanity } from './profanity';
 import { ALL_COSMETICS, titleGrantsFrom } from '../src/game/cosmetics';
 import { levelForXp, roadRewardKind, roadStepsBetween, type RoadStep } from '../src/game/progression';
@@ -130,6 +131,9 @@ CREATE TABLE IF NOT EXISTS instagib_trades (
 );
 CREATE INDEX IF NOT EXISTS idx_trades_from ON instagib_trades(from_id, state);
 CREATE INDEX IF NOT EXISTS idx_trades_to ON instagib_trades(to_id, state);
+CREATE INDEX IF NOT EXISTS idx_trades_state_age ON instagib_trades(state, created_at);
+CREATE INDEX IF NOT EXISTS idx_market_buyer ON instagib_market(buyer_id, state, sold_at);
+CREATE INDEX IF NOT EXISTS idx_market_seller_sold ON instagib_market(seller_id, state, sold_at);
 CREATE TABLE IF NOT EXISTS instagib_meta (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -145,6 +149,20 @@ CREATE TABLE IF NOT EXISTS instagib_meta (
   add('econ_v3', 'econ_v3 INTEGER NOT NULL DEFAULT 0');
   add('legacy_unlocked', `legacy_unlocked TEXT NOT NULL DEFAULT '[]'`);
   add('equipped_items', `equipped_items TEXT NOT NULL DEFAULT '{}'`);
+  // Listings carry their item's def + quality (snapshot at list time) so price
+  // history / suggested prices are an index range, not a scan of every sale.
+  const mcols = new Set((sqlite.prepare(`PRAGMA table_info(instagib_market)`).all() as { name: string }[]).map((r) => r.name));
+  if (!mcols.has('def')) {
+    sqlite.exec(`ALTER TABLE instagib_market ADD COLUMN def TEXT NOT NULL DEFAULT ''`);
+    sqlite.exec(`ALTER TABLE instagib_market ADD COLUMN quality TEXT NOT NULL DEFAULT '[]'`);
+    sqlite.exec(
+      `UPDATE instagib_market SET def = COALESCE((SELECT def FROM instagib_items i WHERE i.uid = instagib_market.uid), ''),
+                                  quality = COALESCE((SELECT quality FROM instagib_items i WHERE i.uid = instagib_market.uid), '[]')`,
+    );
+  }
+  if (!mcols.has('seller_net')) sqlite.exec(`ALTER TABLE instagib_market ADD COLUMN seller_net TEXT NOT NULL DEFAULT ''`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_market_price_hist ON instagib_market(def, quality, state, sold_at)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_market_def_hist ON instagib_market(def, state, sold_at)`);
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -356,7 +374,9 @@ export function entitlementsFor(playerId: string): Set<string> {
   const out = new Set<string>();
   for (const d of ITEM_DEFS) if (d.default) out.add(d.id);
   out.add('title.ranked');
-  for (const c of ALL_COSMETICS) if (c.source.type === 'default') out.add(c.id);
+  // A cosmetic whose source is 'default' but which is also a real (non-default)
+  // item def — e.g. hat.cap, now a Common case hat — must be owned, not implied.
+  for (const c of ALL_COSMETICS) if (c.source.type === 'default' && (itemDef(c.id)?.default ?? true)) out.add(c.id);
   if (!playerId) return out;
   const s = q(
     `SELECT total_xp, total_kills, headshots, total_wins, best_kill_streak, total_games, best_accuracy, legacy_unlocked
@@ -626,7 +646,7 @@ export function addStrangeKills(playerId: string, uids: readonly string[], n: nu
   const stmt = q(
     `UPDATE instagib_items
         SET attrs = json_set(attrs, '$.kills', COALESCE(json_extract(attrs, '$.kills'), 0) + CAST(? AS INTEGER)), updated_at = ?
-      WHERE uid = ? AND owner_id = ? AND state IN ('owned','listed') AND quality LIKE '%strange%'`,
+      WHERE uid = ? AND owner_id = ? AND state = 'owned' AND quality LIKE '%strange%'`,
   );
   const now = Date.now();
   sqlite.transaction(() => {
@@ -905,7 +925,7 @@ export function adminMint(actor: string, i: AdminMintInput): AdminMintResult {
   if (attrs.festive) quality.add('festive');
   if (attrs.customName || attrs.customDesc || attrs.tint || attrs.tier) quality.add('admin');
   if (quality.has('strange') && attrs.kills == null) attrs.kills = 0;
-  const bound = i.bound === true;
+  const bound = i.bound === true || (STAFF_INSTANCE_DEFS as readonly string[]).includes(def.id); // staff gear never reaches the market
   const n = Math.max(1, Math.min(25, Math.floor(Number(i.count) || 1)));
   return sqlite.transaction((): AdminMintResult => {
     ensureOnboarded(owner);
@@ -945,8 +965,11 @@ export function adminGrant(actor: string, player: string, credits: number, rolls
   const r = Math.max(-1000, Math.min(1000, Math.floor(rolls) || 0));
   return sqlite.transaction((): { ok: true; credits: number; freeRolls: number } | { ok: false; error: string } => {
     ensureOnboarded(player);
-    if (c && !addCredits(player, c)) return { ok: false, error: 'insufficient' };
-    if (r && !addRolls(player, r)) return { ok: false, error: 'insufficient' };
+    // Validate BOTH before writing: better-sqlite3 only rolls back on a throw.
+    const cur = econState(player);
+    if (cur.credits + c < 0 || cur.freeRolls + r < 0) return { ok: false, error: 'insufficient' };
+    if (c && !addCredits(player, c)) throw new Error('adminGrant: credits changed mid-transaction');
+    if (r && !addRolls(player, r)) throw new Error('adminGrant: rolls changed mid-transaction');
     audit({ event: 'admin.grant_econ', actorId: actor, targetId: player, detail: { credits: c, rolls: r } });
     return { ok: true, ...econState(player) };
   })();
@@ -995,29 +1018,31 @@ export function mintRoadRewards(playerId: string, steps: readonly RoadStep[]): I
 }
 
 // ── One-time reset + onboarding (docs/economy.md §6) ─────────────────────────
-type OnboardRow = { total_xp: number; road_level: number; unlocked: string; econ_v3: number };
+type OnboardRow = { total_xp: number; road_level: number; unlocked: string; equipped: string; case_keys: number; econ_v3: number };
 export type OnboardResult = { done: boolean; credits: number; rolls: number; minted: number };
 
-// Idempotent per account (`econ_v3`): copy unlocked → legacy_unlocked, clear
-// unlocked / equipped / case_keys, grant credits + free rolls by level, mint the
-// road cosmetics already earned as bound instances, and staff items for admins.
+// Idempotent per account (`econ_v3`): copy unlocked → legacy_unlocked, grant
+// credits + free rolls by level, mint the road cosmetics already earned as bound
+// instances, and staff items for admins. The pre-v3 columns (unlocked / equipped /
+// case_keys) are left untouched — v3 never reads them — so rolling the deploy
+// back to the old code is lossless.
 export const onboardAccount = sqlite.transaction((playerId: string): OnboardResult => {
   ensureStatsRow(playerId);
-  const r = q(`SELECT total_xp, road_level, unlocked, econ_v3 FROM instagib_stats WHERE player_id = ?`).get(playerId) as OnboardRow;
+  const r = q(`SELECT total_xp, road_level, unlocked, equipped, case_keys, econ_v3 FROM instagib_stats WHERE player_id = ?`).get(playerId) as OnboardRow;
   if (r.econ_v3) return { done: false, credits: 0, rolls: 0, minted: 0 };
   const level = levelForXp(r.total_xp);
   const credits = ONBOARDING.credits(level);
   const rolls = ONBOARDING.rolls(level);
   q(
     `UPDATE instagib_stats
-        SET legacy_unlocked = ?, unlocked = '[]', equipped = '{}', case_keys = 0, equipped_items = '{}',
+        SET legacy_unlocked = ?, equipped_items = '{}',
             credits = credits + ?, free_rolls = free_rolls + ?, econ_v3 = 1
       WHERE player_id = ?`,
   ).run(r.unlocked || '[]', credits, rolls, playerId);
   const minted = mintRoadRewards(playerId, roadStepsBetween(1, Math.max(1, r.road_level))).length;
   let staff = 0;
   if (isAdminAccount(playerId)) staff = ensureStaffItems(playerId).length;
-  audit({ event: 'econ.onboard', targetId: playerId, detail: { level, credits, rolls, road: minted, staff } });
+  audit({ event: 'econ.onboard', targetId: playerId, detail: { level, credits, rolls, road: minted, staff, legacyEquipped: json<unknown>(r.equipped, r.equipped), legacyCaseKeys: r.case_keys } });
   return { done: true, credits, rolls, minted: minted + staff };
 });
 
@@ -1031,10 +1056,26 @@ export function ensureOnboarded(playerId: string): void {
   onboardAccount(playerId);
 }
 
+// One-time snapshot of the whole DB before the v3 reset first runs (no
+// `econ_v3_at` marker yet and accounts exist). VACUUM INTO is synchronous and
+// consistent; it runs once at boot, before the server accepts connections.
+function backupBeforeFirstMigration(now: number): void {
+  if (q(`SELECT 1 FROM instagib_meta WHERE k = 'econ_v3_at'`).get()) return;
+  if (!q(`SELECT 1 FROM instagib_users LIMIT 1`).get()) return;
+  const file = path.join(path.dirname(databasePath), `instagib-pre-econ-v3-${now}.sqlite`);
+  try {
+    sqlite.prepare(`VACUUM INTO ?`).run(file);
+    console.log(`[economy] pre-v3 backup written to ${file}`);
+  } catch (err) {
+    console.error('[economy] pre-v3 backup FAILED (continuing):', err);
+  }
+}
+
 export function initEconomy(h: Hooks): void {
   hooks = h;
   ensureEconomySchema();
   const now = Date.now();
+  backupBeforeFirstMigration(now);
   q(`INSERT OR IGNORE INTO instagib_meta (k, v) VALUES ('econ_v3_at', ?)`).run(String(now));
   const ids = q(
     `SELECT u.id FROM instagib_users u LEFT JOIN instagib_stats s ON s.player_id = u.id WHERE s.player_id IS NULL OR s.econ_v3 = 0`,

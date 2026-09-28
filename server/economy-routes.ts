@@ -16,7 +16,7 @@ import {
   q,
   salvageItems,
 } from './economy';
-import { browse, buyListing, listItem, myListings, priceHistory, unlistItem } from './market';
+import { browse, buyListing, listItem, myListings, netHash, priceHistory, unlistItem } from './market';
 import { acceptTrade, cancelTrade, createOffer, declineTrade, listTrades, tradeGate } from './trades';
 
 export const economyRouter = Router();
@@ -44,6 +44,30 @@ function reader(req: Request, res: Response): string {
   }
   return id;
 }
+
+// Read limiter for the public / expensive GETs (market browse + history, player
+// inventories, trades). Fixed 10 s window per IP — plenty for a human flicking
+// filters, but a script can't pin the event loop that runs the game tick.
+const READ_WINDOW_MS = 10_000;
+const READ_MAX = 40;
+const readHits = new Map<string, { start: number; n: number }>();
+function allowRead(req: Request, res: Response): boolean {
+  const key = req.ip || 'unknown';
+  const now = Date.now();
+  const h = readHits.get(key);
+  if (!h || now - h.start >= READ_WINDOW_MS) {
+    readHits.set(key, { start: now, n: 1 });
+    return true;
+  }
+  if (++h.n <= READ_MAX) return true;
+  res.status(429).json({ ok: false, error: 'rate_limited' });
+  return false;
+}
+const readSweep = setInterval(() => {
+  const cutoff = Date.now() - READ_WINDOW_MS;
+  for (const [k, h] of readHits) if (h.start < cutoff) readHits.delete(k);
+}, 60_000);
+readSweep.unref?.();
 
 const send = (res: Response, r: { ok: boolean; error?: string }): void => {
   res.status(r.ok ? 200 : r.error === 'guest' ? 401 : r.error === 'not_found' ? 404 : 400).json(r);
@@ -89,6 +113,7 @@ economyRouter.post('/cases/open', (req, res) => {
 
 // ── Market ───────────────────────────────────────────────────────────────────
 economyRouter.get('/market', (req, res) => {
+  if (!allowRead(req, res)) return;
   const s = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
   res.json(
     browse({
@@ -104,10 +129,12 @@ economyRouter.get('/market', (req, res) => {
 });
 
 economyRouter.get('/market/history/:def', (req, res) => {
+  if (!allowRead(req, res)) return;
   res.json(priceHistory(str(req.params.def).slice(0, 60)));
 });
 
 economyRouter.get('/market/mine', (req, res) => {
+  if (!allowRead(req, res)) return;
   const id = reader(req, res);
   if (!id) return;
   res.json(myListings(id));
@@ -117,7 +144,7 @@ economyRouter.post('/market/list', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
   const b = body(req);
-  send(res, listItem(id, str(b.uid), b.price));
+  send(res, listItem(id, str(b.uid), b.price, netHash(req.ip)));
 });
 economyRouter.post('/market/unlist', (req, res) => {
   const id = writer(req, res);
@@ -127,11 +154,12 @@ economyRouter.post('/market/unlist', (req, res) => {
 economyRouter.post('/market/buy', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
-  send(res, buyListing(id, body(req).id));
+  send(res, buyListing(id, body(req).id, netHash(req.ip)));
 });
 
 // ── Trades ───────────────────────────────────────────────────────────────────
 economyRouter.get('/trades', (req, res) => {
+  if (!allowRead(req, res)) return;
   const id = reader(req, res);
   if (!id) return;
   res.json(listTrades(id));
@@ -157,6 +185,7 @@ for (const [action, fn] of [
 // Public: another player's tradable, unlisted instances (for building an offer)
 // plus whether they pass the trade gates.
 economyRouter.get('/players/:name/inventory', (req, res) => {
+  if (!allowRead(req, res)) return;
   const row = q(`SELECT id, username FROM instagib_users WHERE username_lower = ?`).get(str(req.params.name).toLowerCase()) as
     | { id: string; username: string }
     | undefined;
