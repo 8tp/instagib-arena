@@ -8,7 +8,7 @@ import { BLOOM_TUNING, createRenderer, createScene, getArenaLighting } from '../
 import { CharacterAnimator } from '../character-anim';
 import { Character, SKIN_PALETTE } from '../character/character';
 import { setCharacterFxQuality } from '../character/gibs';
-import { EffectsManager } from '../effects';
+import { EffectsManager, prewarmFx } from '../effects';
 import { WornHat } from '../hats';
 
 // ── FX lab (dev only) ────────────────────────────────────────────────────────
@@ -145,6 +145,10 @@ export class FxLab {
     setCharacterFxQuality({ reducedEffects: this.reduced, lowSpec: fx === 'low' });
     this.effects.setQuality(fx === 'low' ? 0.5 : 1);
     this.effects.warm(this.scene);
+    // Mark the FX context as stepped before any freeze(): the death
+    // animations only spawn their pooled debris (voxels, shards, confetti,
+    // ash) into a context something steps.
+    this.effects.step(0, this.scene);
     this.hs = params.get('hs') === '1';
     this.mode = params.get('mode') === 'unusuals' ? 'unusuals' : 'finishers';
 
@@ -156,6 +160,8 @@ export class FxLab {
     if (this.mode === 'finishers') this.buildFinishers();
     else this.buildUnusuals();
     this.resize();
+    // Smoke-test the shader prewarm the game calls at match load.
+    if (this.tiles[0]) void prewarmFx(this.renderer, this.scene, this.tiles[0].cam);
     const t = params.get('t');
     if (t !== null && this.mode === 'finishers') this.freeze(Number(t));
     (window as unknown as { __fxlab?: FxLab }).__fxlab = this;
@@ -225,6 +231,8 @@ export class FxLab {
 
   // Freeze the finisher sheet at `t` seconds after death (deterministic
   // fixed-step simulation from the moment of the kill).
+  // Nothing advances while frozen (bodies, pool, sprites, arcs, lights all
+  // stop at t), so a capture is faithful however long it settles.
   freeze(t: number) {
     if (this.mode !== 'finishers') return;
     this.effects.clear(this.scene);

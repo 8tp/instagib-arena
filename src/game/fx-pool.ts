@@ -105,7 +105,11 @@ void main() {
   #endif
   mat4 m = modelMatrix * instanceMatrix;
   vN = normalize(mat3(m) * normal);
-  gl_Position = projectionMatrix * viewMatrix * (m * vec4(position, 1.0));
+  // Opaque debris can't fade: inside ~1.2 m of the eye it shrinks into its
+  // centre instead (a point-blank frag must not splat across the view).
+  float igDz = -(viewMatrix * (m * vec4(0.0, 0.0, 0.0, 1.0))).z;
+  float igNear = smoothstep(0.3, 1.2, igDz);
+  gl_Position = projectionMatrix * viewMatrix * (m * vec4(position * igNear, 1.0));
 }
 `;
 
@@ -462,6 +466,7 @@ export class FxParticle {
   sax = 0; say = 1; saz = 0; spin = 0; // tumble axis (unit) + rate rad/s
   floor = -Infinity; // world y it can't sink below (settles on the ground)
   r2 = 0; g2 = 0; b2 = 0; ramp = false; // colour → (r2,g2,b2) over the life
+  rampT = 0; // > 0: the ramp completes after this many seconds instead of the life
   scaleFade = false; // solid shapes: shrink out at the end instead of dimming
   rot = 0; // billboard in-plane angle
   // Bouncing debris (bounce ≥ 0): integrated per frame instead of closed
@@ -491,6 +496,7 @@ export class FxParticle {
     this.floor = -Infinity;
     this.r2 = this.g2 = this.b2 = 0;
     this.ramp = false;
+    this.rampT = 0;
     this.scaleFade = false;
     this.rot = 0;
     this.bounce = -1;
@@ -730,9 +736,10 @@ export class FxPool {
       const col = mesh.instanceColor!.array as Float32Array;
       let r = p.r, g = p.g, b = p.b;
       if (p.ramp) {
-        r += (p.r2 - r) * u;
-        g += (p.g2 - g) * u;
-        b += (p.b2 - b) * u;
+        const ur = p.rampT > 0 ? Math.min(1, t / p.rampT) : u;
+        r += (p.r2 - r) * ur;
+        g += (p.g2 - g) * ur;
+        b += (p.b2 - b) * ur;
       }
       const cf = p.scaleFade ? 1 : fade;
       col[idx * 3] = r * cf;
@@ -1140,6 +1147,25 @@ export class FxContext {
 
   clearBeams() {
     this.railBeams?.clear();
+  }
+
+  // Shader prewarm: make every pooled mesh / one sprite / the arc ribbons
+  // visible (still drawing nothing: count 0) so a compile pass sees them.
+  // Returns the restore function.
+  prewarmBegin(): () => void {
+    const arcs = this.arcs.batch.mesh;
+    const meshes = this.pool.group.children as THREE.InstancedMesh[];
+    const spr = this.sprites.slots[0];
+    for (const m of meshes) m.visible = true;
+    arcs.visible = true;
+    if (spr) spr.sprite.visible = true;
+    // Restore from LIVE state (effects may have spawned during an async
+    // compile), never from a snapshot.
+    return () => {
+      for (const m of meshes) m.visible = m.count > 0;
+      arcs.visible = arcs.geometry.drawRange.count > 0;
+      if (spr) spr.sprite.visible = spr.busy && spr.age >= spr.delay;
+    };
   }
 
   // Lightning arcs, built on first use.

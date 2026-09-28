@@ -15,6 +15,7 @@ import {
 } from './fx-pool';
 import { liveViewmodelMuzzle } from './fx/rail-state';
 import { FINISHER_TIMING, findDeath } from './fx/fx-settings';
+import { UnusualEffect } from './fx/unusuals';
 import type { AABB } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -37,7 +38,6 @@ const FLAT = new THREE.Quaternion().setFromUnitVectors(Z_AXIS, UP);
 // the LDR look stays the same tint; only the first ~40 % of a flash's life
 // saturates whiter.
 const CORE_GAIN = 1.6;
-const RING_GAIN = 1.25;
 const MOTE_GAIN = 1.15;
 
 // The old per-frame `scale *= 1 + g·dt` at 60 fps equals e^{k·t} with this k.
@@ -55,30 +55,6 @@ const tmpDirV = new THREE.Vector3();
 function flash(ctx: FxContext, x: number, y: number, z: number, color: number, radius: number, life: number, grow: number, fadePow: number) {
   const g = Math.exp(growRate(grow) * life);
   sprite(ctx, glowTexture(), x, y, z, radius * 3.2, 1 - g, life, fadePow, color, CORE_GAIN * 1.5, false);
-}
-
-function ring(pool: FxPool, x: number, y: number, z: number, color: number, r: number, tube: number, life: number, grow: number, fadePow: number, quat: THREE.Quaternion = FLAT) {
-  const p = pool.alloc(tube / r < 0.15 ? 'torusThin' : 'torus');
-  if (!p) return;
-  p.x = x; p.y = y; p.z = z;
-  p.setScale(r);
-  p.setQuaternion(quat);
-  p.life = life;
-  p.grow = growRate(grow);
-  p.fadePow = fadePow;
-  p.setColor(color, RING_GAIN);
-}
-
-// A vertical light column rising from `y`, additive + tapered.
-function column(pool: FxPool, x: number, y: number, z: number, color: number, radius: number, height: number, life: number, grow: number, fadePow: number) {
-  const p = pool.alloc('column');
-  if (!p) return;
-  p.x = x; p.y = y + height / 2; p.z = z;
-  p.setScale(radius, height, radius);
-  p.life = life;
-  p.grow = growRate(grow);
-  p.fadePow = fadePow;
-  p.setColor(color, RING_GAIN);
 }
 
 type SprayOpts = {
@@ -624,83 +600,103 @@ function setKillPalette(style: KillEffectStyle, headshot: boolean, tint: THREE.C
 }
 
 // ── Spawn-in styles ─────────────────────────────────────────────────────────
-// A materialize burst at a (re)spawn point. `at` is the player's FEET.
+// A materialize burst at a (re)spawn point. `at` is the player's FEET. Rule:
+// it reads as ENERGY (thin bright rings, a hairline column) and is short —
+// the player spawning inside it must stay clearly visible. No thick floor
+// discs, no opaque slabs; all flush with the floor or thinner than a limb.
 
-// Teleport: a tall light column + an expanding ground ring + rising motes.
+const sHot = new THREE.Color();
+const sCol = new THREE.Color();
+
+// A thin horizontal ring that scans up the body from the feet to the head.
+function scanRing(pool: FxPool, at: THREE.Vector3, c: THREE.Color, gain: number, life: number, delay = 0) {
+  const p = pool.alloc('torusThin');
+  if (!p) return;
+  p.x = at.x; p.y = at.y + 0.05; p.z = at.z;
+  p.vy = 1.75 / life; // feet → head over its life
+  p.setScale(0.42);
+  p.setQuaternion(FLAT);
+  p.life = life;
+  p.fadePow = 1.2;
+  p.delay = delay;
+  p.setRGB(c.r * gain, c.g * gain, c.b * gain);
+}
+
+// A hairline light column (much thinner than the body; see-through).
+function hairColumn(pool: FxPool, at: THREE.Vector3, c: THREE.Color, gain: number, life: number) {
+  const p = pool.alloc('column');
+  if (!p) return;
+  p.x = at.x; p.y = at.y + 1.3; p.z = at.z;
+  p.setScale(0.09, 2.6, 0.09);
+  p.life = life;
+  p.grow = growRate(-2);
+  p.fadePow = 1.8;
+  p.setRGB(c.r * gain, c.g * gain, c.b * gain);
+}
+
+// Teleport (default): thin floor rings, a scan ring up the body, a hairline
+// column and a few motes — gone in ~0.35 s.
 function spawnBeamIn(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const pool = ctx.pool;
-  const hot = 0xa8f0ff;
-  const col = 0x37a6ff;
-  ring(pool, at.x, at.y + 0.05, at.z, col, 0.2, 0.045, 0.42, 7, 1.3);
-  if (fp) return; // first person: rising column/flash/motes would pass through the camera
-  // Short and see-through: the player spawning inside it must stay visible.
-  column(pool, at.x, at.y, at.z, hot, 0.16, 2.2, 0.26, 1.0, 2.2);
-  flash(ctx, at.x, at.y + 0.9, at.z, hot, 0.12, 0.12, 4, 1.8);
-  spray(pool, at.x, at.y, at.z, hot, { count: 12, y: 0.1, radial: [0.5, 0.6], up: [4.5, 2.5], size: 0.05, life: 0.5, gravity: 5, fadePow: 1.2 });
+  sHot.setHex(0xa8f0ff);
+  sCol.setHex(0x37a6ff);
+  groundRing(pool, at.x, at.y, at.z, sCol, 2.2, 0.3, 5, 0.32, 1.4);
+  if (fp) return; // first person: nothing rises through the camera
+  groundRing(pool, at.x, at.y, at.z, sHot, 1.6, 0.2, 3, 0.26, 1.6, 0.05);
+  scanRing(pool, at, sHot, 1.8, 0.3);
+  hairColumn(pool, at, sHot, 1.6, 0.2);
+  spray(pool, at.x, at.y, at.z, 0xa8f0ff, { count: 8, y: 0.1, radial: [0.4, 0.5], up: [3.5, 2], size: 0.035, life: 0.35, gravity: 4, fadePow: 1.2 });
 }
 
-// Shockwave: a hard double ground ring + a bright ground flash. Low + wide.
+// Shockwave: a hard double thin ground ring racing out. Low + wide.
 function spawnRing(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  const hot = 0xbfeaff;
-  const by = at.y + 0.06;
-  ring(pool, at.x, by, at.z, hot, 0.18, 0.05, 0.36, 13, 1.3);
-  ring(pool, at.x, by, at.z, hot, 0.1, 0.03, 0.46, 9, 1.5);
-  flash(ctx, at.x, by, at.z, hot, 0.2, 0.2, 6, 1.8);
-  spray(pool, at.x, at.y, at.z, 0x8ad8ff, { count: 10, y: 0.08, radial: [2.2, 1.4], up: [1.5, 1.5], size: 0.05, life: 0.4, gravity: 7, fadePow: 1.2 });
+  sHot.setHex(0xbfeaff);
+  groundRing(pool, at.x, at.y, at.z, sHot, 2.4, 0.3, 9, 0.3, 1.3);
+  groundRing(pool, at.x, at.y, at.z, sHot, 1.5, 0.2, 6, 0.36, 1.5, 0.06);
+  spray(pool, at.x, at.y, at.z, 0x8ad8ff, { count: 8, y: 0.08, radial: [2.2, 1.4], up: [1, 1], size: 0.04, life: 0.3, gravity: 7, fadePow: 1.2 });
 }
 
-// Cinder: a warm column + a dense cone of rising embers.
+// Cinder: a thin warm floor ring, a warm scan ring and rising embers.
 function spawnEmberIn(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const pool = ctx.pool;
-  const core = 0xffb15a;
-  const spark = 0xff7b3a;
-  if (fp) {
-    ring(pool, at.x, at.y + 0.05, at.z, spark, 0.18, 0.04, 0.4, 7, 1.3);
-    return; // first person: no column / rising embers through the camera
-  }
-  column(pool, at.x, at.y, at.z, core, 0.13, 1.8, 0.36, 0.8, 1.7);
-  flash(ctx, at.x, at.y + 0.2, at.z, core, 0.2, 0.2, 4, 1.8);
-  spray(pool, at.x, at.y, at.z, spark, { count: 18, y: 0.1, radial: [0.3, 0.9], up: [3.5, 3.5], size: 0.045, life: 0.7, gravity: 7, fadePow: 1.1 });
+  sHot.setHex(0xffb15a);
+  sCol.setHex(0xff7b3a);
+  groundRing(pool, at.x, at.y, at.z, sCol, 2.2, 0.28, 5, 0.32, 1.4);
+  if (fp) return; // first person: nothing rises through the camera
+  scanRing(pool, at, sHot, 1.8, 0.3);
+  spray(pool, at.x, at.y, at.z, 0xff7b3a, { count: 12, y: 0.1, radial: [0.3, 0.7], up: [3, 2.5], size: 0.035, life: 0.4, gravity: 6, fadePow: 1.1 });
 }
 
-// Rift: a violet vertical tear that flares, with motes drawn inward then out.
+// Rift: a hairline violet tear that flares, with motes drawn inward.
 function spawnRift(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const pool = ctx.pool;
-  const core = 0xe9d5ff;
-  const halo = 0xa855f7;
-  // A thin tall slab (the tear) that widens and fades.
-  const slab = fp ? null : pool.alloc('box');
-  if (fp) {
-    ring(pool, at.x, at.y + 0.05, at.z, halo, 0.16, 0.04, 0.4, 8, 1.3);
-    return; // first person: no tear slab / motes through the camera
-  }
+  sHot.setHex(0xe9d5ff);
+  sCol.setHex(0xa855f7);
+  groundRing(pool, at.x, at.y, at.z, sCol, 2.2, 0.26, 6, 0.32, 1.4);
+  if (fp) return; // first person: no tear / motes through the camera
+  const slab = pool.alloc('box');
   if (slab) {
     slab.x = at.x; slab.y = at.y + 1.05; slab.z = at.z;
-    slab.setScale(0.08, 2.1, 0.08);
-    slab.life = 0.34;
-    slab.grow = growRate(2.2);
-    slab.fadePow = 1.7;
-    slab.setColor(core, CORE_GAIN);
+    slab.setScale(0.025, 2.1, 0.025);
+    slab.life = 0.24;
+    slab.fadePow = 1.8;
+    slab.setRGB(sHot.r * CORE_GAIN, sHot.g * CORE_GAIN, sHot.b * CORE_GAIN);
   }
-  ring(pool, at.x, at.y + 0.05, at.z, halo, 0.16, 0.04, 0.4, 8, 1.3);
-  // Infalling motes converging on the tear, then released upward by the flare.
-  const n = 9;
+  const n = 8;
   for (let i = 0; i < n; i++) {
-    const p = pool.alloc('ico');
+    const p = pool.alloc('mote');
     if (!p) break;
     const theta = (i / n) * TWO_PI;
     const dx = Math.cos(theta);
     const dz = Math.sin(theta);
-    p.x = at.x + dx * 0.7; p.y = at.y + 0.9; p.z = at.z + dz * 0.7;
-    p.setScale(0.05);
-    p.vx = dx * -2.0; p.vy = 1.5; p.vz = dz * -2.0;
-    p.gravity = -2;
-    p.life = 0.4;
+    p.x = at.x + dx * 0.6; p.y = at.y + 0.9; p.z = at.z + dz * 0.6;
+    p.setScale(0.08);
+    p.vx = dx * -2.0; p.vy = 1.2; p.vz = dz * -2.0;
+    p.life = 0.3;
     p.fadePow = 1.0;
-    p.setColor(halo, MOTE_GAIN);
+    p.setRGB(sCol.r * 1.6, sCol.g * 1.6, sCol.b * 1.6);
   }
-  flash(ctx, at.x, at.y + 0.95, at.z, core, 0.18, 0.28, 6, 2.0);
 }
 
 // ── Weapon flashes ──────────────────────────────────────────────────────────
@@ -848,6 +844,29 @@ export function spawnRailImpact(
 
   if (ctx.decals.enabled) ctx.decals.place(point, normal, helix, 0.85 + Math.random() * 0.3, faceBox);
   ctx.lights.pulse(1, point.x + nx * 0.35, point.y + ny * 0.35, point.z + nz * 0.35, helix, 7, 0.11, 5);
+}
+
+// ── Shader prewarm ──────────────────────────────────────────────────────────
+
+// Compile every FX program before the first kill (the finisher shapes — solid
+// cubes/flakes, glass shards, billboards — the arc ribbons, the unusual point
+// clouds and ribbons) so no frag or first unusual on screen hitches on a
+// shader compile. Call once the scene is built (map + lights in), with the
+// camera you render with; it resolves when the driver has the programs
+// (parallel compile where supported). Leaves nothing visible behind.
+export async function prewarmFx(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
+  const ctx = getFxContext(scene);
+  const restore = ctx.prewarmBegin();
+  // A parked storm unusual: additive + normal-blended point clouds and a
+  // ribbon (every unusual kind shares these programs).
+  const probe = new UnusualEffect('storm');
+  scene.add(probe.group);
+  try {
+    await renderer.compileAsync(scene, camera);
+  } finally {
+    restore();
+    probe.dispose();
+  }
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
