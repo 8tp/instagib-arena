@@ -529,22 +529,35 @@ function clamp01(n: number): number {
 }
 
 /* ── Menu / UI sounds ───────────────────────────────────────────────────────
-   A tiny synthesized set for the deck chrome (buttons, tabs, toggles, modals,
-   toasts). No asset files — every cue is a few oscillator/noise nodes, so the
-   whole bank costs nothing to load and always plays instantly.
+   The synthesized cue set for the deck chrome and the rewards reveal (buttons,
+   tabs, toggles, modals, toasts, XP ticks, unlock stings…). How each cue sounds
+   lives in src/game/sfx/ui-sounds.ts; this bank owns the live context + level.
 
    It lives on its own AudioContext (there is no Game — and so no SoundManager
    — in the lobby), but follows the same rules as gameplay audio: the context
-   is only created/resumed inside a user gesture (see unlockUiAudio, wired to
-   the first pointerdown/keydown in src/deck-core.ts), and its level is
+   is only created/resumed inside a user gesture (unlockUiAudio, wired to the
+   first pointerdown/keydown in src/deck-core.ts; or a click-type cue fired
+   while the browser reports transient user activation), and its level is
    master × SFX from Settings (setUiVolume), so muting SFX mutes the UI too.
-   Hover blips are dropped until the context is actually running, so a page
-   load never queues a burst of sounds that fires on the first click. */
-export type UiSoundName = 'uiHover' | 'uiClick' | 'uiConfirm' | 'uiBack' | 'uiError' | 'uiToggle';
+   Timer-driven cues (hover, the rewards reveal, case spins, modal mounts) are
+   dropped until the context is actually running, so a page load never queues
+   a burst of sounds that fires on the first click. */
+import { isGestureUiSound, playUiCue, type UiSoundName } from './sfx/ui-sounds';
+
+export type { UiSoundName } from './sfx/ui-sounds';
 
 // The UI set is mixed well below the weapon SFX so it never competes with a
 // match (the same settings sliders scale both).
 const UI_TRIM = 0.55;
+
+// True while the page holds transient user activation (inside a click / key
+// handler). Browsers without the API answer "no": the first pointerdown/keydown
+// still unlocks the bank (unlockUiAudio, wired in deck-core), so they lose nothing.
+function inUserGesture(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  return ua ? ua.isActive : false;
+}
 
 class UiSoundBank {
   private ctx: AudioContext | null = null;
@@ -563,7 +576,15 @@ class UiSoundBank {
         this.ctx = new AC();
         this.bus = this.ctx.createGain();
         this.bus.gain.value = this.level();
-        this.bus.connect(this.ctx.destination);
+        // A gentle bus compressor: a fast run of cues (XP ticks over a fanfare)
+        // can never stack into a spike.
+        const comp = this.ctx.createDynamicsCompressor();
+        comp.threshold.value = -14;
+        comp.knee.value = 8;
+        comp.ratio.value = 6;
+        comp.attack.value = 0.002;
+        comp.release.value = 0.12;
+        this.bus.connect(comp).connect(this.ctx.destination);
       } catch {
         this.ctx = null;
         this.bus = null;
@@ -583,105 +604,24 @@ class UiSoundBank {
     return this.master * this.sfx * UI_TRIM;
   }
 
-  play(name: UiSoundName) {
+  play(name: UiSoundName, detail = 0) {
     if (typeof window === 'undefined') return;
-    // Hover is the only cue that fires outside a gesture: never let it create
-    // or resume the context, and skip it while the context can't play.
-    if (name === 'uiHover') {
-      if (!this.ctx || !this.bus || this.ctx.state !== 'running') return;
-    } else {
-      this.unlock();
-      if (!this.ctx || !this.bus) return;
-    }
     if (this.level() <= 0) return;
-    const ctx = this.ctx;
-    const dest = this.bus;
-    switch (name) {
-      case 'uiHover': uiTone(ctx, dest, 'sine', 2100, 1900, 0.022, 0.05); break;
-      case 'uiClick':
-        uiTone(ctx, dest, 'triangle', 1500, 980, 0.032, 0.14);
-        uiTick(ctx, dest, 0.008, 0.06, 2600);
-        break;
-      case 'uiConfirm':
-        uiTone(ctx, dest, 'sine', 780, 780, 0.06, 0.13);
-        uiTone(ctx, dest, 'sine', 1170, 1170, 0.08, 0.13, 0.05);
-        break;
-      case 'uiBack': uiTone(ctx, dest, 'sine', 900, 600, 0.07, 0.11); break;
-      case 'uiError':
-        uiBuzz(ctx, dest, 0);
-        uiBuzz(ctx, dest, 0.09);
-        break;
-      case 'uiToggle':
-        uiTick(ctx, dest, 0.012, 0.1, 3000);
-        uiTone(ctx, dest, 'sine', 1600, 1600, 0.02, 0.09);
-        break;
-    }
+    // Only a click-type cue fired inside a gesture may create / resume the
+    // context; everything else plays only once it is already running.
+    if (isGestureUiSound(name) && inUserGesture()) this.unlock();
+    if (!this.ctx || !this.bus || this.ctx.state !== 'running') return;
+    playUiCue(this.ctx, this.bus, name, this.ctx.currentTime, detail);
   }
-}
-
-// One oscillator sweep with a fast attack and an exponential release.
-function uiTone(
-  ctx: AudioContext,
-  dest: AudioNode,
-  type: OscillatorType,
-  f0: number,
-  f1: number,
-  dur: number,
-  peak: number,
-  delay = 0,
-) {
-  const t0 = ctx.currentTime + delay;
-  const o = ctx.createOscillator();
-  o.type = type;
-  o.frequency.setValueAtTime(f0, t0);
-  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(peak, t0 + 0.003);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  o.connect(g).connect(dest);
-  o.start(t0);
-  o.stop(t0 + dur + 0.01);
-}
-
-// A band-passed noise tick — the mechanical "contact" under clicks + toggles.
-function uiTick(ctx: AudioContext, dest: AudioNode, dur: number, peak: number, band: number) {
-  const t0 = ctx.currentTime;
-  const n = makeNoise(ctx, dur);
-  const f = ctx.createBiquadFilter();
-  f.type = 'bandpass';
-  f.frequency.value = band;
-  f.Q.value = 1.2;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(peak, t0);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  n.connect(f).connect(g).connect(dest);
-  n.start(t0);
-  n.stop(t0 + dur + 0.005);
-}
-
-// Low filtered square pulse — two of these make the error "nuh-uh".
-function uiBuzz(ctx: AudioContext, dest: AudioNode, delay: number) {
-  const t0 = ctx.currentTime + delay;
-  const o = ctx.createOscillator();
-  o.type = 'square';
-  o.frequency.value = 180;
-  const f = ctx.createBiquadFilter();
-  f.type = 'lowpass';
-  f.frequency.value = 900;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(0.12, t0 + 0.004);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.06);
-  o.connect(f).connect(g).connect(dest);
-  o.start(t0);
-  o.stop(t0 + 0.07);
 }
 
 const uiSounds = new UiSoundBank();
 
-export function playUi(name: UiSoundName) {
-  uiSounds.play(name);
+// `detail` is a per-cue parameter: the xpTick line index, the uiToggle new
+// state, the countdownTick seconds left, the unlock rarity index… (see
+// UiSoundName in src/game/sfx/ui-sounds.ts).
+export function playUi(name: UiSoundName, detail?: number) {
+  uiSounds.play(name, detail);
 }
 
 // Mirror the Settings sliders (master + SFX) onto the UI bank.
@@ -693,17 +633,4 @@ export function setUiVolume(master: number, sfx: number) {
 // and is running before the first cue is needed.
 export function unlockUiAudio() {
   uiSounds.unlock();
-}
-
-function makeNoise(ctx: AudioContext, durSec: number): AudioBufferSourceNode {
-  const buf = ctx.createBuffer(
-    1,
-    Math.max(1, Math.floor(ctx.sampleRate * durSec)),
-    ctx.sampleRate,
-  );
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
-  return src;
 }

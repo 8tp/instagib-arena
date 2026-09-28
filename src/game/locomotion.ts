@@ -148,6 +148,11 @@ export class Locomotion {
   }
 
   update(inp: LocoInput, spec: PoseSpec): void {
+    // Self-heal: this state integrates forever, so one non-finite input would
+    // otherwise stick (NaN foot targets → the leg bones collapse → no legs).
+    if (!Number.isFinite(this.strideX + this.strideZ + this.legYaw + this.phase + this.speedS + this.vySmooth)) {
+      this.reset();
+    }
     const dt = inp.dt;
     const s = inp.speed;
     this.speedS = approach(this.speedS, s, 8, dt);
@@ -186,8 +191,11 @@ export class Locomotion {
     const sy = Math.sin(-this.legYaw);
     const lx = inp.vx * cy + inp.vz * sy;
     const lz = -inp.vx * sy + inp.vz * cy;
-    if (s > 0.4) {
-      const l = Math.hypot(lx, lz);
+    // Gate on the INSTANTANEOUS velocity: `s` is smoothed, so a frame where the
+    // body stops dead (wall hit, a repeated sim position) has s > 0.4 but
+    // lx = lz = 0 — 0/0 used to poison strideX with NaN and the legs vanished.
+    const l = Math.hypot(lx, lz);
+    if (s > 0.4 && l > 0.05) {
       this.strideX = approach(this.strideX, lx / l, 14, dt);
       this.strideZ = approach(this.strideZ, lz / l, 14, dt);
       const n = Math.hypot(this.strideX, this.strideZ) || 1;

@@ -85,7 +85,7 @@ export function mapPoolForMode(mode: string): readonly string[] {
 }
 
 // ── Lobby / match networking constants (server + client share these) ───────
-export const MAP_VOTE_DURATION_SEC = 15; // how long the end-of-match vote runs
+export const MAP_VOTE_DURATION_SEC = 20; // how long the end-of-match vote runs (the rewards reveal plays in its first ~12 s)
 export const MAP_VOTE_OPTIONS = 3; // max map choices presented in the vote
 // The map vote is held open this long PAST the match-end moment before its timer
 // can lapse, so the (non-skippable) Play-of-the-Match cinematic always finishes

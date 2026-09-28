@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { applyHighlight, type BotModel } from './bots';
 import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
-import { attachRailgun, disposeRailgun } from './character/gun';
+import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { probeGibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
@@ -12,6 +12,7 @@ import {
   nameColorById,
   railgunFinishById,
   titleById,
+  type KillEffectStyle,
 } from './cosmetics';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
@@ -135,7 +136,7 @@ export class RemotePlayer {
   private character: Character | null = null;
   // Look inputs: TDM team colour > the viewer's enemy highlight > own skin.
   private highlight: THREE.Color | null = null;
-  private weaponGroup: THREE.Group | null = null; // the attached 3rd-person railgun (rebuilt on finish change)
+  private weaponGroup: AttachedRailgun | null = null; // the attached 3rd-person railgun (recoloured on finish change)
   private railgunFinishId = DEFAULT_RAILGUN_FINISH;
   private hat: WornHat | null = null;
   private hatId = 'hat.none';
@@ -197,11 +198,16 @@ export class RemotePlayer {
     }
   }
 
-  markDead() {
+  // Replay: the killer's finisher for this actor's next recorded death (set by
+  // the replay just before it snaps the pose that hides the body).
+  replayFinisher: KillEffectStyle | null = null;
+
+  // `style` = the killer's finisher (how this body breaks apart).
+  markDead(style?: KillEffectStyle) {
     this.deadTimer = DEAD_HIDE_DURATION_SEC;
     this.shieldMesh.visible = false;
     const p = this.group.position;
-    if (this.anim?.die(probeGibFloor(p.x, p.y, p.z) ?? undefined)) {
+    if (this.anim?.die(probeGibFloor(p.x, p.y, p.z) ?? undefined, style)) {
       // Instagib: the body bursts into gibs where it stood (the killer's kill
       // effect plays on top from Game); it hides once the chunks are gone.
       this.deadHidden = false;
@@ -344,7 +350,8 @@ export class RemotePlayer {
       // Visible → hidden while playing forward is a death: gib in place (the
       // group stays where they died), then hide once the chunks are gone.
       if (!wasHidden && anim && !anim.isDying() && dt > 0 && dt < 0.25) {
-        anim.die();
+        anim.die(undefined, this.replayFinisher ?? undefined);
+        this.replayFinisher = null;
         this.setPlateHidden(true);
       }
       if (anim?.isDying() && !anim.deathDone()) {
@@ -501,9 +508,16 @@ export class RemotePlayer {
   // Swap the 3rd-person railgun for one with the current finish.
   private rebuildWeapon() {
     if (!this.character) return; // fallback capsule has no gun
-    this.disposeWeaponGroup();
     const finishId = isRailgunFinish(this.railgunFinishId) ? this.railgunFinishId : DEFAULT_RAILGUN_FINISH;
-    this.weaponGroup = attachRailgun(this.character, railgunFinishById(finishId).data);
+    const finish = railgunFinishById(finishId).data;
+    if (this.weaponGroup) this.weaponGroup.setFinish(finish); // shared geometry: recolour only
+    else this.weaponGroup = attachRailgun(this.character, finish);
+  }
+
+  // Their shot: the 3rd-person gun's claw flashes in their rail colour and its
+  // glow refills over the recharge.
+  notifyFire(railColor?: number) {
+    this.weaponGroup?.notifyFire(railColor);
   }
 
   private disposeWeaponGroup() {

@@ -24,11 +24,11 @@ import {
 import { movePlayer, rayAabb, type ArenaMap } from './map';
 import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
-import { attachRailgun, disposeRailgun } from './character/gun';
+import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
-import { HATS, UNUSUALS } from './cosmetics';
+import { HATS, UNUSUALS, type KillEffectStyle } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
 
 // Bots wear a random (non-bare) hat — and sometimes an unusual effect — so the
@@ -251,7 +251,7 @@ export class Bot {
   state: BotState;
   group: THREE.Group;
   private hat: WornHat | null = null;
-  private gun: THREE.Group | null = null; // third-person railgun (disposed with the bot)
+  private gun: AttachedRailgun | null = null; // third-person railgun (disposed with the bot)
   // Reused animator input (no per-frame allocation).
   private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
   // Shared third-person animator (gait, aim, jump/land, gibs) — the same
@@ -919,7 +919,20 @@ export class Bot {
     return this.team;
   }
 
-  kill() {
+  // The bot fired: its 3rd-person gun's claw flashes (in `railColor`) and the
+  // coils recharge.
+  notifyFire(railColor?: number) {
+    this.gun?.notifyFire(railColor);
+  }
+
+  // World position of the 3rd-person gun's muzzle into `out` (null without a
+  // gun) — where this bot's visible beam + discharge should start.
+  gunMuzzle(out: THREE.Vector3): THREE.Vector3 | null {
+    return this.gun && this.state.alive ? this.gun.muzzleWorld(out) : null;
+  }
+
+  // `style` = the killer's finisher (how this body breaks apart).
+  kill(style?: KillEffectStyle) {
     if (!this.state.alive) return;
     this.state.alive = false;
     this.state.respawnTimer = BOT_RESPAWN_DELAY;
@@ -931,7 +944,7 @@ export class Bot {
       const y = floorBelow(this.lastMap.boxes, this.state.pos.x, this.state.pos.y, this.state.pos.z);
       if (y !== null && this.state.pos.y - y < 4) floor = { y };
     }
-    if (!this.anim?.die(floor)) this.group.visible = false;
+    if (!this.anim?.die(floor, style)) this.group.visible = false;
     this.nameSprite.visible = false; // no floating name over the gibs
   }
 

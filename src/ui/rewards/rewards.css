@@ -1,0 +1,565 @@
+/* ── End-of-match results + rewards reveal ───────────────────────────────────
+   React only mounts elements at the reveal's event times (a handful over ~8 s);
+   every bit of motion between those mounts is a CSS animation here, so it runs
+   at display rate with no per-frame React work.
+
+   --rw-motion scales every travel / scale amplitude and drops to 0 under the
+   OS reduce-motion preference or the reducedEffects setting (.rw-reduced):
+   things then fade in place, and nothing shakes, flips or rotates. .rw-skip
+   (click / Space) collapses every remaining animation to its end state. */
+.rw-root {
+  --rw-motion: 1;
+  --rw-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --rw-snap: cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+.rw-root.rw-reduced {
+  --rw-motion: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rw-root {
+    --rw-motion: 0;
+  }
+}
+.rw-skip *,
+.rw-skip *::before,
+.rw-skip *::after {
+  animation-duration: 1ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 1ms !important;
+}
+
+/* ── Victory / Defeat slam ──────────────────────────────────────────────── */
+.rw-slam {
+  display: inline-block;
+  transform-origin: 50% 55%;
+  animation: rw-slam 520ms linear both;
+}
+@keyframes rw-slam {
+  0% {
+    opacity: 0;
+    transform: scale(calc(1 + 1.3 * var(--rw-motion)));
+    animation-timing-function: cubic-bezier(0.55, 0, 0.9, 0.4);
+  }
+  38% {
+    opacity: 1;
+    transform: scale(calc(1 - 0.07 * var(--rw-motion)));
+    animation-timing-function: ease-out;
+  }
+  62% {
+    transform: scale(calc(1 + 0.025 * var(--rw-motion)));
+    animation-timing-function: ease-in-out;
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+/* The flare that cracks across the header at impact. */
+.rw-flare {
+  transform-origin: 50% 50%;
+  animation: rw-flare 900ms var(--rw-ease) both;
+  animation-delay: 190ms;
+}
+@keyframes rw-flare {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.05);
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+/* Header kick at the moment of impact. */
+.rw-shake {
+  animation: rw-shake 300ms linear both;
+  animation-delay: 190ms;
+}
+@keyframes rw-shake {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(calc(-4px * var(--rw-motion)), calc(3px * var(--rw-motion)));
+  }
+  40% {
+    transform: translate(calc(3px * var(--rw-motion)), calc(-2px * var(--rw-motion)));
+  }
+  60% {
+    transform: translate(calc(-2px * var(--rw-motion)), calc(1px * var(--rw-motion)));
+  }
+  80% {
+    transform: translate(calc(1px * var(--rw-motion)), 0);
+  }
+}
+.rw-sub-in {
+  animation: rw-rise 420ms var(--rw-ease) both;
+  animation-delay: 360ms;
+}
+
+/* ── Shared entrances ───────────────────────────────────────────────────── */
+@keyframes rw-rise {
+  from {
+    opacity: 0;
+    transform: translateY(calc(8px * var(--rw-motion)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes rw-slide {
+  from {
+    opacity: 0;
+    transform: translateX(calc(16px * var(--rw-motion)));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes rw-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.rw-rise {
+  animation: rw-rise 320ms var(--rw-ease) both;
+}
+.rw-fade {
+  animation: rw-fade 260ms ease-out both;
+}
+
+/* XP line: slides in from the right; its +XP pops a beat later. */
+.rw-line {
+  animation: rw-slide 240ms var(--rw-ease) both;
+}
+.rw-line-xp {
+  display: inline-block;
+  transform-origin: 100% 50%;
+  animation: rw-pop 300ms var(--rw-snap) both;
+  animation-delay: 60ms;
+}
+@keyframes rw-pop {
+  from {
+    opacity: 0;
+    transform: scale(calc(1 + 0.6 * var(--rw-motion)));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+/* The rolling total bumps each time a line lands (keyed on the value). */
+.rw-bump {
+  display: inline-block;
+  transform-origin: 0% 70%;
+  animation: rw-bump 260ms var(--rw-ease) both;
+}
+@keyframes rw-bump {
+  from {
+    transform: scale(calc(1 + 0.1 * var(--rw-motion)));
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* ── XP bar ─────────────────────────────────────────────────────────────── */
+.rw-track {
+  position: relative;
+  height: 14px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.rw-track-notch {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(0, 0, 0, 0.45) calc(10% - 1px) 10%);
+  pointer-events: none;
+}
+.rw-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0% 50%;
+}
+.rw-fill-base {
+  background: linear-gradient(90deg, #0e7490, #22d3ee);
+  opacity: 0.55;
+}
+.rw-fill-gain {
+  background: linear-gradient(90deg, #22d3ee, #a5f3fc);
+  box-shadow: 0 0 12px rgba(103, 232, 249, 0.6);
+  animation: rw-fill var(--rw-dur, 800ms) cubic-bezier(0.3, 0.7, 0.25, 1) both;
+}
+.rw-guest .rw-fill-gain {
+  background: repeating-linear-gradient(135deg, rgba(165, 243, 252, 0.75) 0 6px, rgba(34, 211, 238, 0.35) 6px 12px);
+  box-shadow: none;
+}
+@keyframes rw-fill {
+  from {
+    transform: scaleX(var(--rw-from, 0));
+  }
+  to {
+    transform: scaleX(var(--rw-to, 1));
+  }
+}
+/* The bright leading edge riding the fill (a full-width layer translated by
+   the fill fraction, its glow sitting on its left edge). */
+.rw-head {
+  position: absolute;
+  inset: 0;
+  animation: rw-head var(--rw-dur, 800ms) cubic-bezier(0.3, 0.7, 0.25, 1) both;
+}
+.rw-head::after {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: -2px;
+  bottom: -2px;
+  width: 14px;
+  background: radial-gradient(closest-side, #ffffff, rgba(165, 243, 252, 0.6) 55%, transparent);
+  animation: rw-fade-out 380ms ease-in forwards;
+  animation-delay: var(--rw-dur, 800ms);
+}
+@keyframes rw-head {
+  from {
+    transform: translateX(calc(var(--rw-from, 0) * 100%));
+  }
+  to {
+    transform: translateX(calc(var(--rw-to, 1) * 100%));
+  }
+}
+@keyframes rw-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+/* Level-up: the whole bar block flashes, the level stamp slams over it. */
+.rw-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(90% 140% at 50% 50%, rgba(167, 243, 208, 0.55), rgba(52, 211, 153, 0.12) 60%, transparent);
+  animation: rw-flash 700ms ease-out both;
+}
+@keyframes rw-flash {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* The level emblem pops (and brightens) when its number changes (keyed on
+   the level). clip-path would clip a box-shadow, so this is scale + filter. */
+.rw-badge-tick {
+  animation: rw-badge 460ms var(--rw-snap) both;
+}
+@keyframes rw-badge {
+  from {
+    transform: scale(calc(1 + 0.3 * var(--rw-motion)));
+    filter: brightness(1.8);
+  }
+  to {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* ── Level emblem: the menu profile badge (menu.css .menu-level) ─────────── */
+.rw-level {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: var(--rw-lv, 3.25rem);
+  height: var(--rw-lv, 3.25rem);
+  clip-path: polygon(
+    var(--rw-lv-cut, 10px) 0,
+    100% 0,
+    100% calc(100% - var(--rw-lv-cut, 10px)),
+    calc(100% - var(--rw-lv-cut, 10px)) 100%,
+    0 100%,
+    0 var(--rw-lv-cut, 10px)
+  );
+  background: linear-gradient(150deg, #67e8f9 0%, #22d3ee 40%, #0e7490 100%);
+  color: #021216;
+}
+.rw-level-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--rw-lv-num, 1.65rem);
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+.rw-level-cap {
+  margin-top: 0.12em;
+  font-family: var(--font-mono);
+  font-size: var(--rw-lv-cap, 12px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+.rw-level-xl {
+  --rw-lv: 7.25rem;
+  --rw-lv-cut: 22px;
+  --rw-lv-num: 4.4rem;
+  --rw-lv-cap: 15px;
+  background: linear-gradient(150deg, #a5f3fc 0%, #22d3ee 42%, #0e7490 100%);
+}
+.rw-level-guest {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ── Labels + chips (type rule: sentence-case labels ≥ 13 px; caps only on
+   titles, buttons and short state chips ≥ 12 px) ──────────────────────── */
+.rw-label {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.62);
+}
+.rw-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid;
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.rw-chip-amber {
+  border-color: rgba(252, 211, 77, 0.4);
+  color: #fde68a;
+}
+.rw-chip-emerald {
+  border-color: rgba(110, 231, 183, 0.5);
+  background: rgba(110, 231, 183, 0.1);
+  color: #a7f3d0;
+}
+.rw-chip-cyan {
+  border-color: rgba(103, 232, 249, 0.4);
+  color: #a5f3fc;
+}
+.rw-chip-plain {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.62);
+}
+
+/* ── Level-up takeover (TAKEOVER_MS in reveal-model.ts = 2.9 s) ──────────
+   Scrim in, emblem slams, title + "Lv 6 → 7" rise, the reward tile flips in
+   with its burst, hold, then everything collapses back into the column. */
+.rw-takeover {
+  animation: rw-takeover 2900ms linear both;
+}
+@keyframes rw-takeover {
+  0% {
+    opacity: 0;
+  }
+  6% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+    transform: scale(1);
+    animation-timing-function: ease-in;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(calc(1 - 0.04 * var(--rw-motion)));
+  }
+}
+.rw-takeover-scrim {
+  background:
+    radial-gradient(55% 60% at 50% 50%, rgba(16, 185, 129, 0.22), transparent 70%),
+    rgba(4, 7, 10, 0.93);
+}
+.rw-to-emblem {
+  animation: rw-slam 520ms linear both;
+  animation-delay: 60ms;
+  filter: drop-shadow(0 0 28px rgba(34, 211, 238, 0.55));
+}
+.rw-to-title {
+  animation: rw-rise 380ms var(--rw-ease) both;
+  animation-delay: 260ms;
+}
+.rw-to-sub {
+  animation: rw-rise 380ms var(--rw-ease) both;
+  animation-delay: 380ms;
+}
+.rw-to-tile {
+  perspective: 900px;
+  animation: rw-card-in 560ms linear both;
+}
+
+/* ── Reward cards ───────────────────────────────────────────────────────── */
+.rw-card {
+  position: relative;
+  perspective: 600px;
+}
+.rw-card-body {
+  position: relative;
+  transform-origin: 50% 60%;
+  animation: rw-card-in 520ms linear both;
+}
+@keyframes rw-card-in {
+  0% {
+    opacity: 0;
+    transform: rotateY(calc(-85deg * var(--rw-motion))) scale(calc(1 - 0.2 * var(--rw-motion)));
+    animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+  55% {
+    opacity: 1;
+    transform: rotateY(0deg) scale(calc(1 + 0.07 * var(--rw-motion)));
+    animation-timing-function: ease-out;
+  }
+  100% {
+    opacity: 1;
+    transform: rotateY(0deg) scale(1);
+  }
+}
+/* Rarity burst behind the tile at the reveal. */
+.rw-card-burst {
+  position: absolute;
+  inset: -40%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, var(--rw-glow), transparent 70%);
+  animation: rw-burst 700ms ease-out both;
+  animation-delay: 120ms;
+}
+@keyframes rw-burst {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  25% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(calc(1 + 0.4 * var(--rw-motion)));
+  }
+}
+/* Epic + legendary keep a soft halo; legendary adds slow rays + a shine. */
+.rw-card-halo {
+  position: absolute;
+  inset: -6px;
+  pointer-events: none;
+  box-shadow: 0 0 22px -2px var(--rw-glow);
+  animation: rw-fade 500ms ease-out both;
+  animation-delay: 300ms;
+}
+.rw-card-rays {
+  position: absolute;
+  inset: -55%;
+  pointer-events: none;
+  background: repeating-conic-gradient(from 0deg, var(--rw-glow) 0deg 7deg, transparent 7deg 30deg);
+  mask-image: radial-gradient(closest-side, #000 30%, transparent 75%);
+  opacity: 0.4;
+  animation:
+    rw-fade 600ms ease-out both,
+    rw-spin 9s linear infinite;
+  animation-delay: 250ms, 0ms;
+}
+@keyframes rw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.rw-reduced .rw-card-rays {
+  animation: rw-fade 600ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rw-card-rays {
+    animation: rw-fade 600ms ease-out both;
+  }
+}
+.rw-card-shine {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.rw-card-shine::after {
+  content: '';
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  width: 45%;
+  left: 0;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  transform: translateX(-120%) skewX(-12deg);
+  animation: rw-shine 900ms ease-in-out both;
+  animation-delay: 420ms;
+}
+@keyframes rw-shine {
+  to {
+    transform: translateX(330%) skewX(-12deg);
+  }
+}
+
+/* ── Challenges, credits, guest CTA ─────────────────────────────────────── */
+.rw-row {
+  animation: rw-slide 280ms var(--rw-ease) both;
+}
+.rw-check {
+  animation: rw-pop 320ms var(--rw-snap) both;
+  animation-delay: 90ms;
+}
+.rw-cta {
+  animation:
+    rw-rise 380ms var(--rw-ease) both,
+    rw-cta-glow 1.6s ease-in-out 2;
+  animation-delay: 0ms, 400ms;
+}
+@keyframes rw-cta-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(103, 232, 249, 0);
+  }
+  50% {
+    box-shadow: 0 0 22px 0 rgba(103, 232, 249, 0.35);
+  }
+}
+
+/* ── Online auto-advance bar (pauses while the results are hovered) ─────── */
+.rw-countdown {
+  transform-origin: 0% 50%;
+  animation: rw-countdown var(--rw-total, 12s) linear both;
+}
+.rw-countdown[data-paused='true'] {
+  animation-play-state: paused;
+}
+@keyframes rw-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* Skeleton column while the server reply is in flight. */
+.rw-wait {
+  animation: rw-fade 300ms ease-out both;
+  animation-delay: 400ms;
+}

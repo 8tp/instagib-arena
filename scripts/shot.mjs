@@ -22,6 +22,8 @@
 //   --size WxH      viewport (default 1600x900)
 //   --keep-overlay  don't strip the click-to-play overlay
 //   --no-hud        hide the React HUD layer (pure 3D frame)
+//   --cookie N=V    set a cookie on the base origin before loading (e.g. a
+//                   logged-in igsession from a curl cookie jar)
 //
 // Menu/front-end pages: pass --path /play (or /, /lockerlab…) and no --solo.
 
@@ -51,6 +53,7 @@ const evalJs = flag('eval', null);
 const [vw, vh] = String(flag('size', '1600x900')).split('x').map(Number);
 const keepOverlay = flag('keep-overlay', false) === true;
 const noHud = flag('no-hud', false) === true;
+const cookie = flag('cookie', null);
 
 const CHROME =
   process.env.CHROME_BIN ||
@@ -146,6 +149,11 @@ async function main() {
   await send('Page.addScriptToEvaluateOnNewDocument', {
     source: `try{localStorage.setItem('instagib-onboarded','1');if(!localStorage.getItem('instagib-name'))localStorage.setItem('instagib-name','shot');}catch(e){}`,
   });
+  if (cookie) {
+    await send('Network.enable');
+    const eq = String(cookie).indexOf('=');
+    await send('Network.setCookie', { url: base, name: String(cookie).slice(0, eq), value: String(cookie).slice(eq + 1) });
+  }
   await send('Page.navigate', { url: base + path });
   // Wait for the app to mount (a cold vite can take a while to serve the first
   // module graph) rather than a fixed sleep.

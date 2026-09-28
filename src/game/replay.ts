@@ -3,6 +3,7 @@ import { RemotePlayer } from './remote-player';
 import type { BotModel } from './bots';
 import type { RemotePlayerSnapshot } from './net';
 import type { Vec3 } from './types';
+import type { KillEffectStyle } from './cosmetics';
 import { EYE_HEIGHT, MULTIKILL_WINDOW_SEC, TEAM_COLORS } from './constants';
 import {
   REPLAY_VERSION,
@@ -264,7 +265,9 @@ export type ReplayDeps = {
   botModel: BotModel | null;
   spawnBeam: (origin: Vec3, end: Vec3) => void;
   spawnMuzzleFlash: (at: Vec3) => void;
-  spawnKillEffect: (at: THREE.Vector3, headshot: boolean) => void;
+  spawnKillEffect: (at: THREE.Vector3, headshot: boolean, killerId: string) => void;
+  // The killer's finisher — also how the victim's replayed body breaks apart.
+  finisherFor?: (killerId: string) => KillEffectStyle;
   reducedEffects: () => boolean;
   // Fired when the POV star (whose eyes we're in) scores a kill in the clip, so
   // the HUD can flash a hit-marker over the crosshair.
@@ -469,8 +472,17 @@ export class ReplayPlayer {
       }
     }
 
-    // Sample poses at the current replay time and drive every actor.
+    // Sample poses at the current replay time and drive every actor. This
+    // frame's victims are tagged with their killer's finisher first, so the
+    // snap that hides (gibs) them plays the right death.
     const poses = this.sampleAll();
+    if (this.deps.finisherFor) {
+      for (let i = this.nextKillIdx; i < this.kills.length && this.kills[i].t <= this.t; i++) {
+        const k = this.kills[i];
+        const victim = this.actors.get(k.victimId);
+        if (victim) victim.replayFinisher = this.deps.finisherFor(k.killerId);
+      }
+    }
     for (const [id, actor] of this.actors) {
       const pose = poses[id];
       actor.snap(pose ?? ZERO_POSE, dt);
@@ -489,7 +501,7 @@ export class ReplayPlayer {
       const k = this.kills[this.nextKillIdx++];
       const vp = poses[k.victimId] ?? this.poseAt(k.victimId, k.t);
       if (vp) {
-        this.deps.spawnKillEffect(new THREE.Vector3(vp.x, vp.y + 0.9, vp.z), k.headshot);
+        this.deps.spawnKillEffect(new THREE.Vector3(vp.x, vp.y + 0.9, vp.z), k.headshot, k.killerId);
       }
       // A kill BY the star we're spectating → flash a hit-marker on the crosshair.
       if (k.killerId === this.clip.starId) this.deps.onStarKill?.(k.headshot);

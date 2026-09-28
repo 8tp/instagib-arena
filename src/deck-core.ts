@@ -140,9 +140,9 @@ function getToasts() {
   return toastList;
 }
 
-// Push a menu toast. Confirmations get the confirm cue, errors the error cue;
-// pass `sound: 'none'` to stay silent (e.g. when the triggering button already
-// played one).
+// Push a menu toast. Confirmations get the confirm cue, errors the error cue,
+// plain / warn notices a soft pop (the modalOpen whoosh); pass `sound: 'none'`
+// to stay silent (e.g. when the triggering button already played one).
 export function toast(
   text: string,
   opts: { tone?: ToastTone; ttl?: number; sound?: UiSoundName | 'none' } = {},
@@ -152,7 +152,7 @@ export function toast(
   const ttl = opts.ttl ?? (tone === 'err' ? 4200 : 2600);
   toastList = [...toastList.slice(-(MAX_TOASTS - 1)), { id, text, tone, leaving: false }];
   emitToasts();
-  const sound = opts.sound ?? (tone === 'err' ? 'uiError' : tone === 'ok' ? 'uiConfirm' : 'none');
+  const sound = opts.sound ?? (tone === 'err' ? 'uiError' : tone === 'ok' ? 'uiConfirm' : 'modalOpen');
   uiSfx(sound);
   if (typeof window !== 'undefined') window.setTimeout(() => dismissToast(id), ttl);
   return id;

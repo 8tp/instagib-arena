@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { DecalManager } from './decals';
 import { RailBeams } from './fx/rail-beam';
+import { lightningPath, RibbonBatch } from './fx/ribbon';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared, pooled FX primitives — one FxContext per scene.
@@ -28,7 +29,15 @@ import { RailBeams } from './fx/rail-beam';
 // ─────────────────────────────────────────────────────────────────────────
 
 // (Flashes are camera-facing glow sprites — see SpritePool — not solid spheres.)
-export const FX_SHAPES = ['ico', 'torus', 'torusThin', 'box', 'column', 'cone', 'ring'] as const;
+//
+// Finisher shapes (death animations): `cube` = solid lit voxel with glowing
+// edges, `flake` = solid double-sided quad (confetti, ash), `shard` = glassy
+// additive crystal with fresnel + facet glints, `mote` / `glint` = additive
+// camera-facing billboards (soft glow / star) — one draw call each when used.
+export const FX_SHAPES = [
+  'ico', 'torus', 'torusThin', 'box', 'column', 'cone', 'ring',
+  'cube', 'flake', 'shard', 'mote', 'glint',
+] as const;
 export type FxShape = (typeof FX_SHAPES)[number];
 
 // Max simultaneous live instances per shape. Bursts that would overflow simply
@@ -41,14 +50,21 @@ const SHAPE_CAPACITY: Record<FxShape, number> = {
   column: 8,
   cone: 8,
   ring: 32,
+  cube: 192,
+  flake: 320,
+  shard: 128,
+  mote: 256,
+  glint: 64,
 };
+
+const BILLBOARD = new Set<FxShape>(['mote', 'glint']);
 
 const SHAPE_INDEX = Object.fromEntries(FX_SHAPES.map((s, i) => [s, i])) as Record<FxShape, number>;
 
 const MAX_DT = 0.1;
 // Camera-facing flashes (muzzle, impact, kill + every style's energy flash).
 // All busy → the most-faded one is recycled, so a pile-up never allocates.
-const SPRITE_SLOTS = 24;
+const SPRITE_SLOTS = 32;
 
 function buildShapeGeometry(shape: FxShape): THREE.BufferGeometry {
   switch (shape) {
@@ -63,11 +79,175 @@ function buildShapeGeometry(shape: FxShape): THREE.BufferGeometry {
     case 'cone': return new THREE.CylinderGeometry(0.4375, 1, 1, 10, 1, true);
     // Textured surface ring (+Z is the surface normal).
     case 'ring': return new THREE.PlaneGeometry(1, 1);
+    case 'cube': return new THREE.BoxGeometry(1, 1, 1);
+    case 'flake': return new THREE.PlaneGeometry(1, 1);
+    // A faceted crystal: a stretched octahedron (flat normals at detail 0).
+    case 'shard': return new THREE.OctahedronGeometry(0.5, 0).scale(0.6, 1.5, 0.14);
+    case 'mote':
+    case 'glint': return new THREE.PlaneGeometry(1, 1);
   }
 }
 
+// Solid FX surface (voxels, confetti, ash): a cheap two-light shade plus an
+// emissive term from the instance colour (colours above 1 glow through the
+// bloom) and, on cubes, glowing edges. Not scene-lit, so it never re-keys on
+// the level's lights and compiles in a blink.
+const SOLID_VERT = /* glsl */ `
+varying vec3 vN;
+varying vec3 vColor;
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  #ifdef USE_INSTANCING_COLOR
+    vColor = instanceColor;
+  #else
+    vColor = vec3(1.0);
+  #endif
+  mat4 m = modelMatrix * instanceMatrix;
+  vN = normalize(mat3(m) * normal);
+  // Opaque debris can't fade: inside ~1.2 m of the eye it shrinks into its
+  // centre instead (a point-blank frag must not splat across the view).
+  float igDz = -(viewMatrix * (m * vec4(0.0, 0.0, 0.0, 1.0))).z;
+  float igNear = smoothstep(0.3, 1.2, igDz);
+  gl_Position = projectionMatrix * viewMatrix * (m * vec4(position * igNear, 1.0));
+}
+`;
+
+const SOLID_FRAG = /* glsl */ `
+uniform float uEmit;
+uniform float uEdge;
+varying vec3 vN;
+varying vec3 vColor;
+varying vec2 vUv;
+void main() {
+  vec3 n = normalize(vN);
+  if (!gl_FrontFacing) n = -n;
+  float diff = max(dot(n, normalize(vec3(0.35, 0.85, 0.4))), 0.0);
+  float hemi = 0.5 + 0.5 * n.y;
+  vec3 base = min(vColor, vec3(1.0));
+  vec3 col = base * (0.22 + 0.4 * hemi + 0.55 * diff);
+  vec2 e = abs(vUv - 0.5) * 2.0;
+  float edge = pow(max(e.x, e.y), 9.0);
+  col += vColor * (uEmit + uEdge * edge);
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+function solidMaterial(emit: number, edge: number, doubleSided: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uEmit: { value: emit }, uEdge: { value: edge } },
+    vertexShader: SOLID_VERT,
+    fragmentShader: SOLID_FRAG,
+    side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+  });
+}
+
+// Glass shard: see-through body, a bright fresnel rim and a hot glint on any
+// facet that swings toward the camera. Additive.
+const SHARD_VERT = /* glsl */ `
+varying vec3 vN;
+varying vec3 vView;
+varying vec3 vColor;
+void main() {
+  #ifdef USE_INSTANCING_COLOR
+    vColor = instanceColor;
+  #else
+    vColor = vec3(1.0);
+  #endif
+  mat4 m = modelMatrix * instanceMatrix;
+  vec4 wp = m * vec4(position, 1.0);
+  vN = mat3(m) * normal;
+  vView = cameraPosition - wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+
+const SHARD_FRAG = /* glsl */ `
+varying vec3 vN;
+varying vec3 vView;
+varying vec3 vColor;
+void main() {
+  float facing = abs(dot(normalize(vN), normalize(vView)));
+  float rim = pow(1.0 - facing, 2.0);
+  float glint = pow(facing, 28.0);
+  float peak = max(vColor.r, max(vColor.g, vColor.b));
+  vec3 col = vColor * (0.06 + rim * 1.3) + vec3(glint * peak * 0.9);
+  col *= smoothstep(0.15, 0.6, length(vView)); // never swamp the camera
+  gl_FragColor = vec4(col, 1.0);
+  #include <colorspace_fragment>
+}
+`;
+
+function shardMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: SHARD_VERT,
+    fragmentShader: SHARD_FRAG,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false,
+  });
+}
+
+// Camera-facing billboard: the instance matrix carries position (column 3)
+// and a 2-D scale+rotation in the x/y of columns 0 and 1 (see FxPool.step).
+const BILLBOARD_VERT = /* glsl */ `
+varying vec2 vUv;
+varying vec3 vColor;
+void main() {
+  vUv = uv;
+  #ifdef USE_INSTANCING_COLOR
+    vColor = instanceColor;
+  #else
+    vColor = vec3(1.0);
+  #endif
+  vec4 c = viewMatrix * (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0));
+  c.xy += mat2(instanceMatrix[0].xy, instanceMatrix[1].xy) * position.xy;
+  vColor *= smoothstep(0.15, 0.6, -c.z); // never swamp the camera
+  gl_Position = projectionMatrix * c;
+}
+`;
+
+const BILLBOARD_FRAG = /* glsl */ `
+uniform sampler2D map;
+varying vec2 vUv;
+varying vec3 vColor;
+void main() {
+  vec4 t = texture2D(map, vUv);
+  gl_FragColor = vec4(vColor * t.rgb * t.a, 1.0);
+  #include <colorspace_fragment>
+}
+`;
+
+function billboardMaterial(map: THREE.Texture): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { map: { value: map } },
+    vertexShader: BILLBOARD_VERT,
+    fragmentShader: BILLBOARD_FRAG,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
+}
+
+// Additive FX fade out within ~0.6 m of the camera (a spark or ring passing
+// through the eye must not white-out the view). Module scope so every
+// instance shares one program.
+const injectNearFade = (shader: THREE.WebGLProgramParametersWithUniforms) => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying float vIgDepth;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvIgDepth = -mvPosition.z;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying float vIgDepth;')
+    .replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb *= smoothstep(0.15, 0.6, vIgDepth);');
+};
+
 function additiveMaterial(map: THREE.Texture | null, doubleSided: boolean): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({
+  const m = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     map,
     transparent: true,
@@ -76,6 +256,8 @@ function additiveMaterial(map: THREE.Texture | null, doubleSided: boolean): THRE
     toneMapped: false,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
   });
+  m.onBeforeCompile = injectNearFade;
+  return m;
 }
 
 // Energy shell for the light columns / cones (spawn-in beams, the pyre): a
@@ -115,6 +297,7 @@ void main() {
   float v = vUv.y; // 0 at the base, 1 at the top
   float height = smoothstep(0.0, 0.06, v) * pow(1.0 - v, 1.4);
   float a = (rim * 0.85 + streak * 0.3 * (1.0 - facing * 0.5)) * height;
+  a *= smoothstep(0.15, 0.6, length(vView)); // never swamp the camera
   gl_FragColor = vec4(vColor * a, 1.0);
   #include <colorspace_fragment>
 }
@@ -208,6 +391,38 @@ export function glowTexture(): THREE.Texture {
   return glowTex;
 }
 
+let starTex: THREE.Texture | null = null;
+// Four-point sparkle with a hot centre — glints on glass, prism sparkles.
+export function starTexture(): THREE.Texture {
+  if (starTex) return starTex;
+  starTex = canvasTexture(64, (ctx, s) => {
+    const c = s / 2;
+    ctx.globalCompositeOperation = 'lighter';
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+      const len = s * 0.48;
+      const w = s * 0.05;
+      const g = ctx.createLinearGradient(c, c, c + Math.cos(a) * len, c + Math.sin(a) * len);
+      g.addColorStop(0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.35, 'rgba(255,255,255,0.45)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(c + Math.cos(a + Math.PI / 2) * w, c + Math.sin(a + Math.PI / 2) * w);
+      ctx.lineTo(c + Math.cos(a) * len, c + Math.sin(a) * len);
+      ctx.lineTo(c + Math.cos(a - Math.PI / 2) * w, c + Math.sin(a - Math.PI / 2) * w);
+      ctx.closePath();
+      ctx.fill();
+    }
+    const core = ctx.createRadialGradient(c, c, 0, c, c, s * 0.2);
+    core.addColorStop(0, 'rgba(255,255,255,1)');
+    core.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = core;
+    ctx.fillRect(0, 0, s, s);
+  });
+  return starTex;
+}
+
 let ringTex: THREE.Texture | null = null;
 // Thin soft annulus — the expanding shock ring on a surface / at the muzzle.
 export function ringTexture(): THREE.Texture {
@@ -245,6 +460,21 @@ export class FxParticle {
   qx = 0; qy = 0; qz = 0; qw = 1; // orientation (ignored when `align`)
   align = false; // orient +Z along the current velocity (streaks / spikes)
   r = 1; g = 1; b = 1; // linear colour, may exceed 1 for bloom
+  // ── Finisher extras (all closed-form, frame-rate independent) ──
+  delay = 0; // seconds before it appears (life starts after the delay)
+  drag = 0; // 1/s exponential velocity damping (flutter, hang)
+  sax = 0; say = 1; saz = 0; spin = 0; // tumble axis (unit) + rate rad/s
+  floor = -Infinity; // world y it can't sink below (settles on the ground)
+  r2 = 0; g2 = 0; b2 = 0; ramp = false; // colour → (r2,g2,b2) over the life
+  rampT = 0; // > 0: the ramp completes after this many seconds instead of the life
+  scaleFade = false; // solid shapes: shrink out at the end instead of dimming
+  rot = 0; // billboard in-plane angle
+  // Bouncing debris (bounce ≥ 0): integrated per frame instead of closed
+  // form, so it can hit the floor, bounce (restitution `bounce`), skid and
+  // settle into a pile. Needs `floor`.
+  bounce = -1;
+  private live = false;
+  cx = 0; cy = 0; cz = 0; cvx = 0; cvy = 0; cvz = 0; ang = 0; spinNow = 0;
 
   reset(shape: number) {
     this.shape = shape;
@@ -260,6 +490,18 @@ export class FxParticle {
     this.qw = 1;
     this.align = false;
     this.r = this.g = this.b = 1;
+    this.delay = 0;
+    this.drag = 0;
+    this.sax = 0; this.say = 1; this.saz = 0; this.spin = 0;
+    this.floor = -Infinity;
+    this.r2 = this.g2 = this.b2 = 0;
+    this.ramp = false;
+    this.rampT = 0;
+    this.scaleFade = false;
+    this.rot = 0;
+    this.bounce = -1;
+    this.live = false;
+    this.ang = 0;
   }
 
   setColor(hex: number, intensity = 1) {
@@ -267,6 +509,72 @@ export class FxParticle {
     this.r = tmpColor.r * intensity;
     this.g = tmpColor.g * intensity;
     this.b = tmpColor.b * intensity;
+  }
+
+  setRGB(r: number, g: number, b: number) {
+    this.r = r;
+    this.g = g;
+    this.b = b;
+  }
+
+  // Colour ramp end (linear); the colour lerps toward it over the life.
+  setRamp(r: number, g: number, b: number) {
+    this.r2 = r;
+    this.g2 = g;
+    this.b2 = b;
+    this.ramp = true;
+  }
+
+  // Integrate one step of bouncing debris (see `bounce`); `dt` is the part
+  // of this frame since the particle appeared.
+  integrate(dt: number, s: number) {
+    if (!this.live) {
+      this.live = true;
+      this.cx = this.x; this.cy = this.y; this.cz = this.z;
+      this.cvx = this.vx; this.cvy = this.vy; this.cvz = this.vz;
+      this.spinNow = this.spin;
+    }
+    this.cvy -= this.gravity * dt;
+    if (this.drag > 0) {
+      const d = Math.exp(-this.drag * dt);
+      this.cvx *= d; this.cvy *= d; this.cvz *= d;
+    }
+    this.cx += this.cvx * dt;
+    this.cy += this.cvy * dt;
+    this.cz += this.cvz * dt;
+    const h = 0.5 * this.sy * s;
+    if (this.cy < this.floor + h) {
+      this.cy = this.floor + h;
+      if (this.cvy < 0) {
+        this.cvy = -this.cvy * this.bounce;
+        if (this.cvy < 0.4) this.cvy = 0;
+        const f = Math.exp(-6 * dt) * 0.7; // floor friction
+        this.cvx *= f; this.cvz *= f;
+        this.spinNow *= 0.55;
+      } else {
+        const f = Math.exp(-8 * dt);
+        this.cvx *= f; this.cvz *= f;
+        this.spinNow *= f;
+      }
+    }
+    this.ang += this.spinNow * dt;
+  }
+
+  // Tumble about a random axis at `rate` rad/s.
+  randomSpin(rate: number) {
+    const x = Math.random() - 0.5, y = Math.random() - 0.5, z = Math.random() - 0.5;
+    const l = Math.hypot(x, y, z) || 1;
+    this.sax = x / l;
+    this.say = y / l;
+    this.saz = z / l;
+    this.spin = rate;
+  }
+
+  // Random starting orientation.
+  randomOrientation() {
+    tmpE2.set(Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2);
+    tmpQ2.setFromEuler(tmpE2);
+    this.qx = tmpQ2.x; this.qy = tmpQ2.y; this.qz = tmpQ2.z; this.qw = tmpQ2.w;
   }
 
   setQuaternion(q: THREE.Quaternion) {
@@ -283,6 +591,9 @@ export class FxParticle {
   }
 }
 
+const tmpE2 = new THREE.Euler();
+const tmpQ2 = new THREE.Quaternion();
+const tmpAxis = new THREE.Vector3();
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
 const tmpPos = new THREE.Vector3();
 const tmpDir = new THREE.Vector3();
@@ -297,6 +608,7 @@ export class FxPool {
   private readonly live: FxParticle[] = [];
   private readonly free: FxParticle[] = [];
   private readonly liveByShape: Int32Array;
+  private readonly billboard: boolean[] = FX_SHAPES.map((s) => BILLBOARD.has(s));
 
   constructor() {
     this.group.userData.shared = true;
@@ -304,10 +616,16 @@ export class FxPool {
     for (const shape of FX_SHAPES) {
       const cap = SHAPE_CAPACITY[shape];
       const shell = shape === 'column' || shape === 'cone';
-      const mat = shell
-        ? shellMaterial()
-        : additiveMaterial(shape === 'ring' ? ringTexture() : null, shape === 'ring');
+      let mat: THREE.Material;
+      if (shell) mat = shellMaterial();
+      else if (shape === 'cube') mat = solidMaterial(0.45, 1.4, false);
+      else if (shape === 'flake') mat = solidMaterial(0.14, 0, true);
+      else if (shape === 'shard') mat = shardMaterial();
+      else if (shape === 'mote') mat = billboardMaterial(glowTexture());
+      else if (shape === 'glint') mat = billboardMaterial(starTexture());
+      else mat = additiveMaterial(shape === 'ring' ? ringTexture() : null, shape === 'ring');
       const mesh = new THREE.InstancedMesh(buildShapeGeometry(shape), mat, cap);
+      if (shape === 'cube' || shape === 'flake') mesh.renderOrder = -1; // solids before the additive glow
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
@@ -345,43 +663,88 @@ export class FxPool {
     for (let i = live.length - 1; i >= 0; i--) {
       const p = live[i];
       p.age += dt;
-      if (p.age >= p.life) {
+      if (p.age >= p.delay + p.life) {
         live[i] = live[live.length - 1];
         live.pop();
         this.free.push(p);
         continue;
       }
-      const t = p.age;
-      const lifeFrac = 1 - t / p.life;
+      const t = p.age - p.delay;
+      if (t < 0) continue; // still waiting to appear
+      const u = t / p.life;
+      const lifeFrac = 1 - u;
       const fade = p.fadePow === 1 ? lifeFrac : Math.pow(lifeFrac, p.fadePow);
-      const s = p.grow !== 0 ? Math.exp(p.grow * t) : 1;
-
-      tmpPos.set(p.x + p.vx * t, p.y + p.vy * t - 0.5 * p.gravity * t * t, p.z + p.vz * t);
-      if (p.align) {
-        const vy = p.vy - p.gravity * t;
-        const l = Math.hypot(p.vx, vy, p.vz);
-        if (l > 1e-6) {
-          tmpDir.set(p.vx / l, vy / l, p.vz / l);
-          tmpQuat.setFromUnitVectors(Z_AXIS, tmpDir);
-        } else {
-          tmpQuat.identity();
-        }
-      } else {
-        tmpQuat.set(p.qx, p.qy, p.qz, p.qw);
+      let s = p.grow !== 0 ? Math.exp(p.grow * t) : 1;
+      if (p.scaleFade) {
+        const k = Math.min(1, lifeFrac / 0.35);
+        s *= k * k * (3 - 2 * k);
       }
-      tmpScale.set(p.sx * s, p.sy * s, p.sz * s);
-      tmpMat.compose(tmpPos, tmpQuat, tmpScale);
+
+      // Ballistic (optionally with linear drag) in closed form.
+      let vxT = p.vx, vyT = p.vy - p.gravity * t, vzT = p.vz;
+      if (p.bounce >= 0) {
+        p.integrate(Math.min(dt, t), s);
+        tmpPos.set(p.cx, p.cy, p.cz);
+        vxT = p.cvx; vyT = p.cvy; vzT = p.cvz;
+      } else if (p.drag > 0) {
+        const k = p.drag;
+        const e = Math.exp(-k * t);
+        const f = (1 - e) / k;
+        const gk = p.gravity / k;
+        tmpPos.set(p.x + p.vx * f, p.y + (p.vy + gk) * f - gk * t, p.z + p.vz * f);
+        vxT = p.vx * e; vyT = (p.vy + gk) * e - gk; vzT = p.vz * e;
+      } else {
+        tmpPos.set(p.x + p.vx * t, p.y + p.vy * t - 0.5 * p.gravity * t * t, p.z + p.vz * t);
+      }
+      if (tmpPos.y < p.floor) tmpPos.y = p.floor + 0.5 * p.sy * s;
 
       const si = p.shape;
       const idx = counts[si];
       if (idx >= this.capacity[si]) continue; // over budget: keep alive, skip draw
       counts[si] = idx + 1;
       const mesh = this.meshes[si];
-      tmpMat.toArray(mesh.instanceMatrix.array as unknown as number[], idx * 16);
+      const arr = mesh.instanceMatrix.array as Float32Array;
+      if (this.billboard[si]) {
+        // Camera-facing: 2-D scale + rotation in columns 0/1, position in 3.
+        const a = p.rot + p.spin * t;
+        const c = Math.cos(a) * p.sx * s, sn = Math.sin(a) * p.sx * s;
+        const o = idx * 16;
+        arr[o] = c; arr[o + 1] = sn; arr[o + 2] = 0; arr[o + 3] = 0;
+        arr[o + 4] = -sn; arr[o + 5] = c; arr[o + 6] = 0; arr[o + 7] = 0;
+        arr[o + 8] = 0; arr[o + 9] = 0; arr[o + 10] = 1; arr[o + 11] = 0;
+        arr[o + 12] = tmpPos.x; arr[o + 13] = tmpPos.y; arr[o + 14] = tmpPos.z; arr[o + 15] = 1;
+      } else {
+        if (p.align) {
+          const l = Math.hypot(vxT, vyT, vzT);
+          if (l > 1e-6) {
+            tmpDir.set(vxT / l, vyT / l, vzT / l);
+            tmpQuat.setFromUnitVectors(Z_AXIS, tmpDir);
+          } else {
+            tmpQuat.identity();
+          }
+        } else {
+          tmpQuat.set(p.qx, p.qy, p.qz, p.qw);
+          if (p.spin !== 0) {
+            tmpQ2.setFromAxisAngle(tmpAxis.set(p.sax, p.say, p.saz), p.bounce >= 0 ? p.ang : p.spin * t);
+            tmpQuat.premultiply(tmpQ2);
+          }
+        }
+        tmpScale.set(p.sx * s, p.sy * s, p.sz * s);
+        tmpMat.compose(tmpPos, tmpQuat, tmpScale);
+        tmpMat.toArray(arr as unknown as number[], idx * 16);
+      }
       const col = mesh.instanceColor!.array as Float32Array;
-      col[idx * 3] = p.r * fade;
-      col[idx * 3 + 1] = p.g * fade;
-      col[idx * 3 + 2] = p.b * fade;
+      let r = p.r, g = p.g, b = p.b;
+      if (p.ramp) {
+        const ur = p.rampT > 0 ? Math.min(1, t / p.rampT) : u;
+        r += (p.r2 - r) * ur;
+        g += (p.g2 - g) * ur;
+        b += (p.b2 - b) * ur;
+      }
+      const cf = p.scaleFade ? 1 : fade;
+      col[idx * 3] = r * cf;
+      col[idx * 3 + 1] = g * cf;
+      col[idx * 3 + 2] = b * cf;
     }
     for (let si = 0; si < this.meshes.length; si++) {
       const mesh = this.meshes[si];
@@ -433,8 +796,14 @@ export type SpriteSlot = {
   base: number; // starting size (metres)
   shrink: number; // fraction of `base` lost over the life (negative grows)
   flicker: boolean; // alternate-frame 0.78× for the first 2 frames
+  delay: number; // seconds before it appears (the life starts after it)
   r: number; g: number; b: number;
+  size: number; // this frame's size before proximity scaling
+  fade: number; // this frame's brightness factor
+  noProx: boolean; // exempt from proximity scaling (the local viewmodel muzzle)
 };
+
+const tmpCam = new THREE.Vector3();
 
 class SpritePool {
   readonly slots: SpriteSlot[] = [];
@@ -453,9 +822,21 @@ class SpritePool {
       sprite.visible = false;
       sprite.userData.shared = true;
       parent.add(sprite);
-      this.slots.push({
-        sprite, mat, busy: false, age: 0, life: 0.1, fadePow: 1, base: 0.2, shrink: 0, flicker: false, r: 1, g: 1, b: 1,
-      });
+      const slot: SpriteSlot = {
+        sprite, mat, busy: false, age: 0, life: 0.1, fadePow: 1, base: 0.2, shrink: 0, flicker: false, delay: 0, r: 1, g: 1, b: 1,
+        size: 0.2, fade: 1, noProx: false,
+      };
+      // Close to the camera a flash shrinks and dims (a point-blank frag or
+      // an impact on a wall at your face must never white-out the view).
+      sprite.onBeforeRender = (_r, _s, cam) => {
+        const d = sprite.position.distanceTo(tmpCam.setFromMatrixPosition(cam.matrixWorld));
+        const k = slot.noProx ? 1 : Math.max(0.3, Math.min(1, (d - 0.5) / 3.5));
+        sprite.scale.set(slot.size * k, slot.size * k, 1);
+        sprite.updateMatrixWorld();
+        const f = slot.fade * Math.sqrt(k);
+        mat.color.setRGB(slot.r * f, slot.g * f, slot.b * f);
+      };
+      this.slots.push(slot);
     }
   }
 
@@ -465,7 +846,7 @@ class SpritePool {
     let pick: SpriteSlot | null = null;
     for (const s of this.slots) {
       if (!s.busy) { pick = s; break; }
-      if (!pick || s.age / s.life > pick.age / pick.life) pick = s;
+      if (!pick || (s.age - s.delay) / s.life > (pick.age - pick.delay) / pick.life) pick = s;
     }
     const s = pick!;
     s.busy = true;
@@ -475,6 +856,8 @@ class SpritePool {
     s.base = 0.2;
     s.shrink = 0;
     s.flicker = false;
+    s.delay = 0;
+    s.noProx = false;
     s.r = s.g = s.b = 1;
     s.mat.map = map;
     s.mat.rotation = Math.random() * Math.PI * 2;
@@ -485,23 +868,31 @@ class SpritePool {
   // Apply the caller's size / colour right away so the sprite is correct on
   // the very first frame it's drawn (before the first step()).
   finish(s: SpriteSlot) {
+    s.size = s.base;
+    s.fade = 1;
     s.sprite.scale.set(s.base, s.base, 1);
     s.mat.color.setRGB(s.r, s.g, s.b);
+    s.sprite.visible = s.delay <= 0;
   }
 
   step(dt: number, frame: number) {
     for (const s of this.slots) {
       if (!s.busy) continue;
       s.age += dt;
-      if (s.age >= s.life) {
+      const t = s.age - s.delay;
+      if (t < 0) continue; // waiting to appear
+      if (t >= s.life) {
         s.busy = false;
         s.sprite.visible = false;
         continue;
       }
-      const f = 1 - s.age / s.life;
+      s.sprite.visible = true;
+      const f = 1 - t / s.life;
       const fade = s.fadePow === 1 ? f : Math.pow(f, s.fadePow);
-      let size = s.base * (1 - s.shrink * (s.age / s.life));
-      if (s.flicker && s.age < 0.034 && (frame & 1) === 1) size *= 0.78;
+      let size = s.base * (1 - s.shrink * (t / s.life));
+      if (s.flicker && t < 0.034 && (frame & 1) === 1) size *= 0.78;
+      s.size = size;
+      s.fade = fade;
       s.sprite.scale.set(size, size, 1);
       s.mat.color.setRGB(s.r * fade, s.g * fade, s.b * fade);
     }
@@ -520,6 +911,110 @@ class SpritePool {
       s.sprite.removeFromParent();
     }
     this.slots.length = 0;
+  }
+}
+
+// ── Arcs (lightning ribbons) ───────────────────────────────────────────────
+//
+// Short-lived jagged energy arcs between two world points (overload's arcs
+// crawling over a body, the blast's tendrils). One ribbon batch, re-jagged
+// at `rate` Hz with a random flicker, fading over the life. Built on first
+// use (scenes that never arc never pay).
+
+const ARC_SLOTS = 20;
+const ARC_POINTS = 10;
+
+type ArcSlot = {
+  busy: boolean;
+  age: number;
+  delay: number;
+  life: number;
+  ax: number; ay: number; az: number;
+  bx: number; by: number; bz: number;
+  jag: number;
+  r: number; g: number; b: number;
+  width: number;
+  rate: number;
+  next: number; // time to the next re-jag
+  flick: number;
+};
+
+export class ArcPool {
+  readonly batch = new RibbonBatch(ARC_SLOTS, ARC_POINTS, 1.4);
+  private readonly slots: ArcSlot[] = [];
+  private readonly path = new Float32Array(ARC_SLOTS * ARC_POINTS * 3);
+
+  constructor() {
+    for (let i = 0; i < ARC_SLOTS; i++) {
+      this.slots.push({
+        busy: false, age: 0, delay: 0, life: 0.1, ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0,
+        jag: 0.05, r: 1, g: 1, b: 1, width: 0.02, rate: 30, next: 0, flick: 1,
+      });
+    }
+  }
+
+  // Colour is linear (may exceed 1). Drops the arc when every slot is busy.
+  spawn(
+    ax: number, ay: number, az: number, bx: number, by: number, bz: number,
+    r: number, g: number, b: number, width: number, life: number, jag: number, delay = 0, rate = 30,
+  ): void {
+    let s: ArcSlot | null = null;
+    for (const q of this.slots) {
+      if (!q.busy) { s = q; break; }
+    }
+    if (!s) return;
+    s.busy = true;
+    s.age = 0;
+    s.delay = delay;
+    s.life = life;
+    s.ax = ax; s.ay = ay; s.az = az;
+    s.bx = bx; s.by = by; s.bz = bz;
+    s.r = r; s.g = g; s.b = b;
+    s.width = width;
+    s.jag = jag;
+    s.rate = rate;
+    s.next = 0;
+    s.flick = 1;
+  }
+
+  step(dt: number) {
+    const batch = this.batch;
+    batch.begin();
+    for (let i = 0; i < ARC_SLOTS; i++) {
+      const s = this.slots[i];
+      if (!s.busy) continue;
+      s.age += dt;
+      const t = s.age - s.delay;
+      if (t < 0) continue;
+      if (t >= s.life) {
+        s.busy = false;
+        continue;
+      }
+      const o = i * ARC_POINTS * 3;
+      s.next -= dt;
+      if (s.next <= 0) {
+        s.next = 1 / s.rate;
+        s.flick = 0.55 + Math.random() * 0.45;
+        lightningPath(this.path.subarray(o, o + ARC_POINTS * 3), ARC_POINTS, s.ax, s.ay, s.az, s.bx, s.by, s.bz, s.jag);
+      }
+      const k = (1 - t / s.life) * s.flick;
+      for (let j = 0; j < ARC_POINTS; j++) {
+        const q = o + j * 3;
+        const w = s.width * (1 - 0.5 * Math.abs(j / (ARC_POINTS - 1) - 0.5));
+        batch.push(i, this.path[q], this.path[q + 1], this.path[q + 2], s.r * k, s.g * k, s.b * k, w);
+      }
+    }
+    batch.commit();
+  }
+
+  clear() {
+    for (const s of this.slots) s.busy = false;
+    this.batch.begin();
+    this.batch.commit();
+  }
+
+  dispose() {
+    this.batch.dispose();
   }
 }
 
@@ -621,6 +1116,7 @@ export class FxContext {
   readonly decals = new DecalManager();
   // Rail trails, built on the first beam (scenes without a railgun never pay).
   private railBeams: RailBeams | null = null;
+  private arcPool: ArcPool | null = null;
   time = 0; // seconds since creation (drives decal ageing on the GPU)
   frame = 0;
   quality = -1;
@@ -653,6 +1149,34 @@ export class FxContext {
     this.railBeams?.clear();
   }
 
+  // Shader prewarm: make every pooled mesh / one sprite / the arc ribbons
+  // visible (still drawing nothing: count 0) so a compile pass sees them.
+  // Returns the restore function.
+  prewarmBegin(): () => void {
+    const arcs = this.arcs.batch.mesh;
+    const meshes = this.pool.group.children as THREE.InstancedMesh[];
+    const spr = this.sprites.slots[0];
+    for (const m of meshes) m.visible = true;
+    arcs.visible = true;
+    if (spr) spr.sprite.visible = true;
+    // Restore from LIVE state (effects may have spawned during an async
+    // compile), never from a snapshot.
+    return () => {
+      for (const m of meshes) m.visible = m.count > 0;
+      arcs.visible = arcs.geometry.drawRange.count > 0;
+      if (spr) spr.sprite.visible = spr.busy && spr.age >= spr.delay;
+    };
+  }
+
+  // Lightning arcs, built on first use.
+  get arcs(): ArcPool {
+    if (!this.arcPool) {
+      this.arcPool = new ArcPool();
+      this.group.add(this.arcPool.batch.mesh);
+    }
+    return this.arcPool;
+  }
+
   step(dt: number) {
     dt = Math.max(0, Math.min(MAX_DT, dt));
     if (this.quality !== fxQuality) this.applyQuality(fxQuality);
@@ -662,6 +1186,7 @@ export class FxContext {
     this.sprites.step(dt, this.frame);
     this.lights.step(dt);
     this.railBeams?.step(dt);
+    this.arcPool?.step(dt);
     this.decals.setTime(this.time);
   }
 
@@ -678,6 +1203,7 @@ export class FxContext {
     this.lights.clear();
     this.decals.clear();
     this.railBeams?.clear();
+    this.arcPool?.clear();
   }
 
   dispose() {
@@ -689,6 +1215,8 @@ export class FxContext {
     this.decals.dispose();
     this.railBeams?.dispose();
     this.railBeams = null;
+    this.arcPool?.dispose();
+    this.arcPool = null;
   }
 }
 

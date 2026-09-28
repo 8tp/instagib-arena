@@ -56,6 +56,8 @@ import {
   isRailColor,
   isRailgunFinish,
   isSpawnEffect,
+  isKillEffectStyle,
+  DEFAULT_KILL_EFFECT,
   isTitle,
   isUnusual,
   titleById,
@@ -72,6 +74,9 @@ import {
   findUserById,
   getRankedProfile,
   getRankedRating,
+  levelFor,
+  logEvent,
+  recordMatch,
   recordRankedResult,
   unlockedSetFor,
 } from './db';
@@ -252,6 +257,28 @@ const CHAT_HISTORY_MAX = 50; // recent messages replayed to a client on open
 const PLAYER_RADIUS = 0.4;
 const PLAYER_HEIGHT = 1.8;
 const HEADSHOT_FRAC = 0.72;
+// Server-authoritative progression (see settleClient). The flat "match played"
+// base XP is pro rata by time present, full at this, so join/leave (or
+// join/frag/forfeit) cycling earns ~0 base.
+const PRESENCE_FULL_MS = 180_000;
+// A match is only recorded at all (XP, total_games, the "games" challenge) for
+// a player present at least this long, or with at least one frag/death.
+const MIN_RECORD_PRESENCE_MS = 45_000;
+// Repeat-victim decay (FFA/TDM): the first VICTIM_FULL_KILLS frags on the same
+// player (account, or network identity for a guest) in one match are full
+// value, then kill/headshot/streak XP halves
+// every further VICTIM_DECAY_EVERY. Duels are exempt — one opponent is the
+// format, and a duel is capped at its frag limit.
+const VICTIM_FULL_KILLS = 5;
+const VICTIM_DECAY_EVERY = 5;
+// A TDM team win only counts for a member who was in the match at least this
+// long (no joining 10s before the end to collect the win + first-win bonus).
+const TDM_WIN_MIN_PRESENCE_MS = 60_000;
+// A forfeit (opponent left a duel/ranked) only counts as a WIN for XP if the
+// survivor had reached this fraction of the frag limit — otherwise it's a no
+// contest (stops two accounts trading instant forfeits for win XP). Elo is
+// unaffected (endRankedMatch decides that).
+const FORFEIT_WIN_MIN_FRAC = 1 / 3;
 
 type Vec = Vec3;
 type ClientId = string;
@@ -318,18 +345,34 @@ type ClientRecord = {
   aimHits: number;
   aimHeadshots: number;
   aimFlagged: boolean; // statistical outlier → frags throttled
+  // Per-match counters for server-authoritative progression. Reset with
+  // frags/deaths (join, map-vote reset), carried over on resume, consumed by
+  // settleClient at match end / mid-match leave.
+  mShots: number; // accepted shots (past the fire-rate/origin/warmup gates), minus shots spent on non-counting victims
+  mHits: number; // shots that landed a counting frag
+  mKills: number; // counting frags: victims that aren't you (see sameIdentity)
+  mKillWeight: number; // Σ repeat-victim weights of those frags (≤ mKills)
+  mVictims: Map<string, number>; // victim identity (identityKey) → counting frags on them this match
+  mHeadshots: number; // frags that were headshots
+  mStreak: number; // current kill streak (reset on death)
+  mBestStreak: number;
+  mStartedAt: number; // ms: when this player's current match began (join / reset)
+  mSettled: boolean; // this match's progression is already recorded
+  undeliveredProgression: object | null; // a `progression` push that found the socket closed (resent on resume)
   team: number | null; // team index (0/1) in TDM; null otherwise
   hat: string; // equipped hat cosmetic id (echoed to other players in snapshots)
   unusual: string; // equipped unusual-effect cosmetic id
   emote: string; // equipped podium-emote cosmetic id
   nameColor: string; // equipped nameplate-color cosmetic id (echoed in snapshots)
   spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
+  killEffect: string; // equipped finisher (kill-effect style) — stamped on this player's kills
   title: string; // equipped title cosmetic id (flair under the name; echoed in snapshots)
   railColor: string; // equipped rail-beam color cosmetic id (echoed so others/spectators see your beam)
   railgunFinish: string; // equipped railgun-finish (gun skin) cosmetic id (echoed for the 3rd-person gun)
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
+  netId: string; // client network identity (IP) from the WS upgrade — see netIdFrom
   admin: boolean; // account is_admin — drives the staff badge (echoed in snapshots)
   verified: boolean; // account is_verified — drives the blue check (echoed in snapshots)
 };
@@ -364,6 +407,9 @@ type Room = {
   // Recently-used spawn spots (anti-camp): pickSpawn penalizes candidates near
   // these so a camper can't farm the same spawn. Pruned by age (SPAWN_RECENT_MS).
   recentSpawns: { x: number; z: number; t: number }[];
+  // Players who already left this match with a recorded partial — they still
+  // count as opponents for the "someone else played" win rule. Reset per match.
+  matchLeft: { id: ClientId; playerId: string; netId: string }[];
 };
 
 type ClientMessage =
@@ -384,6 +430,7 @@ type ClientMessage =
   | { type: 'emote'; id?: string }
   | { type: 'nameColor'; id?: string }
   | { type: 'spawnEffect'; id?: string }
+  | { type: 'killEffect'; id?: string }
   | { type: 'title'; id?: string }
   | { type: 'railColor'; id?: string }
   | { type: 'railgunFinish'; id?: string }
@@ -450,22 +497,21 @@ function chargeRoomCreate(record: ClientRecord, ts: number): boolean {
 
 // Sanitize a client-sent playercard into a bounded, trusted shape before we
 // relay it to other players (cosmetic-only). The NAME is forced to the
-// server-known name (clients can't impersonate on the killcam), the STYLE is
+// server-known name (clients can't impersonate on the killcam), the LEVEL to
+// the account's real level (guests 1), the STYLE is
 // ownership-checked, the TITLE is forced from the player's server-validated
 // equipped title (never the client payload), and stat strings are length-clamped.
 function sanitizeCard(
   raw: unknown,
   serverName: string,
   owned: Set<string>,
-  flags: { admin: boolean; verified: boolean; title: string },
+  flags: { admin: boolean; verified: boolean; title: string; level: number },
 ): CardPayload | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const name = serverName.slice(0, 24);
-  const level =
-    typeof o.level === 'number' && Number.isFinite(o.level)
-      ? Math.max(1, Math.min(100, Math.floor(o.level)))
-      : 1;
+  // The account's real (XP-derived) level — never the client's claim.
+  const level = flags.level;
   const style =
     typeof o.style === 'string' && isCard(o.style) && owned.has(o.style) ? o.style : 'card.slate';
   const stats: { label: string; value: string }[] = [];
@@ -500,6 +546,45 @@ function resolveTitleText(playerId: string, titleId: string): string {
     return p.rank >= 1 && p.rank <= 10 ? `#${p.rank}` : rankedTierName(p.rating);
   }
   return t.text;
+}
+
+// The WS upgrade request, as far as this module reads it.
+type UpgradeReq = {
+  headers?: {
+    cookie?: string;
+    'cf-connecting-ip'?: string | string[];
+    'x-forwarded-for'?: string | string[];
+  };
+  socket?: { remoteAddress?: string };
+};
+
+// Client network identity (IP) for the progression self-farm guard. Same
+// precedence as server/index.ts clientIp(): Cloudflare's CF-Connecting-IP, else
+// the first X-Forwarded-For hop (Railway's proxy), else the socket address.
+function netIdFrom(req?: UpgradeReq): string {
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  const cf = one(req?.headers?.['cf-connecting-ip'])?.trim();
+  if (cf) return cf;
+  const xff = one(req?.headers?.['x-forwarded-for']);
+  const ip = (xff ? xff.split(',')[0] : req?.socket?.remoteAddress ?? '').trim();
+  return ip.replace(/^::ffff:/, '') || 'unknown';
+}
+
+// Are these the same player for progression purposes? Same account, or the
+// same network identity (your own guest tab, a second account on this
+// machine). Shared-IP households therefore don't earn XP off each other — an
+// accepted trade-off. An undeterminable IP never matches.
+function sameIdentity(
+  a: { playerId: string; netId: string },
+  b: { playerId: string; netId: string },
+): boolean {
+  if (a.playerId && a.playerId === b.playerId) return true;
+  return a.netId !== 'unknown' && a.netId === b.netId;
+}
+
+// Stable per-player key for repeat-victim decay: the account, else the network.
+function identityKey(c: { playerId: string; netId: string }): string {
+  return c.playerId ? `a:${c.playerId}` : `ip:${c.netId}`;
 }
 
 function genId(len = 8): ClientId {
@@ -787,6 +872,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       wasEverOccupied: false,
       createdAt: Date.now(),
       recentSpawns: [],
+      matchLeft: [],
     };
     rooms.set(room.id, room);
     return room;
@@ -870,6 +956,140 @@ export function attachInstagibWs(wss: WebSocketServer) {
         : room.mode === 'tdm'
           ? TDM_FRAG_LIMIT
           : MATCH_FRAG_LIMIT;
+
+  // ── Server-authoritative progression ─────────────────────────────────────
+  // Every online match is recorded HERE from server-known counters (frags,
+  // deaths, accepted shots, frag hits, headshots, streaks) — the client reports
+  // nothing. Accounts are persisted; guests get the same computation as a
+  // preview (saved: false). Each player is sent `{ type: 'progression', … }`.
+  const resetMatchStats = (c: ClientRecord, now: number) => {
+    c.mShots = 0;
+    c.mHits = 0;
+    c.mKills = 0;
+    c.mKillWeight = 0;
+    c.mVictims.clear();
+    c.mHeadshots = 0;
+    c.mStreak = 0;
+    c.mBestStreak = 0;
+    c.mStartedAt = now;
+    c.mSettled = false;
+    // A push held for a resume belongs to the match that just ended — never
+    // deliver it into the next one.
+    c.undeliveredProgression = null;
+  };
+
+  // Did this player take part enough for a match to count (total_games, the
+  // "games" challenge, any XP)? ≥ MIN_RECORD_PRESENCE_MS present, or at least
+  // one frag/death. Applies to every settle path (end, forfeit, leave).
+  const recordable = (c: ClientRecord, now: number): boolean =>
+    now - c.mStartedAt >= MIN_RECORD_PRESENCE_MS || c.frags > 0 || c.deaths > 0;
+
+  // Record one player's match (full at match end, or `partial` when they leave
+  // an active match) and push the reward payload. Idempotent per match.
+  // Returns true if a match was recorded.
+  const settleClient = (c: ClientRecord, room: Room, won: boolean, partial: boolean, now: number): boolean => {
+    if (c.mSettled) return false;
+    c.mSettled = true;
+    if (!recordable(c, now)) return false; // a bounce, not a match
+    const mode = room.isRanked ? 'ranked' : room.mode;
+    const accuracy = c.mShots > 0 ? (c.mHits / c.mShots) * 100 : 0;
+    let reply: ReturnType<typeof recordMatch>;
+    try {
+      reply = recordMatch({
+        playerId: c.playerId,
+        userName: c.name,
+        // Progression counts only frags on OTHER accounts (not guests, not a
+        // second tab of your own) — see handleShoot.
+        kills: c.mKills,
+        deaths: c.deaths,
+        wins: won ? 1 : 0,
+        bestStreak: c.mBestStreak,
+        headshots: c.mHeadshots,
+        shotsFired: c.mShots,
+        shotsHit: c.mHits,
+        accuracy,
+        offline: false,
+        now,
+        // Base XP is always pro rata by time present (full at PRESENCE_FULL_MS).
+        presence: Math.max(0, Math.min(1, (now - c.mStartedAt) / PRESENCE_FULL_MS)),
+        killWeight: c.mKills > 0 ? c.mKillWeight / c.mKills : 1,
+      });
+    } catch (err) {
+      console.error('[instagib] recordMatch failed', err);
+      return false;
+    }
+    logEvent({
+      event: 'match',
+      actorId: c.playerId,
+      actorName: c.name,
+      detail: {
+        kills: c.mKills,
+        deaths: c.deaths,
+        won,
+        headshots: c.mHeadshots,
+        accuracy: Math.round(accuracy),
+        offline: false,
+        xp: reply.xpGained,
+        mode,
+        src: 'ws',
+        partial,
+      },
+      now,
+    });
+    // Keep the killcam card's level in step with the account's real level.
+    if (reply.saved && c.card) c.card.level = reply.progression.level;
+    const msg = { type: 'progression' as const, mode, partial, ...reply };
+    if (c.socket.readyState === c.socket.OPEN) {
+      c.socket.send(JSON.stringify(msg));
+      c.undeliveredProgression = null;
+    } else {
+      c.undeliveredProgression = msg; // dropped mid-grace: deliver on resume
+    }
+    return true;
+  };
+
+  // Match over: record every member. `winnerId` (FFA/duel/ranked) or
+  // `winnerTeam` (TDM) decides `won`; `forfeit` = the opponent left.
+  const settleRoom = (
+    room: Room,
+    winnerId: ClientId | null,
+    winnerTeam: number | null,
+    forfeit: boolean,
+  ) => {
+    const now = Date.now();
+    const minForfeitFrags = Math.ceil(fragLimitFor(room) * FORFEIT_WIN_MIN_FRAC);
+    // Everyone who took part: recordable members + those who left with a
+    // recorded partial. A win (and with it the first-win bonus) only counts if
+    // at least one of them is a genuine opponent — a different identity (not
+    // your account, not your network) — so you can't win against yourself.
+    const participants: { id: ClientId; playerId: string; netId: string }[] = [...room.matchLeft];
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c && recordable(c, now)) participants.push({ id: c.id, playerId: c.playerId, netId: c.netId });
+    }
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (!c) continue;
+      const contested = participants.some((p) => p.id !== c.id && !sameIdentity(p, c));
+      let won =
+        contested &&
+        (winnerTeam != null
+          ? c.team === winnerTeam && now - c.mStartedAt >= TDM_WIN_MIN_PRESENCE_MS
+          : c.id === winnerId);
+      if (won && forfeit && c.frags < minForfeitFrags) won = false; // no contest
+      settleClient(c, room, won, false, now);
+    }
+  };
+
+  // An account already holding a slot in `room` on another connection.
+  const sameAccountMember = (room: Room, record: ClientRecord): ClientRecord | null => {
+    if (!record.playerId) return null;
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c && c !== record && c.playerId === record.playerId) return c;
+    }
+    return null;
+  };
 
   // Pick a spawn for `forClient`. Two independent concerns:
   //  • SAFETY (soft, tunable): distance to nearest live threat, docked for sitting
@@ -983,6 +1203,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.pitch = 0;
     record.frags = 0;
     record.deaths = 0;
+    resetMatchStats(record, Date.now());
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS;
     record.history.length = 0;
     resetPosTimeline(record);
@@ -1033,11 +1254,22 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.pitch = old.pitch;
     record.frags = old.frags;
     record.deaths = old.deaths;
+    record.mShots = old.mShots;
+    record.mHits = old.mHits;
+    record.mKills = old.mKills;
+    record.mKillWeight = old.mKillWeight;
+    record.mVictims = old.mVictims;
+    record.mHeadshots = old.mHeadshots;
+    record.mStreak = old.mStreak;
+    record.mBestStreak = old.mBestStreak;
+    record.mStartedAt = old.mStartedAt;
+    record.mSettled = old.mSettled;
     record.hat = old.hat;
     record.unusual = old.unusual;
     record.emote = old.emote;
     record.nameColor = old.nameColor;
     record.spawnEffect = old.spawnEffect;
+    record.killEffect = old.killEffect;
     record.title = old.title;
     record.railColor = old.railColor;
     record.railgunFinish = old.railgunFinish;
@@ -1078,12 +1310,34 @@ export function attachInstagibWs(wss: WebSocketServer) {
     broadcastRoom(room, { type: 'peer-joined', clientId: record.id, name: record.name }, record.id);
     broadcastRoomList();
     broadcastMeta(room); // reclaimed slot: refresh the room profile for everyone
+    // The match ended while they were dropped: deliver the rewards they missed.
+    if (old.undeliveredProgression) sendRaw(record.socket, old.undeliveredProgression);
+    return true;
+  };
+
+  // One account, one slot per room. If this account already holds a slot in
+  // `room`: a dropped one (a reconnect that lost its resume token — same
+  // account, so the same player) is reclaimed via resumeMatch; a live one (a
+  // second tab) is refused with join-failed 'duplicate'. Returns true when it
+  // handled the join (the caller stops).
+  const handleSameAccount = (record: ClientRecord, room: Room): boolean => {
+    const dup = sameAccountMember(room, record);
+    if (!dup) return false;
+    if (dup.disconnectedAt > 0 && resumeMatch(record, dup)) return true;
+    sendRaw(record.socket, { type: 'join-failed', reason: 'duplicate' });
     return true;
   };
 
   const leaveRoom = (record: ClientRecord) => {
     if (!record.roomId) return;
     const room = rooms.get(record.roomId);
+    // Leaving a live match (leave button, AFK/stale kick, resume grace expiry,
+    // joining elsewhere) records what they played so far as a loss.
+    if (room && room.state === 'active' && room.members.has(record.id)) {
+      if (settleClient(record, room, false, true, Date.now())) {
+        room.matchLeft.push({ id: record.id, playerId: record.playerId, netId: record.netId });
+      }
+    }
     record.roomId = null;
     record.team = null;
     if (!room) return;
@@ -1112,7 +1366,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // map vote opens (size === 1 means the room had 2 and one just left).
     if (room.mode === 'duel' && !room.isRanked && room.state === 'active' && room.members.size === 1) {
       const remaining = room.members.values().next().value;
-      if (remaining) startVote(room, remaining);
+      if (remaining) startVote(room, remaining, null, true);
     }
     // Ranked: bailing mid-match is a forfeit — the survivor wins (the leaver takes
     // the loss + Elo hit). `record` is the departing loser (already removed above).
@@ -1402,6 +1656,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room: Room,
     winnerId: ClientId | null = null,
     winnerTeam: number | null = null,
+    forfeit = false,
   ) => {
     room.state = 'voting';
     // Ballot from THIS mode's pool (duel = small arenas, FFA/TDM = large), with
@@ -1434,6 +1689,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       winnerId,
       winnerTeam,
     });
+    // The match is over the moment the vote opens: record everyone's match and
+    // push their rewards (after vote-start, so "match over" lands first).
+    settleRoom(room, winnerId, winnerTeam, forfeit);
     broadcastRoomList();
   };
 
@@ -1463,6 +1721,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
     room.firstBloodAwarded = false;
+    room.matchLeft.length = 0;
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -1471,6 +1730,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (!c) continue;
       c.frags = 0;
       c.deaths = 0;
+      resetMatchStats(c, now);
       c.history.length = 0;
       c.pos = { ...pickSpawn(room, c, null) };
       c.invulnUntilMs = now + SPAWN_INVULN_MS + POST_MATCH_RESET_SEC * 1000;
@@ -1542,6 +1802,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       rating, // { winner: { rating, delta, rank }, loser: {...} } | null (guests/missing)
     };
     broadcastRoom(room, payload);
+    // Record the match for everyone still in it (a forfeiting loser was already
+    // recorded as a partial loss by leaveRoom).
+    settleRoom(room, winner.id, null, !!loserOverride);
     broadcastRoomList(); // room left the joinable/active set
   };
 
@@ -1579,6 +1842,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const ez = shooter.pos.z;
     if (Math.hypot(msg.ox - ex, msg.oy - ey, msg.oz - ez) > SHOT_ORIGIN_MAX_DIST) return;
     shooter.lastShotMs = now;
+    shooter.mShots += 1; // an accepted shot (progression accuracy)
     shooter.lastActiveMs = now; // firing counts as activity (AFK timer)
     // Firing ends your own spawn invuln — you can't shoot from behind protection.
     if (shooter.invulnUntilMs > now) shooter.invulnUntilMs = 0;
@@ -1657,6 +1921,28 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
     shooter.frags += 1;
     victim.deaths += 1;
+    // Progression counters (a throttled aimbot shot above never gets here).
+    // A frag counts unless the victim is YOU — the same account, or anyone on
+    // your network identity (your own guest tab, a second account on the same
+    // machine). Guests from elsewhere count normally. A shot spent on a
+    // non-counting victim leaves accuracy untouched (out of hits and shots).
+    if (!sameIdentity(victim, shooter)) {
+      shooter.mKills += 1;
+      shooter.mHits += 1;
+      const vKey = identityKey(victim); // decay per victim identity (account, else network)
+      const n = (shooter.mVictims.get(vKey) ?? 0) + 1;
+      shooter.mVictims.set(vKey, n);
+      shooter.mKillWeight +=
+        room.mode === 'duel' || n <= VICTIM_FULL_KILLS
+          ? 1
+          : 2 ** -Math.ceil((n - VICTIM_FULL_KILLS) / VICTIM_DECAY_EVERY);
+      if (bestHeadshot) shooter.mHeadshots += 1;
+      shooter.mStreak += 1;
+      if (shooter.mStreak > shooter.mBestStreak) shooter.mBestStreak = shooter.mStreak;
+    } else {
+      shooter.mShots = Math.max(0, shooter.mShots - 1);
+    }
+    victim.mStreak = 0;
     const respawnPos = pickSpawn(room, victim, shooter.pos);
     const firstBlood = !room.firstBloodAwarded;
     room.firstBloodAwarded = true;
@@ -1670,6 +1956,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       firstBlood,
       victimPos: { ...victim.pos },
       respawnPos,
+      finisher: shooter.killEffect, // the killer's finisher → how the victim dies, for everyone
       // The killer's playercard → victim's killcam. Re-resolve the title here so a
       // live ranked title (#N) on the card reflects the killer's CURRENT standing,
       // not whatever it was when they last equipped the card.
@@ -1722,13 +2009,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const spawn = pickSpawn(room, c, null);
     c.pos = { ...spawn };
     c.deaths += 1;
+    c.mStreak = 0;
     c.history.length = 0;
     c.invulnUntilMs = now + SPAWN_INVULN_MS;
     sendRaw(c.socket, { type: 'respawn', x: spawn.x, y: spawn.y, z: spawn.z, reason: 'void' });
   };
 
   // ── Connection ────────────────────────────────────────────────────────
-  wss.on('connection', (socket: WebSocket, req?: { headers?: { cookie?: string } }) => {
+  wss.on('connection', (socket: WebSocket, req?: UpgradeReq) => {
     const id = genId();
     const now = Date.now();
     // The progression identity (the logged-in account behind the httpOnly
@@ -1777,12 +2065,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
       emote: 'emote.cheer',
       nameColor: 'name.default',
       spawnEffect: 'spawn.beam',
+      killEffect: DEFAULT_KILL_EFFECT,
       title: 'title.none',
       railColor: DEFAULT_RAIL_COLOR,
       railgunFinish: DEFAULT_RAILGUN_FINISH,
       crosshair: '',
       card: null,
       playerId,
+      netId: netIdFrom(req),
       admin: !!account?.isAdmin,
       verified: !!account?.isVerified,
       history: [],
@@ -1795,6 +2085,17 @@ export function attachInstagibWs(wss: WebSocketServer) {
       aimHits: 0,
       aimHeadshots: 0,
       aimFlagged: false,
+      mShots: 0,
+      mHits: 0,
+      mKills: 0,
+      mKillWeight: 0,
+      mVictims: new Map(),
+      mHeadshots: 0,
+      mStreak: 0,
+      mBestStreak: 0,
+      mStartedAt: now,
+      mSettled: false,
+      undeliveredProgression: null,
       team: null,
     };
     clients.set(id, record);
@@ -1951,6 +2252,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (!anyMode && r.mode !== mode) continue;
             if (r.members.size >= r.capacity) continue;
             if (r.state !== 'active') continue;
+            if (sameAccountMember(r, record)) continue; // this account is already in there (another tab)
             const reserved =
               r.members.size === 0 &&
               !r.wasEverOccupied &&
@@ -2037,6 +2339,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
             break;
           }
+          if (handleSameAccount(record, room)) break; // reclaimed own slot, or 'duplicate'
           if (room.members.size >= room.capacity && !room.members.has(record.id)) {
             sendRaw(socket, { type: 'join-failed', reason: 'full' });
             break;
@@ -2113,6 +2416,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
             break;
           }
+          if (handleSameAccount(record, room)) break; // reclaimed own slot, or 'duplicate'
           if (room.members.size >= room.capacity && !room.members.has(record.id)) {
             sendRaw(socket, { type: 'join-failed', reason: 'full' });
             break;
@@ -2188,6 +2492,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
         }
 
+        case 'killEffect': {
+          // Finisher: how this player's victims die. Not meta — the server
+          // stamps it on each kill broadcast (below), so everyone sees it.
+          record.killEffect =
+            typeof msg.id === 'string' && isKillEffectStyle(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : DEFAULT_KILL_EFFECT;
+          break;
+        }
+
         case 'title': {
           // Achievement-earned flair shown under the name. Validate against the
           // manifest + the player's owned set (a modified client can't equip a
@@ -2241,6 +2555,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             admin: record.admin,
             verified: record.verified,
             title: resolveTitleText(record.playerId, record.title),
+            level: levelFor(record.playerId),
           });
           break;
 

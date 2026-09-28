@@ -28,12 +28,22 @@ import {
 } from './deck';
 import { prefersReducedMotion, sfxProps, toast, useAnyModalOpen, useModalStack } from './deck-core';
 import { MenuBackdropView } from './menu/MenuBackdropView';
+import type { HeroLoadout } from './menu/menu-hero';
+import { ProfileBlock } from './menu/ProfileBlock';
+import { FrontDoors } from './menu/FrontDoors';
+import { AccountMenu } from './menu/AccountMenu';
+import { HeroSlot } from './menu/HeroSlot';
+import { ChallengesModal, ChallengesStrip } from './menu/Challenges';
+import { CareerRoad } from './menu/CareerRoad';
+import { LastMatchBanner } from './menu/LastMatch';
+import { fetchChallenges, useMedia, useRefetchAtReset } from './menu/menu-hooks';
+import { freshCatchUp, gainFrom, type ChallengeLists, type MenuProfile } from './menu/road-data';
 import { MenuItem, MenuLink, MenuPlayButton, MenuWordmark, SocialDock, type DockTabId } from './ui/menu-parts';
 import { LoadingScreen, type LoadStep } from './ui/LoadingScreen';
 import { useLevelshot } from './ui/levelshot';
 import { NameBadges } from './ui/badges';
 import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './ui/hud-const';
-import { FightCall, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
+import { FightCall, HudXpTicker, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
 import { fragLimitFor, mapIdByName, mapNameById, modeLine, modeTitle, placementLine, type MatchFlavor } from './ui/match-info';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
@@ -89,7 +99,6 @@ import {
   SENSITIVITY_STEP,
   TOAST_FADE_SEC,
   rankedTier,
-  rankedTierName,
   WEEKLY_CHALLENGE_MAP,
   WEEKLY_CHALLENGE_BOTS,
   WEEKLY_CHALLENGE_DIFFICULTY,
@@ -101,7 +110,6 @@ import {
 } from './game/constants';
 import type {
   BannerState,
-  CardPayload,
   ChatLine,
   HitMarker,
   HudState,
@@ -115,19 +123,7 @@ import type {
   TrainingHud,
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
-import { PodiumScene, type PodiumWinner } from './game/podium';
-import { CharacterPreview, type PreviewCosmetics } from './game/character-preview';
 import {
-  KILL_EFFECTS,
-  RAIL_COLORS,
-  RAILGUN_FINISHES,
-  HATS,
-  UNUSUALS,
-  CARD_STYLES,
-  EMOTES,
-  NAME_COLORS,
-  SPAWN_EFFECTS,
-  TITLES,
   DEFAULT_KILL_EFFECT,
   DEFAULT_RAIL_COLOR,
   DEFAULT_RAILGUN_FINISH,
@@ -139,31 +135,16 @@ import {
   DEFAULT_SPAWN_EFFECT,
   DEFAULT_TITLE,
   announcerPackCosmeticId,
-  cardById,
   cosmeticById,
-  HAT_CASE_COST,
-  caseHats,
-  hatById,
   sourceLabel,
-  titleById,
-  type KillEffectStyle,
-  type Rarity,
-  type CosmeticSource,
-  type HatCosmetic,
 } from './game/cosmetics';
-import { levelProgress } from './game/progression';
-
-export type CrosshairConfig = {
-  style: 'cross' | 'cross-dot' | 'dot' | 'circle';
-  color: string; // hex
-  size: number; // arm length px
-  thickness: number; // px
-  gap: number; // px from center
-  dotSize: number; // px (center dot radius)
-  outline: boolean; // outline for contrast
-  outlineThickness: number; // outline stroke width px
-  outlineColor: string; // hex
-};
+import type { CrosshairConfig, InstagibProfile, ProgressionResp, Settings } from './app-types';
+import { setCharacterFxQuality } from './game/character/gibs';
+import { setFxQuality } from './game/fx-pool';
+import { Locker } from './locker/Locker';
+import { MatchOverOverlay, OnlineMatchResults } from './ui/results';
+import { PlayerCard } from './ui/player-card';
+import { buildCardPayload } from './ui/player-card-data';
 
 const CROSSHAIR_STYLES = ['cross', 'cross-dot', 'dot', 'circle'] as const;
 
@@ -251,62 +232,6 @@ function decodeSettings(code: string): Settings | null {
     return null;
   }
 }
-
-type Settings = {
-  sensitivity: number; // Source/CS2-style sens number
-  dpi: number; // mouse DPI (feeds cm/360 readout only)
-  vertScale: number; // vertical (pitch) sensitivity multiplier
-  zoomSens: number; // ADS/zoom sensitivity multiplier (1 = FOV-scaled default)
-  rawInput: boolean; // pointer-lock unadjustedMovement
-  keybinds: Record<KeybindAction, string>; // action → KeyboardEvent.code
-  fov: number;
-  zoomFov: number; // FOV while the zoom bind is held
-  viewmodelOffset: { x: number; y: number; z: number }; // railgun viewmodel nudge
-  hideViewmodel: boolean; // hide the first-person gun
-  viewmodelMotion: number; // 0..1 bob / sway / landing-dip intensity (fire kick always stays)
-  volume: number; // master
-  sfxVolume: number;
-  uiSounds: boolean; // menu clicks / hovers / toggles (still scaled by master × SFX)
-  announcerVolume: number;
-  announcerEnabled: boolean;
-  announcerPack: AnnouncerPackId; // which announcer voice pack (legacy = default procedural)
-  captions: boolean; // a11y: show announcer/medal/match callouts as on-screen text
-  showFps: boolean;
-  showPing: boolean; // show each player's ping in the Tab scoreboard (online)
-  fpsLimit: number; // 0 = VSync (display), >0 = cap to N fps, -1 = uncapped
-  resolutionScale: number; // render resolution multiplier (perf ↔ sharpness)
-  lowSpec: boolean; // cap high-DPI at 1× + thin particle effects
-  // Post-processing toggles (Game.setPostFx). Low-spec forces all four off.
-  bloom: boolean;
-  shadows: boolean;
-  antialias: boolean; // SMAA
-  vignette: boolean;
-  uiScale: number; // HUD scale multiplier
-  botsEnabled: boolean;
-  multiplayer: boolean;
-  serverUrl: string;
-  playerName: string;
-  mapId: string; // remembered Create-Match map
-  difficulty: BotDifficulty; // remembered Create-Match / quick-match bot difficulty
-  crosshair: CrosshairConfig;
-  worldColor: string; // hex tint on arena surfaces ('#ffffff' = neutral)
-  worldBrightness: number; // 0..1 full-bright emissive boost on surfaces
-  enemyColor: string; // hex highlight applied to enemies when enemyBright is on
-  enemyBright: boolean; // make enemies glow bright for visibility (Ratz-style)
-  killEffect: KillEffectStyle; // equipped kill-effect cosmetic (the frag explosion)
-  railColor: string; // equipped rail-beam color cosmetic
-  railgunFinish: string; // equipped railgun finish (first-person gun skin)
-  hat: string; // equipped hat cosmetic (worn on the player model)
-  unusual: string; // equipped unusual particle effect (on the hat)
-  card: string; // equipped playercard style (kill banner)
-  cardStats: string[]; // up to 3 career-stat keys shown on the card
-  emote: string; // equipped emote (played on the end-of-match podium)
-  nameColor: string; // equipped nameplate color (seen by others)
-  spawnEffect: string; // equipped spawn-in effect
-  title: string; // equipped title flair (shown under the name + on the scoreboard/card)
-  reducedEffects: boolean; // accessibility: suppress camera shake + kill flash + heavy bursts
-  hideChat: boolean; // hide the in-game chat log + disable opening the composer
-};
 
 // (The reduced-effects toggle defaults to the OS "reduce motion" preference —
 // prefersReducedMotion() is shared with the deck chrome in src/deck-core.ts.)
@@ -406,204 +331,6 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const SETTINGS_KEY = 'instagib-settings-v2';
-
-// Rarity → accent color for cosmetic cards in the Locker.
-const RARITY_STYLE: Record<'common' | 'rare' | 'epic', string> = {
-  common: 'text-white/45',
-  rare: 'text-sky-300',
-  epic: 'text-fuchsia-300',
-};
-
-// Career stats a player can show on their playercard (the kill banner).
-const CARD_STAT_DEFS: ReadonlyArray<{
-  key: string;
-  label: string;
-  from: (p: InstagibProfile) => string;
-}> = [
-  { key: 'kills', label: 'KILLS', from: (p) => String(p.stats.totalKills) },
-  { key: 'deaths', label: 'DEATHS', from: (p) => String(p.stats.totalDeaths) },
-  { key: 'wins', label: 'WINS', from: (p) => String(p.stats.totalWins) },
-  { key: 'games', label: 'GAMES', from: (p) => String(p.stats.totalGames) },
-  {
-    key: 'kd',
-    label: 'K/D',
-    from: (p) =>
-      p.stats.totalDeaths > 0
-        ? (p.stats.totalKills / p.stats.totalDeaths).toFixed(2)
-        : String(p.stats.totalKills),
-  },
-  { key: 'streak', label: 'BEST STREAK', from: (p) => String(p.stats.bestKillStreak) },
-  { key: 'headshots', label: 'HEADSHOTS', from: (p) => String(p.stats.headshots) },
-  { key: 'accuracy', label: 'ACCURACY', from: (p) => `${Math.round(p.stats.bestAccuracy)}%` },
-  // Ranked Elo — "Unranked" until you've played a ranked match.
-  { key: 'rating', label: 'RANKED', from: (p) => (p.ranked ? String(p.ranked.rating) : 'Unranked') },
-];
-
-const MAX_CARD_STATS = 3;
-
-function buildCardPayload(
-  profile: InstagibProfile,
-  settings: Settings,
-  account?: Account,
-): CardPayload {
-  const stats = settings.cardStats
-    .map((k) => CARD_STAT_DEFS.find((d) => d.key === k))
-    .filter((d): d is (typeof CARD_STAT_DEFS)[number] => !!d)
-    .slice(0, MAX_CARD_STATS)
-    .map((d) => ({ label: d.label, value: d.from(profile) }));
-  // A dynamic ranked title resolves to the live standing locally for the preview +
-  // the player's own kill-confirm card; the server re-forces it on the killcard
-  // others see, so this can't be faked.
-  const titleDef = titleById(settings.title);
-  const title = titleDef.dynamic === 'ranked' ? rankedStandingText(profile.ranked) : titleDef.text;
-  // Badges mirror the account (server overrides them on the killcard others see,
-  // so this only drives the local Locker preview). Guests carry neither.
-  return {
-    name: settings.playerName || 'Player',
-    level: profile.level,
-    style: settings.card,
-    stats,
-    title,
-    verified: !!account?.isVerified,
-    admin: !!account?.isAdmin,
-  };
-}
-
-// Pick up to 3 career stats for the playercard, with a live preview.
-function CardStatsEditor({
-  settings,
-  onChange,
-  account,
-}: {
-  settings: Settings;
-  onChange: (s: Settings) => void;
-  account?: Account;
-}) {
-  const [profile, setProfile] = useState<InstagibProfile | null>(null);
-  useEffect(() => {
-    let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
-        if (active && d.profile) setProfile(d.profile);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const toggle = (key: string) => {
-    const cur = settings.cardStats;
-    let next: string[];
-    if (cur.includes(key)) next = cur.filter((k) => k !== key);
-    else if (cur.length < MAX_CARD_STATS) next = [...cur, key];
-    else next = [...cur.slice(1), key]; // at the cap → drop the oldest
-    onChange({ ...settings, cardStats: next });
-  };
-
-  const preview: CardPayload = profile
-    ? buildCardPayload(profile, settings, account)
-    : {
-        name: settings.playerName || 'Player',
-        level: 1,
-        style: settings.card,
-        stats: settings.cardStats.map((k) => ({
-          label: CARD_STAT_DEFS.find((d) => d.key === k)?.label ?? k.toUpperCase(),
-          value: '—',
-        })),
-        title: titleById(settings.title).text,
-        verified: !!account?.isVerified,
-        admin: !!account?.isAdmin,
-      };
-
-  return (
-    <Section label='Card Stats'>
-      <div className='flex justify-center py-1'>
-        <PlayerCard card={preview} size='small' reduced={settings.reducedEffects} />
-      </div>
-      <div className='grid grid-cols-2 gap-2'>
-        {CARD_STAT_DEFS.map((d) => (
-          <SegButton key={d.key} active={settings.cardStats.includes(d.key)} onClick={() => toggle(d.key)}>
-            {d.label}
-          </SegButton>
-        ))}
-      </div>
-      <p className='text-[10px] normal-case tracking-normal text-white/40'>
-        Pick up to {MAX_CARD_STATS}. This card is shown to a player on their killcam
-        when you frag them — your graphic, level, and stats.
-      </p>
-    </Section>
-  );
-}
-
-// The kill banner: an unlockable card graphic + the player's level + their chosen
-// stats. Shown on the killcam (the killer's card) and as your own kill-confirm flex.
-function PlayerCard({
-  card,
-  size = 'normal',
-  reduced = false,
-}: {
-  card: CardPayload;
-  size?: 'normal' | 'small';
-  reduced?: boolean;
-}) {
-  const style = cardById(card.style);
-  const small = size === 'small';
-  return (
-    <div
-      className={`relative overflow-hidden rounded-xl border border-white/15 font-mono shadow-2xl ${
-        small ? 'w-[260px] p-3' : 'w-[340px] p-4'
-      } ${reduced ? 'reduced-effects' : ''}`}
-      style={{ background: style.bg }}
-    >
-      <div className='absolute inset-0 bg-black/10' />
-      {/* Animated motion layer (epic+ cards) — sits over the static gradient,
-          under the content; CSS suppresses it under reduced motion/effects. */}
-      {style.anim && <div className={`pcard-anim pcard-anim-${style.anim}`} aria-hidden />}
-      <div className='relative flex items-center gap-3'>
-        <div
-          className='flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-lg border'
-          style={{ borderColor: style.accent, color: style.accent, background: 'rgba(0,0,0,0.25)' }}
-        >
-          <span className='text-[7px] uppercase tracking-[0.16em] opacity-80'>Lvl</span>
-          <span className='text-lg font-extrabold leading-none'>{card.level}</span>
-        </div>
-        <div className='min-w-0 flex-1'>
-          <div className={`flex items-center gap-1 font-bold text-white ${small ? 'text-sm' : 'text-lg'}`}>
-            <span className='truncate'>{card.name}</span>
-            <NameBadges admin={card.admin} verified={card.verified} size={small ? 13 : 16} />
-          </div>
-          {card.title ? (
-            <div
-              className='truncate text-[10px] font-semibold uppercase tracking-[0.18em]'
-              style={{ color: style.accent }}
-            >
-              {card.title}
-            </div>
-          ) : (
-            <div className='text-[9px] uppercase tracking-[0.2em] text-white/55'>Instagib Arena</div>
-          )}
-        </div>
-      </div>
-      {card.stats.length > 0 && (
-        <div className='relative mt-3 flex gap-2'>
-          {card.stats.map((s, i) => (
-            <div
-              key={i}
-              className='flex flex-1 flex-col items-center rounded-md bg-black/30 px-1 py-1.5'
-            >
-              <span className='text-base font-extrabold tabular-nums' style={{ color: style.accent }}>
-                {s.value}
-              </span>
-              <span className='text-[8px] uppercase tracking-[0.1em] text-white/55'>{s.label}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function loadSettings(): Settings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
@@ -770,6 +497,8 @@ export default function InstagibClient() {
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
+  // The last match's reward payload, for the lobby's last-match banner.
+  const [lastProgression, setLastProgression] = useState<ProgressionResp | null>(null);
   // Bumped on every match start so GameView remounts a fresh Game (also for
   // "Play Again" with the same config).
   const [playId, setPlayId] = useState(0);
@@ -778,6 +507,14 @@ export default function InstagibClient() {
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
+
+  // Menu-side 3D (Locker / Career Road previews, thumbnails, the menu hero)
+  // honours Reduce effects + Low spec too — the Game only sets these while a
+  // match is mounted.
+  useEffect(() => {
+    setCharacterFxQuality({ reducedEffects: settings.reducedEffects, lowSpec: settings.lowSpec });
+    setFxQuality(settings.lowSpec ? 0.5 : 1);
+  }, [settings.reducedEffects, settings.lowSpec]);
 
   // Load persisted settings once on mount + backfill window-dependent defaults.
   useEffect(() => {
@@ -837,8 +574,12 @@ export default function InstagibClient() {
     setSettings((s) => (s.playerName === name ? s : { ...s, playerName: name }));
   }, [auth.ready, auth.account]);
 
+  // Bumped per match so a late offline-stats reply can't land on a newer one.
+  const exitToken = useRef(0);
   const startMatch = useCallback((cfg: MatchConfig) => {
+    exitToken.current++;
     setLastResult(null);
+    setLastProgression(null);
     setConfig(cfg);
     setPlayId((n) => n + 1);
     setView('playing');
@@ -846,10 +587,22 @@ export default function InstagibClient() {
 
   // Leave to the lobby. GameView already submitted stats; we only carry the
   // result through for the lobby's "last match" banner (no re-submit here).
-  const exitToLobby = useCallback((result: MatchResult | null) => {
-    if (result) setLastResult(result);
-    setView('lobby');
-  }, []);
+  // `pending` = an offline POST /api/stats still in flight: its reply fills in
+  // the lobby's last-match rewards when it lands (the lobby is already up).
+  const exitToLobby = useCallback(
+    (result: MatchResult | null, progression?: ProgressionResp | null, pending?: Promise<ProgressionResp | null> | null) => {
+      if (result) setLastResult(result);
+      setLastProgression(progression ?? null);
+      setView('lobby');
+      if (!progression && pending) {
+        const token = exitToken.current;
+        void pending.then((p) => {
+          if (p && token === exitToken.current) setLastProgression(p);
+        });
+      }
+    },
+    [],
+  );
 
   const playAgain = useCallback(() => {
     if (config) startMatch(config);
@@ -886,6 +639,11 @@ export default function InstagibClient() {
         onChangeSettings={setSettings}
         onExit={exitToLobby}
         onPlayAgain={playAgain}
+        loggedIn={!!auth.account}
+        onLogin={(r) => {
+          exitToLobby(r);
+          setLoginOpen(true);
+        }}
       />
     );
   }
@@ -897,6 +655,7 @@ export default function InstagibClient() {
         onChangeSettings={setSettings}
         onStart={startMatch}
         lastResult={lastResult}
+        lastProgression={lastProgression}
         account={auth.account}
         onOpenLogin={() => setLoginOpen(true)}
         onLogout={auth.logout}
@@ -976,12 +735,20 @@ function GameView({
   onChangeSettings,
   onExit,
   onPlayAgain,
+  onLogin,
+  loggedIn,
 }: {
   config: MatchConfig;
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
-  onExit: (result: MatchResult | null) => void;
+  onExit: (
+    result: MatchResult | null,
+    progression?: ProgressionResp | null,
+    pending?: Promise<ProgressionResp | null> | null,
+  ) => void;
   onPlayAgain: () => void;
+  onLogin: (result: MatchResult | null) => void; // guest → back to the lobby with the login sheet open
+  loggedIn: boolean; // the in-match +XP ticker only means something with an account
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1012,7 +779,10 @@ function GameView({
     shallowEqual,
   );
   const [endProgression, setEndProgression] = useState<ProgressionResp | null>(null);
+  const statsPending = useRef<Promise<ProgressionResp | null> | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  // Already in this room in another tab: retrying would hit the same refusal.
+  const [joinDuplicate, setJoinDuplicate] = useState(false);
   // Ranked Duel end-of-match result (rating delta) → full-screen overlay.
   const [rankedResult, setRankedResult] = useState<RankedResult | null>(null);
   // Weekly-challenge end-of-run standing (rank/best) → small result banner.
@@ -1022,6 +792,14 @@ function GameView({
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
   const offlineMatch = config.mode !== 'multiplayer';
+  // Only offline (vs-bots) matches are self-reported via POST /api/stats — the
+  // server records online matches itself and pushes the rewards over the socket.
+  // The training range and spectating never count as a match.
+  const reportsOwnStats = config.mode === 'local' && !config.training;
+  // The results headline: FFA shows a Q3 placement, TDM/duel Victory/Defeat.
+  const modeTag = gameRef.current?.getMatchModeTag();
+  const resultsMode: 'ffa' | 'tdm' | 'duel' =
+    modeTag === 'ranked' || modeTag === 'duel' ? 'duel' : modeTag === 'tdm' ? 'tdm' : 'ffa';
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
   // weekly board, NOT career K/D. The engine owns the authoritative run time.
   const isChallenge = config.mode === 'local' && config.challenge === true;
@@ -1050,8 +828,10 @@ function GameView({
             if (me) setChallengeResult(me);
           });
         }
-      } else {
-        void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
+      } else if (reportsOwnStats) {
+        const pending = submitMatchStats(result, offlineMatch, game.getMatchModeTag());
+        statsPending.current = pending;
+        void pending.then((p) => {
           if (p) setEndProgression(p);
         });
       }
@@ -1072,15 +852,21 @@ function GameView({
     window.addEventListener('keydown', onDebugKey);
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
+        setJoinDuplicate(ev.reason === 'duplicate');
         setJoinError(
           ev.reason === 'full'
             ? 'That lobby is full.'
             : ev.reason === 'afk'
               ? 'You were removed from the match for inactivity.'
-              : 'That lobby no longer exists.',
+              : ev.reason === 'duplicate'
+                ? "You're already in this match in another tab."
+                : 'That lobby no longer exists.',
         );
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);
+      } else if (ev.type === 'progression') {
+        // A partial (mid-match leave) push never opens the results screen.
+        if (!ev.progression.partial) setEndProgression(ev.progression);
       }
     });
     applySettingsToGame(game, settings);
@@ -1170,11 +956,13 @@ function GameView({
     const r = game?.getStats() ?? null;
     // A weekly-challenge run only counts when it FINISHES (match-end); leaving
     // mid-run abandons it. Other matches submit the partial run to career stats.
-    if (!isChallenge && r && game?.hasRecordableStats()) {
-      void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
+    if (!isChallenge && reportsOwnStats && r && game?.hasRecordableStats()) {
+      statsPending.current = submitMatchStats(r, offlineMatch, game.getMatchModeTag());
     }
-    onExit(r);
-  }, [onExit, offlineMatch, isChallenge]);
+    // Leaving from the post-match vote still carries this match's rewards (or
+    // the in-flight offline reply, which lands after the lobby is up).
+    onExit(r, endProgression, statsPending.current);
+  }, [onExit, offlineMatch, isChallenge, reportsOwnStats, endProgression]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck
@@ -1271,6 +1059,12 @@ function GameView({
     shallowEqual,
   );
   const [interDoneId, setInterDoneId] = useState(0);
+  // A new online match (the vote resolved → map switch): the previous match's
+  // rewards no longer belong to what a later leave carries to the lobby.
+  const switchId = nextMap?.id ?? 0;
+  useEffect(() => {
+    if (switchId > 0) setEndProgression(null);
+  }, [switchId]);
   // The map on the Tab scoreboard: the latest join / next-map announcement
   // online, else the configured map.
   const [latestNext, setLatestNext] = useState<string | null>(null);
@@ -1327,7 +1121,7 @@ function GameView({
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
-      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} />}
+      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge && loggedIn} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1350,6 +1144,12 @@ function GameView({
           settings={settings}
           result={endResult}
           progression={endProgression}
+          mode={resultsMode}
+          voteEndsAt={hud.vote?.endsAtClient}
+          onLogin={() => {
+            exitFullscreen();
+            onLogin(endResult);
+          }}
           onContinue={() => setOnlineResults(false)}
         />
       )}
@@ -1359,7 +1159,14 @@ function GameView({
           onLeave={() => onExit(null)}
           // Re-attempt the same room (the invite room gets a 5-min grace, so a
           // friend joining a bit late can retry without a fresh link — #17).
-          onRetry={config.mode === 'multiplayer' ? () => { setJoinError(null); onPlayAgain(); } : undefined}
+          onRetry={
+            config.mode === 'multiplayer' && !joinDuplicate
+              ? () => {
+                  setJoinError(null);
+                  onPlayAgain();
+                }
+              : undefined
+          }
         />
       )}
       {waiting && (
@@ -1389,7 +1196,7 @@ function GameView({
           progression={endProgression}
           onLobby={() => {
             exitFullscreen();
-            onExit(endResult);
+            onExit(endResult, endProgression, statsPending.current);
           }}
         />
       )}
@@ -1420,8 +1227,15 @@ function GameView({
           }}
           onLobby={() => {
             exitFullscreen();
-            onExit(endResult);
+            onExit(endResult, endProgression, statsPending.current);
           }}
+          onLogin={() => {
+            exitFullscreen();
+            onLogin(endResult);
+          }}
+          // Training never reports stats; the weekly challenge goes to its own board.
+          expectRewards={!isChallenge && reportsOwnStats}
+          mode={resultsMode}
         />
       )}
       {settingsOpen && (
@@ -1745,988 +1559,6 @@ function SpectatorView({
   );
 }
 
-type LockerProfile = {
-  unlocked: string[];
-  credits: number;
-  equipped: Record<string, string>;
-  level: number;
-};
-
-type LockerItem = {
-  id: string;
-  name: string;
-  blurb: string;
-  rarity: Rarity;
-  source: CosmeticSource;
-};
-type LockerSlotDef = {
-  slot:
-    | 'killEffect'
-    | 'railColor'
-    | 'railgunFinish'
-    | 'hat'
-    | 'unusual'
-    | 'card'
-    | 'emote'
-    | 'nameColor'
-    | 'spawnEffect'
-    | 'title';
-  label: string;
-  items: readonly LockerItem[];
-  current: (s: Settings) => string;
-  apply: (s: Settings, id: string) => Settings;
-};
-const LOCKER_SLOTS: LockerSlotDef[] = [
-  {
-    slot: 'killEffect',
-    label: 'Kill Effect',
-    items: KILL_EFFECTS,
-    current: (s) => s.killEffect,
-    apply: (s, id) => ({ ...s, killEffect: id as KillEffectStyle }),
-  },
-  {
-    slot: 'railColor',
-    label: 'Rail Beam',
-    items: RAIL_COLORS,
-    current: (s) => s.railColor,
-    apply: (s, id) => ({ ...s, railColor: id }),
-  },
-  {
-    slot: 'railgunFinish',
-    label: 'Railgun Finish',
-    items: RAILGUN_FINISHES,
-    current: (s) => s.railgunFinish,
-    apply: (s, id) => ({ ...s, railgunFinish: id }),
-  },
-  {
-    slot: 'spawnEffect',
-    label: 'Spawn Effect',
-    items: SPAWN_EFFECTS,
-    current: (s) => s.spawnEffect,
-    apply: (s, id) => ({ ...s, spawnEffect: id }),
-  },
-  {
-    slot: 'hat',
-    label: 'Hat',
-    items: HATS,
-    current: (s) => s.hat,
-    apply: (s, id) => ({ ...s, hat: id }),
-  },
-  {
-    slot: 'unusual',
-    label: 'Unusual Effect',
-    items: UNUSUALS,
-    current: (s) => s.unusual,
-    apply: (s, id) => ({ ...s, unusual: id }),
-  },
-  {
-    slot: 'nameColor',
-    label: 'Name Color',
-    items: NAME_COLORS,
-    current: (s) => s.nameColor,
-    apply: (s, id) => ({ ...s, nameColor: id }),
-  },
-  {
-    slot: 'title',
-    label: 'Title',
-    items: TITLES,
-    current: (s) => s.title,
-    apply: (s, id) => ({ ...s, title: id }),
-  },
-  {
-    slot: 'card',
-    label: 'Player Card',
-    items: CARD_STYLES,
-    current: (s) => s.card,
-    apply: (s, id) => ({ ...s, card: id }),
-  },
-  {
-    slot: 'emote',
-    label: 'Podium Emote',
-    items: EMOTES,
-    current: (s) => s.emote,
-    apply: (s, id) => ({ ...s, emote: id }),
-  },
-];
-
-// The Locker: pick your equipped cosmetics across every slot. Server-backed —
-// owned items can be equipped, credit-priced ones bought, level-gated ones show
-// their unlock. Degrades to local-only selection if the profile can't be
-// fetched (offline / no backend), so the picker always works.
-// Per-tab focus → the preview shows ONE thing, framed for that slot:
-//  character = hat + unusual, head-zoomed, slowly turning
-//  emote     = the equipped emote on the whole player model
-//  weapon    = just the railgun firing the rail beam (colour) into a kill burst
-type LockerView = 'character' | 'emote' | 'weapon';
-
-// Live 3D preview of the equipped loadout for a single Locker tab. A fresh
-// instance mounts per tab (so only one WebGL context runs at a time).
-function LockerPreview({ settings, view }: { settings: Settings; view: LockerView }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  const previewRef = useRef<CharacterPreview | null>(null);
-  const cosmetics = (): PreviewCosmetics => ({
-    hatId: settings.hat,
-    unusualId: settings.unusual,
-    emoteId: settings.emote,
-    railColor: settings.railColor,
-    railgunFinish: settings.railgunFinish,
-    killEffect: settings.killEffect,
-    skinSeed: settings.playerName || undefined, // the armour colour others see you in
-    view,
-  });
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const preview = new CharacterPreview(canvas, cosmetics());
-    previewRef.current = preview;
-    preview.start();
-    const onResize = () => preview.resize();
-    window.addEventListener('resize', onResize);
-    // Track the canvas box itself so the preview stays crisp when the panel
-    // reflows (open/close, tab switch, responsive width) — not just on window
-    // resize. rAF-debounced to coalesce layout bursts.
-    let pending = 0;
-    const ro = new ResizeObserver(() => {
-      cancelAnimationFrame(pending);
-      pending = requestAnimationFrame(() => preview.resize());
-    });
-    ro.observe(canvas);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      cancelAnimationFrame(pending);
-      ro.disconnect();
-      preview.dispose();
-      previewRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view]);
-  useEffect(() => {
-    previewRef.current?.setCosmetics(cosmetics());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.hat, settings.unusual, settings.emote, settings.railColor, settings.railgunFinish, settings.killEffect, view]);
-  return (
-    <div className='clip-deck-sm relative h-60 w-full shrink-0 overflow-hidden border border-white/10 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
-      <canvas ref={ref} className='block h-full w-full' />
-      <div className='pointer-events-none absolute bottom-1.5 right-3 text-[9px] uppercase tracking-[0.18em] text-white/35'>
-        Live preview
-      </div>
-    </div>
-  );
-}
-
-const LOCKER_TABS = [
-  { id: 'character', label: 'Character', slots: ['hat', 'unusual', 'nameColor', 'title'], view: 'character' as const },
-  { id: 'emote', label: 'Emotes', slots: ['emote'], view: 'emote' as const },
-  { id: 'weapon', label: 'Weapon', slots: ['railColor', 'railgunFinish', 'killEffect', 'spawnEffect'], view: 'weapon' as const },
-  { id: 'card', label: 'Card', slots: ['card'], view: null },
-] as const;
-type LockerTab = (typeof LOCKER_TABS)[number]['id'];
-
-function Locker({
-  settings,
-  onChange,
-  onClose,
-  account,
-}: {
-  settings: Settings;
-  onChange: (s: Settings) => void;
-  onClose: () => void;
-  account?: Account;
-}) {
-  const [profile, setProfile] = useState<LockerProfile | null>(null);
-  // 'loading' until /api/profile answers: the grid shows a skeleton instead of
-  // a flash of "everything owned" that then snaps to locks. 'offline' = no
-  // backend → local-only selection (everything equippable, nothing buyable).
-  const [profileState, setProfileState] = useState<'loading' | 'ready' | 'offline'>('loading');
-  const [busy, setBusy] = useState<string | null>(null);
-  const [tab, setTab] = useState<LockerTab>('character');
-  const [caseSpin, setCaseSpin] = useState<{ won: string; dupe: boolean; refund: number } | null>(
-    null,
-  );
-
-  useEffect(() => {
-    let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
-        if (!active) return;
-        if (!d.profile) {
-          setProfileState('offline');
-          return;
-        }
-        const p = d.profile;
-        setProfile({
-          unlocked: p.unlocked ?? [],
-          credits: p.credits ?? 0,
-          equipped: p.equipped ?? {},
-          level: p.level ?? 1,
-        });
-        setProfileState('ready');
-        // Sync the server's equipped choices into the live game (once, on open).
-        let patch: Settings | null = null;
-        for (const sl of LOCKER_SLOTS) {
-          const eq = p.equipped?.[sl.slot];
-          if (eq && eq !== sl.current(settings) && (p.unlocked ?? []).includes(eq)) {
-            patch = sl.apply(patch ?? settings, eq);
-          }
-        }
-        if (patch) onChange(patch);
-      })
-      .catch(() => {
-        /* offline / no backend → local-only selection below */
-        if (active) setProfileState('offline');
-      });
-    return () => {
-      active = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const owns = (id: string, source: CosmeticSource) =>
-    !profile || profile.unlocked.includes(id) || source.type === 'default';
-
-  const itemName = (id: string) => cosmeticById(id)?.name ?? id;
-
-  // `quiet` skips the "Equipped" toast (buy() reports the purchase instead).
-  const equip = async (sl: LockerSlotDef, id: string, quiet = false) => {
-    if (!profile) {
-      onChange(sl.apply(settings, id)); // local-only fallback
-      if (!quiet) toast(`Equipped · ${itemName(id)}`, { tone: 'ok' });
-      return;
-    }
-    setBusy(id);
-    try {
-      const res = await fetch('/api/equip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ slot: sl.slot, id }),
-      });
-      const d = (await res.json()) as { ok?: boolean; equipped?: Record<string, string> };
-      if (res.ok && d.ok) {
-        onChange(sl.apply(settings, id));
-        setProfile((p) => (p ? { ...p, equipped: d.equipped ?? p.equipped } : p));
-        if (!quiet) toast(`Equipped · ${itemName(id)}`, { tone: 'ok' });
-      } else toast('Could not equip that.', { tone: 'err' });
-    } catch {
-      toast('Network error.', { tone: 'err' });
-    }
-    setBusy(null);
-  };
-
-  const buy = async (sl: LockerSlotDef, id: string) => {
-    setBusy(id);
-    try {
-      const res = await fetch('/api/shop/buy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ id }),
-      });
-      const d = (await res.json()) as {
-        ok?: boolean;
-        reason?: string;
-        credits?: number;
-        unlocked?: string[];
-      };
-      if (res.ok && d.ok) {
-        setProfile((p) =>
-          p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
-        );
-        toast(`Unlocked + equipped · ${itemName(id)}`, { tone: 'ok' });
-        await equip(sl, id, true);
-      } else toast(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not buy that.', { tone: 'err' });
-    } catch {
-      toast('Network error.', { tone: 'err' });
-    }
-    setBusy(null);
-  };
-
-  const openCase = async () => {
-    if (busy || (profile != null && profile.credits < HAT_CASE_COST)) return;
-    setBusy('__case');
-    try {
-      const res = await fetch('/api/shop/open-case', { method: 'POST', credentials: 'same-origin' });
-      const d = (await res.json()) as {
-        ok?: boolean;
-        reason?: string;
-        won?: string;
-        dupe?: boolean;
-        refund?: number;
-        credits?: number;
-        unlocked?: string[];
-      };
-      if (res.ok && d.ok && d.won) {
-        // Apply the new credits/unlocked now; the spinner reveals the win.
-        setProfile((p) =>
-          p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
-        );
-        setCaseSpin({ won: d.won, dupe: !!d.dupe, refund: d.refund ?? 0 });
-      } else toast(d.reason === 'insufficient' ? 'Not enough credits.' : 'Could not open the case.', { tone: 'err' });
-    } catch {
-      toast('Network error.', { tone: 'err' });
-    }
-    setBusy(null);
-  };
-
-  const active = LOCKER_TABS.find((t) => t.id === tab) ?? LOCKER_TABS[0];
-  const slots = LOCKER_SLOTS.filter((sl) => (active.slots as readonly string[]).includes(sl.slot));
-  const loading = profileState === 'loading';
-  return (
-    <>
-    <LockerShell tab={tab} setTab={setTab} credits={profile?.credits ?? null} loading={loading} onClose={onClose}>
-      <p className='text-[10px] leading-relaxed text-white/35'>
-        Cosmetics — purely visual, never affect aim, movement, or hits.
-      </p>
-      {active.view && <LockerPreview key={active.view} settings={settings} view={active.view} />}
-      {tab === 'card' && <CardStatsEditor settings={settings} onChange={onChange} account={account} />}
-      {slots.map((sl) => (
-        <div key={sl.slot} className='flex flex-col gap-2' aria-busy={loading}>
-          <div className='deck-label'>{sl.label}</div>
-          {sl.slot === 'hat' && (
-            <button
-              type='button'
-              onClick={openCase}
-              disabled={loading || busy === '__case' || (profile != null && profile.credits < HAT_CASE_COST)}
-              title={
-                profile != null && profile.credits < HAT_CASE_COST
-                  ? `Need ${HAT_CASE_COST - profile.credits} more credits — earn them by playing online matches`
-                  : undefined
-              }
-              {...sfxProps('uiConfirm')}
-              className='clip-deck-sm flex items-center justify-center gap-2 border border-amber-300/50 bg-gradient-to-r from-fuchsia-500/15 to-amber-400/15 px-3 py-2.5 font-display text-[12px] font-bold uppercase tracking-[0.14em] text-amber-100 transition hover:from-fuchsia-500/25 hover:to-amber-400/25 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40'
-            >
-              🎁{' '}
-              {busy === '__case'
-                ? 'Opening…'
-                : profile != null && profile.credits < HAT_CASE_COST
-                  ? `Need ${HAT_CASE_COST - profile.credits} more ⛁`
-                  : `Open Hat Case · ${HAT_CASE_COST} ⛁`}
-            </button>
-          )}
-          <div className='grid grid-cols-2 gap-2'>
-            {loading
-              ? sl.items.slice(0, 4).map((item) => <LockerItemSkeleton key={item.id} />)
-              : sl.items.map((item) => {
-              const equipped = sl.current(settings) === item.id;
-              const owned = owns(item.id, item.source);
-              const buyable = !owned && item.source.type === 'credits';
-              const affordable =
-                !owned &&
-                item.source.type === 'credits' &&
-                profile != null &&
-                profile.credits >= item.source.price;
-              const working = busy === item.id;
-              return (
-                <div
-                  key={item.id}
-                  data-cosmetic={item.id}
-                  data-state={equipped ? 'equipped' : owned ? 'owned' : buyable ? 'buyable' : 'locked'}
-                  className={`deck-card flex flex-col px-3 py-2.5 ${
-                    equipped ? 'deck-card-active' : owned ? '' : 'deck-card-muted'
-                  }`}
-                >
-                  <div className='flex items-center justify-between gap-2'>
-                    <span className={`font-display text-[13px] font-semibold ${owned ? 'text-white' : 'text-white/60'}`}>
-                      {item.name}
-                    </span>
-                    <span className={`text-[9px] uppercase tracking-[0.14em] ${RARITY_STYLE[item.rarity]}`}>
-                      {item.rarity}
-                    </span>
-                  </div>
-                  <div className='mt-1 flex-1 font-sans text-[11px] leading-snug text-white/50'>{item.blurb}</div>
-                  <div className='mt-2.5'>
-                    {equipped ? (
-                      <div className='py-1 text-[9px] uppercase tracking-[0.18em] text-cyan-300'>
-                        ✓ Equipped
-                      </div>
-                    ) : owned ? (
-                      <DeckButton
-                        data-action='equip'
-                        disabled={working}
-                        onClick={() => equip(sl, item.id)}
-                        accent='cyan'
-                        size='sm'
-                        full
-                        center
-                      >
-                        {working ? '…' : 'Equip'}
-                      </DeckButton>
-                    ) : buyable ? (
-                      <DeckButton
-                        data-action='buy'
-                        disabled={working || !affordable}
-                        onClick={() => buy(sl, item.id)}
-                        accent='amber'
-                        size='sm'
-                        full
-                        center
-                        title={affordable ? undefined : 'Not enough credits'}
-                      >
-                        {working ? '…' : `Buy · ${item.source.type === 'credits' ? item.source.price : 0} ⛁`}
-                      </DeckButton>
-                    ) : (
-                      <div className='py-1 text-[10px] uppercase tracking-[0.12em] text-white/35'>
-                        🔒 {sourceLabel(item.source)}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </LockerShell>
-    {caseSpin && (
-      <CaseSpinner
-        won={caseSpin.won}
-        dupe={caseSpin.dupe}
-        refund={caseSpin.refund}
-        onClose={() => setCaseSpin(null)}
-      />
-    )}
-    </>
-  );
-}
-
-// A placeholder tile the shape of a locker item, shown while the profile
-// (ownership + credits) is still loading.
-function LockerItemSkeleton() {
-  return (
-    <div className='deck-card flex flex-col px-3 py-2.5'>
-      <div className='flex items-center justify-between gap-2'>
-        <Skeleton className='h-3.5 w-24' />
-        <Skeleton className='h-2 w-8' />
-      </div>
-      <Skeleton className='mt-2 h-2.5 w-full' />
-      <Skeleton className='mt-1 h-2.5 w-3/4' />
-      <Skeleton className='mt-3 h-7 w-full' />
-    </div>
-  );
-}
-
-// The Locker's frame: the shared ModalShell, wide, with a STICKY tab row +
-// credits readout under the title so the tabs never scroll away, over a
-// scrolling body.
-function LockerShell({
-  tab,
-  setTab,
-  credits,
-  loading,
-  onClose,
-  children,
-}: {
-  tab: LockerTab;
-  setTab: (t: LockerTab) => void;
-  credits: number | null;
-  loading: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <ModalShell
-      title='Locker'
-      onClose={onClose}
-      size='lg'
-      scroll
-      bodyClassName='gap-4'
-      header={
-        <div className='-mx-2 -mt-1 -mb-3 flex items-center justify-between gap-3'>
-          <div role='tablist' aria-label='Locker categories' className='flex flex-wrap'>
-            {LOCKER_TABS.map((t) => (
-              <DeckTab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)}>
-                {t.label}
-              </DeckTab>
-            ))}
-          </div>
-          {loading ? (
-            <Skeleton className='mr-2 h-3.5 w-14' />
-          ) : (
-            credits != null && (
-              <span className='mr-2 shrink-0 font-mono text-[11px] font-semibold tabular-nums text-amber-300'>
-                {credits} ⛁
-              </span>
-            )
-          )}
-        </div>
-      }
-    >
-      {children}
-    </ModalShell>
-  );
-}
-
-// Krunker-style unboxing roulette: a horizontal reel of hat cards that decelerates
-// onto the server-decided winner under a center ticker, then reveals it.
-function CaseSpinner({
-  won,
-  dupe,
-  refund,
-  onClose,
-}: {
-  won: string;
-  dupe: boolean;
-  refund: number;
-  onClose: () => void;
-}) {
-  const LAND = 48; // index the winner is placed at in the reel
-  const LEN = 56;
-  const CARD = 104;
-  const GAP = 8;
-  const STRIDE = CARD + GAP;
-  const reelRef = useRef<HatCosmetic[] | null>(null);
-  if (!reelRef.current) {
-    const pool = caseHats();
-    const arr: HatCosmetic[] = [];
-    for (let i = 0; i < LEN; i++) {
-      arr.push(i === LAND ? hatById(won) : pool[Math.floor(Math.random() * pool.length)]);
-    }
-    reelRef.current = arr;
-  }
-  const reel = reelRef.current;
-  const [offset, setOffset] = useState(0);
-  const [revealed, setRevealed] = useState(false);
-  const vpRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const vp = vpRef.current?.clientWidth ?? 480;
-    const jitter = (Math.random() - 0.5) * (CARD * 0.55); // land slightly off-center for suspense
-    const target = LAND * STRIDE + CARD / 2 - vp / 2 + jitter;
-    const a = requestAnimationFrame(() => requestAnimationFrame(() => setOffset(-target)));
-    const t = window.setTimeout(() => setRevealed(true), 4500);
-    return () => {
-      cancelAnimationFrame(a);
-      window.clearTimeout(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const wonHat = hatById(won);
-  // Not dismissable until the reel has landed — the reveal is the payoff.
-  return (
-    <ModalShell
-      label='Hat case'
-      tone='fuchsia'
-      fixed
-      z='z-50'
-      size='lg'
-      backdrop='heavy'
-      onClose={revealed ? onClose : undefined}
-    >
-      {({ close }) => (
-        <>
-          <div className='-mb-2 text-center text-[11px] uppercase tracking-[0.3em] text-fuchsia-200/80' aria-live='polite'>
-            {revealed ? (dupe ? 'Duplicate' : 'Unboxed!') : 'Opening case…'}
-          </div>
-          <div ref={vpRef} className='relative h-28 overflow-hidden border border-white/10 bg-black/40'>
-            <div className='pointer-events-none absolute left-1/2 top-0 z-10 h-full w-0.5 -translate-x-1/2 bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.9)]' />
-            <div
-              className='absolute top-1/2 flex -translate-y-1/2 gap-2'
-              style={{
-                transform: `translateX(${offset}px)`,
-                transition: offset !== 0 ? 'transform 4.4s cubic-bezier(0.12,0.85,0.18,1)' : 'none',
-              }}
-            >
-              {reel.map((h, i) => (
-                <HatReelCard key={i} hat={h} width={CARD} />
-              ))}
-            </div>
-          </div>
-          {revealed && (
-            <div className='flex flex-col items-center gap-1 text-center'>
-              <div className={`font-display text-xl font-bold uppercase tracking-[0.08em] ${RARITY_STYLE[wonHat.rarity]}`}>
-                {wonHat.name}
-              </div>
-              <div className='text-[10px] uppercase tracking-[0.2em] text-white/45'>
-                {wonHat.rarity} hat
-              </div>
-              {dupe && (
-                <div className='mt-1 text-sm font-semibold text-amber-300'>
-                  Duplicate — refunded {refund} ⛁
-                </div>
-              )}
-              <DeckButton onClick={close} solid accent='emerald' center className='mt-3' data-autofocus>
-                Nice
-              </DeckButton>
-            </div>
-          )}
-        </>
-      )}
-    </ModalShell>
-  );
-}
-
-function HatReelCard({ hat, width }: { hat: HatCosmetic; width: number }) {
-  const ring =
-    hat.rarity === 'epic'
-      ? 'border-fuchsia-400/60'
-      : hat.rarity === 'rare'
-        ? 'border-sky-400/50'
-        : 'border-white/15';
-  return (
-    <div
-      style={{ width }}
-      className={`flex h-24 shrink-0 flex-col items-center justify-center gap-1 border-2 bg-white/[0.04] px-2 ${ring}`}
-    >
-      <span className='text-2xl'>🎩</span>
-      <span className='line-clamp-2 text-center text-[10px] leading-tight text-white/80'>
-        {hat.name}
-      </span>
-      <span className={`text-[8px] uppercase tracking-[0.12em] ${RARITY_STYLE[hat.rarity]}`}>
-        {hat.rarity}
-      </span>
-    </div>
-  );
-}
-
-// End-of-match XP moment: animated XP bar, +XP / +credits, a LEVEL UP flourish,
-// and any new cosmetic unlocks. Driven entirely by the server's POST /api/stats
-// response so the numbers are authoritative.
-// Eased 0→value counter for the +XP / +credits roll-ups.
-function useCountUp(value: number, durationMs = 1000, startDelayMs = 250): number {
-  const [n, setN] = useState(0);
-  useEffect(() => {
-    if (value <= 0) {
-      setN(value);
-      return;
-    }
-    let raf = 0;
-    let startT = 0;
-    const tick = (now: number) => {
-      if (!startT) startT = now;
-      const t = Math.min(1, (now - startT) / durationMs);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setN(Math.round(value * eased));
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    const to = window.setTimeout(() => {
-      raf = requestAnimationFrame(tick);
-    }, startDelayMs);
-    return () => {
-      window.clearTimeout(to);
-      cancelAnimationFrame(raf);
-    };
-  }, [value, durationMs, startDelayMs]);
-  return n;
-}
-
-function XpReward({ progression }: { progression: ProgressionResp }) {
-  const lp = levelProgress(progression.progression.totalXp);
-  const preLp = levelProgress(Math.max(0, progression.progression.totalXp - progression.xpGained));
-  const pct = (l: ReturnType<typeof levelProgress>) =>
-    l.xpForNext > 0 ? Math.min(100, (l.xpIntoLevel / l.xpForNext) * 100) : 100;
-  const startFill = pct(preLp);
-  const target = pct(lp);
-
-  // Animate the bar from where it was BEFORE the match to the new value, wrapping
-  // through 100% with a flash on level-up so the gain is felt, not just shown.
-  const [fill, setFill] = useState(startFill);
-  const [noAnim, setNoAnim] = useState(false);
-  const [flash, setFlash] = useState(false);
-  useEffect(() => {
-    const timers: number[] = [];
-    timers.push(window.setTimeout(() => setFill(progression.leveledUp ? 100 : target), 300));
-    if (progression.leveledUp) {
-      timers.push(
-        window.setTimeout(() => {
-          setFlash(true);
-          setNoAnim(true);
-          setFill(0);
-        }, 300 + 760),
-      );
-      timers.push(
-        window.setTimeout(() => {
-          setNoAnim(false);
-          setFill(target);
-        }, 300 + 820),
-      );
-      timers.push(window.setTimeout(() => setFlash(false), 300 + 1400));
-    }
-    return () => timers.forEach((t) => window.clearTimeout(t));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const xpN = useCountUp(progression.xpGained);
-  const credN = useCountUp(progression.creditsGained);
-  const unlocks = progression.newUnlocks.map((id) => cosmeticById(id)?.name ?? id);
-
-  return (
-    <div
-      className={`clip-deck-sm mt-4 border px-4 py-3 transition-colors ${
-        flash ? 'border-emerald-400/60 bg-emerald-300/[0.08]' : 'border-cyan-500/20 bg-cyan-300/[0.04]'
-      }`}
-    >
-      <div className='flex items-baseline justify-between'>
-        <span className='text-[10px] uppercase tracking-[0.28em] text-cyan-200/70'>Experience</span>
-        <span className='text-sm font-bold tabular-nums text-cyan-200'>
-          +{xpN} XP
-          {progression.creditsGained > 0 && (
-            <span className='ml-2 text-amber-300'>+{credN} ⛁</span>
-          )}
-        </span>
-      </div>
-      <div className='mt-2 flex items-center gap-2'>
-        <span className='text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-200/80'>
-          Lv {lp.level}
-        </span>
-        <div className='deck-bar relative h-2.5 flex-1'>
-          <div
-            className={`bg-gradient-to-r from-cyan-400 to-sky-300 ${
-              noAnim ? '' : 'transition-[width] duration-700 ease-out'
-            }`}
-            style={{ width: `${fill}%`, boxShadow: '0 0 10px rgba(56,189,248,0.55)' }}
-          />
-        </div>
-      </div>
-      <div className='mt-1 flex items-center justify-between text-[10px] tabular-nums text-white/40'>
-        <span>{lp.xpForNext > 0 ? `${lp.xpIntoLevel} / ${lp.xpForNext}` : 'MAX LEVEL'}</span>
-        {progression.leveledUp && (
-          <span
-            className='font-bold uppercase tracking-[0.18em] text-emerald-300'
-            style={{ filter: 'drop-shadow(0 0 8px rgba(52,211,153,0.6))' }}
-          >
-            ★ Level up! → Lv {lp.level}
-          </span>
-        )}
-      </div>
-      {unlocks.length > 0 && (
-        <div className='mt-2 text-[11px] text-amber-200'>
-          Unlocked: <span className='font-semibold'>{unlocks.join(', ')}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Deterministic 32-bit hash (FNV-1a) so a given name always maps to the same
-// podium hat/emote when we don't know its real loadout (offline bots / remotes).
-function hashStr(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-// Build the top-3 podium roster from the final scoreboard. Each player's real
-// equipped hat/emote is used when known — the local player from settings, and
-// (online) remotes from the broadcast carried on their PlayerScore. Offline bots
-// have no known loadout, so they fall back to a stable name-hashed hat/emote.
-function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWinner[] {
-  const caseHatIds = caseHats().map((h) => h.id);
-  const emoteIds = EMOTES.map((e) => e.id);
-  return scores.slice(0, 3).map((s, i) => {
-    const h = hashStr(s.name);
-    const hatId = s.isLocal ? settings.hat : s.hat ?? caseHatIds[h % caseHatIds.length] ?? DEFAULT_HAT;
-    const emoteId = s.isLocal
-      ? settings.emote
-      : s.emote ?? emoteIds[(h >>> 4) % emoteIds.length] ?? DEFAULT_EMOTE;
-    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId };
-  });
-}
-
-// Mounts the Three.js podium scene on a canvas and tears it down on unmount.
-function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const scene = new PodiumScene(canvas);
-    void scene.setWinners(winners);
-    scene.start();
-    const onResize = () => scene.resize();
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      scene.dispose();
-    };
-  }, [winners]);
-  return <canvas ref={ref} className='block h-full w-full' />;
-}
-
-// Shared results panel: Victory/Defeat header, the 3D top-3 podium, the full
-// scoreboard, match stats + XP reward, and a caller-supplied footer (offline =
-// Play Again/Lobby; online = Continue to the map vote).
-function ResultsPanel({
-  won,
-  scores,
-  settings,
-  result,
-  progression,
-  footer,
-}: {
-  won: boolean;
-  scores: PlayerScore[];
-  settings: Settings;
-  result: MatchResult | null;
-  progression: ProgressionResp | null;
-  footer: ReactNode;
-}) {
-  const acc = result && result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
-  // Stable winners identity so the 3D scene mounts once (not every HUD tick).
-  const rosterKey = scores.slice(0, 3).map((s) => `${s.id}:${s.frags}:${s.hat ?? ''}:${s.emote ?? ''}`).join('|');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote]);
-
-  return (
-    <ModalShell
-      label={won ? 'Victory — final standings' : 'Defeat — final standings'}
-      tone={won ? 'emerald' : 'rose'}
-      size='xl'
-      z='z-30'
-      backdrop='heavy'
-      scroll
-      padded={false}
-      bodyClassName='gap-0'
-    >
-      {/* Header: Victory/Defeat title (kept clear of the 3D labels below) */}
-      <div className='border-b border-white/10 bg-black/40 py-3 text-center'>
-        <span
-          className={`font-display text-2xl font-bold uppercase tracking-[0.24em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
-          style={{
-            filter: won
-              ? 'drop-shadow(0 0 16px rgba(52,211,153,0.55))'
-              : 'drop-shadow(0 0 16px rgba(244,63,94,0.55))',
-          }}
-        >
-          {won ? 'Victory' : 'Defeat'}
-        </span>
-        <span className='ml-3 text-[10px] uppercase tracking-[0.3em] text-white/40'>Final Standings</span>
-      </div>
-      {/* Hero: the 3D podium of the top 3 (hats + emotes) */}
-      <div className='h-[340px] w-full shrink-0 bg-gradient-to-b from-[#161d29] to-[#0b0e14]'>
-        <PodiumResults winners={winners} />
-      </div>
-
-      <div className='p-6 pt-4'>
-        {/* Full scoreboard (all players, compact) */}
-        <div className='overflow-hidden border border-white/10'>
-          <div className='grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-white/45'>
-            <span>#</span>
-            <span>Player</span>
-            <span className='text-right'>K</span>
-            <span className='text-right'>D</span>
-          </div>
-          {scores.map((s, i) => (
-            <div
-              key={s.id}
-              className={`deck-tr grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 px-3 py-1.5 text-sm ${
-                s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
-              }`}
-            >
-              <span className='tabular-nums text-white/45'>{i + 1}</span>
-              <span className='truncate'>
-                {s.name}
-                {s.isLocal && ' (you)'}
-              </span>
-              <span className='text-right tabular-nums'>{s.frags}</span>
-              <span className='text-right tabular-nums'>{s.deaths}</span>
-            </div>
-          ))}
-        </div>
-
-        {result && (
-          <div className='mt-4 grid grid-cols-4 gap-2 text-center'>
-            <MiniStat label='Kills' value={result.kills} />
-            <MiniStat label='Deaths' value={result.deaths} />
-            <MiniStat label='Streak' value={result.bestStreak} />
-            <MiniStat label='Acc' value={`${acc}%`} />
-          </div>
-        )}
-
-        {progression && <XpReward progression={progression} />}
-
-        <div className='mt-6 flex gap-3'>{footer}</div>
-      </div>
-    </ModalShell>
-  );
-}
-
-// Offline (vs-bots) results — replay or bail to the lobby.
-function MatchOverOverlay({
-  won,
-  scores,
-  settings,
-  result,
-  progression,
-  onPlayAgain,
-  onLobby,
-}: {
-  won: boolean;
-  scores: PlayerScore[];
-  settings: Settings;
-  result: MatchResult | null;
-  progression: ProgressionResp | null;
-  onPlayAgain: () => void;
-  onLobby: () => void;
-}) {
-  return (
-    <ResultsPanel
-      won={won}
-      scores={scores}
-      settings={settings}
-      result={result}
-      progression={progression}
-      footer={
-        <>
-          <DeckButton onClick={onPlayAgain} solid accent='emerald' center className='flex-1'>
-            Play Again
-          </DeckButton>
-          <DeckButton onClick={onLobby} center className='flex-1' sound='uiBack'>
-            Lobby
-          </DeckButton>
-        </>
-      }
-    />
-  );
-}
-
-// Online results — same podium, then auto-advances to the map vote (or click).
-// Kept shorter than the 15s vote so players still get time to pick a map.
-function OnlineMatchResults({
-  won,
-  scores,
-  settings,
-  result,
-  progression,
-  onContinue,
-}: {
-  won: boolean;
-  scores: PlayerScore[];
-  settings: Settings;
-  result: MatchResult | null;
-  progression: ProgressionResp | null;
-  onContinue: () => void;
-}) {
-  const [secs, setSecs] = useState(8);
-  useEffect(() => {
-    if (secs <= 0) {
-      onContinue();
-      return;
-    }
-    const t = setTimeout(() => setSecs((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secs]);
-
-  return (
-    <ResultsPanel
-      won={won}
-      scores={scores}
-      settings={settings}
-      result={result}
-      progression={progression}
-      footer={
-        <DeckButton onClick={onContinue} solid accent='cyan' center className='flex-1'>
-          Continue to Map Vote {secs > 0 ? `(${secs})` : ''}
-        </DeckButton>
-      }
-    />
-  );
-}
-
 function mapLabel(id: string): string {
   return MAPS.find((m) => m.id === id)?.label ?? id;
 }
@@ -3039,7 +1871,17 @@ function JoinErrorOverlay({
 
 /* ───────────────────────── HUD layout ───────────────────────── */
 
-function HudOverlay({ store, settings, info }: { store: HudStore; settings: Settings; info: HudMatchInfo }) {
+function HudOverlay({
+  store,
+  settings,
+  info,
+  xpTicker,
+}: {
+  store: HudStore;
+  settings: Settings;
+  info: HudMatchInfo;
+  xpTicker: boolean;
+}) {
   const s = settings.uiScale || 1;
   // UI scale: a counter-sized wrapper rendered at 1/s then transform-scaled by s,
   // so corner-anchored HUD elements keep their anchors while everything resizes.
@@ -3056,7 +1898,7 @@ function HudOverlay({ store, settings, info }: { store: HudStore; settings: Sett
           className='absolute left-0 top-0 origin-top-left'
           style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
         >
-          <HudLayout settings={settings} info={info} />
+          <HudLayout settings={settings} info={info} xpTicker={xpTicker} />
         </div>
       </div>
     </HudStoreContext.Provider>
@@ -3066,7 +1908,15 @@ function HudOverlay({ store, settings, info }: { store: HudStore; settings: Sett
 // Static layout. Each piece below subscribes to its own slice of the store, so
 // a HudState push only re-renders the pieces whose slice actually changed (a
 // push with only `speed` changed re-renders the speed readout alone).
-const HudLayout = memo(function HudLayout({ settings, info }: { settings: Settings; info: HudMatchInfo }) {
+const HudLayout = memo(function HudLayout({
+  settings,
+  info,
+  xpTicker,
+}: {
+  settings: Settings;
+  info: HudMatchInfo;
+  xpTicker: boolean;
+}) {
   const dead = useHudSlice((s) => s.killcam !== null);
   return (
     <>
@@ -3085,6 +1935,7 @@ const HudLayout = memo(function HudLayout({ settings, info }: { settings: Settin
       <HudBanner />
       <HudCaptions captions={settings.captions} />
       <HudFragPopup />
+      <HudXpTicker enabled={xpTicker} />
       {/* Your own card is NOT shown on your kills — it's broadcast so the VICTIM
           sees it on their killcam. The killer's card shows on YOUR killcam below. */}
       <HudKillcam reduced={settings.reducedEffects} />
@@ -4263,16 +3114,6 @@ function randomMapId(): string {
   return QUICK_MAP_POOL[Math.floor(Math.random() * QUICK_MAP_POOL.length)];
 }
 
-type InstagibStats = {
-  totalKills: number;
-  totalDeaths: number;
-  totalGames: number;
-  totalWins: number;
-  bestKillStreak: number;
-  headshots: number;
-  bestAccuracy: number;
-};
-
 function savedPlayerName(): string | undefined {
   if (typeof window === 'undefined') return undefined;
   try {
@@ -4284,22 +3125,6 @@ function savedPlayerName(): string | undefined {
     return undefined;
   }
 }
-
-// Progression delta returned by POST /api/stats — drives the end-of-match XP
-// moment. Mirrors the server `MatchRecordResult` (minus the legacy `stats`).
-type ProgressionResp = {
-  xpGained: number;
-  creditsGained: number;
-  leveledUp: boolean;
-  newUnlocks: string[];
-  progression: {
-    totalXp: number;
-    level: number;
-    credits: number;
-    unlocked: string[];
-    equipped: Record<string, string>;
-  };
-};
 
 async function submitMatchStats(
   result: MatchResult,
@@ -4445,13 +3270,6 @@ type RankedLeaderEntry = {
 
 // Starting Elo for a brand-new ranked player (mirrors server RANKED_BASE_RATING).
 const RANKED_BASE = 1000;
-// The live flair text for the dynamic ranked title from a profile's standing:
-// top-10 → "#N", otherwise the tier name; '' if the player has no ranked games.
-function rankedStandingText(ranked: InstagibProfile['ranked']): string {
-  if (!ranked) return '';
-  return ranked.rank >= 1 && ranked.rank <= 10 ? `#${ranked.rank}` : rankedTierName(ranked.rating);
-}
-
 // Full-screen ranked end-of-match overlay: VICTORY/DEFEAT + the rating delta.
 function RankedResultOverlay({
   result,
@@ -5144,6 +3962,7 @@ function Lobby({
   account,
   onOpenLogin,
   onLogout,
+  lastProgression = null,
 }: {
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
@@ -5152,6 +3971,9 @@ function Lobby({
   account: Account;
   onOpenLogin: () => void;
   onLogout: () => void;
+  // The finished match's server reward (when the shell passes it through);
+  // otherwise the banner diffs the profile before/after the match.
+  lastProgression?: ProgressionResp | null;
 }) {
   const [soloOpen, setSoloOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
@@ -5162,7 +3984,11 @@ function Lobby({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
   const [lockerOpen, setLockerOpen] = useState(false);
-  const [lobbyProfile, setLobbyProfile] = useState<InstagibProfile | null>(null);
+  const [lobbyProfile, setLobbyProfile] = useState<MenuProfile | null>(null);
+  const [challenges, setChallenges] = useState<ChallengeLists | null>(null);
+  const [roadOpen, setRoadOpen] = useState(false);
+  const [heroHover, setHeroHover] = useState(false);
+  const heroSlotRef = useRef<HTMLDivElement>(null);
   const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
@@ -5277,28 +4103,82 @@ function Lobby({
     lobbyRef.current?.setName(settings.playerName || 'Player');
   }, [settings.playerName]);
 
-  // Pull credits/level + the claimable-challenge count for the lobby chrome.
-  // Re-pulls whenever a modal that can change them closes (refreshTick).
+  // Pull the profile (level/XP/credits) + challenges for the lobby chrome.
+  // Re-pulls whenever a modal that can change them closes (refreshTick) and
+  // when you log in or out.
+  const accountName = account?.username ?? '';
   useEffect(() => {
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
-        if (active && d.profile) setLobbyProfile(d.profile);
+      .then((d: { profile?: MenuProfile }) => {
+        if (!active || !d.profile) return;
+        setLobbyProfile(d.profile);
+        const granted = freshCatchUp(d.profile);
+        if (granted.length > 0) {
+          const top = granted[granted.length - 1].level;
+          toast(
+            granted.length === 1
+              ? `Career Road reward granted · level ${top}`
+              : `Career Road rewards granted · ${granted.length} levels, up to ${top}`,
+            { tone: 'ok' },
+          );
+        }
       })
       .catch(() => {});
-    fetch('/api/challenges', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ch'))))
-      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
-        if (!active || !d.challenges) return;
-        const all = [...d.challenges.daily, ...d.challenges.weekly];
-        setClaimable(all.filter((c) => c.complete && !c.claimed).length);
-      })
-      .catch(() => {});
+    void fetchChallenges().then((d) => {
+      if (!active || !d) return;
+      setChallenges(d);
+      setClaimable([...d.daily, ...d.weekly].filter((c) => c.complete && !c.claimed).length);
+    });
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, accountName]);
+  const refreshMeta = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  // What your combatant wears in the menu (reacts as the Locker changes it).
+  const heroLoadout = useMemo<HeroLoadout>(
+    () => ({
+      seed: settings.playerName || 'you',
+      hat: settings.hat,
+      unusual: settings.unusual,
+      railgunFinish: settings.railgunFinish,
+      emote: settings.emote,
+    }),
+    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote],
+  );
+  // Career Road try-on: your loadout, with the previewed reward swapped in.
+  const roadLoadout = useMemo(
+    () => ({
+      seed: settings.playerName || 'you',
+      hat: settings.hat,
+      unusual: settings.unusual,
+      railgunFinish: settings.railgunFinish,
+      railColor: settings.railColor,
+      killEffect: settings.killEffect,
+      emote: settings.emote,
+      spawnEffect: settings.spawnEffect,
+    }),
+    [
+      settings.playerName,
+      settings.hat,
+      settings.unusual,
+      settings.railgunFinish,
+      settings.railColor,
+      settings.killEffect,
+      settings.emote,
+      settings.spawnEffect,
+    ],
+  );
+  // Per-match XP for the Last match banner: the server's reward for that match
+  // only (it may arrive a beat after the lobby mounts); nothing for guests.
+  const lastGain = gainFrom(lastProgression);
+  // The challenge set rolls over at its reset: pull the new one.
+  useRefetchAtReset(challenges, refreshMeta);
+  // Doors + challenges live in the right column on wide layouts, under the
+  // menu on narrow ones — mounted once, where they're shown.
+  const wide = useMedia('(min-width: 1024px)');
 
   const openSettingsAt = (t: SettingsTab) => {
     setSettingsTab(t);
@@ -5376,90 +4256,71 @@ function Lobby({
         : 'Quick match · any mode';
 
   return (
-    <div className='menu-root fixed inset-0 z-50 overflow-hidden text-white'>
+    <div className={`menu-root fixed inset-0 z-50 overflow-hidden text-white ${settings.reducedEffects ? 'menu-reduced' : ''}`}>
       <MenuBackdropView
         active={!modalOpen}
         still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
         onMap={onBackdropMap}
+        hero={heroLoadout}
+        heroSlot={heroSlotRef}
+        heroHover={heroHover && !modalOpen}
       />
       <div aria-hidden='true' className='menu-scrim pointer-events-none absolute inset-0' />
       <a href='#lobby-main' className='deck-skip-link'>
         Skip to content
       </a>
       <MenuToasts />
-      <div className='relative flex h-full w-full flex-col px-5 pb-4 pt-4 sm:px-10 sm:pt-6 lg:px-14'>
-        {/* ── Top bar: account + wallet + server, quiet ─────────────── */}
-        <header className='flex shrink-0 items-center justify-end gap-3'>
-          {account ? (
-            <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
-              <span className='inline-flex items-center gap-1 text-white/85'>
-                {account.username}
-                <NameBadges admin={account.isAdmin} verified={account.isVerified} size={12} />
-              </span>
-              {account.isAdmin && (
-                <button
-                  type='button'
-                  onClick={() => setAdminOpen(true)}
-                  {...sfxProps('uiClick')}
-                  className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-                >
-                  Admin
-                </button>
-              )}
+      <div className='relative flex h-full w-full flex-col px-5 pb-4 pt-4 sm:px-10 sm:pt-5 lg:px-14'>
+        {/* ── Top bar: who you are (left) · account + server (right) ─── */}
+        <header className='relative z-20 flex shrink-0 flex-wrap items-start justify-between gap-3'>
+          <div className='menu-in-top w-full sm:w-auto sm:min-w-[19rem] sm:max-w-[29rem] sm:flex-1' style={{ ['--d' as string]: 0 }}>
+            <ProfileBlock
+              account={account}
+              profile={lobbyProfile}
+              name={account?.username ?? settings.playerName}
+              nameColor={settings.nameColor}
+              title={settings.title}
+              onOpenRoad={() => setRoadOpen(true)}
+              onLogin={onOpenLogin}
+            />
+          </div>
+          <div className='menu-in-top ml-auto flex items-center gap-3 sm:pt-1' style={{ ['--d' as string]: 1 }}>
+            {account && (
+              <AccountMenu
+                isAdmin={account.isAdmin}
+                onStats={() => setStatsOpen(true)}
+                onSettings={() => openSettingsAt('controls')}
+                onAdmin={() => setAdminOpen(true)}
+                onLogout={onLogout}
+              />
+            )}
+            <ServerStatusChip status={lobbyStatus} />
+            {!dockOpen && (
               <button
                 type='button'
-                onClick={onLogout}
-                {...sfxProps('uiBack')}
-                className='text-white/40 transition hover:text-white/80'
+                onClick={toggleDock}
+                aria-expanded={false}
+                {...sfxProps('uiToggle')}
+                className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-display text-[13px] font-semibold uppercase tracking-[0.06em] text-white/75 transition hover:border-cyan-300/60 hover:text-cyan-100'
               >
-                Log&nbsp;out
+                Lobbies &amp; chat
+                {online && rooms.length > 0 && <span className='tabular-nums text-cyan-300'>{rooms.length}</span>}
               </button>
-            </span>
-          ) : (
-            <button
-              type='button'
-              onClick={onOpenLogin}
-              title='Save your progress across devices'
-              {...sfxProps('uiClick')}
-              className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/80 transition hover:border-cyan-300/60 hover:text-cyan-100'
-            >
-              <span className='text-white/40'>Guest ·</span> Log in
-            </button>
-          )}
-          {lobbyProfile && account && (
-            <button
-              type='button'
-              onClick={() => setLockerOpen(true)}
-              title='Open the Locker — spend credits on cosmetics'
-              {...sfxProps('uiClick')}
-              className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-            >
-              <span className='text-white/45'>Lv {lobbyProfile.level}</span>
-              <span>{lobbyProfile.credits.toLocaleString()} CR</span>
-            </button>
-          )}
-          <ServerStatusChip status={lobbyStatus} />
-          {!dockOpen && (
-            <button
-              type='button'
-              onClick={toggleDock}
-              aria-expanded={false}
-              {...sfxProps('uiToggle')}
-              className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/70 transition hover:border-cyan-300/60 hover:text-cyan-100'
-            >
-              Lobbies &amp; chat
-              {online && rooms.length > 0 && <span className='tabular-nums text-cyan-300'>{rooms.length}</span>}
-            </button>
-          )}
+            )}
+          </div>
         </header>
 
-        <main id='lobby-main' tabIndex={-1} className='flex min-h-0 flex-1 gap-8 outline-none'>
+        <main id='lobby-main' tabIndex={-1} className='relative flex min-h-0 flex-1 gap-6 outline-none'>
           {/* ── Left: identity + ways to play ─────────────────────────── */}
-          <section className='menu-enter deck-scroll flex min-h-0 w-full max-w-[31rem] shrink-0 flex-col overflow-y-auto'>
+          <section className='deck-scroll flex min-h-0 w-full max-w-[31rem] shrink-0 flex-col overflow-y-auto'>
             <div className='my-auto flex flex-col py-4'>
-              <MenuWordmark />
-              <p className='menu-tagline'>One railgun. One shot. One kill.</p>
+              <div className='menu-in' style={{ ['--d' as string]: 0 }}>
+                <MenuWordmark />
+              </div>
+              <p className='menu-tagline menu-in' style={{ ['--d' as string]: 1 }}>
+                One railgun. One shot. One kill.
+              </p>
 
               {touchOnly && (
                 <div className='clip-deck-sm mt-6 border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-[12px] text-amber-100'>
@@ -5468,7 +4329,7 @@ function Lobby({
                 </div>
               )}
 
-              <div className='mt-8'>
+              <div className='menu-in mt-8' style={{ ['--d' as string]: 2 }}>
                 <MenuPlayButton
                   onClick={playNow}
                   disabled={playDisabled || searching || (!online && !offline)}
@@ -5483,6 +4344,7 @@ function Lobby({
                   disabled={!online || playDisabled}
                   accent='cyan'
                   sub='Host FFA, duel or TDM'
+                  delay={3}
                 >
                   Create match
                 </MenuItem>
@@ -5491,10 +4353,11 @@ function Lobby({
                   disabled={!online || playDisabled}
                   accent='fuchsia'
                   sub='1v1 on the Elo ladder'
+                  delay={4}
                 >
                   Ranked duel
                 </MenuItem>
-                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline, your rules'>
+                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline, your rules' delay={5}>
                   Solo vs bots
                 </MenuItem>
                 <MenuItem
@@ -5510,88 +4373,150 @@ function Lobby({
                   disabled={playDisabled}
                   accent='amber'
                   sub='Aim drills, no pressure'
+                  delay={6}
                 >
                   Training range
                 </MenuItem>
-                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8-player speedrun'>
+                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8-player speedrun' delay={7}>
                   Weekly challenge
                 </MenuItem>
               </nav>
 
               {/* Meta surfaces: quiet links, visually subordinate to playing. */}
-              <div className='mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4'>
+              <div
+                className='menu-in mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4'
+                style={{ ['--d' as string]: 8 }}
+              >
                 <MenuLink onClick={() => setStatsOpen(true)}>Stats</MenuLink>
                 <MenuLink onClick={() => setChallengesOpen(true)} badge={claimable}>
                   Challenges
                 </MenuLink>
                 <MenuLink onClick={() => setLeaderboardOpen(true)}>Leaderboard</MenuLink>
-                <MenuLink onClick={() => setLockerOpen(true)}>Locker</MenuLink>
                 <MenuLink onClick={() => openSettingsAt('controls')}>Settings</MenuLink>
               </div>
 
-              {lastResult && <LastMatchBanner result={lastResult} />}
+              {lastResult && (
+                <div className='menu-in' style={{ ['--d' as string]: 9 }}>
+                  <LastMatchBanner result={lastResult} gain={lastGain} />
+                </div>
+              )}
+
+              {/* Narrow layouts: the doors + challenges ride under the menu. */}
+              {!wide && (
+                <div className='menu-in mt-5 flex flex-col gap-3' style={{ ['--d' as string]: 10 }}>
+                  <FrontDoors
+                    profile={lobbyProfile}
+                    guest={!account}
+                    hat={settings.hat}
+                    railgunFinish={settings.railgunFinish}
+                    onRoad={() => setRoadOpen(true)}
+                    onLocker={() => setLockerOpen(true)}
+                  />
+                  <ChallengesStrip
+                    lists={challenges}
+                    guest={!account}
+                    onOpen={() => setChallengesOpen(true)}
+                    onLogin={onOpenLogin}
+                    onClaimed={refreshMeta}
+                  />
+                </div>
+              )}
             </div>
           </section>
 
-          {/* ── Right: lobbies / chat / online, demoted to a dock ─────── */}
-          <div className='menu-enter-late ml-auto flex min-h-0 items-end pb-2 max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10 max-lg:ml-0 max-lg:justify-end max-lg:pointer-events-none max-lg:[&>*]:pointer-events-auto'>
-            {dockCompact && (
-              <button
-                type='button'
-                onClick={() => setDockExpanded(true)}
-                aria-expanded={false}
-                {...sfxProps('uiToggle')}
-                className='menu-dock-chip clip-deck-sm'
-              >
-                <span aria-hidden='true' className={`h-1.5 w-1.5 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
-                {online ? (
-                  <span>
-                    {lobbyCount} {lobbyCount === 1 ? 'lobby' : 'lobbies'} · {onlineCount} online · <span className='text-white'>Chat</span>
-                  </span>
-                ) : (
-                  <span>
-                    Linking to server · <span className='text-white'>Chat</span>
-                  </span>
-                )}
-              </button>
+          {/* ── Centre: your combatant (3D, drawn by the backdrop) ─────── */}
+          <HeroSlot
+            slotRef={heroSlotRef}
+            onCustomize={() => setLockerOpen(true)}
+            onHover={setHeroHover}
+            hover={heroHover}
+            className='max-lg:hidden lg:!absolute lg:inset-y-0 lg:left-[32.5rem] lg:right-[20.5rem] 2xl:right-28'
+          />
+
+          {/* ── Right: challenges over the social dock ─────────────────── */}
+          <div className='menu-in-right flex min-h-0 flex-col gap-3 pb-2 lg:relative lg:z-10 lg:ml-auto lg:w-[19.5rem] lg:shrink-0 xl:w-[21rem] max-lg:pointer-events-none max-lg:absolute max-lg:inset-x-5 max-lg:bottom-3 max-lg:top-2 max-lg:z-10'>
+            {wide && (
+              <div className='flex flex-col gap-3'>
+                <FrontDoors
+                  profile={lobbyProfile}
+                  guest={!account}
+                  hat={settings.hat}
+                  railgunFinish={settings.railgunFinish}
+                  onRoad={() => setRoadOpen(true)}
+                  onLocker={() => setLockerOpen(true)}
+                />
+                <ChallengesStrip
+                  lists={challenges}
+                  guest={!account}
+                  onOpen={() => setChallengesOpen(true)}
+                  onLogin={onOpenLogin}
+                  onClaimed={refreshMeta}
+                />
+              </div>
             )}
-            <SocialDock
-              open={dockOpen && !dockCompact}
-              onToggle={toggleDock}
-              tab={dockTab}
-              onTab={setDockTab}
-              lobbies={online ? rooms.length : 0}
-              online={presence?.online ?? null}
-            >
-              {dockTab === 'lobbies' ? (
-                <OpenLobbies
-                  rooms={rooms}
-                  online={online}
-                  onJoin={(r) => startOnline(r.id, r.mapId)}
-                  onSpectate={(r) => startSpectate(r.id, r.mapId)}
-                  onRefresh={() => lobbyRef.current?.refresh()}
-                />
-              ) : dockTab === 'chat' ? (
-                <GlobalChatPanel
-                  messages={chatLog}
-                  online={online}
-                  canChat={!!account}
-                  youName={account?.username ?? null}
-                  onSend={(text) => lobbyRef.current?.sendChat(text)}
-                />
-              ) : (
-                <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
+            <div className='menu-dock-col pointer-events-none flex min-h-0 flex-1 flex-col items-end justify-end [&>*]:pointer-events-auto'>
+              {dockCompact && (
+                <button
+                  type='button'
+                  onClick={() => setDockExpanded(true)}
+                  aria-expanded={false}
+                  {...sfxProps('uiToggle')}
+                  className='menu-dock-chip clip-deck-sm'
+                >
+                  <span aria-hidden='true' className={`h-2 w-2 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
+                  {online ? (
+                    <>
+                      <span className='menu-dock-stat'>
+                        <b>{onlineCount}</b> online
+                      </span>
+                      <span className='menu-dock-stat'>
+                        <b>{lobbyCount}</b> {lobbyCount === 1 ? 'lobby' : 'lobbies'}
+                      </span>
+                    </>
+                  ) : (
+                    <span>Linking to server</span>
+                  )}
+                  <span className='menu-dock-open'>Chat</span>
+                </button>
               )}
-            </SocialDock>
+              <SocialDock
+                open={dockOpen && !dockCompact}
+                onToggle={toggleDock}
+                tab={dockTab}
+                onTab={setDockTab}
+                lobbies={online ? rooms.length : 0}
+                online={presence?.online ?? null}
+              >
+                {dockTab === 'lobbies' ? (
+                  <OpenLobbies
+                    rooms={rooms}
+                    online={online}
+                    onJoin={(r) => startOnline(r.id, r.mapId)}
+                    onSpectate={(r) => startSpectate(r.id, r.mapId)}
+                    onRefresh={() => lobbyRef.current?.refresh()}
+                  />
+                ) : dockTab === 'chat' ? (
+                  <GlobalChatPanel
+                    messages={chatLog}
+                    online={online}
+                    canChat={!!account}
+                    youName={account?.username ?? null}
+                    onSend={(text) => lobbyRef.current?.sendChat(text)}
+                  />
+                ) : (
+                  <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
+                )}
+              </SocialDock>
+            </div>
           </div>
         </main>
 
-        {/* ── Footer: what you're looking at + the pitch, whisper-quiet ─ */}
-        <footer className='flex shrink-0 items-center justify-between gap-4 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
+        {/* ── Footer: what you're looking at, whisper-quiet ─────────────── */}
+        <footer className='flex shrink-0 items-center justify-between gap-4 pt-3 font-sans text-[12px] text-white/45'>
           <span className='truncate'>
             {arenaName && (
               <>
-                Arena <span className='text-white/65'>{arenaName}</span>
+                Arena · <span className='text-white/75'>{arenaName}</span>
               </>
             )}
           </span>
@@ -5635,6 +4560,11 @@ function Lobby({
       {statsOpen && <StatsModal onClose={() => setStatsOpen(false)} />}
       {challengesOpen && (
         <ChallengesModal
+          guest={!account}
+          onLogin={() => {
+            setChallengesOpen(false);
+            onOpenLogin();
+          }}
           onClose={() => {
             setChallengesOpen(false);
             setRefreshTick((t) => t + 1); // claiming changed credits + claim count
@@ -5691,6 +4621,20 @@ function Lobby({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      {roadOpen && (
+        <CareerRoad
+          profile={lobbyProfile}
+          guest={!account}
+          reduced={settings.reducedEffects}
+          lowSpec={settings.lowSpec}
+          loadout={roadLoadout}
+          onClose={() => setRoadOpen(false)}
+          onLogin={() => {
+            setRoadOpen(false);
+            onOpenLogin();
+          }}
+        />
+      )}
       {lockerOpen && (
         <Locker
           settings={settings}
@@ -5730,7 +4674,7 @@ function ServerStatusChip({ status }: { status: LobbyStatus }) {
   return (
     <span
       title={s.title}
-      className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.18em] ${s.ring}`}
+      className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-display text-[12px] font-bold uppercase tracking-[0.1em] ${s.ring}`}
     >
       <span className={`deck-pulse h-1.5 w-1.5 rounded-full ${s.dot}`} />
       {s.t}
@@ -6106,40 +5050,6 @@ function CreateOnlineModal({
   );
 }
 
-function LastMatchBanner({ result }: { result: MatchResult }) {
-  const acc = result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
-  return (
-    <div
-      className={`clip-deck-sm mt-2 border px-4 py-3 ${
-        result.won ? 'border-emerald-400/40 bg-emerald-400/10' : 'border-white/12 bg-white/5'
-      }`}
-    >
-      <div
-        className={`text-xs font-bold uppercase tracking-[0.2em] ${
-          result.won ? 'text-emerald-300' : 'text-white/70'
-        }`}
-      >
-        {result.won ? 'Victory' : 'Match complete'}
-      </div>
-      <div className='mt-2 grid grid-cols-4 gap-2 text-center'>
-        <MiniStat label='Kills' value={result.kills} />
-        <MiniStat label='Deaths' value={result.deaths} />
-        <MiniStat label='Streak' value={result.bestStreak} />
-        <MiniStat label='Acc' value={`${acc}%`} />
-      </div>
-    </div>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div>
-      <div className='text-[9px] uppercase tracking-[0.2em] text-white/40'>{label}</div>
-      <div className='text-lg font-bold tabular-nums'>{value}</div>
-    </div>
-  );
-}
-
 // (ModalShell — the shared dialog frame with Escape/backdrop close, exit motion,
 // focus trap + restore, and the modal stack — lives in src/deck.tsx.)
 
@@ -6236,18 +5146,6 @@ function DifficultyPicker({
   );
 }
 
-type InstagibProfile = {
-  level: number;
-  totalXp: number;
-  xpIntoLevel: number;
-  xpForNext: number;
-  credits: number;
-  unlocked: string[];
-  equipped: Record<string, string>;
-  stats: InstagibStats;
-  ranked: { rating: number; rank: number; provisional: boolean } | null;
-};
-
 function StatsModal({ onClose }: { onClose: () => void }) {
   const [profile, setProfile] = useState<InstagibProfile | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -6343,156 +5241,6 @@ function StatsModal({ onClose }: { onClose: () => void }) {
             <BigStat label='Headshots' value={stats.headshots} />
           </div>
         </>
-      )}
-    </ModalShell>
-  );
-}
-
-type ChallengeView = {
-  id: string;
-  title: string;
-  period: 'daily' | 'weekly';
-  goal: number;
-  progress: number;
-  claimed: boolean;
-  complete: boolean;
-  rewardXp: number;
-  rewardCredits: number;
-};
-
-function ChallengesModal({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<{ daily: ChallengeView[]; weekly: ChallengeView[] } | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [claiming, setClaiming] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    fetch('/api/challenges', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenges'))))
-      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
-        if (d.challenges) {
-          setData(d.challenges);
-          setState('ready');
-        } else setState('error');
-      })
-      .catch(() => setState('error'));
-  }, []);
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const claim = async (id: string) => {
-    setClaiming(id);
-    try {
-      const res = await fetch('/api/challenges/claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ id }),
-      });
-      const d = (await res.json()) as { ok?: boolean; xpGained?: number; creditsGained?: number };
-      if (res.ok && d.ok) {
-        toast(`Reward claimed · +${d.xpGained} XP · +${d.creditsGained} ⛁`, { tone: 'ok' });
-        load();
-      } else toast('Could not claim that reward.', { tone: 'err' });
-    } catch {
-      toast('Network error.', { tone: 'err' });
-    }
-    setClaiming(null);
-  };
-
-  const Row = (c: ChallengeView) => {
-    const pct = Math.min(100, Math.round((c.progress / c.goal) * 100));
-    return (
-      <div
-        key={c.id}
-        data-challenge={c.id}
-        data-complete={c.complete ? '1' : '0'}
-        data-claimed={c.claimed ? '1' : '0'}
-        className={`deck-card px-3 py-2.5 ${c.complete && !c.claimed ? 'border-emerald-400/40' : ''}`}
-      >
-        <div className='flex items-center justify-between gap-2'>
-          <span className='font-sans text-sm text-white/90'>{c.title}</span>
-          <span className='shrink-0 text-[10px] uppercase tracking-[0.12em] text-amber-300/90'>
-            {c.rewardXp} XP · {c.rewardCredits} ⛁
-          </span>
-        </div>
-        <div className='mt-2 flex items-center gap-2'>
-          <div className='deck-bar h-2 flex-1'>
-            <div className={c.complete ? 'bg-emerald-400' : 'bg-cyan-400/80'} style={{ width: `${pct}%` }} />
-          </div>
-          <span className='w-14 shrink-0 text-right text-[11px] tabular-nums text-white/55'>
-            {Math.min(c.progress, c.goal)}/{c.goal}
-          </span>
-          {c.claimed ? (
-            <span className='w-[4.5rem] shrink-0 text-right text-[10px] uppercase tracking-[0.14em] text-white/35'>
-              Claimed
-            </span>
-          ) : (
-            <DeckButton
-              data-action='claim'
-              disabled={!c.complete || claiming === c.id}
-              onClick={() => claim(c.id)}
-              accent='emerald'
-              size='xs'
-              center
-              className='w-[4.5rem] shrink-0'
-            >
-              {claiming === c.id ? '…' : 'Claim'}
-            </DeckButton>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const RowSkeleton = (i: number) => (
-    <div key={i} className='deck-card px-3 py-2.5'>
-      <div className='flex items-center justify-between gap-2'>
-        <Skeleton className='h-3.5 w-40' />
-        <Skeleton className='h-2.5 w-16' />
-      </div>
-      <div className='mt-2.5 flex items-center gap-2'>
-        <Skeleton className='h-2 flex-1' />
-        <Skeleton className='h-3 w-14' />
-        <Skeleton className='h-6 w-[4.5rem]' />
-      </div>
-    </div>
-  );
-
-  return (
-    <ModalShell title='Challenges' onClose={onClose}>
-      {state === 'loading' && (
-        <div className='flex flex-col gap-4' aria-busy='true' aria-label='Loading challenges'>
-          <div>
-            <div className='deck-label mb-2'>Daily · resets every day</div>
-            <div className='flex flex-col gap-2'>{[0, 1, 2].map(RowSkeleton)}</div>
-          </div>
-          <div>
-            <div className='deck-label mb-2'>Weekly · bigger rewards</div>
-            <div className='flex flex-col gap-2'>{[3, 4].map(RowSkeleton)}</div>
-          </div>
-        </div>
-      )}
-      {state === 'error' && (
-        <div className='font-sans text-sm text-white/55'>
-          Couldn&apos;t load challenges. Play an online match to start earning.
-        </div>
-      )}
-      {state === 'ready' && data && (
-        <div className='flex flex-col gap-4'>
-          <div>
-            <div className='deck-label mb-2'>Daily · resets every day</div>
-            <div className='flex flex-col gap-2'>{data.daily.map(Row)}</div>
-          </div>
-          <div>
-            <div className='deck-label mb-2'>Weekly · bigger rewards</div>
-            <div className='flex flex-col gap-2'>{data.weekly.map(Row)}</div>
-          </div>
-          <div className='text-[10px] normal-case tracking-normal text-white/35'>
-            Challenges progress from online matches only. Complete one, then Claim
-            its XP + credits.
-          </div>
-        </div>
       )}
     </ModalShell>
   );

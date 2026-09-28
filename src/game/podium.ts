@@ -17,7 +17,7 @@ const MEDAL = [0xffd24a, 0xcdd6e0, 0xd08a4a]; // gold / silver / bronze (place 1
 const SLOTS: ReadonlyArray<{ x: number; h: number }> = [
   { x: 0, h: 0.95 },
   { x: -1.7, h: 0.62 },
-  { x: 1.7, h: 0.36 },
+  { x: 1.7, h: 0.42 },
 ];
 // Stagger the three performers so they never move in lockstep.
 const TIME_OFFSET = [0, 0.55, 1.15];
@@ -28,12 +28,13 @@ export type PodiumWinner = {
   score: number;
   hatId: string;
   emoteId: string;
+  you?: boolean; // the local player — their nameplate is marked
 };
 
 // A floating label sprite (name + score) drawn on a canvas.
-function makeLabel(name: string, sub: string, accent: string): THREE.Sprite {
-  const w = 320;
-  const h = 100;
+function makeLabel(name: string, sub: string, accent: string, you = false): THREE.Sprite {
+  const w = 400;
+  const h = 124;
   const cv = document.createElement('canvas');
   cv.width = w;
   cv.height = h;
@@ -41,22 +42,22 @@ function makeLabel(name: string, sub: string, accent: string): THREE.Sprite {
   ctx.fillStyle = 'rgba(8,12,20,0.78)';
   roundRect(ctx, 4, 4, w - 8, h - 8, 14);
   ctx.fill();
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = you ? '#67e8f9' : accent;
+  ctx.lineWidth = you ? 5 : 3;
   roundRect(ctx, 4, 4, w - 8, h - 8, 14);
   ctx.stroke();
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 38px "JetBrains Mono", monospace';
-  ctx.fillText(name.slice(0, 12), w / 2, 48);
+  ctx.fillStyle = you ? '#a5f3fc' : '#ffffff';
+  ctx.font = 'bold 48px "JetBrains Mono", monospace';
+  ctx.fillText((you ? '▸ ' : '') + name.slice(0, 12), w / 2, 58);
   ctx.fillStyle = accent;
-  ctx.font = 'bold 30px "JetBrains Mono", monospace';
-  ctx.fillText(sub, w / 2, 84);
+  ctx.font = 'bold 34px "JetBrains Mono", monospace';
+  ctx.fillText(you ? `You · ${sub}` : sub, w / 2, 102);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, toneMapped: false }));
-  spr.scale.set(1.4, 0.44, 1);
+  spr.scale.set(1.6, 0.5, 1); // bigger type on the results podium, still clear of the neighbours
   return spr;
 }
 function roundRect(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -87,6 +88,8 @@ export class PodiumScene {
   private clock = { last: 0 };
   private disposed = false;
   private readonly owned: Array<{ dispose(): void }> = [];
+  // Per place: the pedestal's meshes (an unused place — a duel's 3rd — hides).
+  private readonly pedestals: THREE.Object3D[][] = [];
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -213,7 +216,8 @@ export class PodiumScene {
       ctx.fillText(String(i + 1), 64, 70);
       const tex = new THREE.CanvasTexture(cv);
       tex.colorSpace = THREE.SRGBColorSpace;
-      const size = Math.min(0.36, h * 0.6);
+      // Same numeral size on every pedestal (the short bronze one included).
+      const size = Math.min(0.3, (h - 0.09) * 0.9);
       const nGeo = new THREE.PlaneGeometry(size, size);
       const nMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false, color: 0xffffff });
       const num = new THREE.Mesh(nGeo, nMat);
@@ -225,6 +229,7 @@ export class PodiumScene {
       strip.position.set(x, h - 0.09, 0.628);
       this.scene.add(strip);
       this.owned.push(geo, mat, capGeo, capMat, tex, nGeo, nMat, sGeo, sMat);
+      this.pedestals.push([ped, cap, num, strip]);
     }
     // floor
     const fGeo = new THREE.CircleGeometry(6, 48);
@@ -239,6 +244,8 @@ export class PodiumScene {
   async setWinners(winners: PodiumWinner[]): Promise<void> {
     if (this.disposed) return;
     this.clearChars();
+    const used = new Set(winners.slice(0, 3).map((w) => Math.max(0, Math.min(2, w.place - 1))));
+    this.pedestals.forEach((meshes, i) => meshes.forEach((m) => (m.visible = used.has(i))));
     for (const w of winners.slice(0, 3)) {
       const idx = Math.max(0, Math.min(2, w.place - 1));
       const slot = SLOTS[idx];
@@ -259,7 +266,7 @@ export class PodiumScene {
       void hat.setHat(w.hatId);
 
       const accent = '#' + new THREE.Color(MEDAL[idx]).getHexString();
-      const label = makeLabel(w.name, `#${w.place} · ${w.score}`, accent);
+      const label = makeLabel(w.name, `#${w.place} · ${w.score}`, accent, w.you);
       // Clear of overhead arms and hops (cheer jumps ~0.3 m with arms up).
       label.position.set(0, 2.82, 0);
       group.add(label);

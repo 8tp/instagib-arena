@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { ProgressionResp } from '../app-types';
 import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
 import {
   BotManager,
@@ -40,6 +41,7 @@ import {
   PLAYER_RADIUS,
   KILL_FLASH_DURATION_SEC,
   RAIL_COOLDOWN,
+  RAIL_HELIX_COLOR,
   RAIL_RANGE,
   SHAKE_DEATH,
   SHAKE_FIRE,
@@ -56,7 +58,9 @@ import {
   type GameMode,
   type KeybindAction,
 } from './constants';
-import { EffectsManager } from './effects';
+import { EffectsManager, prewarmFx } from './effects';
+import { prewarmGuns } from './gun/prewarm';
+import { setRailBeamsReduced } from './fx/rail-beam';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, setMapBuildQuality, type ArenaMap } from './map';
@@ -86,6 +90,7 @@ import {
   railgunFinishById,
   spawnEffectById,
   SPAWN_EFFECTS,
+  KILL_EFFECTS,
   titleById,
   type KillEffectStyle,
 } from './cosmetics';
@@ -123,7 +128,7 @@ import {
   SHADOW_TUNING,
   type PostFxOptions,
 } from './renderer';
-import { buildRailgun, type RailgunModel } from './weapon-model';
+import { buildRailgun, setRailgunReducedEffects, type RailgunModel } from './weapon-model';
 import { POS_FLAG_HOLD } from './netcodec';
 import { localRail } from './fx/rail-state';
 import { ViewmodelMotion } from './viewmodel-motion';
@@ -167,7 +172,8 @@ export type MatchEndListener = (result: MatchResult) => void;
 export type NetMatchEvent =
   | { type: 'join-failed'; reason: string }
   | { type: 'spectate-ended' } // the watched match ended / room reaped → leave to lobby
-  | { type: 'ranked-result'; result: RankedResult; won: boolean }; // ranked match over → show overlay
+  | { type: 'ranked-result'; result: RankedResult; won: boolean } // ranked match over → show overlay
+  | { type: 'progression'; progression: ProgressionResp }; // server-recorded rewards for this online match
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
@@ -429,6 +435,7 @@ export class Game {
   private tmpRight = new THREE.Vector3();
   private tmpUp = new THREE.Vector3();
   private tmpBeamOrigin = new THREE.Vector3();
+  private readonly tmpBotMuzzle = new THREE.Vector3();
 
   // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
   // so it never blocks the crosshair; user offset + hide applied on top.
@@ -441,6 +448,8 @@ export class Game {
   private viewmodelOffset = { x: 0, y: 0, z: 0 };
   private hideViewmodel = false;
   private killEffectStyle: KillEffectStyle = DEFAULT_KILL_EFFECT;
+  // Online: each killer's server-stamped finisher, remembered for replays.
+  private readonly finisherSeen = new Map<string, KillEffectStyle>();
   private localRailgunFinish: string = DEFAULT_RAILGUN_FINISH; // viewmodel skin (local)
   private localNameColor: string = DEFAULT_NAME_COLOR; // nameplate tint (broadcast)
   private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
@@ -525,6 +534,14 @@ export class Game {
     applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
     this.effects.warm(this.scene); // FX lights present before the first compile
+    // Compile every FX / gun shader variant now (async), not on the first kill
+    // or the first remote with a new finish mid-match.
+    // One after the other: each temporarily adds/unhides probe objects, and two
+    // concurrent compileAsync polls over the same scene race (one sees the
+    // other's probe material after it's gone). Best-effort — never throws.
+    void prewarmFx(this.renderer, this.scene, this.camera)
+      .then(() => (this.disposed ? undefined : prewarmGuns(this.postFx, { lowSpec: this.lowSpec })))
+      .catch(() => {});
     this.player = new Player(this.map.spawn);
     // Gibs bounce on the real floor under the victim (closure reads the current map).
     setGibFloorProbe((x, y, z) => floorBelow(this.map.boxes, x, y, z));
@@ -668,6 +685,7 @@ export class Game {
     this.lowSpec = !!lowSpec;
     this.applyPixelRatio();
     this.effects.setQuality(lowSpec ? 0.5 : 1);
+    this.viewmodelRail?.setLowSpec(this.lowSpec);
     this.audio.setLowSpec(this.lowSpec); // shorter reverb, cheaper panning, fewer voices
     this.postFx.setWorldQuality(this.lowSpec); // sky drops its procedural detail on the low tier
     setCharacterFxQuality({ lowSpec: this.lowSpec }); // fewer gib chunks
@@ -859,6 +877,14 @@ export class Game {
   // can never break rendering.
   setKillEffect(id: string) {
     this.killEffectStyle = isKillEffectStyle(id) ? id : DEFAULT_KILL_EFFECT;
+    this.net?.setLocalKillEffect(this.killEffectStyle);
+  }
+
+  // A stable per-bot finisher so solo play shows the whole range of death
+  // animations (and what's worth unlocking) without any netcode.
+  private botFinisher(botId: string): KillEffectStyle {
+    const pool = KILL_EFFECTS.filter((k) => k.source.type !== 'admin');
+    return pool[hashStr(botId) % pool.length].id;
   }
 
   // Equipped rail-beam color cosmetic — recolors the local player's beam, and is
@@ -866,7 +892,7 @@ export class Game {
   setRailColor(id: string) {
     const safe = isRailColor(id) ? id : DEFAULT_RAIL_COLOR;
     const c = railColorById(safe);
-    this.weapon.setBeamColors(c.data.core, c.data.helix);
+    this.weapon.setBeamColors(c.data.core, c.data.helix, c.mode);
     this.net?.setLocalRailColor(safe);
   }
 
@@ -880,21 +906,24 @@ export class Game {
   // from the constructor and whenever the finish changes (Locker equip / a
   // spectator switching to a player whose gun skin differs).
   private buildViewmodel() {
-    if (this.viewmodel) {
-      this.camera.remove(this.viewmodel);
-      disposeGroup(this.viewmodel);
-    }
     // Spectators show the WATCHED player's finish; normal play shows the local one.
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
+    if (this.viewmodelRail) {
+      this.viewmodelRail.setFinish(finish); // recolour only — the geometry is shared
+      return;
+    }
     const vm = buildRailgun(finish);
     this.viewmodelRail = vm;
+    vm.setLowSpec(this.lowSpec);
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
     this.viewmodelMuzzle = vm.muzzleFlash;
     this.applyViewmodelTransform();
-    this.camera.add(this.viewmodel);
+    // Drawn in the viewmodel layer (after the world, depth cleared) so the gun
+    // never clips into walls; its camera mirrors the world camera every frame.
+    this.postFx.viewmodel.camera.add(this.viewmodel);
   }
 
   // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
@@ -959,6 +988,8 @@ export class Game {
   setReducedEffects(v: boolean) {
     this.reducedEffects = v;
     setCharacterFxQuality({ reducedEffects: v }); // fewer gib chunks, no bounce
+    setRailgunReducedEffects(v); // animated finishes + coil shimmer hold still
+    setRailBeamsReduced(v); // muted white-hot flash, no helix sparkle
   }
 
   private applyEnemyStyle() {
@@ -1168,6 +1199,7 @@ export class Game {
     this.scene.environment = null;
     this.disposeScene();
     this.postFx.dispose();
+    this.viewmodelRail?.dispose();
     // Drop the viewmodel muzzle link (fx/rail-state.ts) so the module-level
     // ref can't keep this disposed Game's scene alive in the menu.
     localRail.muzzle = null;
@@ -1264,6 +1296,7 @@ export class Game {
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
           onRankedResult: (r) => this.handleNetRankedResult(r),
+          onProgression: (p) => this.onNetEvent({ type: 'progression', progression: p }),
           onChat: (m) => this.handleNetChat(m),
           onBeam: (b) => this.handleNetBeam(b),
         },
@@ -1355,10 +1388,12 @@ export class Game {
     const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
-    const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
-    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map);
+    const rc = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR);
+    const c = rc.data;
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
+    if (b.id) this.remotePlayers.get(b.id)?.notifyFire(c.helix); // their 3rd-person gun flashes + recharges
     // Their discharge flash at the muzzle, in their rail colour.
-    this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
+    if (!b.id || !this.remotePlayers.get(b.id)) this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
     if (this.spectator && b.id === this.spectatedId) {
       this.spectatedShotMs = performance.now();
       this.viewmodelRail?.notifyFire();
@@ -1771,6 +1806,15 @@ export class Game {
   // every other id passes through unchanged.
   private replayId(netId: string): string {
     return this.net && netId === this.net.clientId ? 'you' : netId;
+  }
+
+  // The finisher a replayed kill plays: yours, a bot's stable one, or the one
+  // the server stamped on that player's last live kill.
+  private replayFinisher(killerId: string): KillEffectStyle {
+    if (killerId === 'you') return this.killEffectStyle;
+    const seen = this.finisherSeen.get(killerId);
+    if (seen) return seen;
+    return this.bots ? this.botFinisher(killerId) : DEFAULT_KILL_EFFECT;
   }
 
   // One downsampled frame for the match recorder: the pose of every entity the
@@ -2226,7 +2270,7 @@ export class Game {
     this.viewmodelMotion.onFire();
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
-    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, undefined, this.tmpForward, true);
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, this.weapon.beamColors.core, this.tmpForward, true);
 
     // Training range: count the shot, pop any targets the rail passed through,
     // and break the streak on a clean miss. Live stats refresh to the HUD.
@@ -2311,7 +2355,7 @@ export class Game {
         hit.headshot,
         this.killEffectStyle,
       );
-      bot.kill();
+      bot.kill(this.killEffectStyle);
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2416,8 +2460,15 @@ export class Game {
 
     // Visible beam to the impact point (enemy fire reveals positions).
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
-    this.weapon.spawnBeam(origin, end, this.scene, undefined, undefined, this.map);
-    this.effects.spawnMuzzleFlash(this.scene, origin, undefined, dir);
+    // The VISIBLE beam + discharge leave the bot's gun muzzle (the hit ray
+    // above stays on the eye line), so the flash sits on the claw it came from.
+    const shooter = this.bots?.bots.find((b) => b.state.id === intent.botId);
+    const visible = shooter?.gunMuzzle(this.tmpBotMuzzle) ?? origin;
+    this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
+    // A bot holding a gun flashes its own muzzle claw; the world flash is only
+    // the fallback (a gunless capsule).
+    if (!shooter?.gunMuzzle(this.tmpBotMuzzle)) this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
+    shooter?.notifyFire(RAIL_HELIX_COLOR);
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },
@@ -2445,12 +2496,13 @@ export class Game {
     } else {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (victim) {
+        const finisher = this.botFinisher(intent.botId);
         this.spawnKillEffect(
           new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
           false,
-          DEFAULT_KILL_EFFECT,
+          finisher,
         );
-        victim.kill();
+        victim.kill(finisher);
         this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
         this.audio.gibAt(victim.state.pos.x, victim.centerY(), victim.state.pos.z, 0.6);
       }
@@ -2672,7 +2724,8 @@ export class Game {
         ),
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
-      spawnKillEffect: (at, headshot) => this.spawnKillEffect(at, headshot, this.killEffectStyle),
+      spawnKillEffect: (at, headshot, killerId) => this.spawnKillEffect(at, headshot, this.replayFinisher(killerId)),
+      finisherFor: (killerId) => this.replayFinisher(killerId),
       reducedEffects: () => this.reducedEffects,
       // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
       // it reads as "they just fragged someone" during the cinematic.
@@ -2776,10 +2829,15 @@ export class Game {
       ev.victimPos.y + 0.9,
       ev.victimPos.z,
     );
-    // Your equipped kill effect plays on YOUR frags; everyone else's frags use
-    // the default until the server broadcasts each player's equipped cosmetics
-    // (progression Phase 1 — remote cosmetics in the snapshot payload).
-    this.spawnKillEffect(burstAt, ev.headshot, iAmKiller ? this.killEffectStyle : DEFAULT_KILL_EFFECT);
+    // The KILLER's finisher decides how the victim dies — yours on your frags,
+    // the server-stamped one (ownership-checked at equip) on everyone else's.
+    const finisher: KillEffectStyle = iAmKiller
+      ? this.killEffectStyle
+      : ev.finisher && isKillEffectStyle(ev.finisher)
+        ? ev.finisher
+        : DEFAULT_KILL_EFFECT;
+    if (!iAmKiller) this.finisherSeen.set(ev.killerId, finisher);
+    this.spawnKillEffect(burstAt, ev.headshot, finisher);
 
     if (iAmKiller) {
       // Killer: trust the server-authoritative score (next snapshot will
@@ -2863,14 +2921,14 @@ export class Game {
     } else {
       // Bystander — just hide the dead remote player briefly.
       const rp = this.remotePlayers.get(ev.victimId);
-      if (rp) rp.markDead();
+      if (rp) rp.markDead(finisher);
       this.audio.gibAt(burstAt.x, burstAt.y, burstAt.z, 0.6); // hear frags around you
     }
 
     // For non-victim clients that are local-rendering the victim, hide them.
     if (!iAmVictim) {
       const rp = this.remotePlayers.get(ev.victimId);
-      if (rp) rp.markDead();
+      if (rp) rp.markDead(finisher);
     }
 
     // Killfeed everywhere.

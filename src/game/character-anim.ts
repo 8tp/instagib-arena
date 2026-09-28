@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { EmoteKind } from './cosmetics';
+import { DEFAULT_KILL_EFFECT, type EmoteKind, type KillEffectStyle } from './cosmetics';
 import { Character } from './character/character';
 import { B } from './character/rig';
 import { PoseSpec, SIDE_L, SIDE_R, solvePose } from './character/pose';
@@ -180,9 +180,10 @@ export class CharacterAnimator {
 
   // Instagib: burst the body into its rigid parts. Always succeeds (even in
   // mid-air — chunks just fall and shrink without a floor to bounce on).
-  die(floor?: GibFloor): boolean {
+  // `style` = the killer's finisher: it picks how the body breaks apart.
+  die(floor?: GibFloor, style: KillEffectStyle = DEFAULT_KILL_EFFECT): boolean {
     if (this.gibs.active) return true;
-    this.gibs.start(this.vx, this.vyNow, this.vz, floor ?? this.guessFloor());
+    this.gibs.start(this.vx, this.vyNow, this.vz, floor ?? this.guessFloor(), style);
     return true;
   }
 

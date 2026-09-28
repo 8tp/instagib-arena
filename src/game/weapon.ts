@@ -3,6 +3,7 @@ import { RAIL_COOLDOWN, RAIL_CORE_COLOR, RAIL_HELIX_COLOR, RAIL_RANGE } from './
 import { spawnRailImpact } from './effects';
 import { getFxContext, peekFxContext } from './fx-pool';
 import { liveViewmodelMuzzle, localRail } from './fx/rail-state';
+import type { RailBeamMode } from './fx/rail-beam';
 import { mapVisualTop, rayAabb, rayAabbNormal, type ArenaMap } from './map';
 import type { AABB, Vec3 } from './types';
 
@@ -86,10 +87,18 @@ export class Railgun {
   // beams keep the defaults — spawnBeam's params fall back to the constants.
   private beamCore = RAIL_CORE_COLOR;
   private beamHelix = RAIL_HELIX_COLOR;
+  private beamMode: RailBeamMode | undefined;
 
-  setBeamColors(core: number, helix: number) {
+  // `mode` = the rail colour's beam treatment ('spectrum' cycles the hue).
+  setBeamColors(core: number, helix: number, mode?: RailBeamMode) {
     this.beamCore = core;
     this.beamHelix = helix;
+    this.beamMode = mode;
+  }
+
+  // The equipped beam colours (e.g. to tint the local muzzle discharge).
+  get beamColors(): { core: number; helix: number; mode?: RailBeamMode } {
+    return { core: this.beamCore, helix: this.beamHelix, mode: this.beamMode };
   }
 
   // 0 = just fired … 1 = ready (the viewmodel's energy coils show it).
@@ -189,6 +198,7 @@ export class Railgun {
       dir,
       drawnWall ? drawnFaceBox(surface, wallIdx, boxes[wallIdx]) : undefined,
       true,
+      this.beamMode,
     );
 
     return { hits, end };
@@ -200,6 +210,7 @@ export class Railgun {
   // colors when fire() passes them.
   // `surface` (the arena) is an optional hint: with it, a beam that ends on a
   // drawn map face also plays the rail impact (sparks + flash + scorch) there.
+  // `mode` = the shooter's rail-colour treatment ('spectrum').
   spawnBeam(
     origin: THREE.Vector3,
     end: THREE.Vector3,
@@ -207,10 +218,11 @@ export class Railgun {
     core: number = RAIL_CORE_COLOR,
     helix: number = RAIL_HELIX_COLOR,
     surface?: ArenaMap,
+    mode?: RailBeamMode,
   ) {
     const face = surface ? resolveImpactFace(origin, end, surface) : -1;
     const box = surface && face >= 0 ? drawnFaceBox(surface, face, surface.boxes[face]) : undefined;
-    this.spawnBeamAt(origin, end, scene, core, helix, box ? tmpNormal : null, null, box, false);
+    this.spawnBeamAt(origin, end, scene, core, helix, box ? tmpNormal : null, null, box, false, mode);
   }
 
   private spawnBeamAt(
@@ -223,8 +235,9 @@ export class Railgun {
     dir: THREE.Vector3 | null,
     faceBox: AABB | undefined,
     own: boolean,
+    mode?: RailBeamMode,
   ) {
-    getFxContext(scene).beams.spawn(origin, end, core, helix, own);
+    getFxContext(scene).beams.spawn(origin, end, core, helix, own, { mode, impact: !!impactNormal });
     if (impactNormal) {
       const d = dir ?? tmpDir.subVectors(end, origin).normalize();
       spawnRailImpact(scene, end, impactNormal, d, core, helix, faceBox);
