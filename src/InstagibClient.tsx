@@ -4162,7 +4162,7 @@ function Lobby({
           </div>
           <div className='menu-in-top ml-auto flex items-center gap-3 sm:pt-1' style={{ ['--d' as string]: 1 }}>
             {account && (
-              <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] md:inline-flex'>
+              <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
                 {account.isAdmin && (
                   <button
                     type='button'
