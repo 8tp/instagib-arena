@@ -2711,6 +2711,7 @@ export class Game {
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
       spawnKillEffect: (at, headshot, killerId) => this.spawnKillEffect(at, headshot, this.replayFinisher(killerId)),
+      finisherFor: (killerId) => this.replayFinisher(killerId),
       reducedEffects: () => this.reducedEffects,
       // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
       // it reads as "they just fragged someone" during the cinematic.

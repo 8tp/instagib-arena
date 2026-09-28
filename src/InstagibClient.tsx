@@ -139,6 +139,8 @@ import {
   sourceLabel,
 } from './game/cosmetics';
 import type { CrosshairConfig, InstagibProfile, ProgressionResp, Settings } from './app-types';
+import { setCharacterFxQuality } from './game/character/gibs';
+import { setFxQuality } from './game/fx-pool';
 import { Locker } from './locker/Locker';
 import { MatchOverOverlay, OnlineMatchResults } from './ui/results';
 import { PlayerCard } from './ui/player-card';
@@ -505,6 +507,14 @@ export default function InstagibClient() {
   // A ?join= invite arriving on the FIRST run is held here until onboarding is
   // done, so a first-time invitee still sees the controls primer before locking.
   const pendingJoinRef = useRef<MatchConfig | null>(null);
+
+  // Menu-side 3D (Locker / Career Road previews, thumbnails, the menu hero)
+  // honours Reduce effects + Low spec too — the Game only sets these while a
+  // match is mounted.
+  useEffect(() => {
+    setCharacterFxQuality({ reducedEffects: settings.reducedEffects, lowSpec: settings.lowSpec });
+    setFxQuality(settings.lowSpec ? 0.5 : 1);
+  }, [settings.reducedEffects, settings.lowSpec]);
 
   // Load persisted settings once on mount + backfill window-dependent defaults.
   useEffect(() => {

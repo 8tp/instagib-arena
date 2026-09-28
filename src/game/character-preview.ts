@@ -810,6 +810,14 @@ export class CharacterPreview {
     this.gunPivot.rotation.set(0.06, -0.58 + this.yaw + sway, 0.03);
   }
 
+  // Pause the render loop (the canvas stays mounted, e.g. hidden behind a 2D
+  // reward in the Career Road); start() resumes it.
+  stop() {
+    if (this.raf !== null) cancelAnimationFrame(this.raf);
+    this.raf = null;
+    this.last = 0;
+  }
+
   start() {
     if (this.raf !== null) return;
     const tick = (nowMs: number) => {
@@ -958,9 +966,13 @@ export class CharacterPreview {
     this.bgTex?.dispose();
     this.scene.background = null;
     // The combatant + hat clones share CACHED geometry, so those are not freed
-    // here (see Character.dispose / WornHat). renderer.dispose() releases this
-    // preview's GPU programs/targets without forcing a context loss.
+    // here (see Character.dispose / WornHat). The shared caches hold a
+    // 'dispose' listener per renderer that drew them, which keeps this
+    // context (and its GPU memory) reachable — so in production force the
+    // context loss, like Game.dispose (dev Fast Refresh reuses the canvas, and
+    // a force-lost context can't be re-acquired).
     this.renderer.dispose();
+    if (import.meta.env.PROD) this.renderer.forceContextLoss();
     this.anchorEl = null;
   }
 }

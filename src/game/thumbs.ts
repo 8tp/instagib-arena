@@ -207,6 +207,10 @@ function getStudio(): Studio | null {
     renderer.toneMappingExposure = 0.95;
     renderer.setClearColor(0x000000, 0);
     const scene = new THREE.Scene();
+    // The studio steps its own effects before every capture, so body-bound
+    // finisher particles (voxels, shards, confetti, ash) spawn into the pool —
+    // unmanaged, GibBurst.start skips them and the thumbnail comes out empty.
+    getFxContext(scene).managed = true;
     const pmrem = new THREE.PMREMGenerator(renderer);
     const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();

@@ -198,6 +198,10 @@ export class RemotePlayer {
     }
   }
 
+  // Replay: the killer's finisher for this actor's next recorded death (set by
+  // the replay just before it snaps the pose that hides the body).
+  replayFinisher: KillEffectStyle | null = null;
+
   // `style` = the killer's finisher (how this body breaks apart).
   markDead(style?: KillEffectStyle) {
     this.deadTimer = DEAD_HIDE_DURATION_SEC;
@@ -346,7 +350,8 @@ export class RemotePlayer {
       // Visible → hidden while playing forward is a death: gib in place (the
       // group stays where they died), then hide once the chunks are gone.
       if (!wasHidden && anim && !anim.isDying() && dt > 0 && dt < 0.25) {
-        anim.die();
+        anim.die(undefined, this.replayFinisher ?? undefined);
+        this.replayFinisher = null;
         this.setPlateHidden(true);
       }
       if (anim?.isDying() && !anim.deathDone()) {

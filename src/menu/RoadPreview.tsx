@@ -65,10 +65,11 @@ function tryOn(reward: RoadReward, l: PreviewLoadout, reduced: boolean): Preview
   }
 }
 
-function Stage3D({ cos, lowSpec }: { cos: PreviewCosmetics; lowSpec: boolean }) {
+function Stage3D({ cos, lowSpec, active }: { cos: PreviewCosmetics; lowSpec: boolean; active: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewRef = useRef<CharacterPreview | null>(null);
   const latest = useRef(cos);
+  const activeRef = useRef(active);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -87,7 +88,7 @@ function Stage3D({ cos, lowSpec }: { cos: PreviewCosmetics; lowSpec: boolean }) 
         }
         previewRef.current = p;
         p.enableOrbit(canvas);
-        p.start();
+        if (activeRef.current) p.start();
         ro = new ResizeObserver(() => {
           cancelAnimationFrame(pending);
           pending = requestAnimationFrame(() => p.resize());
@@ -110,7 +111,21 @@ function Stage3D({ cos, lowSpec }: { cos: PreviewCosmetics; lowSpec: boolean }) 
     previewRef.current?.setCosmetics(cos);
   }, [cos]);
 
-  return <canvas ref={canvasRef} className={`road-stage-canvas ${ready ? 'road-stage-ready' : ''}`} aria-hidden='true' />;
+  // Hidden behind a 2D reward: pause, but keep the context (no remount churn).
+  useEffect(() => {
+    activeRef.current = active;
+    if (active) previewRef.current?.start();
+    else previewRef.current?.stop();
+  }, [active]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className={`road-stage-canvas ${ready ? 'road-stage-ready' : ''}`}
+      style={active ? undefined : { display: 'none' }}
+      aria-hidden='true'
+    />
+  );
 }
 
 export function RoadPreview({
@@ -127,7 +142,21 @@ export function RoadPreview({
   reduced: boolean;
 }) {
   const cos = useMemo(() => tryOn(reward, loadout, reduced), [reward, loadout, reduced]);
-  if (cos) return <Stage3D cos={cos} lowSpec={lowSpec} />;
+  // Once a 3D reward has been shown, the stage stays mounted (hidden + paused
+  // for 2D rewards) so browsing the road never churns WebGL contexts.
+  const [lastCos, setLastCos] = useState<PreviewCosmetics | null>(cos);
+  if (cos && cos !== lastCos) setLastCos(cos);
+  const stage = lastCos ? <Stage3D cos={cos ?? lastCos} lowSpec={lowSpec} active={!!cos} /> : null;
+  if (cos) return stage;
+  return (
+    <>
+      {stage}
+      <Flat reward={reward} locked={locked} />
+    </>
+  );
+}
+
+function Flat({ reward, locked }: { reward: RoadReward; locked: boolean }) {
   if (reward.type === 'credits') {
     return (
       <div className='road-emblem road-emblem-credits' data-locked={locked ? '1' : '0'}>
