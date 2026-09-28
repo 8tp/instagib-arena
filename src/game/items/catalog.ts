@@ -173,7 +173,8 @@ export const ITEM_DEFS: readonly ItemDef[] = [
   ...legacy('finisher', KILL_EFFECTS),
   ...legacy('spawn', SPAWN_EFFECTS),
   ...legacy('emote', EMOTES),
-  ...legacy('card', CARD_STYLES),
+  // Cards stay UNLOCKABLE (level-gated entitlements, like titles) — never case items / tradable.
+  ...legacy('card', CARD_STYLES).map((d) => ({ ...d, tradable: false, inCases: false })),
   ...legacy('nameColor', NAME_COLORS),
   ...titles,
 ];

@@ -23,6 +23,7 @@ per-tier odds each ~4–5× rarer). Research notes: see the PR description.
   `owner_id`, `state` (`owned | listed | traded-away | salvaged | revoked`).
 - **Defaults** (bare head, stock finish, cyan beam, pulse finisher, cheer emote, slate card…) are
   *virtual*: everyone has them, they're not instances, not tradable.
+- **Player cards** stay **unlockable by level** (entitlements, not instances, not tradable, not in cases) — like titles.
 - **Titles** stay achievement/level-earned and **bound** (untradable instances minted on grant).
   Announcer packs stay level-gated entitlements (not items).
 
