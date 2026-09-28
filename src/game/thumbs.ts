@@ -39,9 +39,11 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v8:';
+const STORE_PREFIX = 'ig-thumb:v10:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
+// Hats sit on a mid-slate helmet: white caps read lighter, black hats darker.
+const HAT_SKIN = '#6f7888';
 const FACE_CAMERA = Math.PI;
 
 const cache = new Map<string, string | null>();
@@ -118,9 +120,24 @@ export function getThumbnail(id: string): Promise<string | null> {
   return p;
 }
 
-// Warm a batch (e.g. a Locker slot's grid) — same as calling getThumbnail on each.
-export function prefetchThumbnails(ids: readonly string[]): void {
+// Warm a batch (e.g. a Locker slot's grid). `front`: these jump the queue
+// (the grid the player is looking at renders first), keeping their order.
+export function prefetchThumbnails(ids: readonly string[], front = false): void {
   for (const id of ids) void getThumbnail(id);
+  if (!front) return;
+  const want = new Set(ids);
+  const first = queue.filter((j) => want.has(j.id));
+  const rest = queue.filter((j) => !want.has(j.id));
+  queue.length = 0;
+  queue.push(...first, ...rest);
+}
+
+// True while a thumbnail is queued or rendering (tiles show a quiet
+// placeholder instead of the no-thumbnail fallback).
+export function thumbnailPending(id: string): boolean {
+  if (pending.has(id)) return true;
+  // Not asked for yet but it will be (a tile's first paint): also pending.
+  return !cache.has(id) && !studioFailed && typeof document !== 'undefined' && renderable(cosmeticById(id));
 }
 
 const nextFrame = () =>
@@ -141,7 +158,8 @@ async function pump() {
     let url: string | null = null;
     try {
       url = await renderThumb(job.id);
-    } catch {
+    } catch (err) {
+      console.warn(`[thumbs] ${job.id} failed to render`, err);
       url = null;
     }
     cache.set(job.id, url);
@@ -260,9 +278,9 @@ type Subject = {
 
 // A neutral combatant, facing the camera (optionally turned `turn` radians),
 // posed at `t` seconds into `clip` (the breathing idle by default).
-function combatant(turn = 0, clip: EmoteKind = 'idle', t = 0.6) {
+function combatant(turn = 0, clip: EmoteKind = 'idle', t = 0.6, skin = THUMB_SKIN) {
   const holder = new THREE.Group();
-  const ch = new Character({ colorHex: THUMB_SKIN, castShadow: false });
+  const ch = new Character({ colorHex: skin, castShadow: false });
   holder.add(ch.root);
   holder.rotation.y = FACE_CAMERA + turn;
   const anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
@@ -275,7 +293,7 @@ function combatant(turn = 0, clip: EmoteKind = 'idle', t = 0.6) {
 // Camera-facing dark radial disc (thumbnail backdrop for glow effects). The
 // texture is cached for the studio's life.
 let backdropTex: THREE.CanvasTexture | null = null;
-function darkBackdrop(): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> {
+function darkBackdrop(size = 1.25): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> {
   if (!backdropTex) {
     const S = 128;
     const cv = document.createElement('canvas');
@@ -291,7 +309,7 @@ function darkBackdrop(): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial
     backdropTex.colorSpace = THREE.SRGBColorSpace;
   }
   return new THREE.Mesh(
-    new THREE.PlaneGeometry(1.25, 1.25),
+    new THREE.PlaneGeometry(size, size),
     new THREE.MeshBasicMaterial({ map: backdropTex, transparent: true, depthWrite: false, toneMapped: false }),
   );
 }
@@ -313,6 +331,33 @@ const EMOTE_FRAME: Partial<Record<EmoteKind, number>> = {
   slowclap: 0.33,
   flourish: 0.72,
 };
+// Each finisher's signature moment (seconds after the kill): the frame that
+// tells it apart — Nova's sphere, Singularity's pop, Derez's bands, Vaporize's
+// ash. Re-tune with the FX lab (/fxlab?t=…) when a finisher changes.
+const FINISHER_FRAME: Partial<Record<KillEffectStyle, number>> = {
+  pulse: 0.12,
+  nova: 0.14,
+  starburst: 0.1,
+  voxel: 0.22,
+  ember: 0.3,
+  gibstorm: 0.16,
+  singularity: 0.36,
+  prism: 0.14,
+  derez: 0.3,
+  shatter: 0.1,
+  confetti: 0.2,
+  overload: 0.32,
+  vaporize: 0.42,
+};
+// Victim skin per tile rarity — a complement of the tile colour, so the burst
+// (which takes the victim's colour) reads on its backdrop.
+const FINISHER_SKIN: Record<string, string> = {
+  common: '#27b8ff',
+  rare: '#ffb21e',
+  epic: '#1fd6a0',
+  legendary: '#27b8ff',
+};
+
 function stepEffects(s: Studio, seconds: number, extra?: (dt: number) => void) {
   const dt = 1 / 60;
   for (let t = 0; t < seconds - 1e-6; t += dt) {
@@ -324,14 +369,27 @@ function stepEffects(s: Studio, seconds: number, extra?: (dt: number) => void) {
 async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | null> {
   switch (entry.slot) {
     case 'hat': {
-      const c = combatant(-0.42);
+      const c = combatant(-0.42, 'idle', 0.6, HAT_SKIN);
       const hat = new WornHat(c.ch.sockets.headTop);
       await hat.setHat(entry.id);
+      // Frame on the hat itself so it fills ~60% of the tile (cropped just
+      // above the visor), rather than a bust with a small hat on top.
+      c.holder.updateMatrixWorld(true);
+      const box = new THREE.Box3();
+      for (const child of c.ch.sockets.headTop.children) box.expandByObject(child);
+      let target = new THREE.Vector3(0, 1.74, 0);
+      let win = 0.5; // bare helmet
+      if (!box.isEmpty() && box.max.y - box.min.y > 0.02) {
+        const size = box.getSize(new THREE.Vector3());
+        win = Math.max(size.y, size.x, size.z) / 0.6;
+        const centre = box.getCenter(new THREE.Vector3());
+        target = new THREE.Vector3(centre.x, centre.y - win * 0.06, centre.z);
+      }
       return {
         root: c.holder,
-        target: new THREE.Vector3(0, 1.76, 0),
-        dist: 1.45,
-        elev: 0.16,
+        target,
+        dist: win / 2 / Math.tan((15 * Math.PI) / 180),
+        elev: 0.34, // from a little above: brims and crowns read
         dispose: () => {
           hat.dispose();
           disposeCombatant(c);
@@ -339,33 +397,33 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       };
     }
     case 'unusual': {
-      const c = combatant(-0.25);
+      const c = combatant(0);
       const hat = new WornHat(c.ch.sockets.headTop);
       hat.setUnusual(entry.id);
-      // Every unusual is legendary (gold tile) and many are warm-coloured: a
-      // dark halo behind the effect keeps the particles readable.
-      const backdrop = darkBackdrop();
-      backdrop.position.set(0, 1.95, -0.45);
-      backdrop.visible = unusualById(entry.id).kind !== 'none';
+      const none = unusualById(entry.id).kind === 'none';
+      // The head is a dark silhouette so it never competes with the effect;
+      // a soft dark halo behind keeps warm effects readable on the gold tile.
+      const body = c.ch.mesh.material;
+      const shadow = new THREE.MeshStandardMaterial({ color: 0x07090d, roughness: 0.9, metalness: 0, envMapIntensity: 0.12 });
+      if (!none) c.ch.mesh.material = shadow;
+      const backdrop = darkBackdrop(1.5);
+      backdrop.position.set(0, 2.0, -0.5);
+      backdrop.visible = !none;
       const root = new THREE.Group();
       root.add(c.holder, backdrop);
       return {
         root,
-        target: new THREE.Vector3(0, 1.9, 0),
-        dist: 1.3,
-        elev: 0.12,
+        target: new THREE.Vector3(0, none ? 1.74 : 1.98, 0),
+        dist: none ? 1.9 : 1.45,
+        elev: 0.1,
         settle: () => {
-          for (let i = 0; i < 36; i++) hat.update(1 / 60); // ~0.6 s in
-          // In-game particle sizes are tuned for a player-sized read at range;
-          // at thumbnail scale they'd be specks. Fatten them for the still
-          // (these materials belong to this throwaway effect instance).
-          c.holder.traverse((o) => {
-            const pts = o as THREE.Points;
-            if (pts.isPoints) (pts.material as THREE.PointsMaterial).size *= 2.2;
-          });
+          // Unusuals only simulate while seeded — step ~1 s in.
+          for (let i = 0; i < 60; i++) hat.update(1 / 60);
         },
         dispose: () => {
           hat.dispose();
+          c.ch.mesh.material = body;
+          shadow.dispose();
           disposeCombatant(c);
           backdrop.geometry.dispose();
           backdrop.material.dispose();
@@ -412,17 +470,23 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       };
     }
     case 'killEffect': {
-      const c = combatant(0.3);
       const style = entry.id as KillEffectStyle;
+      const skin = FINISHER_SKIN[entry.rarity] ?? '#27b8ff';
+      const c = combatant(0.3, 'idle', 0.6, skin);
       return {
         root: c.holder,
-        target: new THREE.Vector3(0, 1.0, 0),
-        dist: 5.2,
+        target: new THREE.Vector3(0, 1.05, 0),
+        dist: 5.0,
         elev: 0.1,
         settle: () => {
+          // As in-game: the burst (in the victim's colour), then the death.
+          s.effects.spawnKillBurst(s.scene, new THREE.Vector3(0, 0.95, 0), false, style, new THREE.Color(skin));
           c.anim.die({ y: 0 }, style);
-          s.effects.spawnKillBurst(s.scene, new THREE.Vector3(0, 0.95, 0), false, style);
-          stepEffects(s, 0.1, (dt) => c.anim.updateStatic(dt));
+          const step = 1 / 120;
+          for (let t = 0; t + step <= (FINISHER_FRAME[style] ?? 0.2) + 1e-9; t += step) {
+            c.anim.updateStatic(step);
+            s.effects.step(step, s.scene);
+          }
         },
         dispose: () => disposeCombatant(c),
       };

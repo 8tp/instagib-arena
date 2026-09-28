@@ -22,6 +22,11 @@ import {
 } from '../game/cosmetics';
 import { RARITY_RANK } from '../ui/rarity';
 
+// Currency always reads "⛁ 1,234".
+export function credits(n: number): string {
+  return `⛁ ${n.toLocaleString()}`;
+}
+
 export type LockerSlot =
   | 'hat'
   | 'unusual'
@@ -59,7 +64,7 @@ export const SLOT_DEFS: Record<LockerSlot, SlotDef> = {
     label: 'Unusual',
     noun: 'Unusual Effect',
     items: UNUSUALS,
-    view: 'head',
+    view: 'crown',
     current: (s) => s.unusual,
     apply: (s, id) => ({ ...s, unusual: id }),
   },
@@ -116,7 +121,7 @@ export const SLOT_DEFS: Record<LockerSlot, SlotDef> = {
 export const SLOT_GROUPS: ReadonlyArray<{ id: string; label: string; slots: readonly LockerSlot[] }> = [
   { id: 'character', label: 'Character', slots: ['hat', 'unusual'] },
   { id: 'weapon', label: 'Weapon', slots: ['railgunFinish', 'railColor'] },
-  { id: 'effects', label: 'Finisher & Effects', slots: ['killEffect', 'spawnEffect'] },
+  { id: 'effects', label: 'Finisher & effects', slots: ['killEffect', 'spawnEffect'] },
   { id: 'identity', label: 'Identity', slots: ['card', 'title', 'nameColor'] },
   { id: 'emotes', label: 'Emotes', slots: ['emote'] },
 ];
@@ -178,7 +183,7 @@ export function unlockInfo(source: CosmeticSource, level: number | null, stats: 
         ? { line: `Career Road · Level ${source.level}`, detail: `you're Level ${level}`, progress: Math.min(1, level / source.level) }
         : { line: `Career Road · Level ${source.level}` };
     case 'credits':
-      return { line: `Shop · ${source.price.toLocaleString()} credits` };
+      return { line: `Shop · ${credits(source.price)}` };
     case 'achievement': {
       const v = achievementValue(source, stats);
       return {

@@ -22,7 +22,8 @@ import {
 // ("view") is switchable at runtime — the camera eases between framings — so
 // picking a slot never remounts the renderer:
 //   full      whole combatant idling (breathing), hat + unusual on
-//   head      head-and-shoulders for hats / unusuals (headroom for the effect)
+//   head      head-and-shoulders for hats (the window grows with a tall hat)
+//   crown     head-and-shoulders with headroom for an unusual effect
 //   character legacy alias of `head` with a slow turntable sway (/lockerlab)
 //   identity  upper body, room above the head for the DOM nameplate anchor
 //   emote     full body playing the emote (railgun in hand when it calls)
@@ -41,6 +42,7 @@ export type PreviewView =
   | 'weapon'
   | 'full'
   | 'head'
+  | 'crown'
   | 'identity'
   | 'finisher'
   | 'spawn';
@@ -80,13 +82,14 @@ type Framing = { tx: number; ty: number; tz: number; dist: number; elev: number;
 
 const FRAMES: Record<PreviewView, Framing> = {
   full: { tx: 0, ty: 1.0, tz: 0, dist: 4.7, elev: 0.3, fov: 30 },
-  head: { tx: 0, ty: 1.6, tz: 0, dist: 2.75, elev: 0.12, fov: 30 },
+  head: { tx: 0, ty: 1.52, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
+  crown: { tx: 0, ty: 1.66, tz: 0, dist: 2.4, elev: 0.1, fov: 30 },
   character: { tx: 0, ty: 1.66, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
   identity: { tx: 0, ty: 1.3, tz: 0, dist: 4.4, elev: 0.1, fov: 30 },
   emote: { tx: 0, ty: 1.08, tz: 0, dist: 5.3, elev: 0.25, fov: 30 },
   finisher: { tx: 0, ty: 1.1, tz: 0, dist: 8.6, elev: 0.55, fov: 24 },
   spawn: { tx: 0, ty: 1.2, tz: 0, dist: 7.0, elev: 0.45, fov: 28 },
-  weapon: { tx: 0, ty: 1.02, tz: 0, dist: 3.35, elev: 0.28, fov: 30 },
+  weapon: { tx: 0, ty: 1.02, tz: 0, dist: 4.3, elev: 0.32, fov: 30 },
 };
 
 function savedName(): string {
@@ -158,6 +161,8 @@ export class CharacterPreview {
 
   // Camera framing state (eased toward FRAMES[view]).
   private cam: Framing;
+  private readonly frameTmp: Framing = { tx: 0, ty: 0, tz: 0, dist: 1, elev: 0, fov: 30 };
+  private hatTopY = 1.8;
   private offsetX = 0; // fractional screen-space shift of the subject (+ = right)
   private offsetY = 0;
 
@@ -261,7 +266,7 @@ export class CharacterPreview {
     this.subject.add(ch.root);
     this.anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     this.hat = new WornHat(ch.sockets.headTop);
-    void this.hat.setHat(this.cos.hatId);
+    void this.hat.setHat(this.cos.hatId).then(() => this.measureHat());
     this.hat.setUnusual(this.cos.unusualId);
   }
 
@@ -365,7 +370,7 @@ export class CharacterPreview {
       this.yawVel = 0;
       this.sinceDrag = 99;
     }
-    if (first || this.cos.reducedEffects) this.cam = { ...FRAMES[v] };
+    if (first || this.cos.reducedEffects) this.cam = { ...this.framing() };
     this.setAnchorVisible(this.anchorVisible);
   }
 
@@ -378,7 +383,7 @@ export class CharacterPreview {
       this.applyView();
     }
     if (this.hat) {
-      if (cos.hatId !== prev.hatId) void this.hat.setHat(cos.hatId);
+      if (cos.hatId !== prev.hatId) void this.hat.setHat(cos.hatId).then(() => this.measureHat());
       if (cos.unusualId !== prev.unusualId) this.hat.setUnusual(cos.unusualId);
     }
     if (cos.emoteId !== prev.emoteId && this.view === 'emote') {
@@ -426,7 +431,7 @@ export class CharacterPreview {
   }
 
   private anchorAllowed() {
-    return this.view === 'identity' || this.view === 'full' || this.view === 'head' || this.view === 'character';
+    return this.view === 'identity' || this.view === 'full' || this.view === 'head' || this.view === 'crown' || this.view === 'character';
   }
 
   // Equip / unlock flourish: a spawn ring at the combatant's feet.
@@ -537,8 +542,48 @@ export class CharacterPreview {
     this.camera.updateProjectionMatrix();
   }
 
-  private stepCamera(dt: number) {
+  // Head framings follow the worn hat: the head sits ~38% from the top of a
+  // head-and-shoulders window; a tall hat (or an unusual's plume) pushes the
+  // window's top up instead of being cropped.
+  private framing(): Framing {
     const f = FRAMES[this.view];
+    if (this.view !== 'head' && this.view !== 'crown') return f;
+    const tan = Math.tan((f.fov * Math.PI) / 360);
+    const win = this.view === 'head' ? 1.1 : 1.3;
+    const head = 1.65;
+    const top = this.view === 'head' ? Math.max(head + 0.38 * win, this.hatTopY + 0.1) : Math.max(head + 0.5 * win, this.hatTopY + 0.42);
+    this.frameTmp.tx = f.tx;
+    this.frameTmp.tz = f.tz;
+    this.frameTmp.ty = top - win / 2;
+    this.frameTmp.dist = win / 2 / tan;
+    this.frameTmp.elev = f.elev;
+    this.frameTmp.fov = f.fov;
+    return this.frameTmp;
+  }
+
+  // World height of the worn hat's top (bare helmet: the crest).
+  private measureHat() {
+    const socket = this.character?.sockets.headTop;
+    if (!socket || this.disposed) return;
+    socket.updateWorldMatrix(true, true);
+    const box = new THREE.Box3();
+    const tmp = new THREE.Box3();
+    // Hat meshes only — the unusual (world-space particles, ribbons) is skipped.
+    const visit = (o: THREE.Object3D) => {
+      if (o.name === 'unusual') return;
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.geometry) {
+        if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+        if (m.geometry.boundingBox) box.union(tmp.copy(m.geometry.boundingBox).applyMatrix4(m.matrixWorld));
+      }
+      for (const c of o.children) visit(c);
+    };
+    for (const child of socket.children) visit(child);
+    this.hatTopY = !box.isEmpty() && box.max.y > 1.5 ? Math.min(2.6, box.max.y) : 1.8;
+  }
+
+  private stepCamera(dt: number) {
+    const f = this.framing();
     const c = this.cam;
     const k = this.cos.reducedEffects ? 1 : 1 - Math.exp(-CAM_EASE * dt);
     c.tx += (f.tx - c.tx) * k;
@@ -569,7 +614,7 @@ export class CharacterPreview {
     // A gentle showcase sway returns once the player leaves it alone.
     const swayTarget = this.dragging || this.sinceDrag < IDLE_SWAY_AFTER ? 0 : 1;
     this.swayW += (swayTarget - this.swayW) * (1 - Math.exp(-1.2 * dt));
-    const amp = this.view === 'character' ? 0.7 : this.view === 'head' ? 0.42 : this.view === 'weapon' ? 0.3 : 0.2;
+    const amp = this.view === 'character' ? 0.7 : this.view === 'head' || this.view === 'crown' ? 0.42 : this.view === 'weapon' ? 0.3 : 0.2;
     const sway = this.cos.reducedEffects ? 0 : Math.sin(this.t * 0.5) * amp * this.swayW;
     this.subject.rotation.y = FACE_CAMERA + this.yaw + sway;
     // The gun points its barrel to screen-right and a little into depth.
@@ -609,14 +654,17 @@ export class CharacterPreview {
   private stepFinisher(_dt: number, slow: number) {
     if (!this.dummyAnim) return;
     if (this.finisherPhase === 'idle' && this.loopT >= FINISHER_IDLE * slow) {
-      // The killing rail: from off-screen left into the dummy's chest.
+      // The killing rail: from off-screen front-left into the dummy's chest,
+      // angled into depth so the helix reads as a helix (side-on it
+      // flattens into a sine wave).
       const rc = railColorById(this.cos.railColor).data;
-      const start = _v.set(-9, 1.3, 0.6);
+      const start = _v.set(-6.5, 1.75, 4.8);
       const hit = _v2.set(0, 1.22, 0);
-      getFxContext(this.scene).beams.spawn(start, hit, rc.core, rc.helix, false, { mode: railColorById(this.cos.railColor).mode });
-      this.dummyAnim.die({ y: 0 }, this.cos.killEffect);
+      getFxContext(this.scene).beams.spawn(start, hit, rc.core, rc.helix, false, { mode: railColorById(this.cos.railColor).mode, impact: true });
+      // As in-game: the burst (in the victim's colour), then the death.
       if (this.cos.reducedEffects) this.effects.spawnHitFlash(this.scene, CHEST, 0x9be8ff);
-      else this.effects.spawnKillBurst(this.scene, CHEST, false, this.cos.killEffect);
+      else this.effects.spawnKillBurst(this.scene, CHEST, false, this.cos.killEffect, this.dummy?.getColor(new THREE.Color()) ?? null);
+      this.dummyAnim.die({ y: 0 }, this.cos.killEffect);
       this.finisherPhase = 'dead';
       this.loopT = 0;
     } else if (this.finisherPhase === 'dead' && this.loopT >= FINISHER_DEAD * slow) {

@@ -2,7 +2,7 @@
 // whole Locker), a rarity tint behind it, and the DOM nameplate the preview
 // keeps above the combatant's head. Everything else (details, card showcase,
 // celebrations) is passed in as overlay children.
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { CharacterPreview, type PreviewCosmetics } from '../game/character-preview';
 
 export type StageNameplate = { name: string; color: string; title: string };
@@ -34,6 +34,7 @@ export function LockerStage({
   const plateRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<CharacterPreview | null>(null);
   const initial = useRef({ cos, lowSpec });
+  const [dragged, setDragged] = useState(false);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -100,6 +101,7 @@ export function LockerStage({
         tabIndex={0}
         aria-label='Loadout preview. Drag or use the left and right arrow keys to rotate; Enter replays the effect.'
         onKeyDown={onKey}
+        onPointerDown={() => setDragged(true)}
       />
       <div ref={plateRef} className='lk-plate' aria-hidden>
         {nameplate && (
@@ -111,7 +113,7 @@ export function LockerStage({
           </div>
         )}
       </div>
-      <div className='lk-hint'>Drag to rotate</div>
+      <div className={`lk-hint ${dragged ? 'lk-hint-gone' : ''}`}>Drag to rotate</div>
       {children}
     </div>
   );

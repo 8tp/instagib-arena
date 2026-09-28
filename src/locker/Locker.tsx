@@ -23,7 +23,7 @@ import {
   type Rarity,
 } from '../game/cosmetics';
 import { prefetchThumbnails } from '../game/thumbs';
-import { ItemTile } from '../ui/item-tile';
+import { ItemTile, LevelBadge } from '../ui/item-tile';
 import { CardStatsEditor, PlayerCard } from '../ui/player-card';
 import { buildCardPayload, rankedStandingText } from '../ui/player-card-data';
 import { RARITY_COLOR, RARITY_LABEL } from '../ui/rarity';
@@ -34,6 +34,7 @@ import {
   SLOT_DEFS,
   SLOT_GROUPS,
   casePool,
+  credits as fmtCredits,
   loadSeen,
   saveSeen,
   slotOfItem,
@@ -71,13 +72,14 @@ type CaseResp = {
 };
 
 const VIEW_OFFSET: Partial<Record<PreviewCosmetics['view'], number>> = {
-  head: 0.14,
+  head: 0.16,
+  crown: 0.16,
   identity: 0.17,
   weapon: 0.07,
   full: 0.2,
   emote: 0.2,
-  finisher: 0.17,
-  spawn: 0.19,
+  finisher: 0.1,
+  spawn: 0.14,
 };
 
 const FOCUSABLE =
@@ -258,7 +260,10 @@ export function Locker({
     prefetchThumbnails(ALL_SLOTS.map((s) => SLOT_DEFS[s].current(settingsRef.current)));
   }, []);
   useEffect(() => {
-    prefetchThumbnails(items.map((i) => i.id));
+    prefetchThumbnails(
+      items.map((i) => i.id),
+      true,
+    );
   }, [items]);
 
   const setSlot = (s: LockerSlot) => {
@@ -439,7 +444,7 @@ export function Locker({
         });
       } else if (res.ok && d.ok) {
         // Nothing left to win: the server paid a consolation instead.
-        toast(`Case complete · +${(d.consolation ?? 0).toLocaleString()} ⛁`, { tone: 'ok' });
+        toast(`Case complete · +${fmtCredits(d.consolation ?? 0)}`, { tone: 'ok' });
       } else if (res.status === 429) toast('Slow down a moment.', { tone: 'warn' });
       else
         toast(
@@ -556,7 +561,7 @@ export function Locker({
                     ? 'Log in to open'
                     : (profile?.caseKeys ?? 0) > 0
                       ? 'Open Hat Case · 1 key'
-                      : `Open Hat Case · ${HAT_CASE_COST} ⛁`,
+                      : `Open Hat Case · ${fmtCredits(HAT_CASE_COST)}`,
               disabled:
                 guest || !!busy || caseComplete || ((profile?.caseKeys ?? 0) <= 0 && (credits ?? 0) < HAT_CASE_COST),
               onOpen: () => void openCase(),
@@ -596,17 +601,21 @@ export function Locker({
       className={`lk-root ${closing ? 'lk-exit' : 'lk-enter'} ${reduced ? 'lk-reduced' : ''}`}
     >
       <header className='lk-top'>
-        <div className='flex min-w-0 flex-1 items-baseline gap-4'>
+        <div className='flex min-w-0 flex-1 items-center gap-3'>
           <h2 className='lk-title'>Locker</h2>
-          <span className='lk-note truncate'>Cosmetic only — never affects aim, movement or hits.</span>
+          <span className='lk-info' tabIndex={0} role='note' aria-label='Cosmetic only. Nothing here affects aim, movement or hits.'>
+            <span aria-hidden>i</span>
+            <span className='lk-info-tip' aria-hidden>
+              Cosmetic only. Nothing here affects aim, movement or hits.
+            </span>
+          </span>
         </div>
         {loading ? (
           <Skeleton className='h-5 w-24' />
         ) : (
           credits != null && (
-            <div className='lk-credits' aria-label={`${credits} credits`}>
-              <b>{credits.toLocaleString()} ⛁</b>
-              <span>Credits</span>
+            <div className='lk-credits' aria-label={`${credits} credits`} title='Credits'>
+              <b>{fmtCredits(credits)}</b>
               {profile && profile.caseKeys > 0 && (
                 <span className='lk-chip ml-2' style={{ color: '#ffe7a3', boxShadow: 'inset 0 0 0 1px #ffc23d88' }}>
                   {profile.caseKeys} case key{profile.caseKeys === 1 ? '' : 's'}
@@ -615,7 +624,7 @@ export function Locker({
             </div>
           )
         )}
-        <button type='button' className='lk-close' onClick={close} {...sfxProps('none')}>
+        <button type='button' className='lk-close' onClick={close} aria-label='Close the Locker' {...sfxProps('none')}>
           ✕ Esc
         </button>
       </header>
@@ -637,7 +646,7 @@ export function Locker({
               <div
                 className='lk-watermark'
                 aria-hidden
-                style={{ fontSize: `min(150px, ${(150 / Math.max(4, def.label.length)).toFixed(1)}cqw)` }}
+                style={{ fontSize: `min(140px, ${(88 / (Math.max(4, def.label.length) * 0.66)).toFixed(1)}cqw)` }}
               >
                 {def.label}
               </div>
@@ -647,7 +656,7 @@ export function Locker({
           {tryingOn && shownItem && (
             <div className='lk-tryon'>
               Trying on
-              <span style={{ color: RARITY_COLOR[shownItem.rarity].from }}>· {shownItem.name}</span>
+              <span style={{ color: RARITY_COLOR[shownItem.rarity].from }}>{shownItem.name}</span>
             </div>
           )}
           {cardPayload && (
@@ -678,7 +687,6 @@ export function Locker({
                       <ItemTile
                         id={eq}
                         fluid
-                        caption={sd.label}
                         selected={slot === s}
                         dot={hasNew}
                         tabIndex={slot === s ? 0 : -1}
@@ -687,7 +695,7 @@ export function Locker({
                           setSlot(s);
                         }}
                         onPointerEnter={uiHover}
-                        rootProps={{ 'data-tile': '', 'data-slot': s, 'aria-label': `${sd.label}: ${cosmeticById(eq)?.name ?? eq}${hasNew ? ', new items' : ''}` }}
+                        rootProps={{ 'data-tile': '', 'data-slot': s, title: sd.label, 'aria-label': `${sd.label}: ${cosmeticById(eq)?.name ?? eq}${hasNew ? ', new items' : ''}` }}
                       />
                     </div>
                   );
@@ -916,7 +924,7 @@ function ItemDetails({
         data-action='buy'
         {...sfxProps('none')}
       >
-        {busy ? 'Buying…' : guest ? 'Log in to buy' : short > 0 ? `Need ${short.toLocaleString()} more ⛁` : `Buy · ${price.toLocaleString()} ⛁`}
+        {busy ? 'Buying…' : guest ? 'Log in to buy' : short > 0 ? `Need ${fmtCredits(short)} more` : `Buy · ${fmtCredits(price)}`}
       </button>
     );
   else if (caseAction)
@@ -954,10 +962,21 @@ function ItemDetails({
       <p className='lk-blurb'>{item.blurb}</p>
       {!owned && !loading && (
         <div className='lk-unlock'>
-          <span>
-            🔒 {info.line}
-            {info.detail ? <span className='text-white/40'> — {info.detail}</span> : null}
-          </span>
+          {item.source.type === 'level' ? (
+            <span className='inline-flex flex-wrap items-center gap-x-2 gap-y-1'>
+              <LevelBadge level={item.source.level} /> Career Road reward
+              {level != null && (
+                <span className='inline-flex items-center gap-2 text-white/45'>
+                  · you&rsquo;re <LevelBadge level={level} />
+                </span>
+              )}
+            </span>
+          ) : (
+            <span>
+              {info.line}
+              {info.detail ? <span className='text-white/45'> · {info.detail}</span> : null}
+            </span>
+          )}
           {info.progress != null && (
             <div className='lk-bar' aria-hidden>
               <i style={{ width: `${Math.round(info.progress * 100)}%` }} />
@@ -966,7 +985,9 @@ function ItemDetails({
         </div>
       )}
       {owned && item.source.type !== 'default' && !loading && credits != null && (
-        <div className='lk-unlock text-white/40'>{info.line.replace(/^Shop · .*/, 'Purchased')}</div>
+        <div className='lk-unlock text-white/45'>
+          {item.source.type === 'credits' ? 'Purchased' : item.source.type === 'level' ? `Career Road reward · Lv ${item.source.level}` : info.line}
+        </div>
       )}
       {reducedNote && <div className='lk-unlock text-white/40'>{reducedNote}</div>}
       <div className='mt-1 flex items-center gap-3'>{action}</div>

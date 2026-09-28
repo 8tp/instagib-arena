@@ -2,9 +2,9 @@
 // the Locker grid + loadout rail, the end-of-match reward cards and the Career
 // Road. Rendered thumbnails come from game/thumbs.ts; slots without a 3D
 // subject (name colours, titles, cards) get a CSS treatment here instead.
-import type { CSSProperties, FocusEvent, HTMLAttributes, KeyboardEvent, MouseEvent, PointerEvent } from 'react';
-import { cardById, cosmeticById, nameColorById, titleById, type CatalogEntry, type Rarity } from '../game/cosmetics';
-import { RARITY_COLOR, useThumbnail } from './rarity';
+import type { CSSProperties, FocusEvent, HTMLAttributes, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
+import { cardById, cosmeticById, nameColorById, titleById, type CatalogEntry, type CosmeticSource, type Rarity } from '../game/cosmetics';
+import { RARITY_COLOR, useThumbnailState } from './rarity';
 
 export function ItemTile({
   id,
@@ -16,6 +16,7 @@ export function ItemTile({
   isNew = false,
   dot = false,
   price,
+  hint = 'auto',
   caption,
   label = true,
   onClick,
@@ -36,7 +37,8 @@ export function ItemTile({
   equipped?: boolean;
   isNew?: boolean;
   dot?: boolean; // small "something new inside" pip (loadout rail)
-  price?: number; // credits chip on a buyable locked item
+  price?: number; // overrides the credits hint on a buyable locked item
+  hint?: 'auto' | 'none' | ReactNode; // locked tiles: unlock route in the name row (auto from the catalog)
   caption?: string; // tiny top-left caption (the slot name on the loadout rail)
   label?: boolean;
   onClick?: () => void;
@@ -52,10 +54,21 @@ export function ItemTile({
   const item = cosmeticById(id);
   const rarity: Rarity = item?.rarity ?? 'common';
   const c = RARITY_COLOR[rarity];
-  const thumb = useThumbnail(id);
+  const { url: thumb, pending } = useThumbnailState(id);
   const interactive = !!onClick;
   const Tag = interactive ? 'button' : 'div';
   const lit = selected || equipped;
+  // Every locked tile says how to get it (price / level / case / achievement).
+  const shownHint: ReactNode =
+    hint === 'none' || !locked
+      ? null
+      : hint !== 'auto'
+        ? hint
+        : price != null
+          ? <CreditsHint amount={price} />
+          : item
+            ? <UnlockHint source={item.source} />
+            : null;
   const style: CSSProperties & Record<'--rc', string> = {
     '--rc': c.edge,
     ...(fluid ? { width: '100%', aspectRatio: '1 / 1' } : { width: size, height: size }),
@@ -111,35 +124,45 @@ export function ItemTile({
             className='absolute inset-0 h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.05] motion-reduce:transition-none'
             style={locked ? { filter: 'grayscale(0.55) brightness(0.62)' } : undefined}
           />
+        ) : pending ? (
+          <span aria-hidden className='deck-skeleton absolute inset-[18%] opacity-40' />
         ) : (
           <Treatment item={item} id={id} locked={locked} color={c.edge} />
         )}
         {/* Rarity bar along the bottom edge. */}
         <span aria-hidden className='absolute inset-x-0 bottom-0 h-[3px]' style={{ background: c.edge }} />
         {label && (
+          // Name band on a scrim: the unlock route (price / level / case)
+          // right-aligned on its own line, then the name on up to two lines —
+          // never "Standard Iss…", never covering the art mid-tile.
           <span
-            className='absolute inset-x-0 bottom-[3px] truncate px-[6cqw] pb-[4cqw] pt-[12cqw] font-display font-semibold uppercase leading-none tracking-[0.04em]'
-            style={{
-              color: locked ? `${c.text}b3` : c.text,
-              background: 'linear-gradient(transparent, rgba(0,0,0,0.78))',
-              fontSize: 'max(10px, 10.5cqw)',
-            }}
+            className='absolute inset-x-0 bottom-[3px] flex flex-col items-stretch gap-[2.5cqw] px-[6cqw] pb-[5cqw] pt-[16cqw]'
+            style={{ background: 'linear-gradient(180deg, rgba(4,6,10,0) 0%, rgba(4,6,10,0.74) 42%, rgba(4,6,10,0.9) 100%)' }}
           >
-            {item?.name ?? id}
+            {shownHint && <span className='self-end leading-none'>{shownHint}</span>}
+            <span
+              className='line-clamp-2 font-display font-semibold leading-[1.08]'
+              style={{
+                color: locked ? `${c.text}c0` : c.text,
+                fontSize: 'max(12px, 9cqw)',
+                overflowWrap: 'break-word',
+              }}
+            >
+              {item?.name ?? id}
+            </span>
           </span>
         )}
         {caption && (
           <span
-            className='absolute left-0 top-0 bg-black/55 px-[5cqw] py-[2.5cqw] font-mono font-semibold uppercase leading-none tracking-[0.14em] text-white/80'
-            style={{ fontSize: 'max(8px, 8cqw)' }}
+            className='absolute left-0 top-0 bg-black/60 px-[5cqw] py-[2.5cqw] font-sans font-medium leading-none text-white/85'
+            style={{ fontSize: 'max(12px, 9cqw)' }}
           >
             {caption}
           </span>
         )}
         {isNew && (
           <span
-            className='lk-new-badge absolute left-[5cqw] top-[5cqw] bg-[#ffe14d] px-[4cqw] py-[1.5cqw] font-display font-bold uppercase leading-none tracking-[0.08em] text-black'
-            style={{ fontSize: 'max(8px, 8.5cqw)' }}
+            className='lk-new-badge absolute left-[5cqw] top-[5cqw] bg-[#ffe14d] px-[5px] py-[2px] font-display text-[12px] font-bold uppercase leading-none tracking-[0.06em] text-black'
           >
             New
           </span>
@@ -148,7 +171,7 @@ export function ItemTile({
           <span
             aria-hidden
             className='absolute right-0 top-0 grid place-items-center bg-cyan-300 font-bold leading-none text-black'
-            style={{ width: 'max(15px, 15cqw)', height: 'max(15px, 15cqw)', fontSize: 'max(9px, 9cqw)' }}
+            style={{ width: 'max(18px, 15cqw)', height: 'max(18px, 15cqw)', fontSize: 'max(12px, 10cqw)' }}
             title='Equipped'
           >
             ✓
@@ -169,17 +192,65 @@ export function ItemTile({
             className='absolute right-[5cqw] top-[5cqw] h-2 w-2 rounded-full bg-[#ffe14d] shadow-[0_0_8px_#ffe14d]'
           />
         )}
-        {price != null && locked && (
-          <span
-            className='absolute right-[5cqw] bottom-[18cqw] bg-black/70 px-[4cqw] py-[1.5cqw] font-mono font-semibold tabular-nums leading-none text-amber-200'
-            style={{ fontSize: 'max(9px, 8.5cqw)' }}
-          >
-            {price.toLocaleString()} ⛁
-          </span>
-        )}
       </span>
     </Tag>
   );
+}
+
+// Compact unlock routes for the name row. Currency always reads "⛁ 1,234";
+// levels use the filled level badge.
+function CreditsHint({ amount }: { amount: number }) {
+  return <span className='font-mono text-[12px] font-semibold tabular-nums leading-none text-amber-200'>⛁ {amount.toLocaleString()}</span>;
+}
+
+export function LevelBadge({ level }: { level: number }) {
+  return (
+    <span
+      className='inline-block px-[5px] py-[2px] font-display text-[12px] font-bold leading-none text-[#021216]'
+      style={{
+        background: 'linear-gradient(150deg, #67e8f9 0%, #22d3ee 40%, #0e7490 100%)',
+        clipPath: 'polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px)',
+      }}
+    >
+      Lv {level}
+    </span>
+  );
+}
+
+function compactCount(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k` : String(n);
+}
+
+function UnlockHint({ source }: { source: CosmeticSource }) {
+  const muted = 'font-sans text-[12px] font-medium leading-none text-white/75';
+  switch (source.type) {
+    case 'credits':
+      return <CreditsHint amount={source.price} />;
+    case 'level':
+      return <LevelBadge level={source.level} />;
+    case 'case':
+      return <span className={`${muted} text-amber-200`}>Case</span>;
+    case 'admin':
+      return <span className={muted}>Staff</span>;
+    case 'achievement': {
+      const n = compactCount(source.min);
+      const label =
+        source.stat === 'kills'
+          ? `${n} frags`
+          : source.stat === 'headshots'
+            ? `${n} HS`
+            : source.stat === 'wins'
+              ? `${n} wins`
+              : source.stat === 'bestStreak'
+                ? `${n} streak`
+                : source.stat === 'games'
+                  ? `${n} games`
+                  : `${source.min}% acc`;
+      return <span className={muted}>{label}</span>;
+    }
+    default:
+      return null;
+  }
 }
 
 function LockGlyph() {
@@ -226,7 +297,7 @@ function Treatment({
           <span
             className='border px-[5cqw] py-[3cqw] text-center font-mono font-semibold uppercase leading-tight tracking-[0.14em]'
             style={{
-              fontSize: 'max(9px, 10.5cqw)',
+              fontSize: 'max(12px, 10cqw)',
               color: 'rgba(226,234,255,0.92)',
               borderColor: `${color}88`,
               background: 'rgba(8,10,14,0.62)',
