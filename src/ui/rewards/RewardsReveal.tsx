@@ -22,6 +22,7 @@ import { RARITY_COLOR } from '../rarity';
 import {
   buildRevealModel,
   buildTimeline,
+  isDense,
   levelSpan,
   rarityRank,
   type RevealCard,
@@ -96,8 +97,14 @@ function buildCues(m: RevealModel, tl: RevealTimeline): { times: number[]; cues:
   m.segments.forEach((s, k) => {
     if (s.levelUp) cue(tl.seg[k].end, 'levelUp');
   });
+  // A dense deal (catch-up road) ticks up the XP ladder for the everyday
+  // drops and saves the stings for epic + legendary.
+  const dense = isDense(m);
+  let tick = 0;
   m.cards.forEach((c, i) => {
-    if (c.kind === 'cosmetic') cue(tl.cardAt[i], RARITY_UNLOCK[rarityRank(c.rarity)]);
+    const rank = c.kind === 'cosmetic' ? rarityRank(c.rarity) : -1;
+    if (dense && rank < 2) cue(tl.cardAt[i], 'xpTick', tick++);
+    else if (c.kind === 'cosmetic') cue(tl.cardAt[i], RARITY_UNLOCK[rank]);
     else if (c.kind === 'credits') cue(tl.cardAt[i], 'purchase');
     else cue(tl.cardAt[i], 'caseReveal');
   });
@@ -219,9 +226,9 @@ function XpBar({ m, tl, t }: { m: RevealModel; tl: RevealTimeline; t: number }) 
   );
 }
 
-function KeyGlyph() {
+function KeyGlyph({ size }: { size: number }) {
   return (
-    <svg width='34' height='34' viewBox='0 0 24 24' aria-hidden='true' className='text-sky-200'>
+    <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' className='text-sky-200'>
       <circle cx='8' cy='12' r='4.2' fill='none' stroke='currentColor' strokeWidth='2' />
       <path d='M12 12h9M18 12v3.5M15.5 12v2.5' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='square' />
     </svg>
@@ -244,7 +251,7 @@ function RewardCardView({ c, size }: { c: RevealCard; size: number }) {
         {c.rarity === 'legendary' && <div className='rw-card-rays' />}
         <div className='rw-card-body'>
           {(c.rarity === 'epic' || c.rarity === 'legendary') && <div className='rw-card-halo' />}
-          <ItemTile id={c.id} size={CARD} />
+          <ItemTile id={c.id} size={CARD} label={CARD >= 60} />
           {c.rarity === 'legendary' && <div className='rw-card-shine' />}
         </div>
         {caption(`Lv ${c.level}`, col.edge)}
@@ -254,14 +261,18 @@ function RewardCardView({ c, size }: { c: RevealCard; size: number }) {
   if (c.kind === 'credits') {
     const style = { '--rw-glow': '#fbbf24aa' } as CSSProperties;
     return (
-      <div className='rw-card' style={style}>
+      <div className='rw-card' style={style} role='img' aria-label={`${c.amount} credits, level ${c.level} reward`}>
         <div className='rw-card-burst' />
         <div
           className='rw-card-body flex flex-col items-center justify-center'
           style={{ width: CARD, height: CARD, background: 'radial-gradient(120% 90% at 50% 20%, #7a4a0b, #2a1703)', boxShadow: 'inset 0 0 0 1px #fbbf2466' }}
         >
-          <span className={`font-display font-bold tabular-nums text-amber-200 ${CARD < 80 ? 'text-xl' : 'text-2xl'}`}>+{fmt(c.amount)}</span>
-          <span className='font-mono text-[9px] uppercase tracking-[0.16em] text-amber-200/70'>Credits</span>
+          <span
+            className={`font-display font-bold tabular-nums text-amber-200 ${CARD < 60 ? 'text-sm' : CARD < 80 ? 'text-xl' : 'text-2xl'}`}
+          >
+            +{fmt(c.amount)}
+          </span>
+          {CARD >= 60 && <span className='font-mono text-[9px] uppercase tracking-[0.16em] text-amber-200/70'>Credits</span>}
         </div>
         {caption(`Lv ${c.level}`, '#fcd34dcc')}
       </div>
@@ -269,14 +280,16 @@ function RewardCardView({ c, size }: { c: RevealCard; size: number }) {
   }
   const style = { '--rw-glow': '#60a5facc' } as CSSProperties;
   return (
-    <div className='rw-card' style={style}>
+    <div className='rw-card' style={style} role='img' aria-label={`Hat case key, level ${c.level} reward`}>
       <div className='rw-card-burst' />
       <div
         className='rw-card-body flex flex-col items-center justify-center gap-1'
         style={{ width: CARD, height: CARD, background: 'radial-gradient(120% 90% at 50% 20%, #1d4f8f, #0a1a33)', boxShadow: 'inset 0 0 0 1px #60a5fa66' }}
       >
-        <KeyGlyph />
-        <span className='text-center font-mono text-[9px] uppercase leading-tight tracking-[0.12em] text-sky-100/80'>Case key</span>
+        <KeyGlyph size={CARD < 60 ? 24 : 34} />
+        {CARD >= 60 && (
+          <span className='text-center font-mono text-[9px] uppercase leading-tight tracking-[0.12em] text-sky-100/80'>Case key</span>
+        )}
       </div>
       {caption(`Lv ${c.level}`, '#7dd3fccc')}
     </div>
@@ -351,7 +364,7 @@ export function RewardsReveal({
     last?.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
   }, [t, skipped, reduced]);
 
-  const cardSize = m.cards.length > 4 ? 64 : 78;
+  const cardSize = isDense(m) ? 52 : m.cards.length > 4 ? 64 : 78;
   const visibleLines = m.lines.filter((_, i) => t >= tl.lineAt[i]);
   const shownTotal = t >= tl.totalAt ? m.xp : visibleLines.length ? visibleLines[visibleLines.length - 1].running : 0;
   const leveled = m.levelAfter > m.levelBefore;
@@ -383,7 +396,7 @@ export function RewardsReveal({
           <span className='mb-1 flex flex-wrap justify-end gap-1.5'>
             {m.offline && <Chip tone='amber'>Offline · XP ×{OFFLINE_XP_SCALE}</Chip>}
             {guest && <Chip tone='plain'>Not saved</Chip>}
-            {leveled && t >= tl.seg[tl.seg.length - 1].end && (
+            {leveled && !guest && t >= tl.seg[tl.seg.length - 1].end && (
               <span className='rw-fade'>
                 <Chip tone='emerald'>Level up</Chip>
               </span>
@@ -424,8 +437,11 @@ export function RewardsReveal({
       {/* Career Road rewards. */}
       {m.cards.length > 0 && (
         <div>
-          <div className='deck-label mb-2'>{guest ? 'Career Road · would unlock' : 'Career Road'}</div>
-          <div className={`flex flex-wrap ${m.cards.length > 4 ? 'gap-2' : 'gap-2.5'}`}>
+          <div className='mb-2 flex items-center justify-between gap-2'>
+            <span className='deck-label'>{guest ? 'Career Road · would unlock' : 'Career Road'}</span>
+            {m.cards.some((c) => c.level <= m.levelBefore) && <Chip tone='cyan'>Catch-up</Chip>}
+          </div>
+          <div className={`flex flex-wrap ${isDense(m) ? 'gap-1.5' : m.cards.length > 4 ? 'gap-2' : 'gap-2.5'}`}>
             {m.cards.map((c, i) => (
               <div
                 key={c.key}

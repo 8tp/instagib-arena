@@ -183,6 +183,11 @@ export function buildRevealModel(
 
 /* ── Timeline ───────────────────────────────────────────────────────────── */
 
+// A long road run (catch-up steps) — small cards, fast cadence, tick cues.
+export function isDense(m: RevealModel): boolean {
+  return m.cards.length > 8;
+}
+
 export type RevealTimeline = {
   start: number;
   lineAt: number[];
@@ -214,12 +219,16 @@ export function buildTimeline(m: RevealModel, startMs = 750): RevealTimeline {
   }
   t += 260;
 
+  // Many cards (catch-up road steps after a curve change) deal out quickly;
+  // only the rare drops keep their full beat.
+  const dense = isDense(m);
   const cardAt: number[] = [];
   for (const c of m.cards) {
+    const rank = c.kind === 'cosmetic' ? rarityRank(c.rarity) : -1;
     // A beat of anticipation before the rarer drops.
-    if (c.kind === 'cosmetic' && c.rarity === 'legendary') t += 260;
+    if (rank === 3) t += 260;
     cardAt.push(t);
-    t += c.kind === 'cosmetic' ? (c.rarity === 'legendary' ? 900 : c.rarity === 'epic' ? 620 : 420) : 360;
+    t += rank === 3 ? 900 : rank === 2 ? (dense ? 420 : 620) : dense ? 150 : c.kind === 'cosmetic' ? 420 : 360;
   }
   if (m.cards.length) t += 160;
 

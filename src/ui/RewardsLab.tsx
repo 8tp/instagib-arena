@@ -1,7 +1,9 @@
 // /rewardslab — harness for the end-of-match results + rewards reveal: fake
 // payloads, no match needed. Dev-only, not linked anywhere in the UI.
 //
-//   ?case=levelup|multi|guest|offline|plain|legacy   (default levelup)
+//   ?case=levelup|multi|catchup|guest|offline|plain|legacy   (default levelup)
+//        catchup = an existing player after the curve change: Career Road steps
+//        from well below levelBefore are granted at once (a dense card deal)
 //   ?online=1        the online variant (auto-advance countdown; loops back)
 //   ?won=0|1         override the case's Victory/Defeat
 //   ?at=MS           freeze the reveal clock MS after mount (deterministic shots)
@@ -20,8 +22,8 @@ import type { PlayerScore } from '../game/types';
 import { creditsForXp, levelForXp, totalXpForLevel, type RewardExtras, type XpLine } from '../game/progression';
 import { MatchOverOverlay, OnlineMatchResults } from './results';
 
-type LabCase = 'levelup' | 'multi' | 'guest' | 'offline' | 'plain' | 'legacy';
-const CASES: LabCase[] = ['levelup', 'multi', 'guest', 'offline', 'plain', 'legacy'];
+type LabCase = 'levelup' | 'multi' | 'catchup' | 'guest' | 'offline' | 'plain' | 'legacy';
+const CASES: LabCase[] = ['levelup', 'multi', 'catchup', 'guest', 'offline', 'plain', 'legacy'];
 
 // A point `frac` of the way through `level` on the live curve (so the lab never
 // hard-codes thresholds the progression track may retune).
@@ -137,6 +139,30 @@ function buildCase(c: LabCase): { won: boolean; result: MatchResult; progression
             ],
           },
         ),
+      };
+    }
+    case 'catchup': {
+      const lines: XpLine[] = [
+        { key: 'base', label: 'Match played', xp: 25 },
+        { key: 'kills', label: 'Frags', xp: 140, detail: '14 × 10' },
+        { key: 'headshots', label: 'Headshots', xp: 24, detail: '4 × 6' },
+        { key: 'streak', label: 'Best streak', xp: 20, detail: '5 × 4' },
+        { key: 'win', label: 'Victory', xp: 60 },
+        { key: 'accuracy', label: 'Accuracy', xp: 15, detail: '38%' },
+      ];
+      const lvl = 14;
+      const before = xpAt(lvl + 1, 0) - Math.round(sum(lines) * 0.4);
+      const cos = ['hat.graduation', 'rail.toxic', 'card.cyber', 'gun.crimson', 'confetti', 'gun.void', 'card.nebula', 'unusual.galaxy'];
+      const roadRewards = Array.from({ length: 11 }, (_, i) => {
+        const level = 5 + i;
+        if (i % 3 === 1) return { level, rewards: [{ type: 'credits' as const, amount: 100 + i * 25 }] };
+        if (i === 6) return { level, rewards: [{ type: 'case' as const }] };
+        return { level, rewards: [{ type: 'cosmetic' as const, id: cos[Math.min(cos.length - 1, Math.floor(i * 0.75))] }] };
+      });
+      return {
+        won: true,
+        result: { ...MATCH, kills: 14, headshots: 4, bestStreak: 5 },
+        progression: payload({ before, lines, extraCredits: 1400 }, { roadRewards }),
       };
     }
     case 'guest': {

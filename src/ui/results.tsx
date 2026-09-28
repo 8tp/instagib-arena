@@ -8,7 +8,7 @@ import { DeckButton, ModalShell } from '../deck';
 import { prefersReducedMotion } from '../deck-core';
 import { playUi } from '../game/audio';
 import { PodiumScene, type PodiumWinner } from '../game/podium';
-import { DEFAULT_EMOTE, DEFAULT_HAT, EMOTES, caseHats } from '../game/cosmetics';
+import { DEFAULT_EMOTE, DEFAULT_HAT, EMOTES, HATS } from '../game/cosmetics';
 import { ordinal } from './match-info';
 import { RewardsPending, RewardsReveal } from './rewards/RewardsReveal';
 
@@ -28,7 +28,8 @@ function hashStr(s: string): number {
 // (online) remotes from the broadcast carried on their PlayerScore. Offline bots
 // have no known loadout, so they fall back to a stable name-hashed hat/emote.
 function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWinner[] {
-  const caseHatIds = caseHats().map((h) => h.id);
+  // Any modelled, non-staff hat (caseHats() is only the few case exclusives).
+  const caseHatIds = HATS.filter((h) => h.model && h.source.type !== 'admin').map((h) => h.id);
   const emoteIds = EMOTES.map((e) => e.id);
   return scores.slice(0, 3).map((s, i) => {
     const h = hashStr(s.name);
