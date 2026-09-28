@@ -8,6 +8,7 @@
 import { Router, type Request } from 'express';
 import {
   buyCosmetic,
+  challengeResets,
   claimChallenge,
   findUserById,
   getChallenges,
@@ -101,11 +102,21 @@ statsRouter.post('/stats', (req, res) => {
   const id = playerId(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
 
+  // OFFLINE-ONLY. Online matches are recorded by the authoritative game server
+  // (server/instagib-game.ts → recordMatch, pushed as a WS `progression`
+  // message), so anything POSTed here is treated as a bot/practice match no
+  // matter what the body claims: scaled down, capped per UTC day, and it never
+  // advances challenges or the first-win bonus. The training range is not a
+  // match at all.
+  if (body.training === true) {
+    res.status(400).json({ error: 'training' });
+    return;
+  }
+
   // Clamp to PLAUSIBLE per-match values, then cross-validate so a forged body
-  // can't manufacture an impossible match (e.g. 100k headshots / 0 kills) to
-  // farm cosmetic XP. This is a client-authoritative game with no in-match
-  // anti-cheat, so these caps — plus the per-match XP cap and rate limit — are
-  // what bound progression abuse. Stakes are low (cosmetic-only, self-affecting).
+  // can't manufacture an impossible match (e.g. 100k headshots / 0 kills). The
+  // offline XP scale, per-match cap and per-day cap (progression.ts) bound what
+  // a forged body can earn; the rate limit bounds the rest.
   const kills = clampInt(body.kills, 200);
   const deaths = clampInt(body.deaths, 500);
   const shotsFired = clampInt(body.shotsFired, 5_000);
@@ -114,7 +125,7 @@ statsRouter.post('/stats', (req, res) => {
   const headshots = Math.min(clampInt(body.headshots, 200), kills);
   const bestStreak = Math.min(clampInt(body.bestStreak, 200), kills);
   const wins = body.won === true ? 1 : 0;
-  const offline = body.offline === true;
+  const offline = true; // forced — see above
   const accuracy = shotsFired > 0 ? (shotsHit / shotsFired) * 100 : 0;
   // Game mode is metadata for the audit row only (drives the admin dashboard's
   // mode breakdown). Whitelisted so a forged body can't pollute the breakdown.
@@ -147,20 +158,24 @@ statsRouter.post('/stats', (req, res) => {
     event: 'match',
     actorId: id,
     actorName: account?.username ?? cleanName(body.name),
-    detail: { kills, deaths, won: wins === 1, headshots, accuracy: Math.round(accuracy), offline, xp: result.xpGained, mode },
+    detail: {
+      kills,
+      deaths,
+      won: wins === 1,
+      headshots,
+      accuracy: Math.round(accuracy),
+      offline,
+      xp: result.xpGained,
+      mode,
+      src: 'post',
+    },
     ip: req.ip,
   });
 
-  // Stats (legacy shape) plus the progression delta so the client can show the
-  // end-of-match XP bar / LEVEL UP / new-unlock moment immediately.
-  res.json({
-    stats: result.stats,
-    xpGained: result.xpGained,
-    creditsGained: result.creditsGained,
-    leveledUp: result.leveledUp,
-    newUnlocks: result.newUnlocks,
-    progression: result.progression,
-  });
+  // Stats (legacy shape) plus the full reward payload (legacy xpGained /
+  // creditsGained / leveledUp / newUnlocks / progression + the itemized
+  // RewardExtras) — the same shape the WS `progression` push uses online.
+  res.json(result);
 });
 
 // Full profile for the lobby (level/XP/credits/unlocked/equipped + career stats).
@@ -198,7 +213,8 @@ statsRouter.post('/shop/buy', (req, res) => {
   res.status(result.ok ? 200 : 400).json(result);
 });
 
-// Open a hat case (credits-funded, server-authoritative roll). Rate-limited.
+// Open a hat case (a free Career Road key if the player has one, else credits;
+// server-authoritative, never a duplicate — see db.ts openCase). Rate-limited.
 statsRouter.post('/shop/open-case', (req, res) => {
   const rateKey = rateKeyFor(req);
   if (!allowPost(rateKey, Date.now())) {
@@ -212,7 +228,9 @@ statsRouter.post('/shop/open-case', (req, res) => {
 // Current daily/weekly challenges with progress + claim state.
 statsRouter.get('/challenges', (req, res) => {
   const id = playerId(req);
-  res.json({ challenges: getChallenges(id, Date.now()) });
+  const now = Date.now();
+  // resetsAt: ms epoch when the daily (00:00 UTC) / weekly (Monday 00:00 UTC) sets rotate.
+  res.json({ challenges: getChallenges(id, now), resetsAt: challengeResets(now) });
 });
 
 // Claim a completed challenge's reward. Rate-limited + server-validated.
