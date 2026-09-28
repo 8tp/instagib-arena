@@ -919,9 +919,16 @@ export class Bot {
     return this.team;
   }
 
-  // The bot fired: its 3rd-person gun flashes and recharges.
-  notifyFire() {
-    this.gun?.notifyFire();
+  // The bot fired: its 3rd-person gun's claw flashes (in `railColor`) and the
+  // coils recharge.
+  notifyFire(railColor?: number) {
+    this.gun?.notifyFire(railColor);
+  }
+
+  // World position of the 3rd-person gun's muzzle into `out` (null without a
+  // gun) — where this bot's visible beam + discharge should start.
+  gunMuzzle(out: THREE.Vector3): THREE.Vector3 | null {
+    return this.gun && this.state.alive ? this.gun.muzzleWorld(out) : null;
   }
 
   // `style` = the killer's finisher (how this body breaks apart).

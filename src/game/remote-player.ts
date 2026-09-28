@@ -509,9 +509,10 @@ export class RemotePlayer {
     else this.weaponGroup = attachRailgun(this.character, finish);
   }
 
-  // Their shot: the 3rd-person gun flashes and its glow refills over the recharge.
-  notifyFire() {
-    this.weaponGroup?.notifyFire();
+  // Their shot: the 3rd-person gun's claw flashes in their rail colour and its
+  // glow refills over the recharge.
+  notifyFire(railColor?: number) {
+    this.weaponGroup?.notifyFire(railColor);
   }
 
   private disposeWeaponGroup() {

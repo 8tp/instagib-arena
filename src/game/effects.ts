@@ -809,7 +809,7 @@ export function spawnRailImpact(
     const p = pool.alloc('box');
     if (!p) break;
     p.x = px; p.y = py; p.z = pz;
-    p.setScale(0.014, 0.014, 0.1 + Math.random() * 0.1);
+    p.setScale(0.014, 0.014, 0.06 + Math.random() * 0.06); // short, hot streaks — not sticks
     p.align = true;
     const u = Math.random() * 2 - 1;
     const phi = Math.random() * TWO_PI;
@@ -825,7 +825,7 @@ export function spawnRailImpact(
     const speed = 3 + Math.random() * 4.5;
     p.vx = (vx / l) * speed; p.vy = (vy / l) * speed; p.vz = (vz / l) * speed;
     p.gravity = 11;
-    p.life = 0.28 + Math.random() * 0.25;
+    p.life = 0.12 + Math.random() * 0.06;
     p.fadePow = 1.3;
     p.setColor(i % 3 === 0 ? helix : core, 2.0);
   }

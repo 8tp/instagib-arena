@@ -108,18 +108,19 @@ export type RailColorCosmetic = {
   source: CosmeticSource;
   data: { core: number; helix: number }; // beam core + helix colors
   // 'spectrum' = the helix hue cycles along the beam (rail-beam.ts shader).
-  mode?: 'spectrum';
+  // 'gilded' = pale white-gold rings (kept off full saturation).
+  mode?: 'spectrum' | 'gilded';
 };
 
 export const RAIL_COLORS: readonly RailColorCosmetic[] = [
   { id: 'rail.cyan',   name: 'Cyan',   blurb: 'The stock blue-cyan twin rail.', rarity: 'common', source: { type: 'default' },             data: { core: 0xd6f4ff, helix: 0x37a6ff } },
   { id: 'rail.plasma', name: 'Plasma', blurb: 'Hot magenta-violet beam.',       rarity: 'rare',   source: { type: 'level', level: 5 },      data: { core: 0xffd9ff, helix: 0xc23bff } },
   { id: 'rail.toxic',  name: 'Toxic',  blurb: 'Acid-green tracer.',             rarity: 'rare',   source: { type: 'level', level: 23 },      data: { core: 0xe8ffd6, helix: 0x6fff3b } },
-  { id: 'rail.ember',  name: 'Ember',  blurb: 'Molten orange-red beam.',        rarity: 'rare',   source: { type: 'credits', price: 600 },  data: { core: 0xffe0b0, helix: 0xff6a1a } },
-  { id: 'rail.gold',   name: 'Gold',   blurb: 'A regal gold beam.',             rarity: 'epic',   source: { type: 'credits', price: 1800 }, data: { core: 0xfff4c0, helix: 0xffb000 } },
-  { id: 'rail.admin',  name: 'Sovereign', blurb: 'Staff-gold rail — admin only.', rarity: 'epic', source: { type: 'admin' },              data: { core: 0xfff6d0, helix: 0xffd700 } },
-  { id: 'rail.ratz',   name: 'Ratz',     blurb: 'Hot-pink neon, straight out of 2003.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, data: { core: 0xfff0fb, helix: 0xff3ec8 } },
-  { id: 'rail.void',   name: 'Void',     blurb: 'A deep violet slash of light.',        rarity: 'rare',   source: { type: 'level', level: 45 },     data: { core: 0xf0e4ff, helix: 0x7c3aed } },
+  { id: 'rail.ember',  name: 'Ember',  blurb: 'Molten orange-red beam.',        rarity: 'rare',   source: { type: 'credits', price: 600 },  data: { core: 0xffd0b0, helix: 0xff4410 } },
+  { id: 'rail.gold',   name: 'Gold',   blurb: 'A regal gold beam.',             rarity: 'epic',   source: { type: 'credits', price: 1800 }, data: { core: 0xffe6a8, helix: 0xffb000 } },
+  { id: 'rail.admin',  name: 'Sovereign', blurb: 'Staff-gold rail — admin only.', rarity: 'epic', source: { type: 'admin' },              data: { core: 0xffffff, helix: 0xffd700 }, mode: 'gilded' },
+  { id: 'rail.ratz',   name: 'Ratz',     blurb: 'Hot-pink neon, straight out of 2003.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, data: { core: 0xffd6f4, helix: 0xff2bd6 } },
+  { id: 'rail.void',   name: 'Void',     blurb: 'A deep violet slash of light.',        rarity: 'rare',   source: { type: 'level', level: 45 },     data: { core: 0xd9d0ff, helix: 0x5a3cff } },
   { id: 'rail.spectrum', name: 'Spectrum', blurb: 'The helix cycles through every hue.', rarity: 'legendary', source: { type: 'level', level: 50 }, data: { core: 0xffffff, helix: 0xff4fd8 }, mode: 'spectrum' },
 ];
 
@@ -139,7 +140,7 @@ export const DEFAULT_RAILGUN_FINISH = 'gun.stock';
 
 // Surface pattern / material treatment a finish applies on top of its palette
 // (rendered in weapon-model.ts). 'plain' (default) = the palette on stock PBR.
-export type FinishPattern = 'plain' | 'carbon' | 'hex' | 'hazard' | 'plasma' | 'spectrum' | 'digital' | 'ceramic';
+export type FinishPattern = 'plain' | 'carbon' | 'hex' | 'hazard' | 'plasma' | 'spectrum' | 'digital' | 'ceramic' | 'enamel' | 'void';
 
 export type RailgunFinish = {
   body: number; // dark receiver
@@ -161,12 +162,12 @@ export type RailgunFinishCosmetic = {
 
 export const RAILGUN_FINISHES: readonly RailgunFinishCosmetic[] = [
   { id: 'gun.stock',   name: 'Standard Issue', blurb: 'The factory gunmetal-and-cyan rail.', rarity: 'common', source: { type: 'default' },              data: { body: 0x171b22, metal: 0x2c333f, metalLt: 0x515d6e, accent: 0x37a6ff, accentHot: 0x8af2ff } },
-  { id: 'gun.crimson', name: 'Crimson',        blurb: 'Blackened frame, hot red rails.',     rarity: 'rare',   source: { type: 'level', level: 15 },       data: { body: 0x1a1012, metal: 0x33252a, metalLt: 0x6e515a, accent: 0xff3b4e, accentHot: 0xff9aa6 } },
+  { id: 'gun.crimson', name: 'Crimson',        blurb: 'Blackened frame, hot red rails.',     rarity: 'rare',   source: { type: 'level', level: 15 },       data: { body: 0x4a0710, metal: 0x2a2226, metalLt: 0x9a2433, accent: 0xff2438, accentHot: 0xff8c8c } },
   { id: 'gun.toxic',   name: 'Biohazard',      blurb: 'Acid-green accelerator rails.',       rarity: 'rare',   source: { type: 'level', level: 31 },      data: { body: 0x121a14, metal: 0x29332b, metalLt: 0x51604f, accent: 0x6fff3b, accentHot: 0xc6ffaa } },
   { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1000 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff, pattern: 'carbon' } },
   { id: 'gun.gold',    name: 'Midas',          blurb: 'A gilded receiver fit for a champ.',  rarity: 'epic',   source: { type: 'credits', price: 2200 },  data: { body: 0x241a08, metal: 0x6e5520, metalLt: 0xb0902f, accent: 0xffd24a, accentHot: 0xfff4c0 } },
-  { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 1800 },  data: { body: 0x12081a, metal: 0x271333, metalLt: 0x4c2d75, accent: 0xa855f7, accentHot: 0xe9d5ff } },
-  { id: 'gun.admin',   name: 'Regalia',        blurb: 'Gilded staff rail — admin only.',     rarity: 'epic',   source: { type: 'admin' },                 data: { body: 0x2a2208, metal: 0x7a5f15, metalLt: 0xd4af37, accent: 0xffe9a0, accentHot: 0xffffff } },
+  { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 1800 },  data: { body: 0x0b0718, metal: 0x1a1233, metalLt: 0x5a3cff, accent: 0x6a4cff, accentHot: 0xd6ccff, pattern: 'void' } },
+  { id: 'gun.admin',   name: 'Regalia',        blurb: 'Gilded staff rail — admin only.',     rarity: 'epic',   source: { type: 'admin' },                 data: { body: 0xf1ece0, metal: 0xb88a22, metalLt: 0xf0c95a, accent: 0xffd24a, accentHot: 0xfff4d0, pattern: 'enamel' } },
   // Finish wave 2 — patterned / animated treatments.
   { id: 'gun.arctic',  name: 'Arctic',         blurb: 'White ceramic plates, ice-blue rails.', rarity: 'rare',     source: { type: 'level', level: 41 },      data: { body: 0xc9d3dc, metal: 0x8b98a6, metalLt: 0xeef3f7, accent: 0x6fd6ff, accentHot: 0xe0f7ff, pattern: 'ceramic' } },
   { id: 'gun.hazard',  name: 'Hazard',         blurb: 'Industrial chevrons. Handle with care.', rarity: 'rare',    source: { type: 'credits', price: 900 },  data: { body: 0x1a1a14, metal: 0x3a3a30, metalLt: 0xd9b400, accent: 0xffc400, accentHot: 0xfff0a0, pattern: 'hazard' } },

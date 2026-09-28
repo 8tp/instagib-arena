@@ -41,6 +41,7 @@ import {
   PLAYER_RADIUS,
   KILL_FLASH_DURATION_SEC,
   RAIL_COOLDOWN,
+  RAIL_HELIX_COLOR,
   RAIL_RANGE,
   SHAKE_DEATH,
   SHAKE_FIRE,
@@ -432,6 +433,7 @@ export class Game {
   private tmpRight = new THREE.Vector3();
   private tmpUp = new THREE.Vector3();
   private tmpBeamOrigin = new THREE.Vector3();
+  private readonly tmpBotMuzzle = new THREE.Vector3();
 
   // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
   // so it never blocks the crosshair; user offset + hide applied on top.
@@ -1377,7 +1379,7 @@ export class Game {
     const rc = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR);
     const c = rc.data;
     this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
-    if (b.id) this.remotePlayers.get(b.id)?.notifyFire(); // their 3rd-person gun flashes + recharges
+    if (b.id) this.remotePlayers.get(b.id)?.notifyFire(c.helix); // their 3rd-person gun flashes + recharges
     // Their discharge flash at the muzzle, in their rail colour.
     this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
     if (this.spectator && b.id === this.spectatedId) {
@@ -2446,9 +2448,13 @@ export class Game {
 
     // Visible beam to the impact point (enemy fire reveals positions).
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
-    this.weapon.spawnBeam(origin, end, this.scene, undefined, undefined, this.map);
-    this.effects.spawnMuzzleFlash(this.scene, origin, undefined, dir);
-    this.bots?.bots.find((b) => b.state.id === intent.botId)?.notifyFire();
+    // The VISIBLE beam + discharge leave the bot's gun muzzle (the hit ray
+    // above stays on the eye line), so the flash sits on the claw it came from.
+    const shooter = this.bots?.bots.find((b) => b.state.id === intent.botId);
+    const visible = shooter?.gunMuzzle(this.tmpBotMuzzle) ?? origin;
+    this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
+    this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
+    shooter?.notifyFire(RAIL_HELIX_COLOR);
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },
