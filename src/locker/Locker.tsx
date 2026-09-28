@@ -578,6 +578,7 @@ export function Locker({
       role='dialog'
       aria-modal='true'
       aria-label='Locker'
+      data-profile={profileState}
       tabIndex={-1}
       className={`lk-root ${closing ? 'lk-exit' : 'lk-enter'} ${reduced ? 'lk-reduced' : ''}`}
     >
@@ -616,6 +617,19 @@ export function Locker({
           nameplate={nameplate}
           pulseKey={pulseKey}
           replayKey={replayKey}
+          backdrop={
+            // Giant slot name behind the subject — skipped where the nameplate
+            // or the card showcase owns the top of the stage.
+            def.view !== 'identity' && slot !== 'card' ? (
+              <div
+                className='lk-watermark'
+                aria-hidden
+                style={{ fontSize: `min(150px, ${(150 / Math.max(4, def.label.length)).toFixed(1)}cqw)` }}
+              >
+                {def.label}
+              </div>
+            ) : null
+          }
         >
           {tryingOn && shownItem && (
             <div className='lk-tryon'>
@@ -647,21 +661,22 @@ export function Locker({
                   const eq = sd.current(settings);
                   const hasNew = sd.items.some((i) => newIds.has(i.id));
                   return (
-                    <ItemTile
-                      key={s}
-                      id={eq}
-                      fluid
-                      caption={sd.label}
-                      selected={slot === s}
-                      dot={hasNew}
-                      tabIndex={slot === s ? 0 : -1}
-                      onClick={() => {
-                        uiSfx('uiClick');
-                        setSlot(s);
-                      }}
-                      onPointerEnter={uiHover}
-                      rootProps={{ 'data-tile': '', 'data-slot': s }}
-                    />
+                    <div key={s} className='lk-rail-cell'>
+                      <ItemTile
+                        id={eq}
+                        fluid
+                        caption={sd.label}
+                        selected={slot === s}
+                        dot={hasNew}
+                        tabIndex={slot === s ? 0 : -1}
+                        onClick={() => {
+                          uiSfx('uiClick');
+                          setSlot(s);
+                        }}
+                        onPointerEnter={uiHover}
+                        rootProps={{ 'data-tile': '', 'data-slot': s, 'aria-label': `${sd.label}: ${cosmeticById(eq)?.name ?? eq}${hasNew ? ', new items' : ''}` }}
+                      />
+                    </div>
                   );
                 })}
               </div>
@@ -929,7 +944,7 @@ function ItemDetails({
           )}
         </div>
       )}
-      {owned && item.source.type !== 'default' && !loading && (
+      {owned && item.source.type !== 'default' && !loading && credits != null && (
         <div className='lk-unlock text-white/40'>{info.line.replace(/^Shop · .*/, 'Purchased')}</div>
       )}
       {dropsFromCase(item.id) && !owned && !loading && <div className='lk-unlock text-amber-200/70'>Also drops from the Hat Case</div>}

@@ -16,6 +16,7 @@ export function LockerStage({
   nameplate,
   pulseKey,
   replayKey,
+  backdrop,
   children,
 }: {
   cos: PreviewCosmetics;
@@ -26,7 +27,8 @@ export function LockerStage({
   nameplate: StageNameplate | null;
   pulseKey: number; // bump → celebrate() (spawn ring at the feet)
   replayKey: number; // bump → restart the current loop
-  children?: ReactNode;
+  backdrop?: ReactNode; // drawn behind the 3D canvas
+  children?: ReactNode; // overlays drawn above it
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const plateRef = useRef<HTMLDivElement>(null);
@@ -91,6 +93,7 @@ export function LockerStage({
   return (
     <div className='lk-stage'>
       <div className='lk-tint' style={{ backgroundColor: tint }} />
+      {backdrop}
       <canvas
         ref={canvasRef}
         className='lk-canvas'

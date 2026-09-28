@@ -116,6 +116,7 @@
   position: relative;
   min-height: 0;
   overflow: hidden;
+  container-type: inline-size;
   border-right: 1px solid rgba(255, 255, 255, 0.07);
   background:
     radial-gradient(70% 40% at 58% 88%, rgba(120, 160, 210, 0.1), transparent 70%),
@@ -181,6 +182,23 @@
   color: #0a0d13;
   background: #e6edf7;
   pointer-events: none;
+}
+
+/* Giant outlined slot name behind the subject (game-UI identity, very quiet). */
+.lk-watermark {
+  position: absolute;
+  left: 18px;
+  top: 44px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 0.85;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+  user-select: none;
 }
 
 /* In-world nameplate (mirrors remote-player.ts makeNameSprite) */
@@ -372,6 +390,9 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
+.lk-rail-cell {
+  min-width: 0;
+}
 
 /* Item grid column */
 .lk-main {
@@ -425,7 +446,8 @@
 /* Hat case card */
 .lk-case {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 20px;
   margin-bottom: 18px;
@@ -717,6 +739,10 @@
     height: 56px;
     padding: 0 16px;
     gap: 12px;
+    background: #06080c;
+  }
+  .lk-credits > span:not(.lk-chip) {
+    display: none;
   }
   .lk-title {
     font-size: 24px;
@@ -768,7 +794,8 @@
     display: flex;
     gap: 8px;
   }
-  .lk-rail-grid > * {
+  .lk-rail-cell {
+    flex-shrink: 0;
     width: 84px;
   }
   .lk-main-head {
@@ -783,6 +810,17 @@
     gap: 10px;
   }
   .lk-case {
-    flex-wrap: wrap;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 14px;
+  }
+  .lk-case > .lk-action {
+    grid-column: 1 / -1;
+  }
+  .lk-crate {
+    width: 64px;
+    height: 64px;
+  }
+  .lk-watermark {
+    top: 16px;
   }
 }
