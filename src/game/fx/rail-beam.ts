@@ -151,7 +151,7 @@ void main() {
   float glow = exp(-x * x * 3.0) * (1.0 - x);
   float coreLife = uLife * 0.7;
   float glowLife = uLife * 0.85;
-  float filI = 3.4 * exp(-t * 16.0) + 1.0 * pow(max(0.0, 1.0 - t / (uLife * 0.45)), 2.0);
+  float filI = 2.2 * exp(-t * 22.0) + 1.1 * pow(max(0.0, 1.0 - t / (uLife * 0.45)), 2.0);
   float coreI = 1.8 * exp(-t * 10.0) + 1.3 * pow(max(0.0, 1.0 - t / coreLife), 1.6);
   float glowI = 1.3 * pow(max(0.0, 1.0 - t / glowLife), 1.4);
   vec3 glowCol = uGlow;
@@ -229,14 +229,14 @@ void main() {
   if (uMode > 0.5) base = railHue(vS * 0.26 - uAge * 2.0 + uPhase * 0.159) * 1.15;
   vec3 c = mix(vec3(1.0), base, smoothstep(0.0, 0.14, uAge));
   // Sparkle: short glints scattered along the helix, twinkling while fresh.
-  float cell = floor(vS * 7.0);
+  float cell = floor(vS * 2.5);
   float h = sparkHash(cell + uPhase * 17.0);
-  float f = fract(vS * 7.0) - 0.5;
-  float spot = exp(-f * f * 70.0) * step(0.6, h);
+  float f = fract(vS * 2.5) - 0.5;
+  float spot = exp(-f * f * 45.0) * step(0.55, h);
   float tw = 0.5 + 0.5 * sin(uAge * 36.0 + h * 50.0);
   float spark = spot * tw * tw * (1.0 - smoothstep(0.05, 0.6, uAge / uLife));
   float head = smoothstep(0.3, 0.8, vS);
-  vec3 col = (c * 1.7 + mix(vec3(1.0), base, 0.25) * spark * 3.2) * a * vFade * head * nearFade(vS, uAge);
+  vec3 col = (c * 1.7 + mix(vec3(1.0), base, 0.25) * spark * 2.6) * a * vFade * head * nearFade(vS, uAge);
   gl_FragColor = vec4(col, 1.0);
   #include <colorspace_fragment>
 }

@@ -48,7 +48,13 @@ const TWO_PI = Math.PI * 2;
 // is toed in so its muzzle points up toward the crosshair from the lower right,
 // keeping the coils well clear of the aim point. Applies in every pose (it is
 // placement, not motion, so the motion-intensity setting doesn't scale it).
-const PLACEMENT = { x: 0.3, y: -0.09, z: 0.02, yaw: 0.075, pitch: 0.035 } as const;
+// (Nudged 6 mm right/down for the chunkier railgun so its idle screen coverage
+// stays at the old slim gun's — measured in /gunlab: 3.0 % vs 2.96 % at FOV 90.)
+const PLACEMENT = { x: 0.306, y: -0.096, z: 0.02, yaw: 0.075, pitch: 0.035 } as const;
+// Extra zoom tuck on top of VIEWMODEL_MOTION.zoomTuck: the heavier barrel
+// tucks a little further while zoomed so it covers no more of the zoomed view
+// than the old gun did (1.27 % vs 1.22 %).
+const ZOOM_EXTRA = { x: 0.015, y: -0.02 } as const;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -275,10 +281,10 @@ export class ViewmodelMotion {
     const i2 = Math.sin(this.t * TWO_PI * T.idle.hzB + 1.7);
 
     const p = this.pose;
-    p.x = PLACEMENT.x + bobX + this.swayX.x + this.dashX.x + tk * T.zoomTuck.x + T.idle.x * i2 * k;
+    p.x = PLACEMENT.x + bobX + this.swayX.x + this.dashX.x + tk * (T.zoomTuck.x + ZOOM_EXTRA.x) + T.idle.x * i2 * k;
     p.y =
       PLACEMENT.y + bobY + this.swayY.x + landY + a * T.recoilA.y + b * T.recoilB.y +
-      tk * T.zoomTuck.y + T.idle.y * i1 * k;
+      tk * (T.zoomTuck.y + ZOOM_EXTRA.y) + T.idle.y * i1 * k;
     p.z = PLACEMENT.z + this.dashZ.x + a * T.recoilA.z + b * T.recoilB.z + tk * T.zoomTuck.z;
     p.rx =
       PLACEMENT.pitch + this.swayPitch.x + landY * T.landPitch + a * T.recoilA.pitch + b * T.recoilB.pitch +

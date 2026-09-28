@@ -26,8 +26,11 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 //     &overlay=0   old path: gun parented to the world camera (clips)
 //     &post=0      every post pass off (the direct-render path)
 //   ?view=sheet   contact sheet of every finish (&lod=low, &fire=…)
-//   ?view=beams   every rail colour side by side (&age=0.12)
-//   ?view=tp      third-person guns on combatants (&far=1)
+//   ?view=beams   every rail colour side by side (&age=0.12 &gap=0.5), or one
+//                 shot across the arena into a wall (&only=rail.spectrum)
+//   ?view=tp      third-person guns on combatants (&far=1 &from=6 &count=6
+//                 &fireidx=1 &fire=<s since that gun's shot>)
+//   &off=x,y,z    viewmodel offset (the user setting) for coverage trials
 // window.__gunlab.coverage() → fraction of the screen the viewmodel covers.
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -113,7 +116,7 @@ export class GunLab {
     const fireT = p.has('fire') ? this.num('fire', 0) : -1;
     const beam = p.get('beam');
     const rc = beam ? railColorById(beam) : null;
-    if (rc) this.railgun.setBeamColors(rc.data.core, rc.data.helix);
+    if (rc) this.railgun.setBeamColors(rc.data.core, rc.data.helix, rc.mode);
     // Settle the pose (zoom tuck etc.) for 2 s, then run the shot timeline.
     for (let t = 0; t < 2; t += STEP) this.stepPose(STEP, zoom);
     localRail.charge = 1;
@@ -149,8 +152,6 @@ export class GunLab {
     );
   }
 
-  private readonly tmpV = new THREE.Vector3();
-
   private stepPose(dt: number, zoom: number) {
     const gun = this.gun;
     if (!gun) return;
@@ -164,7 +165,13 @@ export class GunLab {
       zoom,
       reducedEffects: false,
     });
-    gun.group.position.set(VIEWMODEL_BASE.x + pose.x, VIEWMODEL_BASE.y + pose.y, VIEWMODEL_BASE.z + pose.z);
+    // &off=x,y,z: the user's viewmodel offset setting (or a placement trial).
+    const off = (this.params.get('off') ?? '0,0,0').split(',').map((v) => Number(v) || 0);
+    gun.group.position.set(
+      VIEWMODEL_BASE.x + pose.x + (off[0] ?? 0),
+      VIEWMODEL_BASE.y + pose.y + (off[1] ?? 0),
+      VIEWMODEL_BASE.z + pose.z + (off[2] ?? 0),
+    );
     gun.group.rotation.set(pose.rx, pose.ry, pose.rz);
     const m = pose.muzzle;
     gun.muzzleFlash.visible = m > 0;
@@ -272,21 +279,38 @@ export class GunLab {
     const beams = new RailBeams();
     if (p.get('low') === '1') beams.setQuality(0.5);
     this.scene.add(beams.group);
-    const list = RAIL_COLORS;
+    const only = p.get('only');
+    const list = only ? RAIL_COLORS.filter((c) => c.id === only) : RAIL_COLORS;
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
     const eye = this.camera.position.clone();
     const dist = this.num('dist', 7);
     const labels: Label[] = [];
-    list.forEach((c, i) => {
-      const yOff = 1.6 - (i * 3.2) / (list.length - 1);
-      const a = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -6).addScaledVector(up, yOff);
-      const b = eye.clone().addScaledVector(fwd, dist + 5).addScaledVector(right, 7).addScaledVector(up, yOff);
-      beams.spawn(a, b, c.data.core, c.data.helix, false, { mode: c.mode, impact: true });
-      const l = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -6.2).addScaledVector(up, yOff + 0.12).project(this.camera);
-      labels.push({ x: (l.x + 1) / 2, y: (1 - l.y) / 2 - 0.03, text: c.name });
-    });
+    if (only && list[0]) {
+      // One beam, the way you see someone else's shot: from beside you, out
+      // across the arena into a wall (the flare lands there).
+      const c = list[0];
+      const a = eye.clone().addScaledVector(right, 1.4).addScaledVector(up, -0.35).addScaledVector(fwd, 1.2);
+      const dir = fwd.clone().multiplyScalar(1).addScaledVector(right, -0.55).addScaledVector(up, 0.02).normalize();
+      let t = 60;
+      for (const box of map.boxes) {
+        const h = rayAabb({ x: a.x, y: a.y, z: a.z }, { x: dir.x, y: dir.y, z: dir.z }, box);
+        if (h !== null && h > 0 && h < t) t = h;
+      }
+      beams.spawn(a, a.clone().addScaledVector(dir, t), c.data.core, c.data.helix, false, { mode: c.mode, impact: true });
+      labels.push({ x: 0.5, y: 0.04, text: c.name });
+    } else {
+      const gap = this.num('gap', 0.5);
+      list.forEach((c, i) => {
+        const yOff = ((list.length - 1) / 2 - i) * gap;
+        const a = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -6).addScaledVector(up, yOff);
+        const b = eye.clone().addScaledVector(fwd, dist + 5).addScaledVector(right, 7).addScaledVector(up, yOff);
+        beams.spawn(a, b, c.data.core, c.data.helix, false, { mode: c.mode, impact: true });
+        const l = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -6.2).addScaledVector(up, yOff + 0.12).project(this.camera);
+        labels.push({ x: (l.x + 1) / 2, y: (1 - l.y) / 2 - 0.03, text: c.name });
+      });
+    }
     const age = this.num('age', 0.12);
     for (let t = 0; t < age; t += STEP) {
       this.virtualMs = T0 + (t + STEP) * 1000;
@@ -336,6 +360,7 @@ export class GunLab {
     this.camera.fov = far ? 40 : 55;
     this.camera.updateProjectionMatrix();
     this.scene.add(this.camera);
+    this.camera.updateMatrixWorld(true);
     this.post = new PostFxPipeline(this.renderer, this.scene, this.camera);
     this.post.setOptions({ bloom: true, shadows: true, aa: true, vignette: false });
     const labels: Label[] = [];
@@ -412,6 +437,5 @@ export class GunLab {
     this.post?.dispose();
     this.renderer.dispose();
     for (const g of this.guns) g.dispose();
-    void rayAabb;
   }
 }
