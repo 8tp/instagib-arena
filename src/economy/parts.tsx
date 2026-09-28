@@ -4,6 +4,7 @@ import { memo, type ReactNode } from 'react';
 import { uiHover } from '../deck-core';
 import { itemDef, type ItemDef } from '../game/items/catalog';
 import { TIER_META, type ItemInstanceWire, type ItemSlot, type Tier } from '../game/items/types';
+import { TicketGlyph } from '../menu/RewardTile';
 import { ItemTile } from '../ui/item-tile';
 import { TIER_COLOR, TIER_LABEL, isIridescent } from '../ui/rarity';
 import { fmtCredits, instBaseName, instFullName, instTags, instTier, instTileSub, qualityTone, thumbLook, type Tag } from './display';
@@ -81,11 +82,13 @@ export const InstTile = memo(function InstTile({
   dot,
   tabbable,
   price,
+  label = true,
   onPick,
   onHover,
   rootProps,
 }: {
   inst: ItemInstanceWire;
+  label?: boolean;
   size?: number;
   fluid?: boolean;
   selected?: boolean;
@@ -116,6 +119,7 @@ export const InstTile = memo(function InstTile({
       equipped={equipped}
       isNew={isNew}
       dot={dot}
+      label={label}
       hint={price ?? 'none'}
       tabIndex={tabbable === undefined ? undefined : tabbable ? 0 : -1}
       onClick={onPick ? () => onPick(inst) : undefined}
@@ -188,15 +192,6 @@ export function Balance({ credits, freeRolls, compact = false }: { credits: numb
         </span>
       )}
     </div>
-  );
-}
-
-export function TicketGlyph({ size = 15 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' className='shrink-0'>
-      <path d='M3 7h18v3.2a2 2 0 0 0 0 3.6V17H3v-3.2a2 2 0 0 0 0-3.6V7Z' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinejoin='round' />
-      <path d='M14.5 8v8' stroke='currentColor' strokeWidth='2' strokeDasharray='2 2' />
-    </svg>
   );
 }
 

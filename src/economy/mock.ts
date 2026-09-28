@@ -135,7 +135,7 @@ type Sale = { price: number; soldAt: number; quality: string[] };
 const S = {
   credits: 1240,
   freeRolls: 6,
-  level: 12,
+  level: Number(new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search).get('mockLevel')) || 12,
   equipped: {} as Equipped,
   items: [] as ItemInstanceWire[],
   market: [] as Listing[],

@@ -83,7 +83,7 @@ export function Locker({
       live = false;
     };
   }, [account]);
-  const shownProfile = profile ?? (mock ? ({ level: 12 } as InstagibProfile) : null);
+  const shownProfile = profile ?? (mock ? ({ level: Number(new URLSearchParams(window.location.search).get('mockLevel')) || 12 } as InstagibProfile) : null);
 
   const setTab = useCallback((t: LockerTab) => {
     uiSfx('tabSwitch');

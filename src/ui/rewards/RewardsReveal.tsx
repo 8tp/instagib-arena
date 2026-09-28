@@ -22,7 +22,9 @@ import { OFFLINE_XP_SCALE } from '../../game/progression';
 import { cosmeticById, type CosmeticSlot } from '../../game/cosmetics';
 import { DeckButton, Skeleton } from '../../deck';
 import { ItemTile } from '../item-tile';
-import { RARITY_COLOR } from '../rarity';
+import { itemDef } from '../../game/items/catalog';
+import { SLOT_LABEL } from '../../economy/display';
+import { TIER_COLOR, TIER_LABEL } from '../rarity';
 import {
   buildRevealModel,
   buildTimeline,
@@ -51,7 +53,10 @@ const SLOT_NAME: Record<CosmeticSlot, string> = {
   title: 'Title',
   announcer: 'Announcer',
 };
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const slotNoun = (id: string): string => {
+  const d = itemDef(id);
+  return (d ? SLOT_LABEL[d.slot] : SLOT_NAME[cosmeticById(id)?.slot ?? 'hat']).toLowerCase();
+};
 // Why +224 XP can pay out eleven levels of rewards (after the curve change).
 const CATCH_UP_REASON = "Includes rewards for levels you'd already reached on the new curve.";
 const levelRange = (a: number, b: number) => (a === b ? `Lv ${a}` : `Lv ${a}–${b}`);
@@ -282,15 +287,15 @@ function XpBar({ m, tl, t }: { m: RevealModel; tl: RevealTimeline; t: number }) 
 function KeyGlyph({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' className='text-sky-200'>
-      <circle cx='8' cy='12' r='4.2' fill='none' stroke='currentColor' strokeWidth='2' />
-      <path d='M12 12h9M18 12v3.5M15.5 12v2.5' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='square' />
+      <path d='M3 7h18v3.2a2 2 0 0 0 0 3.6V17H3v-3.2a2 2 0 0 0 0-3.6V7Z' fill='none' stroke='currentColor' strokeWidth='2' strokeLinejoin='round' />
+      <path d='M14.5 8v8' stroke='currentColor' strokeWidth='2' strokeDasharray='2 2' />
     </svg>
   );
 }
 
 // The card face alone (no caption): a cosmetic tile, a credits drop or a key.
 function CardFace({ c, size }: { c: RevealCard; size: number }) {
-  if (c.kind === 'cosmetic') return <ItemTile id={c.id} size={size} label={false} />;
+  if (c.kind === 'cosmetic') return <ItemTile id={c.id} size={size} label={false} tier={c.tier} mint={c.inst?.mint} />;
   if (c.kind === 'credits') {
     return (
       <div
@@ -317,17 +322,17 @@ function CardFace({ c, size }: { c: RevealCard; size: number }) {
 }
 
 function cardGlow(c: RevealCard): string {
-  if (c.kind === 'cosmetic') return `${RARITY_COLOR[c.rarity].edge}cc`;
+  if (c.kind === 'cosmetic') return `${TIER_COLOR[c.tier].edge}cc`;
   return c.kind === 'credits' ? '#fbbf24aa' : '#60a5facc';
 }
 
 function cardName(c: RevealCard): string {
   if (c.kind === 'cosmetic') return cosmeticName(c.id);
-  return c.kind === 'credits' ? `${fmt(c.amount)} credits` : 'Case key';
+  return c.kind === 'credits' ? `${fmt(c.amount)} credits` : c.count > 1 ? `${c.count} free rolls` : 'Free roll';
 }
 
 function cardAria(c: RevealCard): string {
-  const what = c.kind === 'cosmetic' ? `${cosmeticName(c.id)}, ${c.rarity}` : cardName(c);
+  const what = c.kind === 'cosmetic' ? `${cosmeticName(c.id)}, ${TIER_LABEL[c.tier]}${c.inst ? `, mint ${c.inst.mint}` : ''}` : cardName(c);
   return `${what}, level ${c.level} reward`;
 }
 
@@ -335,7 +340,7 @@ function cardAria(c: RevealCard): string {
 // epic/legendary halo; legendary rays + shine), then a sentence-case caption.
 function RewardCardView({ c, size, captioned = true }: { c: RevealCard; size: number; captioned?: boolean }) {
   const rarity = c.kind === 'cosmetic' ? c.rarity : null;
-  const edge = c.kind === 'cosmetic' ? RARITY_COLOR[c.rarity].edge : c.kind === 'credits' ? '#fcd34d' : '#7dd3fc';
+  const edge = c.kind === 'cosmetic' ? TIER_COLOR[c.tier].edge : c.kind === 'credits' ? '#fcd34d' : '#7dd3fc';
   return (
     <div className='rw-card' style={{ '--rw-glow': cardGlow(c) } as CSSProperties} role='img' aria-label={cardAria(c)}>
       <div className='rw-card-burst' />
@@ -400,8 +405,8 @@ function LevelTakeover({ m }: { m: RevealModel }) {
                     <CardFace c={c} size={tile} />
                   </div>
                   <div className='mt-3 max-w-full truncate font-display text-[22px] font-semibold leading-tight text-white'>{cardName(c)}</div>
-                  <div className='mt-0.5 text-[14px]' style={{ color: c.kind === 'cosmetic' ? RARITY_COLOR[c.rarity].edge : '#cbd5e1' }}>
-                    {c.kind === 'cosmetic' ? `${cap(c.rarity)} ${SLOT_NAME[cosmeticById(c.id)?.slot ?? 'hat'].toLowerCase()}` : c.kind === 'case' ? 'One free hat-case opening' : 'Credits'}
+                  <div className='mt-0.5 text-[14px]' style={{ color: c.kind === 'cosmetic' ? TIER_COLOR[c.tier].edge : '#cbd5e1' }}>
+                    {c.kind === 'cosmetic' ? `${TIER_LABEL[c.tier]} ${slotNoun(c.id)}${c.inst ? ` · #${c.inst.mint}` : ''}` : c.kind === 'case' ? 'Open any standard case for free' : 'Credits'}
                     <span className='text-white/40'> · Lv {c.level}</span>
                   </div>
                 </div>

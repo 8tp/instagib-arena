@@ -10,7 +10,8 @@ import { econ as api, reasonText, type OpenCaseResp } from './api';
 import { CaseReveal } from './CaseReveal';
 import { pct, poolOf, qualityRows } from './rates';
 import { fmtCredits } from './display';
-import { Balance, TicketGlyph } from './parts';
+import { TicketGlyph } from '../menu/RewardTile';
+import { Balance } from './parts';
 import type { Econ } from './useEconomy';
 
 const CASE_HUE: Record<CaseId, { a: string; b: string; glyph: string }> = {

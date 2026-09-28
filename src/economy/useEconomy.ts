@@ -45,9 +45,15 @@ export function useEconomy(
   onChangeRef.current = onChange;
   const equipSeq = useRef<Partial<Record<ItemSlot, number>>>({});
 
-  // Push the equipped Looks into the live settings (the game reads these).
-  const publish = useCallback((equipped: Equipped, looks: Loadout) => {
-    onChangeRef.current({ ...settingsRef.current, looks, equippedUids: equipped });
+  // Push the equipped Looks into the live settings (the game reads these):
+  // looks + equippedUids, plus the equipped finish INSTANCE (the in-game weapon
+  // inspect card and the Strange odometer read `finishItem`).
+  const itemsRef = useRef<ItemInstanceWire[]>([]);
+  itemsRef.current = st.items;
+  const publish = useCallback((equipped: Equipped, looks: Loadout, items: readonly ItemInstanceWire[] = itemsRef.current) => {
+    const tok = equipped.finish;
+    const finishItem = tok && !tok.startsWith('def:') ? (items.find((i) => i.uid === tok) ?? null) : null;
+    onChangeRef.current({ ...settingsRef.current, looks, equippedUids: equipped, finishItem });
   }, []);
 
   useEffect(() => {
@@ -69,8 +75,14 @@ export function useEconomy(
       // Bring the live settings in line with the server's equipped Looks.
       const looks: Loadout = r.looks ?? {};
       const cur = settingsRef.current;
-      if (JSON.stringify(cur.equippedUids ?? {}) !== JSON.stringify(r.equipped ?? {}) || JSON.stringify(cur.looks ?? {}) !== JSON.stringify(looks)) {
-        publish(r.equipped ?? {}, looks);
+      const fTok = (r.equipped ?? {}).finish;
+      const fItem = fTok && !fTok.startsWith('def:') ? (r.items.find((i) => i.uid === fTok) ?? null) : null;
+      if (
+        JSON.stringify(cur.equippedUids ?? {}) !== JSON.stringify(r.equipped ?? {}) ||
+        JSON.stringify(cur.looks ?? {}) !== JSON.stringify(looks) ||
+        JSON.stringify(cur.finishItem ?? null) !== JSON.stringify(fItem)
+      ) {
+        publish(r.equipped ?? {}, looks, r.items);
       }
     };
     setSt((s) => ({ ...s, status: 'loading' }));
@@ -147,7 +159,7 @@ export function useEconomy(
           changed = true;
         }
       }
-      if (changed) publish(eqUids, looks);
+      if (changed) publish(eqUids, looks, itemsRef.current.filter((i) => !dropped.has(i.uid)));
       return true;
     },
     [publish],

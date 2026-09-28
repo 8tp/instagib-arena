@@ -8,7 +8,7 @@ import type { Account } from '../auth';
 import type { InstagibProfile, Settings } from '../app-types';
 import { SegButton, Skeleton } from '../deck';
 import { sfxProps, toast, uiHover, uiSfx } from '../deck-core';
-import { CARD_STYLES, cosmeticById, nameColorById, sourceLabel, titleById } from '../game/cosmetics';
+import { cosmeticById, nameColorById, sourceLabel, titleById } from '../game/cosmetics';
 import { DEFAULT_LOADOUT, ITEM_DEFS, itemDef } from '../game/items/catalog';
 import { TIER_META, strangeRank, STRANGE_RANKS, wearName, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
 import { prefetchThumbnails } from '../game/thumbs';
@@ -136,7 +136,6 @@ export function InventoryTab({
   const owner = account?.username ?? 'guest';
   const level = profile?.level ?? null;
   const loading = econ.status === 'loading';
-  const loggedIn = !!account;
 
   // NEW badges: instances not seen before (first visit baselines everything).
   useEffect(() => {
@@ -254,7 +253,7 @@ export function InventoryTab({
   const offsetY = SLOT_VIEW[slot] === 'weapon' ? (narrow ? -0.04 : -0.1) : 0;
   const cardPayload =
     slot === 'card'
-      ? profile
+      ? profile?.stats
         ? buildCardPayload(profile, { ...settings, card: lookD('card') }, account)
         : { name: settings.playerName || 'Player', level: level ?? 1, style: lookD('card'), stats: [], title: titleText(lookD('title')), verified: !!account?.isVerified, admin: !!account?.isAdmin }
       : null;
@@ -390,7 +389,15 @@ export function InventoryTab({
           <div>
             <h3 className='lk-slot-title'>{noun}</h3>
             <div className='lk-count'>
-              {loading ? 'Loading…' : econ.status === 'error' ? 'Not loaded' : econ.status === 'guest' ? 'Log in to collect items' : `${ownedCount} item${ownedCount === 1 ? '' : 's'}${slot === 'card' ? ` · ${shown.coll.filter((e) => !e.locked).length} / ${shown.coll.length} cards unlocked` : ''}`}
+              {loading
+                ? 'Loading…'
+                : econ.status === 'error'
+                  ? 'Not loaded'
+                  : econ.status === 'guest' && slot !== 'card'
+                    ? 'Log in to collect items'
+                    : slot === 'card'
+                      ? `${shown.coll.filter((e) => !e.locked).length + 1} / ${shown.coll.length + 1} cards unlocked`
+                      : `${ownedCount} item${ownedCount === 1 ? '' : 's'}${shown.coll.length ? ` · ${shown.coll.filter((e) => !e.locked).length} unlocked extras` : ''}`}
             </div>
           </div>
           <div className='ec-filters'>
@@ -450,7 +457,7 @@ export function InventoryTab({
           )}
           {shown.coll.length > 0 && (
             <>
-              <h4 className='ec-section'>Collection <small>unlocked by level — not tradable</small></h4>
+              <h4 className='ec-section'>{slot === 'card' ? 'Cards' : 'Collection'} <small>{slot === 'card' ? 'unlocked by Career level — not tradable' : 'unlocked / earned — not tradable'}</small></h4>
               <div className='lk-grid' role='listbox' aria-label='Level-unlocked cards' onKeyDown={onTileArrows} onPointerLeave={() => setHover(null)}>
                 {shown.coll.map((e) => (
                   <DefTile key={e.key} entry={e} selected={sel?.key === e.key} equipped={equippedKey(e)} tabbable={false} onPick={onPick} onHover={onHoverEntry} />
@@ -460,7 +467,7 @@ export function InventoryTab({
           )}
           {slot === 'card' && (
             <div className='mt-6 max-w-[520px] font-mono'>
-              <CardStatsEditor settings={settings} onChange={onChange} account={account} profile={econ.status === 'loading' ? undefined : profile} showPreview={false} />
+              <CardStatsEditor settings={settings} onChange={onChange} account={account} profile={econ.status === 'loading' ? undefined : profile?.stats ? profile : null} showPreview={false} />
             </div>
           )}
         </div>
