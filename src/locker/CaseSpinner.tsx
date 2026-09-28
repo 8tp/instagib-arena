@@ -6,13 +6,16 @@ import { sfxProps } from '../deck-core';
 import { HAT_CASE_COST, cosmeticById, type Rarity } from '../game/cosmetics';
 import { ItemTile } from '../ui/item-tile';
 import { RARITY_COLOR, RARITY_LABEL } from '../ui/rarity';
-import { caseOdds, casePool, type LockerItem } from './slots';
+import { caseJackpotItems, casePool, type LockerItem } from './slots';
 
-export type CaseWin = { won: string; dupe: boolean; refund: number; jackpot: boolean };
+// `won` is the server-decided item (a case hat or a jackpot unusual). Older
+// servers can still report a duplicate + refund; the finalized one never does.
+export type CaseWin = { won: string; jackpot: boolean; dupe: boolean; refund: number };
 
 export function HatCaseCard({
   credits,
   keys,
+  owned,
   complete,
   busy,
   loading,
@@ -20,7 +23,8 @@ export function HatCaseCard({
   onOpen,
 }: {
   credits: number | null; // null = offline (no server case)
-  keys: number;
+  keys: number; // free case keys — spent before credits
+  owned: (id: string) => boolean;
   complete: boolean;
   busy: boolean;
   loading: boolean;
@@ -39,31 +43,33 @@ export function HatCaseCard({
         : complete
           ? 'Collection complete'
           : keys > 0
-            ? `Open · ${keys} key${keys === 1 ? '' : 's'}`
+            ? `Open · 1 key`
             : short > 0
               ? `Need ${short.toLocaleString()} more ⛁`
               : `Open · ${HAT_CASE_COST} ⛁`;
-  const jackpots = casePool().filter((i) => i.source.type === 'case');
+  const pool = casePool();
+  const jackpots = caseJackpotItems();
   return (
     <div className='lk-case' data-case>
       <div className='lk-crate' aria-hidden>
         <b>?</b>
       </div>
       <div className='min-w-0 flex-1'>
-        <div className='lk-case-title'>Hat Case</div>
-        <p className='mt-1.5 font-sans text-[13px] leading-snug text-white/65'>
-          Unbox a random hat. Rare chance at a case-exclusive unusual
-          {jackpots.length ? ` (${jackpots.map((j) => j.name).join(', ')})` : ''}.
-        </p>
-        <div className='lk-odds'>
-          {caseOdds().map((o) => (
-            <span
-              key={o.rarity}
-              className='lk-chip'
-              style={{ color: RARITY_COLOR[o.rarity].edge, boxShadow: `inset 0 0 0 1px ${RARITY_COLOR[o.rarity].edge}55` }}
-            >
-              {RARITY_LABEL[o.rarity]} {o.pct < 10 ? o.pct.toFixed(1) : Math.round(o.pct)}%
+        <div className='flex flex-wrap items-center gap-2'>
+          <div className='lk-case-title'>Hat Case</div>
+          {keys > 0 && (
+            <span className='lk-chip' style={{ background: '#ffc23d', color: '#1c1204' }}>
+              {keys} key{keys === 1 ? '' : 's'}
             </span>
+          )}
+        </div>
+        <p className='mt-1.5 font-sans text-[13px] leading-snug text-white/65'>
+          Case-exclusive hats{jackpots.length ? `, with a rare shot at a jackpot unusual` : ''}.
+          {keys > 0 ? ' Keys are used before credits.' : ''}
+        </p>
+        <div className='mt-2 flex flex-wrap gap-1.5' aria-label='Case contents'>
+          {pool.map((i) => (
+            <ItemTile key={i.id} id={i.id} size={40} label={false} locked={!owned(i.id)} equipped={false} />
           ))}
         </div>
       </div>
@@ -103,9 +109,8 @@ export function CaseSpinner({
   const STRIDE = CARD + GAP;
   const reelRef = useRef<LockerItem[] | null>(null);
   if (!reelRef.current) {
-    const pool = casePool();
-    const hats = pool.filter((p) => p.source.type !== 'case');
-    const jackpots = pool.filter((p) => p.source.type === 'case');
+    const jackpots = caseJackpotItems();
+    const hats = casePool().filter((p) => !jackpots.includes(p));
     const wonItem = (cosmeticById(win.won) as LockerItem | undefined) ?? hats[0];
     const arr: LockerItem[] = [];
     for (let i = 0; i < LEN; i++) {
@@ -121,6 +126,7 @@ export function CaseSpinner({
   const [offset, setOffset] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const vpRef = useRef<HTMLDivElement>(null);
+  const revealRef = useRef<HTMLDivElement>(null);
   const SPIN_MS = reduced ? 900 : 4400;
 
   useEffect(() => {
@@ -135,6 +141,11 @@ export function CaseSpinner({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Move focus to the reveal's first action once the reel lands.
+  useEffect(() => {
+    if (revealed) revealRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
+  }, [revealed]);
 
   const item = cosmeticById(win.won);
   const rarity: Rarity = item?.rarity ?? 'common';
@@ -175,7 +186,7 @@ export function CaseSpinner({
             </div>
           </div>
           {revealed && (
-            <div className='lk-reveal flex flex-col items-center gap-1 text-center'>
+            <div ref={revealRef} className='lk-reveal flex flex-col items-center gap-1 text-center'>
               {win.jackpot && (
                 <div className='lk-chip mb-1' style={{ background: '#ffc23d', color: '#1c1204' }}>
                   Case-exclusive jackpot
@@ -200,7 +211,6 @@ export function CaseSpinner({
                   <button
                     type='button'
                     className='lk-action lk-action-equip'
-                    data-autofocus
                     {...sfxProps('none')}
                     onClick={() => {
                       onEquip(win.won);

@@ -14,6 +14,7 @@ import { SegButton, Skeleton } from '../deck';
 import { MODAL_EXIT_MS, prefersReducedMotion, sfxProps, toast, uiHover, uiSfx, useModalStack } from '../deck-core';
 import type { PreviewCosmetics } from '../game/character-preview';
 import {
+  HAT_CASE_COST,
   cosmeticById,
   nameColorById,
   titleById,
@@ -52,16 +53,22 @@ type LockerProfile = {
   raw: InstagibProfile;
 };
 
+// POST /api/shop/open-case. Finalized: `won` (a case hat or jackpot unusual,
+// or null → everything owned, `consolation` credits instead), `jackpot`,
+// `usedKey`, `caseKeys`; failures carry reason 'insufficient' | 'complete'.
+// Older servers sent `dupe` + `refund` — still handled.
 type CaseResp = {
   ok?: boolean;
   reason?: string;
-  won?: string;
+  won?: string | null;
+  jackpot?: boolean;
+  consolation?: number;
+  usedKey?: boolean;
   dupe?: boolean;
   refund?: number;
   credits?: number;
-  unlocked?: string[];
-  jackpot?: boolean;
   caseKeys?: number;
+  unlocked?: string[];
 };
 
 const VIEW_OFFSET: Partial<Record<PreviewCosmetics['view'], number>> = {
@@ -397,25 +404,29 @@ export function Locker({
         body: '{}',
       });
       const d = (await res.json().catch(() => ({}))) as CaseResp;
-      if (res.ok && d.ok && d.won) {
-        // Apply the new credits/unlocked now; the spinner reveals the win.
-        setProfile((p) =>
-          p
-            ? {
-                ...p,
-                credits: d.credits ?? p.credits,
-                unlocked: d.unlocked ?? (d.dupe ? p.unlocked : [...p.unlocked, d.won!]),
-                caseKeys: typeof d.caseKeys === 'number' ? d.caseKeys : p.caseKeys,
-              }
-            : p,
-        );
-        if (!d.dupe) setNewIds((n) => new Set([...n, d.won!]));
+      // Credits / keys / unlocks ride along on success AND failure.
+      const won = typeof d.won === 'string' && cosmeticById(d.won) ? d.won : null;
+      setProfile((p) =>
+        p
+          ? {
+              ...p,
+              credits: typeof d.credits === 'number' ? d.credits : p.credits,
+              caseKeys: typeof d.caseKeys === 'number' ? d.caseKeys : p.caseKeys,
+              unlocked: d.unlocked ?? (won && !d.dupe && !p.unlocked.includes(won) ? [...p.unlocked, won] : p.unlocked),
+            }
+          : p,
+      );
+      if (res.ok && d.ok && won) {
+        if (!d.dupe) setNewIds((n) => new Set([...n, won]));
         setCaseWin({
-          won: d.won,
+          won,
           dupe: !!d.dupe,
           refund: d.refund ?? 0,
-          jackpot: !!d.jackpot || cosmeticById(d.won)?.source.type === 'case',
+          jackpot: !!d.jackpot || (cosmeticById(won)?.source.type === 'case' && slotOfItem(won) === 'unusual'),
         });
+      } else if (res.ok && d.ok) {
+        // Nothing left to win: the server paid a consolation instead.
+        toast(`Case complete · +${(d.consolation ?? 0).toLocaleString()} ⛁`, { tone: 'ok' });
       } else if (res.status === 429) toast('Slow down a moment.', { tone: 'warn' });
       else
         toast(
@@ -521,9 +532,26 @@ export function Locker({
             : 'Reduced effects is on: spawn effects are hidden in-match.'
           : null
       }
+      slot={slot}
+      caseAction={
+        selItem.source.type === 'case' && !selOwned && profileState === 'ready'
+          ? {
+              label:
+                busy === '__case'
+                  ? 'Opening…'
+                  : guest
+                    ? 'Log in to open'
+                    : (profile?.caseKeys ?? 0) > 0
+                      ? 'Open Hat Case · 1 key'
+                      : `Open Hat Case · ${HAT_CASE_COST} ⛁`,
+              disabled:
+                guest || !!busy || caseComplete || ((profile?.caseKeys ?? 0) <= 0 && (credits ?? 0) < HAT_CASE_COST),
+              onOpen: () => void openCase(),
+            }
+          : undefined
+      }
       onEquip={() => void equip(selItem.id)}
       onBuy={() => void buy(selItem.id)}
-      onGoToCase={slot !== 'hat' && selItem.source.type === 'case' ? () => setSlot('hat') : undefined}
     />
   );
 
@@ -663,6 +691,7 @@ export function Locker({
               <HatCaseCard
                 credits={profileState === 'offline' ? null : (credits ?? 0)}
                 keys={profile?.caseKeys ?? 0}
+                owned={(id) => !!profile?.unlocked.includes(id)}
                 complete={caseComplete}
                 busy={busy === '__case'}
                 loading={loading}
@@ -800,9 +829,10 @@ function ItemDetails({
   guest,
   stampKey,
   reducedNote,
+  slot,
+  caseAction,
   onEquip,
   onBuy,
-  onGoToCase,
 }: {
   item: LockerItem;
   noun: string;
@@ -816,13 +846,14 @@ function ItemDetails({
   guest: boolean;
   stampKey: number;
   reducedNote: string | null;
+  slot: LockerSlot;
+  caseAction?: { label: string; disabled: boolean; onOpen: () => void };
   onEquip: () => void;
   onBuy: () => void;
-  onGoToCase?: () => void;
 }) {
   const rarity: Rarity = item.rarity;
   const rc = RARITY_COLOR[rarity];
-  const info = unlockInfo(item.source, level, stats);
+  const info = unlockInfo(item.source, level, stats, slot);
   const price = item.source.type === 'credits' ? item.source.price : 0;
   const short = item.source.type === 'credits' && credits != null ? Math.max(0, price - credits) : 0;
   let action: ReactNode;
@@ -850,6 +881,19 @@ function ItemDetails({
         {...sfxProps('none')}
       >
         {busy ? 'Buying…' : guest ? 'Log in to buy' : short > 0 ? `Need ${short.toLocaleString()} more ⛁` : `Buy · ${price.toLocaleString()} ⛁`}
+      </button>
+    );
+  else if (caseAction)
+    action = (
+      <button
+        type='button'
+        className={`lk-action ${caseAction.disabled ? 'lk-action-muted' : 'lk-action-buy'}`}
+        disabled={caseAction.disabled}
+        onClick={caseAction.onOpen}
+        data-action='open-case'
+        {...sfxProps('uiConfirm')}
+      >
+        {caseAction.label}
       </button>
     );
   else
@@ -882,11 +926,6 @@ function ItemDetails({
             <div className='lk-bar' aria-hidden>
               <i style={{ width: `${Math.round(info.progress * 100)}%` }} />
             </div>
-          )}
-          {onGoToCase && (
-            <button type='button' className='self-start text-[11px] uppercase tracking-[0.14em] text-amber-200 underline-offset-4 hover:underline' onClick={onGoToCase} {...sfxProps('uiClick')}>
-              Open the Hat Case
-            </button>
           )}
         </div>
       )}

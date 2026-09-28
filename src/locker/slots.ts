@@ -10,7 +10,6 @@ import {
   NAME_COLORS,
   RAIL_COLORS,
   RAILGUN_FINISHES,
-  RARITY_WEIGHT,
   SPAWN_EFFECTS,
   TITLES,
   UNUSUALS,
@@ -169,7 +168,7 @@ function achievementValue(source: Extract<CosmeticSource, { type: 'achievement' 
   return null;
 }
 
-export function unlockInfo(source: CosmeticSource, level: number | null, stats: Stats): UnlockInfo {
+export function unlockInfo(source: CosmeticSource, level: number | null, stats: Stats, slot?: LockerSlot): UnlockInfo {
   switch (source.type) {
     case 'default':
       return { line: 'Default · everyone has this' };
@@ -188,32 +187,28 @@ export function unlockInfo(source: CosmeticSource, level: number | null, stats: 
       };
     }
     case 'case':
-      return { line: 'Hat Case jackpot · case exclusive' };
+      return { line: slot === 'hat' ? 'Hat Case · case exclusive' : 'Hat Case jackpot · rare drop' };
     case 'admin':
       return { line: 'Staff exclusive' };
   }
 }
 
-// Hats that can also drop from the case (the case pool).
-export function dropsFromCase(id: string): boolean {
-  return caseHats().some((h) => h.id === id);
+// The Hat Case pool. Works with both catalog generations: the finalized
+// progression catalog makes caseHats() the case-exclusive hats and adds
+// caseJackpots(); the older one's caseHats() is every droppable hat. The
+// jackpots are always the case-sourced unusuals.
+// TODO(integration): switch to cosmetics.casePool(owned) / caseJackpots()
+// once the progression catalog is merged (same result).
+export function caseJackpotItems(): LockerItem[] {
+  return UNUSUALS.filter((u) => u.source.type === 'case');
 }
-
-// The case pool as the reel + odds see it: droppable hats + the case-exclusive
-// jackpot unusuals.
 export function casePool(): LockerItem[] {
-  return [...caseHats(), ...UNUSUALS.filter((u) => u.source.type === 'case')];
+  return [...caseHats(), ...caseJackpotItems()];
 }
 
-// Per-rarity drop odds for the droppable hats (the current server roll).
-export function caseOdds(): Array<{ rarity: Rarity; pct: number }> {
-  const pool = caseHats();
-  const total = pool.reduce((s, h) => s + (RARITY_WEIGHT[h.rarity] ?? 1), 0) || 1;
-  const by = new Map<Rarity, number>();
-  for (const h of pool) by.set(h.rarity, (by.get(h.rarity) ?? 0) + (RARITY_WEIGHT[h.rarity] ?? 1));
-  return [...by.entries()]
-    .sort((a, b) => RARITY_RANK[a[0]] - RARITY_RANK[b[0]])
-    .map(([rarity, w]) => ({ rarity, pct: (w / total) * 100 }));
+// A non-case-exclusive hat that can ALSO drop from the case (older catalog).
+export function dropsFromCase(id: string): boolean {
+  return caseHats().some((h) => h.id === id && h.source.type !== 'case');
 }
 
 // ── "NEW" tracking ───────────────────────────────────────────────────────────

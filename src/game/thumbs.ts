@@ -38,7 +38,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v5:';
+const STORE_PREFIX = 'ig-thumb:v6:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 const FACE_CAMERA = Math.PI;
@@ -354,6 +354,13 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
         elev: 0.12,
         settle: () => {
           for (let i = 0; i < 36; i++) hat.update(1 / 60); // ~0.6 s in
+          // In-game particle sizes are tuned for a player-sized read at range;
+          // at thumbnail scale they'd be specks. Fatten them for the still
+          // (these materials belong to this throwaway effect instance).
+          c.holder.traverse((o) => {
+            const pts = o as THREE.Points;
+            if (pts.isPoints) (pts.material as THREE.PointsMaterial).size *= 2.2;
+          });
         },
         dispose: () => {
           hat.dispose();
