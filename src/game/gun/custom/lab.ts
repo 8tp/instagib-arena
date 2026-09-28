@@ -302,6 +302,13 @@ export class CustomGunLab {
       st.draws = c.draws;
       st.points = c.points;
       st.coverage = +(this.coverage(sub) * 100).toFixed(2);
+      // Third-person LOD budget.
+      const low = this.make(key, 'low');
+      const lc = this.counts(low);
+      st.lowTris = lc.tris;
+      st.lowDraws = lc.draws;
+      st.lowPoints = lc.points;
+      low.dispose();
     }
     st[`clear_${state}`] = +clear.toFixed(3);
     // Caption with the numbers (after measuring).
@@ -310,7 +317,7 @@ export class CustomGunLab {
     c.fillStyle = '#9fb3cc';
     const text =
       state === 'idle'
-        ? `${st.tris} tris · ${st.draws} draws · ${st.points} pts · cov ${st.coverage}% · clear ${clear.toFixed(2)}`
+        ? `hi ${st.tris}t/${st.draws}d/${st.points}p · lo ${st.lowTris}t/${st.lowDraws}d/${st.lowPoints}p · cov ${st.coverage}% · clear ${clear.toFixed(2)}`
         : `clear ${clear.toFixed(2)}`;
     const tw = c.measureText(text).width;
     c.fillText(text, col * this.cw + this.cw - tw - 8, row * this.ch + 18);

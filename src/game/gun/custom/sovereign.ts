@@ -40,8 +40,8 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   const SEG = hi ? 20 : 8;
   const p = new Parts();
   const ENAMEL: PartOpts = { pal: PAL.BODY, rough: 0.18, metal: 0.05, zone: Z.ENAMEL };
-  const GOLD: PartOpts = { pal: PAL.METAL, rough: 0.2, metal: 1, zone: Z.GOLD };
-  const GOLD_LT: PartOpts = { pal: PAL.METAL_LT, rough: 0.14, metal: 1, zone: Z.GOLD };
+  const GOLD: PartOpts = { pal: PAL.METAL, rough: 0.32, metal: 1, zone: Z.GOLD };
+  const GOLD_LT: PartOpts = { pal: PAL.METAL_LT, rough: 0.24, metal: 1, zone: Z.GOLD };
   const RUBY: PartOpts = { col: 0xc0102a, rough: 0.05, metal: 0.1, zone: Z.JEWEL, glow: 1, flat: true };
   const SAPPHIRE: PartOpts = { col: 0x1840d0, rough: 0.05, metal: 0.1, zone: Z.JEWEL, glow: 1, flat: true };
   const EMERALD: PartOpts = { col: 0x10a050, rough: 0.05, metal: 0.1, zone: Z.JEWEL, glow: 1, flat: true };

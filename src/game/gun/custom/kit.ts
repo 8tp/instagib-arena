@@ -823,6 +823,9 @@ export class GunRig {
     if (Array.isArray(mat)) this.materials.push(...mat);
     else this.materials.push(mat);
     obj.userData.shared = true; // geometry is a shared cache
+    // Third person: let off-screen guns cull (bounds cover the animation).
+    // First person keeps drawing (the viewmodel is always in view).
+    obj.frustumCulled = this.lod === 'low';
     this.group.add(obj);
     return obj;
   }
