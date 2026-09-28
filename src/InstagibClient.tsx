@@ -1682,15 +1682,44 @@ function PlayOfTheMatchOverlay({
             <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
               Play of the Match
             </div>
-          </div>
-
-          <div className='absolute left-[4vw] bottom-[14vh]'>
-            <div className='text-3xl font-extrabold uppercase tracking-[0.04em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
+            <div
+              className='mt-2 text-4xl font-black uppercase tracking-[0.06em] drop-shadow-[0_3px_12px_rgba(0,0,0,0.95)]'
+              style={{ color: pom.kit?.nameColor ?? '#ffffff' }}
+            >
               {pom.star}
             </div>
-            <div className='mt-1 text-lg font-bold uppercase tracking-[0.25em] text-cyan-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
-              {pom.label}
-              {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
+            {pom.kit?.title ? (
+              <div className='mt-1 text-[12px] font-bold uppercase tracking-[0.4em] text-white/70'>{pom.kit.title}</div>
+            ) : null}
+          </div>
+
+          {/* Lower third on the star's equipped playercard background. */}
+          <div
+            className='absolute left-[4vw] bottom-[14vh] max-w-[46vw] overflow-hidden rounded-md border border-white/15 px-5 py-3 shadow-[0_6px_24px_rgba(0,0,0,0.6)]'
+            style={{ background: pom.kit?.cardBg ?? 'rgba(0,0,0,0.55)' }}
+          >
+            <div className='absolute inset-0 bg-black/35' />
+            <div className='relative'>
+              <div
+                className='text-3xl font-extrabold uppercase tracking-[0.04em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
+                style={{ color: pom.kit?.nameColor ?? '#ffffff' }}
+              >
+                {pom.star}
+              </div>
+              <div
+                className='mt-1 text-lg font-bold uppercase tracking-[0.25em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
+                style={{ color: pom.kit?.cardAccent ?? '#67e8f9' }}
+              >
+                {pom.label}
+                {pom.subLabel ? <span className='ml-3 text-white/60'>· {pom.subLabel}</span> : null}
+              </div>
+              {pom.kit ? (
+                <div className='mt-1 text-[12px] uppercase tracking-[0.18em] text-amber-200/90 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]'>
+                  {pom.kit.weapon}
+                  {pom.kit.weaponKills != null ? ` · ${pom.kit.weaponKills.toLocaleString('en-US')} kills` : ''}
+                  {pom.kit.finisher ? <span className='text-white/60'>{` · ${pom.kit.finisher}`}</span> : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </>
@@ -2261,6 +2290,13 @@ const KillcamCard = memo(function KillcamCard({
           <div className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
             {cam.killerName}
           </div>
+          {cam.killerKit && (
+            <div className='mt-2 font-mono text-[12px] uppercase tracking-[0.18em] text-amber-200/90 [text-shadow:0_2px_0_rgba(0,0,0,0.7)]'>
+              {cam.killerKit.weapon}
+              {cam.killerKit.weaponKills != null ? ` · ${cam.killerKit.weaponKills.toLocaleString('en-US')} kills` : ''}
+              {cam.killerKit.finisher ? <span className='text-white/60'>{` · ${cam.killerKit.finisher}`}</span> : null}
+            </div>
+          )}
         </div>
         {cam.killerCard && (
           <div className='mt-5'>
@@ -3803,6 +3839,11 @@ function ReplayViewerOverlay({
     fov: settings.fov,
     resolutionScale: settings.resolutionScale,
     lowSpec: settings.lowSpec,
+    volume: settings.volume,
+    sfxVolume: settings.sfxVolume,
+    announcerVolume: settings.announcerVolume,
+    announcerEnabled: settings.announcerEnabled,
+    announcerPack: settings.announcerPack,
   });
   // onClose changes identity on every parent (Lobby) re-render — keep it in a ref
   // so the viewer effect can depend only on playerId. Otherwise the Lobby's

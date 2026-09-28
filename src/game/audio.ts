@@ -388,6 +388,44 @@ export class SoundManager {
     this.engine?.remoteMove(kind, x, y, z, strength);
   }
 
+  // ── Replay audio (killcam / Play of the Match / rewatch) ───────────────────
+  // The replay's own sound set, spatialised from the replay camera (the listener
+  // pose follows it). Everything routes through the same SFX bus, so master /
+  // SFX volume + mute apply; the treatment (soft low-pass, extra room, boundary
+  // fade, slow-mo pitch) is one switch on the mixer.
+  replayBegin(timeScale = 1, fade = 0.4) {
+    if (!this.engine) return;
+    this.resume();
+    this.engine.setReplay(true, timeScale, fade);
+  }
+
+  replayEnd(fade = 0.4) {
+    this.engine?.setReplay(false, 1, fade);
+  }
+
+  replayShot(x: number, y: number, z: number, star: boolean, vol = 1) {
+    if (this.ctx?.state !== 'running') return;
+    this.engine?.replayShot(x, y, z, star, vol);
+  }
+
+  replayImpact(x: number, y: number, z: number, vol = 1) {
+    if (this.ctx?.state !== 'running') return;
+    this.engine?.railImpactAt(x, y, z, vol);
+  }
+
+  replayGib(x: number, y: number, z: number, style: string, headshot: boolean, star: boolean, vol = 1) {
+    if (this.ctx?.state !== 'running') return;
+    this.engine?.replayGib(x, y, z, style, headshot, star, vol);
+  }
+
+  // A replayed movement event: the star's own body is centred (as in live play),
+  // everyone else's is positional at their feet.
+  replayMove(kind: MotionEventKind, x: number, y: number, z: number, strength: number, star: boolean) {
+    if (this.ctx?.state !== 'running' || !this.engine) return;
+    if (star) this.engine.localMove(kind, kind === 'dash' ? 0 : strength);
+    else this.engine.remoteMove(kind, x, y, z, strength);
+  }
+
   // Procedural medal cue (used when the announcer can't voice a medal).
   medalSting(kind: StingKind, level: number) {
     if (!this.engine) return;

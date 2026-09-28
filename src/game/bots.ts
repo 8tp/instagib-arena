@@ -27,7 +27,19 @@ import { Character, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
-import { BodyGear, applyFinishLook, asV3, emoteKindOfLook, randomBotLoadout, resolveCosmetics } from './look-runtime';
+import {
+  BodyGear,
+  applyFinishLook,
+  asV3,
+  createTauntAura,
+  emoteKindOfLook,
+  randomBotLoadout,
+  resolveCosmetics,
+  vfxHooks,
+  type EyesLike,
+  type TauntAuraLike,
+} from './look-runtime';
+import { emoteClip } from './emotes';
 import { railgunFinishById, type KillEffectStyle } from './cosmetics';
 import type { Loadout } from './items/types';
 import type { BotState, EntityId, Vec3 } from './types';
@@ -244,6 +256,8 @@ export class Bot {
   readonly loadout: Loadout = randomBotLoadout(); // random cosmetics for variety (solo)
   private tauntLeft = 0;
   private streak = 0;
+  private tauntAura: TauntAuraLike | null = null; // an Unusual emote's aura while it plays
+  private eyes: EyesLike | null = null; // Professional Killstreak eyes while on a streak
   private gun: AttachedRailgun | null = null; // third-person railgun (disposed with the bot)
   // Reused animator input (no per-frame allocation).
   private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
@@ -973,10 +987,15 @@ export class Bot {
   // Animate the hat's unusual effect (the hat itself rides the head socket).
   updateHat(dt: number) {
     this.gear?.update(dt);
+    this.eyes?.update?.(dt);
+    this.tauntAura?.update(dt);
     if (this.tauntLeft > 0) {
       this.tauntLeft -= dt;
       const over = this.tauntLeft <= 0 || !this.state.alive;
-      if (over) this.anim?.playEmote(null);
+      if (over) {
+        this.anim?.playEmote(null);
+        this.clearTauntAura();
+      }
       // A non-gun emote hides the held railgun (it would ride the raised hand).
       if (this.gun && this.anim) this.gun.visible = over || this.anim.emoteShowsGun;
     }
@@ -991,9 +1010,28 @@ export class Bot {
   taunt(): boolean {
     if (!this.anim || !this.state.alive || !this.onGround || this.tauntLeft > 0) return false;
     const look = this.loadout.emote;
-    this.anim.playEmote(emoteKindOfLook(look), true);
-    this.tauntLeft = 2.6;
+    const kind = emoteKindOfLook(look);
+    this.anim.playEmote(kind, true);
+    const dur = Math.min(emoteClip(kind).duration, 2.6);
+    this.tauntLeft = dur;
+    // An Unusual emote's aura (whole-body, on the character root).
+    this.clearTauntAura();
+    const aura = createTauntAura(look?.e);
+    if (aura?.start && this.character) {
+      this.character.root.add(aura.group);
+      aura.start(dur);
+      this.tauntAura = aura;
+    } else {
+      aura?.dispose();
+    }
     return true;
+  }
+
+  private clearTauntAura() {
+    if (!this.tauntAura) return;
+    this.tauntAura.group.removeFromParent();
+    this.tauntAura.dispose();
+    this.tauntAura = null;
   }
 
   // Killstreak on the gun (sheen) — bots roll a random finish, some are killstreak-capable.
@@ -1001,6 +1039,16 @@ export class Bot {
     if (n === this.streak) return;
     this.streak = n;
     if (this.gun) asV3(this.gun).setStreak?.(n);
+    // Professional Killstreak: the eyes light from a 5-kill streak.
+    const ks = this.loadout.finish?.k;
+    const on = !!ks && n >= 5;
+    if (on && !this.eyes && this.character) {
+      this.eyes = vfxHooks.createKillstreakEyes?.(this.character.sockets.headTop, ks) ?? null;
+    } else if (!on && this.eyes) {
+      this.eyes.dispose();
+      this.eyes = null;
+    }
+    this.eyes?.setStreak?.(n);
   }
 
   // Footfall events for synced footstep audio (see RemotePlayer).
@@ -1013,6 +1061,9 @@ export class Bot {
 
   dispose(scene: THREE.Scene) {
     this.gear?.dispose();
+    this.eyes?.dispose();
+    this.eyes = null;
+    this.clearTauntAura();
     if (this.gun) disposeRailgun(this.gun); // per-bot gun geometry/materials
     this.gun = null;
     this.character?.dispose();

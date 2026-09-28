@@ -12,7 +12,7 @@
 // i16 ×256 (~3.9 mm) over ±128 m, angles as i16 over [-π, π].
 
 import type { Vec3 } from './types';
-import type { Loadout } from './items/types';
+import type { Loadout, Look } from './items/types';
 
 export type ReplayActorKind = 'local' | 'remote' | 'bot';
 
@@ -49,6 +49,10 @@ export type ReplayKill = {
 
 export type ReplayShot = { t: number; origin: Vec3; end: Vec3; killerId: string };
 
+// v3: a taunt that started at `t` (the emote Look — def + unusual effect — so the
+// replay body plays the right clip and aura). Absent in v1/v2 replays.
+export type ReplayTaunt = { t: number; actorId: string; look?: Look };
+
 // The full decoded replay. `localId` is the actor whose eyes we ride in playback
 // (the runner). `won`/`durationMs` summarize the run for the leaderboard + the
 // server's sanity check that the submitted score matches the recording.
@@ -63,11 +67,12 @@ export type ReplayData = {
   frames: ReplayFrame[];
   kills: ReplayKill[];
   shots: ReplayShot[];
+  taunts?: ReplayTaunt[]; // v3
 };
 
-// v2 adds a per-actor Looks JSON string after `team`. The decoder still reads v1
+// v3 appends a taunt list after the shots. v2 adds a per-actor Looks JSON string after `team`. The decoder still reads v1
 // (stored weekly-challenge replays live for 26 weeks); the encoder writes v2.
-export const REPLAY_VERSION = 2;
+export const REPLAY_VERSION = 3;
 const MIN_REPLAY_VERSION = 1;
 const MAGIC = 0x49475231; // "IGR1"
 
@@ -233,6 +238,16 @@ export function encodeReplay(data: ReplayData): Uint8Array {
     w.i16(qPos(s.end.x)); w.i16(qPos(s.end.y)); w.i16(qPos(s.end.z));
   }
 
+  // Taunts (v3): time, actor, emote Look as JSON ('' = default).
+  const tauntN = Math.min(0xffff, data.taunts?.length ?? 0);
+  w.u16(tauntN);
+  for (let i = 0; i < tauntN; i++) {
+    const tn = data.taunts![i];
+    w.u32(Math.max(0, Math.round(tn.t * 1000)));
+    w.u16(idxOf.get(tn.actorId) ?? NONE);
+    w.str(tn.look ? JSON.stringify(tn.look) : '');
+  }
+
   return w.bytes();
 }
 
@@ -328,8 +343,28 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
     shots[i] = { t, killerId: idAt(ki), origin: { x: ox, y: oy, z: oz }, end: { x: ex, y: ey, z: ez } };
   }
 
+  const taunts: ReplayTaunt[] = [];
+  if (version >= 3 && r.remaining >= 2) {
+    const n = r.u16();
+    for (let i = 0; i < n; i++) {
+      const t = r.u32() / 1000;
+      const ai = r.u16();
+      const raw = r.str();
+      let look: Look | undefined;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === 'object' && typeof (parsed as Look).d === 'string') look = parsed as Look;
+        } catch {
+          // a malformed look only costs the taunt's variant
+        }
+      }
+      if (ai !== NONE && profiles[ai]) taunts.push({ t, actorId: profiles[ai].id, look });
+    }
+  }
+
   const localId = localIdx === NONE ? '' : profiles[localIdx]?.id ?? '';
-  return { version, hz, mapId, durationMs, localId, won, profiles, frames, kills, shots };
+  return { version, hz, mapId, durationMs, localId, won, profiles, frames, kills, shots, taunts };
 }
 
 // Cheap server-side summary used to sanity-check a submitted score against the

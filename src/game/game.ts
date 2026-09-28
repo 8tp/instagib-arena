@@ -89,6 +89,7 @@ import {
   railColorById,
   railgunFinishById,
   spawnEffectById,
+  killEffectById,
   SPAWN_EFFECTS,
   KILL_EFFECTS,
   titleById,
@@ -97,7 +98,8 @@ import {
 import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
-import { applyFinishLook, asV3, emoteKindOfLook, loadoutTokens } from './look-runtime';
+import { applyFinishLook, asV3, emoteKindOfLook, kitInfo, loadoutTokens } from './look-runtime';
+import { makeReplaySfx } from './replay-audio';
 import { emoteClip, type AnyEmoteKind } from './emotes';
 import type { ItemSlot, Loadout, Look } from './items/types';
 import {
@@ -368,6 +370,8 @@ export class Game {
   // When set, buildViewmodel() uses this finish (the watched player's gun skin)
   // instead of the local player's; cleared outside spectator mode.
   private viewmodelFinishOverride: string | null = null;
+  private replayVmActive = false; // the viewmodel is showing the replay star's gun
+  private replayVmStreak = -1;
   private posSendAccumMs = 0;
   // 64Hz simulation tick clock stamped on every position upload (see
   // net.sendPosition / BIN_POS_TICK) so the server replays our motion on our
@@ -1097,10 +1101,12 @@ export class Game {
     body.apply(this.localSnapshot(), 0);
     body.group.position.set(p.x, p.y, p.z);
     const dur = emoteClip(kind).duration;
+    body.setStreak(this.medals.currentStreak);
     body.playTaunt(kind, look, dur);
     this.tauntCooldownUntil = now + TAUNT_COOLDOWN_MS;
     this.taunt = { kind, look, t: 0, dur, blend: 0, orbit: 0, dist: 0, cancelled: false };
     this.net?.sendTaunt();
+    this.recorder.logTaunt('you', look);
     return true;
   }
 
@@ -1212,6 +1218,7 @@ export class Game {
     const l = look ?? this.net?.remotes.get(id)?.looks?.emote;
     const kind = emoteKindOfLook(l);
     rp.playTaunt(kind, l, emoteClip(kind).duration);
+    this.recorder.logTaunt(id, l);
   }
 
   // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
@@ -2103,6 +2110,15 @@ export class Game {
     return this.net && netId === this.net.clientId ? 'you' : netId;
   }
 
+  // What the killer was holding, for the killcam card: their gun (with Killstreak /
+  // Festive / Professional qualities) and finisher, from their equipped Looks.
+  private killerKitOf(killerId: string): { weapon: string; finisher: string } | undefined {
+    const looks = this.net?.remotes.get(killerId)?.looks ?? this.bots?.bots.find((b) => b.state.id === killerId)?.loadout;
+    if (!looks) return undefined;
+    const fin = this.replayFinisher(killerId);
+    return { weapon: kitInfo(looks).weapon, finisher: fin === DEFAULT_KILL_EFFECT ? '' : killEffectById(fin).name };
+  }
+
   // The finisher a replayed kill plays: yours, a bot's stable one, or the one
   // the server stamped on that player's last live kill.
   private replayFinisher(killerId: string): KillEffectStyle {
@@ -2831,7 +2847,9 @@ export class Game {
     this.streaks.set(intent.botId, (this.streaks.get(intent.botId) ?? 0) + 1);
     this.streaks.delete(victimId);
     // Now and then a bot celebrates a frag with its emote (solo variety).
-    if (!this.reducedEffects && Math.random() < 0.07) shooter?.taunt();
+    if (!this.reducedEffects && Math.random() < 0.07 && shooter?.taunt()) {
+      this.recorder.logTaunt(intent.botId, shooter.loadout.emote);
+    }
     this.checkMatchEnd();
   }
 
@@ -2872,6 +2890,7 @@ export class Game {
       deathPos,
       remaining: KILLCAM_DURATION_SEC,
       total: KILLCAM_DURATION_SEC,
+      killerKit: this.killerKitOf(killerId),
     };
     if (bot) {
       this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
@@ -2998,6 +3017,11 @@ export class Game {
     const replay = this.makeReplayPlayer();
     replay.start(seg.clip, this.recorder, seg.opts);
     this.replay = replay;
+    // Replay audio treatment (soft low-pass, slow-mo pitch, boundary fade) + the
+    // star's gun in first person.
+    this.audio.replayBegin(seg.opts.timeScale ?? 1, i === 0 ? 0.4 : 0.2);
+    this.setReplayViewmodel(seg.clip.starId);
+    const starLooks = seg.clip.starId === 'you' ? this.localLooks : this.recorder.profiles.get(seg.clip.starId)?.looks;
     this.pom = {
       phase: seg.kind,
       won: this.endWon,
@@ -3008,7 +3032,52 @@ export class Game {
       total: replay.totalWall,
       hitId: 0,
       hitHeadshot: false,
+      kit: this.starKit(seg.clip.starId, starLooks),
     };
+  }
+
+  // The Play of the Match title card's setup summary. The finisher comes from the
+  // same source the replay's kills use (recorded Look → server-stamped → bot's).
+  private starKit(starId: string, looks: Loadout | undefined) {
+    const kit = kitInfo(looks, starId === 'you' ? this.currentStrangeKills() : null);
+    const fin = starId === 'you' ? this.killEffectStyle : this.replayFinisher(starId);
+    return { ...kit, finisher: fin === DEFAULT_KILL_EFFECT ? '' : killEffectById(fin).name };
+  }
+
+  // The star's first-person gun for a replay segment: their finish (model, sheen,
+  // festive) instead of yours; your own gun when you're the star. Restored by
+  // restoreReplayViewmodel() when the cinematic ends.
+  private setReplayViewmodel(starId: string) {
+    if (starId === 'you') {
+      this.restoreReplayViewmodel();
+      this.replayVmActive = true; // streak from the replay is driven per frame
+      this.replayVmStreak = -1;
+      return;
+    }
+    const looks = this.recorder.profiles.get(starId)?.looks;
+    const id = looks?.finish?.d;
+    const finishId = id && isRailgunFinish(id) ? id : DEFAULT_RAILGUN_FINISH;
+    this.replayVmActive = true;
+    if (finishId !== this.viewmodelFinishOverride) {
+      this.viewmodelFinishOverride = finishId;
+      this.buildViewmodel();
+    }
+    const vm = this.viewmodelRail;
+    if (vm) {
+      applyFinishLook(vm, looks?.finish);
+      asV3(vm).setStrangeKills?.(null);
+    }
+    this.replayVmStreak = -1;
+  }
+
+  private restoreReplayViewmodel() {
+    if (!this.replayVmActive) return;
+    this.replayVmActive = false;
+    if (this.viewmodelFinishOverride !== null) {
+      this.viewmodelFinishOverride = null;
+      this.buildViewmodel();
+    }
+    this.applyViewmodelV3(true);
   }
 
   // Current segment finished: advance to the next, or end the whole cinematic.
@@ -3042,17 +3111,29 @@ export class Game {
         ),
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
-      spawnKillEffect: (at, headshot, killerId) => this.spawnKillEffect(at, headshot, this.replayFinisher(killerId)),
+      // The killer's recorded finisher (their Look) decides the burst.
+      spawnKillEffect: (at, headshot, _killerId, finisher) => this.spawnKillEffect(at, headshot, finisher),
       finisherFor: (killerId) => this.replayFinisher(killerId),
+      // A respawn in the clip plays that actor's own spawn-in effect.
+      spawnIn: (at, id) => {
+        if (!this.reducedEffects) this.effects.spawnInBurst(this.scene, at, spawnEffectById(id).style);
+      },
       reducedEffects: () => this.reducedEffects,
-      // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
-      // it reads as "they just fragged someone" during the cinematic.
+      // Replay audio: shots, frags + finishers, movement (see replay-audio.ts).
+      sfx: makeReplaySfx(this.audio),
+      // The star's own body drives the first-person viewmodel (fire kick, hop, land).
+      onStarEvent: (kind, strength) => {
+        if (kind === 'fire') this.viewmodelMotion.onFire();
+        else if (kind === 'jump' || kind === 'airjump') this.viewmodelMotion.onJump();
+        else if (kind === 'land') this.viewmodelMotion.onLand(strength);
+      },
+      // Each star kill in the clip flashes a crosshair hit-marker so it reads as
+      // "they just fragged someone" (the sound is the replay sfx's).
       onStarKill: (headshot) => {
         if (this.pom) {
           this.pom.hitId += 1;
           this.pom.hitHeadshot = headshot;
         }
-        this.audio.play(headshot ? 'headshot' : 'hit', 0.6);
         this.emitHud();
       },
     });
@@ -3069,6 +3150,8 @@ export class Game {
     this.replaySegments = [];
     this.replaySegIdx = 0;
     this.pom = null;
+    this.audio.replayEnd(0.5);
+    this.restoreReplayViewmodel();
     for (const rp of this.remotePlayers.values()) rp.group.visible = true;
     if (this.bots) for (const b of this.bots.bots) b.group.visible = b.state.alive;
     const done = this.pomOnDone;
@@ -3227,6 +3310,7 @@ export class Game {
         remaining: KILLCAM_DURATION_SEC,
         total: KILLCAM_DURATION_SEC,
         killerCard: ev.killerCard,
+        killerKit: this.killerKitOf(ev.killerId),
       };
       // Initialize the killcam's smoothed look-at near the killer's
       // current position so we don't whip from origin on the first
@@ -3822,17 +3906,26 @@ export class Game {
       const specSnap =
         this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
       const specPov = !!specSnap;
+      const rp = this.replay;
       this.viewmodel.visible =
-        !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay && !this.taunt;
+        !this.hideViewmodel && (this.locked || specPov || !!rp) && !this.killcam && !this.taunt;
+      // Replay: the star's killstreak drives the gun's sheen as it climbs.
+      if (rp && this.viewmodelRail) {
+        const n = rp.starStreak;
+        if (n !== this.replayVmStreak) {
+          this.replayVmStreak = n;
+          asV3(this.viewmodelRail).setStreak?.(n);
+        }
+      }
       // Local first person feeds full movement state; spectator POV gets only the
       // watched player's look (idle + sway); killcam/replay coast to rest.
       const localPov = !this.spectator && !this.killcam && !this.replay;
       const p = this.player;
       const pose = this.viewmodelMotion.update({
         dt: fdt,
-        yaw: specSnap ? specSnap.yaw : p.yaw,
-        pitch: specSnap ? specSnap.pitch : p.pitch,
-        groundSpeed: localPov ? Math.hypot(p.vel.x, p.vel.z) : 0,
+        yaw: rp ? rp.camYawNow : specSnap ? specSnap.yaw : p.yaw,
+        pitch: rp ? rp.camPitchNow : specSnap ? specSnap.pitch : p.pitch,
+        groundSpeed: localPov ? Math.hypot(p.vel.x, p.vel.z) : rp ? rp.starGroundSpeed : 0,
         lateralSpeed: localPov ? p.vel.x * Math.cos(p.yaw) - p.vel.z * Math.sin(p.yaw) : 0,
         grounded: localPov ? p.onGround : true,
         zoom: zoomT,

@@ -574,10 +574,10 @@ export class RemotePlayer {
       this.eyes?.dispose();
       this.eyes = null;
       this.eyesKey = key;
-      // STUB(T4): KillstreakEyes — created through the vfx seam when wired.
       if (on && this.character) this.eyes = vfxHooks.createKillstreakEyes?.(this.character.sockets.headTop, ks) ?? null;
     }
     this.eyes?.setActive(on);
+    this.eyes?.setStreak?.(n);
   }
 
   // ── Taunts ──────────────────────────────────────────────────────────────
@@ -591,11 +591,15 @@ export class RemotePlayer {
     this.tauntAura?.group.removeFromParent();
     this.tauntAura?.dispose();
     this.tauntAura = createTauntAura(look?.e);
-    if (this.tauntAura) {
-      // Stopgap (Unusual emitter crowning the head; scaling it breaks the
-      // world-space particles). The VFX track's TauntAura replaces it via vfxHooks.
-      this.tauntAura.group.position.y = BOT_HEIGHT + 0.05;
-      this.group.add(this.tauntAura.group);
+    const aura = this.tauntAura;
+    if (aura?.start) {
+      // The VFX track's whole-body aura: on the character root, for the clip's length.
+      (this.character?.root ?? this.group).add(aura.group);
+      aura.start(seconds);
+    } else if (aura) {
+      // Legacy emitter kinds crown the head (scaling it breaks the world-space particles).
+      aura.group.position.y = BOT_HEIGHT + 0.05;
+      this.group.add(aura.group);
     }
   }
   // Convenience: the remote's taunt from the server's relayed emote Look.
