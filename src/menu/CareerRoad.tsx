@@ -5,6 +5,7 @@ import { cosmeticById } from '../game/cosmetics';
 import { MAX_LEVEL, type RoadReward } from '../game/progression';
 import { Credits, LevelEmblem, XpBar } from './Progress';
 import { KeyGlyph, RewardTile } from './RewardTile';
+import { RoadPreview, type PreviewLoadout } from './RoadPreview';
 import { careerRoad, nextRoadStep, rewardKind, rewardText, xpFraction, type MenuProfile, type RoadNode } from './road-data';
 import './menu.css';
 
@@ -54,12 +55,16 @@ export function CareerRoad({
   profile,
   guest,
   reduced,
+  lowSpec = false,
+  loadout,
   onClose,
   onLogin,
 }: {
   profile: MenuProfile | null;
   guest: boolean;
   reduced: boolean;
+  lowSpec?: boolean;
+  loadout: PreviewLoadout;
   onClose: () => void;
   onLogin: () => void;
 }) {
@@ -88,16 +93,22 @@ export function CareerRoad({
   const hereX = maxed ? centerOf(level) : centerOf(level) + frac * (centerOf(level + 1) - centerOf(level));
 
   const initial = nextRoadStep(level) ?? road[Math.min(road.length - 1, level - 1)];
-  // Big-ticket levels still ahead (every 10th, and any legendary), for the
-  // "Coming up" row under the track.
-  const milestones = useMemo(
-    () =>
-      road
-        .filter((n) => n.level > level && n.rewards.length > 0)
-        .filter((n) => n.level % 10 === 0 || n.rewards.some((r) => r.type === 'cosmetic' && cosmeticById(r.id)?.rarity === 'legendary'))
-        .slice(0, 5),
-    [road, level],
-  );
+  // "Coming up": the next five named cosmetics ahead (epic / legendary first,
+  // then the nearest rares) — never a row of identical case keys.
+  const milestones = useMemo(() => {
+    const RANK: Record<string, number> = { legendary: 3, epic: 2, rare: 1, common: 0 };
+    const ahead: { level: number; index: number; reward: RoadReward; rank: number }[] = [];
+    for (const n of road) {
+      if (n.level <= level) continue;
+      n.rewards.forEach((r, index) => {
+        if (r.type !== 'cosmetic') return;
+        const c = cosmeticById(r.id);
+        if (c) ahead.push({ level: n.level, index, reward: r, rank: RANK[c.rarity] ?? 0 });
+      });
+    }
+    const window = ahead.slice(0, 18);
+    return [...window].sort((a, b) => b.rank - a.rank || a.level - b.level).slice(0, 5).sort((a, b) => a.level - b.level);
+  }, [road, level]);
   const [sel, setSel] = useState<Sel>({ level: initial.level, index: 0 });
   const selNode = road[sel.level - 1];
   const selReward: RoadReward | undefined = selNode?.rewards[sel.index] ?? selNode?.rewards[0];
@@ -278,8 +289,8 @@ export function CareerRoad({
     uiSfx('uiClick');
     setSel({ level: lv, index });
   };
-  const jumpTo = (lv: number) => {
-    pick(lv, 0);
+  const jumpTo = (lv: number, index = 0) => {
+    pick(lv, index);
     scrollToX(centerOf(lv), true);
   };
 
@@ -339,8 +350,8 @@ export function CareerRoad({
             )}
           </div>
         )}
-        <button type='button' className='road-close' onClick={close} {...sfxProps('none')}>
-          ✕ Esc
+        <button type='button' className='road-close' onClick={close} aria-label='Close the Career Road' {...sfxProps('none')}>
+          ✕ ESC
         </button>
       </header>
 
@@ -349,45 +360,55 @@ export function CareerRoad({
         <section className='road-preview' aria-live='polite'>
           {selReward ? (
             <>
-              <div className='road-preview-tile'>
-                <RewardTile reward={selReward} size={340} label={false} locked={!guest && selState === 'locked'} />
+              <div className='road-stage'>
+                <RoadPreview
+                  reward={selReward}
+                  loadout={loadout}
+                  locked={guest || selState === 'locked'}
+                  lowSpec={lowSpec}
+                  reduced={!smooth}
+                />
               </div>
-              <div className='mt-5 flex items-start gap-4'>
-                <LevelEmblem level={selNode.level} size={48} tone={selState === 'claimed' && !guest ? 'you' : 'locked'} />
-                <div className='min-w-0'>
-                  <h3 className='road-preview-name'>{nameOf(selReward)}</h3>
-                  <p className='mt-1 font-sans text-[14px] text-white/60'>{rewardKind(selReward)}</p>
+              <div className='road-preview-info'>
+                <div className='flex items-start gap-4'>
+                  <LevelEmblem level={selNode.level} size={52} tone={selState === 'claimed' && !guest ? 'you' : 'locked'} />
+                  <div className='min-w-0'>
+                    <h3 className='road-preview-name'>{nameOf(selReward)}</h3>
+                    <p className='mt-1 font-sans text-[14px] text-white/65'>{rewardKind(selReward)}</p>
+                  </div>
                 </div>
-              </div>
-              <p className={`mt-4 font-sans text-[15px] ${selState === 'claimed' && !guest ? 'text-cyan-200' : 'text-white/75'}`}>
-                {selState === 'claimed' && !guest && (
-                  <span className='mr-1.5 inline-block align-[-1px] text-cyan-300'>
-                    <CheckGlyph />
-                  </span>
-                )}
-                {status}
-              </p>
-              {selNode.rewards.length > 1 && (
-                <p className='mt-1 font-sans text-[13px] text-white/45'>
-                  Also at this level: {selNode.rewards.filter((_, i) => i !== sel.index).map(nameOf).join(', ')}
+                <p className={`mt-3 font-sans text-[15px] ${selState === 'claimed' && !guest ? 'text-cyan-200' : 'text-white/80'}`}>
+                  {selState === 'claimed' && !guest && (
+                    <span className='mr-1.5 inline-block align-[-1px] text-cyan-300'>
+                      <CheckGlyph />
+                    </span>
+                  )}
+                  {status}
                 </p>
-              )}
-              {!guest && (
-                <div className='mt-6'>
-                  <button type='button' onClick={() => scrollToX(hereX, true)} {...sfxProps('uiClick')} className='menu-acct-btn'>
-                    Jump to my level
-                  </button>
-                </div>
-              )}
+                {selNode.rewards.length > 1 && (
+                  <p className='mt-1 font-sans text-[13px] text-white/50'>
+                    Also at this level: {selNode.rewards.filter((_, i) => i !== sel.index).map(nameOf).join(', ')}
+                  </p>
+                )}
+                {!guest && (
+                  <div className='mt-4'>
+                    <button type='button' onClick={() => scrollToX(hereX, true)} {...sfxProps('uiClick')} className='menu-acct-btn'>
+                      Jump to my level
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
           ) : (
-            <p className='font-sans text-[15px] text-white/55'>Rewards for this level are on the way.</p>
+            <p className='p-8 font-sans text-[15px] text-white/55'>Rewards for this level are on the way.</p>
           )}
         </section>
 
         {/* ── The track ───────────────────────────────────────────────── */}
         <section className='road-trackwrap' aria-label='Levels'>
           <div className='relative'>
+          <span aria-hidden='true' className='road-fade road-fade-l' style={{ opacity: ends[0] ? 0 : 1 }} />
+          <span aria-hidden='true' className='road-fade road-fade-r' style={{ opacity: ends[1] ? 0 : 1 }} />
           <button type='button' className='road-arrow road-arrow-l' onClick={() => page(-1)} disabled={ends[0]} aria-label='Earlier levels' {...sfxProps('uiClick')}>
             <Arrow dir={-1} />
           </button>
@@ -481,15 +502,16 @@ export function CareerRoad({
               <h3 className='road-coming-title'>Coming up</h3>
               <div className='flex flex-wrap gap-4'>
                 {milestones.map((m) => (
-                  <div key={m.level} className='flex flex-col items-start gap-1.5'>
+                  <div key={`${m.level}:${m.index}`} className='flex w-[112px] flex-col items-start gap-1'>
                     <RewardTile
-                      reward={m.rewards.find((r) => r.type === 'cosmetic') ?? m.rewards[0]}
-                      size={104}
+                      reward={m.reward}
+                      size={112}
                       label={false}
-                      selected={sel.level === m.level}
-                      onClick={() => jumpTo(m.level)}
+                      selected={sel.level === m.level && sel.index === m.index}
+                      onClick={() => jumpTo(m.level, m.index)}
                     />
-                    <span className='font-sans text-[13px] text-white/60'>Level {m.level}</span>
+                    <span className='mt-0.5 w-full truncate font-sans text-[13px] font-medium text-white/85'>{nameOf(m.reward)}</span>
+                    <span className='font-sans text-[12px] text-white/50'>Level {m.level}</span>
                   </div>
                 ))}
               </div>

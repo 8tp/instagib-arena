@@ -4107,6 +4107,29 @@ function Lobby({
     }),
     [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote],
   );
+  // Career Road try-on: your loadout, with the previewed reward swapped in.
+  const roadLoadout = useMemo(
+    () => ({
+      seed: settings.playerName || 'you',
+      hat: settings.hat,
+      unusual: settings.unusual,
+      railgunFinish: settings.railgunFinish,
+      railColor: settings.railColor,
+      killEffect: settings.killEffect,
+      emote: settings.emote,
+      spawnEffect: settings.spawnEffect,
+    }),
+    [
+      settings.playerName,
+      settings.hat,
+      settings.unusual,
+      settings.railgunFinish,
+      settings.railColor,
+      settings.killEffect,
+      settings.emote,
+      settings.spawnEffect,
+    ],
+  );
   const lastGain: MatchGain | null = lastProgression
     ? lastProgression.xpGained > 0
       ? {
@@ -4560,6 +4583,8 @@ function Lobby({
           profile={lobbyProfile}
           guest={!account}
           reduced={settings.reducedEffects}
+          lowSpec={settings.lowSpec}
+          loadout={roadLoadout}
           onClose={() => setRoadOpen(false)}
           onLogin={() => {
             setRoadOpen(false);
