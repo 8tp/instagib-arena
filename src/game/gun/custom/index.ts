@@ -2,6 +2,8 @@ import type { CustomGunBuild } from './types';
 import { buildPrism } from './prism';
 import { buildDragon } from './dragon';
 import { buildTesla } from './tesla';
+import { buildReaper } from './reaper';
+import { buildSeraph } from './seraph';
 
 // Every custom railgun model, keyed by RailgunFinish.model (cosmetics.ts).
 // Registered with the weapon track's registry on import (custom/load.ts
@@ -10,6 +12,8 @@ export const CUSTOM_GUN_BUILDS: Record<string, CustomGunBuild> = {
   prism: buildPrism,
   dragon: buildDragon,
   tesla: buildTesla,
+  reaper: buildReaper,
+  seraph: buildSeraph,
 };
 
 export const CUSTOM_GUN_KEYS = Object.keys(CUSTOM_GUN_BUILDS);
