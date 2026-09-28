@@ -4,7 +4,7 @@ import type { KillEffectStyle } from '../cosmetics';
 import type { Character } from './character';
 import { B, BONE_COUNT, REST_ABS } from './rig';
 import { getFxQuality, peekFxContext, type FxContext, type FxParticle, type FxShape } from '../fx-pool';
-import { FINISHER_TIMING, fxFlags } from '../fx/fx-settings';
+import { FINISHER_TIMING, fxFlags, noteDeath } from '../fx/fx-settings';
 
 // ── Instagib death: the parts ARE the gibs ───────────────────────────────────
 //
@@ -302,6 +302,7 @@ export class GibBurst {
     const R0 = _m2.copy(root.matrix);
     // The body's side axis (derez slides along it) in parent space.
     const sideX = R0.elements[0], sideZ = R0.elements[2];
+    const feetX = R0.elements[12], feetY = R0.elements[13], feetZ = R0.elements[14];
     root.position.set(0, 0, 0);
     root.rotation.set(0, 0, 0);
     root.updateMatrix();
@@ -400,6 +401,9 @@ export class GibBurst {
 
     // Colours: the victim's energy tints the default-ish styles.
     ch.getColor(this.energy);
+    // Tell a pending kill burst where this body really is, and its colour.
+    _w.set(feetX, feetY, feetZ).applyMatrix4(this.parentM);
+    noteDeath(_w.x, _w.y + 0.9, _w.z, this.energy.r, this.energy.g, this.energy.b);
     this.glowCol.copy(this.energy).lerp(WHITE, 0.3);
     ch.resetDeathLook();
     const u = ch.uniforms;

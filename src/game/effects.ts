@@ -13,7 +13,7 @@ import {
   type FxPool,
 } from './fx-pool';
 import { liveViewmodelMuzzle } from './fx/rail-state';
-import { FINISHER_TIMING } from './fx/fx-settings';
+import { FINISHER_TIMING, findDeath } from './fx/fx-settings';
 import type { AABB } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -124,6 +124,7 @@ function spray(pool: FxPool, x: number, y: number, z: number, color: number, o: 
 
 const AMBER = new THREE.Color(1.0, 0.62, 0.12);
 const kTint = new THREE.Color(); // the burst's key colour (victim / style)
+const pendingTint = new THREE.Color();
 const kHot = new THREE.Color(); // key pushed toward white — flashes, cores
 const kAcc = new THREE.Color(); // accent: key, or amber on a headshot
 const kTmp = new THREE.Color();
@@ -846,7 +847,11 @@ export class EffectsManager {
 
   // The killer's finisher burst at `at` (the victim's body centre). `tint` =
   // the victim's colour (Character.getColor) — the default-ish styles
-  // explode in it; without one each style uses its own key colour.
+  // explode in it. Without a tint the burst waits one frame for the body that
+  // bursts this frame near `at` (GibBurst.start → noteDeath) and adopts its
+  // colour AND its rendered position (remote bodies are interpolation-
+  // delayed, the kill event's victimPos is not); no body → the style's own
+  // key colour at `at`.
   spawnKillBurst(
     scene: THREE.Scene,
     at: THREE.Vector3,
@@ -854,6 +859,23 @@ export class EffectsManager {
     style: KillEffectStyle = 'pulse',
     tint?: THREE.Color | number | null,
   ) {
+    if (tint === undefined || tint === null) {
+      // No victim colour given: resolve next step() against the body that
+      // bursts this frame (its colour + rendered position — fx-settings).
+      const q = this.pending.find((b) => !b.busy);
+      if (q) {
+        q.busy = true;
+        q.scene = scene;
+        q.at.copy(at);
+        q.headshot = headshot;
+        q.style = style;
+        return;
+      }
+    }
+    this.burstNow(scene, at, headshot, style, tint);
+  }
+
+  private burstNow(scene: THREE.Scene, at: THREE.Vector3, headshot: boolean, style: KillEffectStyle, tint?: THREE.Color | number | null) {
     const ctx = getFxContext(scene);
     setKillPalette(style, headshot, tint);
     switch (style) {
@@ -875,6 +897,29 @@ export class EffectsManager {
     }
   }
 
+  // Bursts waiting one frame for their victim's body (see spawnKillBurst).
+  private readonly pending = Array.from({ length: 8 }, () => ({
+    busy: false,
+    scene: null as THREE.Scene | null,
+    at: new THREE.Vector3(),
+    headshot: false,
+    style: 'pulse' as KillEffectStyle,
+  }));
+
+  private flushPending(scene: THREE.Scene) {
+    for (const q of this.pending) {
+      if (!q.busy || q.scene !== scene) continue;
+      q.busy = false;
+      q.scene = null;
+      const d = findDeath(q.at.x, q.at.y, q.at.z, 3, 250);
+      if (d) {
+        q.at.set(d.x, d.y, d.z);
+        pendingTint.setRGB(d.r, d.g, d.b);
+        this.burstNow(scene, q.at, q.headshot, q.style, pendingTint);
+      } else this.burstNow(scene, q.at, q.headshot, q.style, null);
+    }
+  }
+
   // Cosmetic-only materialize burst at a (re)spawn point; `beam` is the default.
   // `firstPerson`: the LOCAL player's own spawn, seen from eye height inside
   // it — only the ground ring. The column/slab, torso flash and rising motes
@@ -891,6 +936,7 @@ export class EffectsManager {
   }
 
   step(dt: number, scene: THREE.Scene) {
+    this.flushPending(scene);
     const ctx = getFxContext(scene);
     ctx.managed = true;
     ctx.step(dt);
@@ -907,12 +953,14 @@ export class EffectsManager {
   // and the point lights — removing the lights re-keys (recompiles) every lit
   // material on the next frame.
   clear(scene: THREE.Scene) {
+    for (const q of this.pending) if (q.scene === scene) { q.busy = false; q.scene = null; }
     peekFxContext(scene)?.clear();
   }
 
   // Clears every live effect and releases the scene's pooled GPU resources
   // (teardown).
   dispose(scene: THREE.Scene) {
+    for (const q of this.pending) if (q.scene === scene) { q.busy = false; q.scene = null; }
     disposeFxContext(scene);
   }
 }
