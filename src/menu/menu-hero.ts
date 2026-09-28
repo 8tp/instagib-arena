@@ -57,7 +57,7 @@ const SPAWN_SECONDS = 1.1; // materialise-in on first show
 const FIRST_EMOTE_S = 5.5;
 const EMOTE_GAP_MIN = 20;
 const EMOTE_GAP_MAX = 30;
-const RIM = 4.2;
+const RIM = 3.6;
 const HERO_HEIGHT = 0.7; // the combatant stands ~70% of the viewport tall
 const BODY_M = 1.9; // helmet-crown height in metres (what HERO_HEIGHT measures)
 const FOOT_REST_Y = 0.095; // planted ankle height (rig rest)
@@ -138,10 +138,10 @@ export class MenuHero {
     fill.position.set(3.5, 1.2, 3);
     scene.add(fill);
     this.rim = new THREE.DirectionalLight(this.color, RIM);
-    this.rim.position.set(2.4, 2.2, -5);
+    this.rim.position.set(2.8, 1.3, -5);
     scene.add(this.rim);
     this.back = new THREE.DirectionalLight(this.color, RIM * 0.6);
-    this.back.position.set(-2.6, 2.8, -5);
+    this.back.position.set(-3, 1.6, -5);
     scene.add(this.back);
 
     // A dark vignette behind the body (camera-facing, in the scene — not the
