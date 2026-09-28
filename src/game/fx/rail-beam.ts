@@ -26,12 +26,15 @@ import * as THREE from 'three';
 // single frame reads as a rainbow — and roll it over time; 'gilded' rails
 // stay a pale white-gold.
 //
-// Near the camera: the core/halo fade out within ~2 m, the helix is held to
-// ≤ 30 % within 2 m and the flare fades inside ~4 m, so a rail passing your
-// head never draws screen-sized loops. Own beams (the local shooter's) also
-// clear their first few metres almost at once so the line from the gun to the
-// crosshair never hangs in front of the aim. Pieces widened past their world
-// size by the pixel clamps dim to match, so far trails stay crisp.
+// Near the camera: the core/halo fade out within ~2 m, the helix is gone
+// within 1.5 m (full only from 4 m) and never draws a loop larger than
+// ~12 px in radius, and the flare fades inside ~4 m — a rail passing your
+// head never draws screen-sized loops. The back half of each helix turn runs
+// dimmer + thinner so it reads as a spiral round the core. Own beams (the
+// local shooter's) also clear their first few metres almost at once so the
+// line from the gun to the crosshair never hangs in front of the aim. Pieces
+// widened past their world size by the pixel clamps dim to match, so far
+// trails stay crisp.
 //
 // One pool per scene (owned by the scene's FxContext); the oldest trail is
 // recycled when every slot is live. Low-spec (setQuality < 1) coarsens the
@@ -66,6 +69,12 @@ export type RailBeamOptions = {
 // Shared: drawing-buffer height for the pixel clamp, refreshed right before
 // any beam draws (onBeforeRender), so every material reads the live value.
 const viewH = { value: 900 };
+// Reduced effects (accessibility), shared by every beam material: the white
+// filament flash is muted and the helix glints stop twinkling.
+const calm = { value: 0 };
+export function setRailBeamsReduced(on: boolean): void {
+  calm.value = on ? 1 : 0;
+}
 const tmpSize = new THREE.Vector2();
 function syncViewH(renderer: THREE.WebGLRenderer) {
   const rt = renderer.getRenderTarget();
@@ -79,6 +88,7 @@ uniform float uAge;
 uniform float uLife;
 uniform float uOwn;
 uniform float uViewH;
+uniform float uCalm;
 // World size of one pixel at view depth d.
 float pixelSize(float d) { return 2.0 * max(d, 0.05) / (projectionMatrix[1][1] * uViewH); }
 // The core + halo fade out within ~2 m of the camera.
@@ -152,6 +162,7 @@ uniform float uLife;
 uniform float uOwn;
 uniform float uMode;
 uniform float uSeed;
+uniform float uCalm;
 ${NEAR_FADE}
 ${HUE}
 varying float vX;
@@ -171,7 +182,7 @@ void main() {
   float coreLife = uLife * 0.72;
   float haloLife = uLife * 0.6;
   // White-hot for ~60 ms, then gone.
-  float filI = 2.4 * (1.0 - smoothstep(0.0, ${WHITE_HOT.toFixed(3)}, t));
+  float filI = 2.4 * (1.0 - smoothstep(0.0, ${WHITE_HOT.toFixed(3)}, t)) * (1.0 - 0.7 * uCalm);
   // The core blooms a little while fresh, then settles under the threshold.
   float coreI = 0.9 * exp(-t * 12.0) + 1.15 * pow(max(0.0, 1.0 - t / coreLife), 1.5);
   // The halo never crosses the bloom threshold (peak channel ≤ ~0.75).
@@ -215,15 +226,24 @@ void main() {
   side = sl > 1e-6 ? side / sl : radial;
   float px = pixelSize(-(viewMatrix * vec4(C, 1.0)).z);
   // ~2 px wide at mid range (never a hairline), ≤ ~4.5 px up close.
-  float hwWorld = mix(0.011, 0.015, spread);
-  float hw = clamp(hwWorld, px * 1.0, px * 2.2);
-  float dim = max(0.35, min(1.0, hwWorld / hw));
+  // Depth cue: the half of each turn behind the beam (away from the eye)
+  // runs dimmer and thinner, so the ribbon reads as a spiral wrapping the
+  // core rather than a flat sine beside it.
+  vec3 toEye = normalize(cameraPosition - (C - radial * r));
+  float front = smoothstep(-0.35, 0.35, dot(radial, toEye));
+  float hwWorld = mix(0.011, 0.015, spread) * mix(0.65, 1.0, front);
+  float hw = clamp(hwWorld, px * mix(0.75, 1.0, front), px * 2.2);
+  float dim = max(0.35, min(1.0, hwWorld / hw)) * mix(0.4, 1.0, front);
   // Dissipation: the helix breaks into ring segments that drop out.
   float n = hash(floor(s / ${(HELIX_TURN / 3).toFixed(3)}) + uPhase * 13.0);
   float keep = 1.0 - smoothstep(n - 0.12, n + 0.12, k * 1.3 - 0.2);
-  // Near the eye: ≤ 30 % within 2 m, full from 4 m.
+  // Near the eye: invisible within 1.5 m, full from 4 m…
   float dc = length(cameraPosition - C);
-  float near = 0.3 * smoothstep(0.5, 2.0, dc) + 0.7 * smoothstep(2.0, 4.0, dc);
+  float near = smoothstep(1.5, 4.0, dc);
+  // …and no loop ever draws bigger than ~a crosshair ring on screen: fade
+  // any stretch whose projected radius passes ~12 px.
+  float rpx = r / px;
+  near *= 1.0 - smoothstep(12.0, 22.0, rpx);
   // Dims as it spreads (alpha ∝ 1 − r / rMax).
   float grow = 1.0 - 0.7 * spread;
   vX = position.y;
@@ -241,6 +261,7 @@ uniform float uOwn;
 uniform float uMode;
 uniform float uPhase;
 uniform float uSeed;
+uniform float uCalm;
 ${NEAR_FADE}
 ${HUE}
 varying float vX;
@@ -258,7 +279,7 @@ void main() {
   float f = fract(vS * 2.5) - 0.5;
   float spot = exp(-f * f * 45.0) * step(0.55, h);
   float tw = 0.5 + 0.5 * sin(uAge * 36.0 + h * 50.0);
-  float spark = spot * tw * tw * (1.0 - smoothstep(0.05, 0.6, uAge / uLife));
+  float spark = spot * tw * tw * (1.0 - smoothstep(0.05, 0.6, uAge / uLife)) * (1.0 - uCalm);
   float head = smoothstep(0.3, 0.8, vS);
   // Peak ~1.15: under the bloom threshold, so the spiral stays a crisp line.
   vec3 col = (c * 1.15 + mix(vec3(1.0), base, 0.35) * spark * 1.6) * a * vFade * head * nearFade(vS, uAge);
@@ -323,6 +344,7 @@ type Uniforms = {
   uLife: { value: number };
   uOwn: { value: number };
   uViewH: { value: number };
+  uCalm: { value: number };
   uMode: { value: number };
   uSeed: { value: number };
 };
@@ -394,10 +416,11 @@ export class RailBeams {
   private readonly helix = buildHelixAttributes();
   private quality = 1;
 
-  constructor() {
+  // `slots`: pool size (a 1-slot pool is enough to warm the shader cache).
+  constructor(slots = SLOTS) {
     this.group.name = 'rail-beams';
     this.group.userData.shared = true;
-    for (let i = 0; i < SLOTS; i++) this.slots.push(this.buildSlot());
+    for (let i = 0; i < slots; i++) this.slots.push(this.buildSlot());
   }
 
   private buildSlot(): Slot {
@@ -408,6 +431,7 @@ export class RailBeams {
       uLife: { value: BEAM_LIFE },
       uOwn: { value: 0 },
       uViewH: viewH,
+      uCalm: calm,
       uMode: { value: 0 },
       uSeed: { value: 0 },
     };

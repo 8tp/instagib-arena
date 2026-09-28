@@ -7,7 +7,7 @@ import { GunLab as Lab } from './gun-lab';
 // third-person guns on combatants. See gun-lab.ts for the URL params.
 export default function GunLab() {
   const ref = useRef<HTMLCanvasElement>(null);
-  const [labels, setLabels] = useState<Array<{ x: number; y: number; text: string }>>([]);
+  const [labels, setLabels] = useState<Array<{ x: number; y: number; text: string; anchor?: 'below' | 'left' }>>([]);
   const [caption, setCaption] = useState('');
   useEffect(() => {
     const canvas = ref.current;
@@ -35,7 +35,7 @@ export default function GunLab() {
             position: 'absolute',
             left: `${l.x * 100}%`,
             top: `${l.y * 100}%`,
-            transform: 'translate(-50%, 0)',
+            transform: l.anchor === 'left' ? 'translate(calc(-100% - 10px), -50%)' : 'translate(-50%, 0)',
             color: '#c9d4e4',
             fontFamily: 'monospace',
             fontSize: 13,

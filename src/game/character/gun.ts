@@ -3,7 +3,7 @@ import type { RailgunFinish } from '../cosmetics';
 import { RAIL_COOLDOWN } from '../constants';
 import { nowMs } from '../fx/rail-state';
 import { BARREL_Y, COIL_COUNT, MUZZLE_Z, PART, railgunGeometrySplit } from '../gun/gun-geometry';
-import { GunMaterial, STOCK_FINISH } from '../gun/gun-material';
+import { GunMaterial, STOCK_FINISH, gunFx } from '../gun/gun-material';
 import type { Character } from './character';
 
 // Third-person railgun: the low-LOD model (grip/trigger at the origin, barrel
@@ -19,7 +19,8 @@ import type { Character } from './character';
 //     charge (notifyFire / setCharge). At rest the glow is calm (under the
 //     bloom threshold); a shot flashes it white-hot and it refills over the
 //     rail cooldown.
-// Two draws per gun (+ the shell's shadow).
+// Two draws per gun (+ the shell's shadow), plus a tiny claw flare for ~90 ms
+// after each shot.
 
 // World size of the third-person gun (~0.8 m in hand).
 export const GUN_SCALE = 0.6;
@@ -123,11 +124,46 @@ function energyMaterial(u: EnergyUniforms): THREE.MeshBasicMaterial {
   return m;
 }
 
+// ── Claw flare ──────────────────────────────────────────────────────────────
+// The shot cue on a third-person gun: a small camera-facing ring on the muzzle
+// claw in the shooter's rail colour — ≤ 0.2 m across its radius, gone in
+// ~90 ms, bright enough to catch the eye but too small to bloom over the
+// shooter. Hidden (not drawn) between shots.
+const CLAW_RADIUS = 0.2; // m
+const CLAW_LIFE = 0.09; // s
+let clawGeo: THREE.PlaneGeometry | null = null;
+const CLAW_VERT = /* glsl */ `
+uniform float uSize;
+varying vec2 vQ;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  vQ = position.xy;
+  mv.xy += position.xy * uSize;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+const CLAW_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform float uK;
+varying vec2 vQ;
+void main() {
+  float r = length(vQ);
+  if (r > 1.0 || uK <= 0.0) discard;
+  float ring = exp(-pow((r - 0.55) / 0.14, 2.0));
+  float core = exp(-r * r * 16.0);
+  vec3 c = uColor * (ring * 1.5 + core * 2.0) * uK * (1.0 - r);
+  gl_FragColor = vec4(c, 1.0);
+  #include <colorspace_fragment>
+}
+`;
+
 // The gun attached to a combatant. A THREE.Group (callers that just hold it
 // keep working) with drive hooks for remotes/bots.
 export class AttachedRailgun extends THREE.Group {
   private readonly shell: THREE.Mesh<THREE.BufferGeometry, GunMaterial>;
   private readonly energy: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  private readonly claw: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  private readonly clawK = { value: 0 };
   private readonly u: EnergyUniforms = {
     uAccent: { value: new THREE.Color() },
     uHot: { value: new THREE.Color() },
@@ -150,12 +186,37 @@ export class AttachedRailgun extends THREE.Group {
     // Geometry + material are shared caches: scene teardown must skip them.
     this.shell.userData.shared = true;
     this.shell.onBeforeRender = () => {
-      this.shell.material.gun.uTime.value = (nowMs() / 1000) % 3600;
+      const u = this.shell.material.gun;
+      u.uTime.value = gunFx.reduced ? 0 : (nowMs() / 1000) % 3600;
+      u.uCalm.value = gunFx.reduced ? 1 : 0;
     };
     this.energy = new THREE.Mesh(geo.energy, energyMaterial(this.u));
     this.energy.name = 'railgun-3p-energy';
+    // Shared cached geometry: scene teardown must skip it (the per-gun
+    // material is freed by dispose()).
+    this.energy.userData.shared = true;
     this.energy.onBeforeRender = () => this.drive(nowMs());
-    this.add(this.shell, this.energy);
+    clawGeo ??= new THREE.PlaneGeometry(2, 2);
+    this.claw = new THREE.Mesh(
+      clawGeo,
+      new THREE.ShaderMaterial({
+        uniforms: { uColor: this.u.uRail, uK: this.clawK, uSize: { value: CLAW_RADIUS } },
+        vertexShader: CLAW_VERT,
+        fragmentShader: CLAW_FRAG,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      }),
+    );
+    this.claw.name = 'railgun-3p-claw';
+    this.claw.userData.shared = true; // shared quad; material freed by dispose()
+    this.claw.position.set(0, BARREL_Y, MUZZLE_Z - 0.02);
+    this.claw.frustumCulled = false;
+    this.claw.visible = false;
+    this.claw.renderOrder = 2;
+    this.claw.onBeforeRender = () => this.drive(nowMs());
+    this.add(this.shell, this.energy, this.claw);
     this.setFinish(f);
   }
 
@@ -173,6 +234,8 @@ export class AttachedRailgun extends THREE.Group {
   // cooldown (unless setCharge drives the refill explicitly).
   notifyFire(railColor?: number) {
     this.fireMs = nowMs();
+    this.clawK.value = 1;
+    this.claw.visible = true;
     if (railColor !== undefined) {
       this.hasRail = true;
       this.u.uRail.value.setHex(railColor);
@@ -204,11 +267,17 @@ export class AttachedRailgun extends THREE.Group {
     d.y = 0;
     d.z = fill;
     d.w = flash;
+    // Claw flare: ≤ 90 ms. Visibility takes effect from the next frame (the
+    // render list is already built), so it never lingers more than a frame.
+    const k = since >= 0 && since < CLAW_LIFE ? Math.exp(-since * 22) : 0;
+    this.clawK.value = k;
+    if (k <= 0) this.claw.visible = false;
   }
 
   dispose() {
     this.removeFromParent();
     this.energy.material.dispose(); // the shell + geometry are shared caches
+    this.claw.material.dispose();
   }
 }
 
