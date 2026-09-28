@@ -656,7 +656,11 @@ export function getBodyGeometry(): BodyGeometry {
 //     edge across the band; light slits glow in the player colour;
 //   • a player-colour fresnel rim + an emissive lift for readability — the
 //     same treatment for everyone;
-//   • gib state: charred albedo (uBurn) and hot glowing seams (uGlow/uGlowCol).
+//   • gib state: charred albedo (uBurn) and hot glowing seams (uGlow/uGlowCol);
+//   • finisher looks (death animations only, all behind uniform branches so
+//     a living body pays nothing): noise dissolve with a glowing front, ash,
+//     a rising char line, glassy crystal, derez bands that slide + blink out,
+//     crawling overload veins and per-chunk rainbow seams.
 
 export type CharacterUniforms = {
   uPlayer: { value: THREE.Color };
@@ -668,10 +672,51 @@ export type CharacterUniforms = {
   uGlow: { value: number };
   uGlowCol: { value: THREE.Color };
   uBurn: { value: number };
+  // ── Finisher looks (death animations, gibs.ts). All zero / off when alive. ──
+  uFxTime: { value: number }; // seconds since the death began (animated noise)
+  uFxCalm: { value: number }; // 1 = reduced effects: no blinking / strobing
+  // Noise dissolve: fragments whose key < uDissolve are gone; a glowing rim
+  // (uEdgeCol) runs along the front. uDissolveH biases the key by height
+  // (+ top first, − bottom first; 0 = pure noise).
+  uDissolve: { value: number };
+  uDissolveH: { value: number };
+  uEdgeCol: { value: THREE.Color };
+  uAsh: { value: number }; // flash-burnt ash: near-black, cracks glow uEdgeCol
+  uCharLine: { value: number }; // pyre: char front height (m, rest space); < −1 = off
+  uCrystal: { value: number }; // glassy crystal armour (shatter)
+  uCrystalCol: { value: THREE.Color };
+  // Derez: x = band height (0 = off), y = slide progress 0..1.
+  uBands: { value: THREE.Vector2 };
+  uBandDir: { value: THREE.Vector3 }; // slide axis (mesh-local = the body's parent space)
+  uBandT: { value: Float32Array }; // per-band blink-out time (s)
+  uBandO: { value: Float32Array }; // per-band signed slide distance (m)
+  uArc: { value: number }; // overload: crawling surface lightning
+  uArcCol: { value: THREE.Color };
+  uRainbow: { value: number }; // prism: per-chunk rainbow seam glow
+  uFlash: { value: THREE.Color }; // whole-body emissive flash (the frag's white-hot beat)
 };
 
+export const DEREZ_BANDS = 24;
 const VISOR_Y = 1.656; // rest-space centre of the visor band
 const VISOR_HALF = 0.023;
+
+// Cheap 3-D value noise (fragment only, behind uniform branches).
+const NOISE_GLSL = `
+float igHash(vec3 p) {
+  p = fract(p * 0.3183099 + 0.1);
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float igNoise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(igHash(i), igHash(i + vec3(1, 0, 0)), f.x), mix(igHash(i + vec3(0, 1, 0)), igHash(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(igHash(i + vec3(0, 0, 1)), igHash(i + vec3(1, 0, 1)), f.x), mix(igHash(i + vec3(0, 1, 1)), igHash(i + vec3(1, 1, 1)), f.x), f.y),
+    f.z);
+}
+`;
 
 // Defined once at module scope so every character material hashes to the same
 // compiled program (three keys custom programs on onBeforeCompile's source).
@@ -681,7 +726,19 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
-      '#include <common>\nattribute vec4 aMat;\nattribute vec3 aEdge;\nvarying vec4 vMat;\nvarying vec3 vEdge;\nvarying vec3 vBary;\nvarying vec3 vRest;',
+      [
+        '#include <common>',
+        'attribute vec4 aMat;',
+        'attribute vec3 aEdge;',
+        'varying vec4 vMat;',
+        'varying vec3 vEdge;',
+        'varying vec3 vBary;',
+        'varying vec3 vRest;',
+        'varying float vBone;',
+        'uniform vec2 uBands;',
+        'uniform vec3 uBandDir;',
+        `uniform float uBandO[${DEREZ_BANDS}];`,
+      ].join('\n'),
     )
     .replace(
       '#include <begin_vertex>',
@@ -690,8 +747,20 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'vMat = aMat;',
         'vEdge = aEdge;',
         'vRest = position;',
+        'vBone = skinIndex.x;',
         'int igK = gl_VertexID % 3;',
         'vBary = vec3(igK == 0 ? 1.0 : 0.0, igK == 1 ? 1.0 : 0.0, igK == 2 ? 1.0 : 0.0);',
+      ].join('\n'),
+    )
+    .replace(
+      '#include <skinning_vertex>',
+      [
+        '#include <skinning_vertex>',
+        // Derez: horizontal bands slide apart along the body's side axis.
+        'if (uBands.x > 0.0) {',
+        `  int igB = clamp(int(floor(vRest.y / uBands.x)), 0, ${DEREZ_BANDS - 1});`,
+        '  transformed += uBandDir * uBandO[igB] * uBands.y;',
+        '}',
       ].join('\n'),
     );
   shader.fragmentShader = shader.fragmentShader
@@ -703,6 +772,7 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'varying vec3 vEdge;',
         'varying vec3 vBary;',
         'varying vec3 vRest;',
+        'varying float vBone;',
         'uniform vec3 uPlayer;',
         'uniform vec3 uVisorCore;',
         'uniform vec3 uVisorEdge;',
@@ -712,12 +782,56 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'uniform float uGlow;',
         'uniform vec3 uGlowCol;',
         'uniform float uBurn;',
+        'uniform float uFxTime;',
+        'uniform float uFxCalm;',
+        'uniform float uDissolve;',
+        'uniform float uDissolveH;',
+        'uniform vec3 uEdgeCol;',
+        'uniform float uAsh;',
+        'uniform float uCharLine;',
+        'uniform float uCrystal;',
+        'uniform vec3 uCrystalCol;',
+        'uniform vec2 uBands;',
+        `uniform float uBandT[${DEREZ_BANDS}];`,
+        'uniform float uArc;',
+        'uniform vec3 uArcCol;',
+        'uniform float uRainbow;',
+        'uniform vec3 uFlash;',
+        NOISE_GLSL,
       ].join('\n'),
     )
     .replace(
       '#include <color_fragment>',
       [
         '#include <color_fragment>',
+        // ── Finisher: dissolve / derez blink (discard first, cheap exit) ──
+        'float igCut = 0.0;',
+        'if (uDissolve > 0.0) {',
+        '  float igN = igNoise(vRest * 9.0) * 0.65 + igNoise(vRest * 23.0) * 0.35;',
+        '  float igH = clamp(vRest.y / 1.85, 0.0, 1.0);',
+        '  float igHb = uDissolveH >= 0.0 ? 1.0 - igH : igH;',
+        '  float igKey = mix(igN, igHb * 0.8 + igN * 0.2, abs(uDissolveH));',
+        '  if (igKey < uDissolve) discard;',
+        '  igCut = 1.0 - smoothstep(0.0, 0.07, igKey - uDissolve);',
+        '}',
+        'float igBandGlow = 0.0;',
+        'if (uBands.x > 0.0) {',
+        `  int igB = clamp(int(floor(vRest.y / uBands.x)), 0, ${DEREZ_BANDS - 1});`,
+        '  float igTt = uFxTime - uBandT[igB];',
+        '  if (igTt > 0.1) discard;',
+        '  if (igTt > 0.0 && uFxCalm < 0.5 && fract(igTt * 30.0) < 0.5) discard;',
+        '  float igBy = fract(vRest.y / uBands.x);',
+        '  igBandGlow = 1.0 - smoothstep(0.0, 0.14, min(igBy, 1.0 - igBy));',
+        '  if (igTt > 0.0) igBandGlow += 1.5;',
+        '}',
+        // Pyre char front / vaporize ash → one local "ash" amount.
+        'float igAsh = uAsh;',
+        'float igFront = 0.0;',
+        'if (uCharLine > -1.0) {',
+        '  float igL = vRest.y + (igNoise(vRest * 11.0) - 0.5) * 0.14;',
+        '  igAsh = max(igAsh, 1.0 - smoothstep(uCharLine - 0.05, uCharLine + 0.02, igL));',
+        '  igFront = 1.0 - smoothstep(0.0, 0.07, abs(igL - uCharLine));',
+        '}',
         // Crease distance: only hard edges count (soft edges → 1).
         'vec3 igD = mix(vec3(1.0), vBary, vEdge);',
         'float igM = min(min(igD.x, igD.y), igD.z);',
@@ -729,23 +843,27 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'diffuseColor.rgb = mix(diffuseColor.rgb, min(diffuseColor.rgb * 1.7 + 0.1, vec3(1.0)), igEdge * 0.65);',
         // Gibs: the plates char as they burst.
         'diffuseColor.rgb *= 1.0 - 0.72 * uBurn;',
+        // Finisher albedo: ash, crystal, derez (Tron-dark).
+        'diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.035, 0.032, 0.03), igAsh);',
+        'diffuseColor.rgb = mix(diffuseColor.rgb, uCrystalCol * 0.18, uCrystal);',
+        'if (uBands.x > 0.0) diffuseColor.rgb *= 0.12;',
       ].join('\n'),
     )
     .replace(
       '#include <roughnessmap_fragment>',
-      'float roughnessFactor = clamp(vMat.y - igEdge * 0.15 + uBurn * 0.3, 0.05, 1.0);',
+      'float roughnessFactor = clamp(mix(vMat.y - igEdge * 0.15 + uBurn * 0.3 + igAsh * 0.6, 0.06, uCrystal), 0.05, 1.0);',
     )
-    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMat.z * (1.0 - 0.5 * uBurn);')
+    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMat.z * (1.0 - 0.5 * uBurn) * (1.0 - igAsh) * (1.0 - uCrystal);')
     .replace(
       '#include <lights_physical_fragment>',
       [
         '#include <lights_physical_fragment>',
         // Lacquer only on the painted plates; fabric sheen only on the suit.
         '#ifdef USE_CLEARCOAT',
-        'material.clearcoat *= vMat.x * (1.0 - uBurn);',
+        'material.clearcoat = max(material.clearcoat * vMat.x * (1.0 - uBurn) * (1.0 - igAsh), uCrystal);',
         '#endif',
         '#ifdef USE_SHEEN',
-        'material.sheenColor *= (1.0 - vMat.x) * (1.0 - step(0.5, vMat.z)) * (1.0 - step(0.01, vMat.w));',
+        'material.sheenColor *= (1.0 - vMat.x) * (1.0 - step(0.5, vMat.z)) * (1.0 - step(0.01, vMat.w)) * (1.0 - igAsh);',
         '#endif',
       ].join('\n'),
     )
@@ -758,13 +876,39 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'float igCore = 1.0 - smoothstep(0.08, 0.6, igVy);',
         'vec3 igVisor = mix(uVisorEdge * (1.0 - 0.45 * igVy * igVy), uVisorCore, igCore);',
         'float igIsVisor = step(0.95, vMat.w);',
-        'totalEmissiveRadiance += igIsVisor * igVisor + (1.0 - igIsVisor) * uVisorEdge * vMat.w * 0.8;',
-        'totalEmissiveRadiance += uPlayer * (vMat.x * uLift);',
+        'float igAlive = (1.0 - igAsh) * (1.0 - 0.7 * uCrystal);',
+        'totalEmissiveRadiance += (igIsVisor * igVisor + (1.0 - igIsVisor) * uVisorEdge * vMat.w * 0.8) * igAlive;',
+        'totalEmissiveRadiance += uPlayer * (vMat.x * uLift) * igAlive;',
         'float igFres = 1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);',
         'float igRim = igFres * igFres * (0.4 + 0.6 * igFres);',
-        'totalEmissiveRadiance += uRim * (igRim * uRimStr * (0.55 + 0.45 * vMat.x) * (1.0 - uBurn));',
+        'totalEmissiveRadiance += uRim * (igRim * uRimStr * (0.55 + 0.45 * vMat.x) * (1.0 - uBurn) * igAlive);',
         // Gib heat: glowing seams + silhouette, suit (the inside) smoulders.
-        'totalEmissiveRadiance += uGlowCol * uGlow * (igEdgeRaw * 1.1 + igFres * igFres * 1.6 + 0.22 * (1.0 - vMat.x));',
+        // Prism swaps the glow colour for a per-chunk rainbow.
+        'vec3 igGlowCol = uGlowCol;',
+        'if (uRainbow > 0.0) {',
+        '  vec3 igHue = 0.5 + 0.5 * cos(6.2831853 * (vBone * 0.137 + uFxTime * 0.9 + vec3(0.0, 0.33, 0.67)));',
+        '  igGlowCol = mix(uGlowCol, igHue * 2.4, uRainbow);',
+        '}',
+        'totalEmissiveRadiance += igGlowCol * uGlow * (igEdgeRaw * 1.1 + igFres * igFres * 1.6 + 0.22 * (1.0 - vMat.x));',
+        // Finisher emission.
+        'totalEmissiveRadiance += uFlash;',
+        'if (igCut > 0.0) totalEmissiveRadiance += uEdgeCol * igCut * 2.2;',
+        'if (igAsh > 0.0) {',
+        '  float igCr = 1.0 - smoothstep(0.0, 0.08, abs(igNoise(vRest * 16.0) - 0.5));',
+        '  totalEmissiveRadiance += uEdgeCol * igAsh * (igCr * 1.3 + igEdgeRaw * 0.5);',
+        '}',
+        'totalEmissiveRadiance += uEdgeCol * igFront * 2.6;',
+        'if (uCrystal > 0.0) totalEmissiveRadiance += uCrystalCol * uCrystal * (igFres * igFres * 1.9 + igEdgeRaw * 1.7 + 0.05);',
+        'if (uBands.x > 0.0) {',
+        '  float igScan = pow(0.5 + 0.5 * sin(vRest.y * 190.0), 14.0);',
+        '  totalEmissiveRadiance += uEdgeCol * (igEdgeRaw * 1.3 + igBandGlow * 1.8 + igScan * 0.4 + igFres * 0.7);',
+        '}',
+        'if (uArc > 0.0) {',
+        '  float igA = igNoise(vRest * 7.0 + vec3(0.0, uFxTime * 6.0, uFxTime * 2.0));',
+        '  float igA2 = igNoise(vRest * 13.0 - vec3(uFxTime * 5.0, 0.0, 0.0));',
+        '  float igVein = (1.0 - smoothstep(0.0, 0.045, abs(igA - 0.5))) + 0.6 * (1.0 - smoothstep(0.0, 0.03, abs(igA2 - 0.5)));',
+        '  totalEmissiveRadiance += uArcCol * igVein * uArc;',
+        '}',
       ].join('\n'),
     );
 }
@@ -780,6 +924,23 @@ export function createCharacterMaterial(): { material: THREE.MeshPhysicalMateria
     uGlow: { value: 0 },
     uGlowCol: { value: new THREE.Color(1, 1, 1) },
     uBurn: { value: 0 },
+    uFxTime: { value: 0 },
+    uFxCalm: { value: 0 },
+    uDissolve: { value: 0 },
+    uDissolveH: { value: 0 },
+    uEdgeCol: { value: new THREE.Color(0, 0, 0) },
+    uAsh: { value: 0 },
+    uCharLine: { value: -2 },
+    uCrystal: { value: 0 },
+    uCrystalCol: { value: new THREE.Color(0.8, 0.9, 1) },
+    uBands: { value: new THREE.Vector2(0, 0) },
+    uBandDir: { value: new THREE.Vector3(1, 0, 0) },
+    uBandT: { value: new Float32Array(DEREZ_BANDS) },
+    uBandO: { value: new Float32Array(DEREZ_BANDS) },
+    uArc: { value: 0 },
+    uArcCol: { value: new THREE.Color(0.6, 0.8, 1) },
+    uRainbow: { value: 0 },
+    uFlash: { value: new THREE.Color(0, 0, 0) },
   };
   const material = new THREE.MeshPhysicalMaterial({
     vertexColors: true,
@@ -795,4 +956,101 @@ export function createCharacterMaterial(): { material: THREE.MeshPhysicalMateria
   material.userData.charUniforms = uniforms;
   material.onBeforeCompile = injectCharacterShader;
   return { material, uniforms };
+}
+
+// Reset every finisher uniform to "alive".
+export function resetDeathLook(u: CharacterUniforms): void {
+  u.uGlow.value = 0;
+  u.uBurn.value = 0;
+  u.uFxTime.value = 0;
+  u.uFxCalm.value = 0;
+  u.uDissolve.value = 0;
+  u.uDissolveH.value = 0;
+  u.uEdgeCol.value.setRGB(0, 0, 0);
+  u.uAsh.value = 0;
+  u.uCharLine.value = -2;
+  u.uCrystal.value = 0;
+  u.uBands.value.set(0, 0);
+  u.uArc.value = 0;
+  u.uRainbow.value = 0;
+  u.uFlash.value.setRGB(0, 0, 0);
+}
+
+// ── Surface samples (finisher particles) ─────────────────────────────────────
+// Area-weighted random points on the body's surface in REST model space, with
+// the owning bone and a surface class, so a death can spawn voxels / shards /
+// ash exactly where the armour was. Deterministic (seeded), built once.
+
+export const SAMPLE_ARMOR = 0; // painted plate (player colour)
+export const SAMPLE_SUIT = 1; // dark under-suit / gunmetal
+export const SAMPLE_GLOW = 2; // visor / light slits
+
+export type BodySamples = {
+  count: number;
+  pos: Float32Array; // xyz, rest model space
+  bone: Uint8Array;
+  kind: Uint8Array;
+};
+
+let samples: BodySamples | null = null;
+
+export function getBodySamples(): BodySamples {
+  if (samples) return samples;
+  const g = getBodyGeometry().geometry;
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  const skin = g.getAttribute('skinIndex') as THREE.BufferAttribute;
+  const mat = g.getAttribute('aMat') as THREE.BufferAttribute;
+  const tris = pos.count / 3;
+  const cum = new Float64Array(tris);
+  let total = 0;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  for (let t = 0; t < tris; t++) {
+    a.fromBufferAttribute(pos, t * 3);
+    b.fromBufferAttribute(pos, t * 3 + 1);
+    c.fromBufferAttribute(pos, t * 3 + 2);
+    total += b.sub(a).cross(c.sub(a)).length() * 0.5;
+    cum[t] = total;
+  }
+  const N = 256;
+  const out: BodySamples = { count: N, pos: new Float32Array(N * 3), bone: new Uint8Array(N), kind: new Uint8Array(N) };
+  let seed = 1234567;
+  const rand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  for (let i = 0; i < N; i++) {
+    // Stratified pick along the cumulative area.
+    const r = ((i + rand()) / N) * total;
+    let lo = 0, hi = tris - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cum[mid] < r) lo = mid + 1;
+      else hi = mid;
+    }
+    let u = rand(), v = rand();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    const w = 1 - u - v;
+    for (let k = 0; k < 3; k++) {
+      out.pos[i * 3 + k] =
+        pos.getComponent(lo * 3, k) * w + pos.getComponent(lo * 3 + 1, k) * u + pos.getComponent(lo * 3 + 2, k) * v;
+    }
+    out.bone[i] = skin.getX(lo * 3);
+    const emit = mat.getW(lo * 3);
+    out.kind[i] = emit > 0.5 ? SAMPLE_GLOW : mat.getX(lo * 3) > 0.5 ? SAMPLE_ARMOR : SAMPLE_SUIT;
+  }
+  // Shuffle (deterministic) so any prefix is spread over the whole body.
+  for (let i = N - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    for (let k = 0; k < 3; k++) {
+      const tmp = out.pos[i * 3 + k];
+      out.pos[i * 3 + k] = out.pos[j * 3 + k];
+      out.pos[j * 3 + k] = tmp;
+    }
+    const tb = out.bone[i]; out.bone[i] = out.bone[j]; out.bone[j] = tb;
+    const tk = out.kind[i]; out.kind[i] = out.kind[j]; out.kind[j] = tk;
+  }
+  samples = out;
+  return out;
 }

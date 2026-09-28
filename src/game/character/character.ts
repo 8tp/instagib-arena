@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createCharacterMaterial, getBodyGeometry, type CharacterUniforms } from './body';
+import { createCharacterMaterial, getBodyGeometry, resetDeathLook, type CharacterUniforms } from './body';
 import { B, Rig, SOCKETS, type SocketName } from './rig';
 
 // One arena combatant: a Rig (flat bones + FK/IK), ONE SkinnedMesh sharing the
@@ -134,6 +134,12 @@ export class Character {
   // Gib char: 0 = clean paint … 1 = scorched plates.
   setBurn(v: number): void {
     this.uniforms.uBurn.value = v;
+  }
+
+  // Back to a living body: clears every death-animation look (glow, char,
+  // dissolve, ash, crystal, derez bands, overload veins, rainbow).
+  resetDeathLook(): void {
+    resetDeathLook(this.uniforms);
   }
 
   dispose(): void {
