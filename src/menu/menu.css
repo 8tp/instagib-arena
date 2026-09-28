@@ -559,6 +559,10 @@ button.menu-reward:focus-visible {
 }
 
 /* ── Right column + challenges widget ──────────────────────────────────── */
+/* The dock never outgrows its column (narrow: the overlay lane). */
+.menu-dock-col .menu-dock {
+  max-width: 100%;
+}
 /* Wide layouts: the social dock fills the right column under the strip. */
 @media (min-width: 1024px) {
   .menu-dock-col .menu-dock {

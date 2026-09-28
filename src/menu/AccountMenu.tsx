@@ -3,7 +3,8 @@ import { sfxProps, uiSfx } from '../deck-core';
 import './menu.css';
 
 // Small account menu in the top bar (replaces the loose "Log out" text):
-// Stats · Settings · Admin (staff) · Log out.
+// Stats · Settings · Admin (staff) · Log out. A plain disclosure: Tab moves
+// through its buttons, Esc or a click outside closes it.
 export function AccountMenu({
   isAdmin,
   onStats,
@@ -53,7 +54,7 @@ export function AccountMenu({
       <button
         ref={btnRef}
         type='button'
-        aria-haspopup='menu'
+        aria-controls='menu-account-pop'
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         {...sfxProps('uiToggle')}
@@ -65,20 +66,20 @@ export function AccountMenu({
         </svg>
       </button>
       {open && (
-        <div role='menu' aria-label='Account' className='menu-acct-pop'>
-          <button type='button' role='menuitem' onClick={run(onStats)}>
+        <div id='menu-account-pop' aria-label='Account' className='menu-acct-pop'>
+          <button type='button' onClick={run(onStats)}>
             Stats
           </button>
-          <button type='button' role='menuitem' onClick={run(onSettings)}>
+          <button type='button' onClick={run(onSettings)}>
             Settings
           </button>
           {isAdmin && (
-            <button type='button' role='menuitem' onClick={run(onAdmin)} className='text-amber-200'>
+            <button type='button' onClick={run(onAdmin)} className='text-amber-200'>
               Admin
             </button>
           )}
           <hr />
-          <button type='button' role='menuitem' onClick={run(onLogout)}>
+          <button type='button' onClick={run(onLogout)}>
             Log out
           </button>
         </div>
