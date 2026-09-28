@@ -12,6 +12,7 @@ import { RailBeams } from '../fx/rail-beam';
 import { Character, skinColorFor } from '../character/character';
 import { CharacterAnimator } from '../character-anim';
 import { attachRailgun, type AttachedRailgun } from '../character/gun';
+import { railgunGeometry, railgunGeometrySplit } from './gun-geometry';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -410,6 +411,19 @@ export class GunLab {
     let n = 0;
     for (let i = 0; i < px.length; i += 4) if (px[i] > 127) n++;
     return n / (w * h);
+  }
+
+  // Triangle counts per LOD (the budget check) — every LOD is one draw call
+  // (+ the hidden flare in first person; + the energy mesh in third person).
+  stats(): Record<string, number> {
+    const tris = (g: THREE.BufferGeometry) => g.attributes.position.count / 3;
+    const split = railgunGeometrySplit('low');
+    return {
+      high: tris(railgunGeometry('high')),
+      low: tris(railgunGeometry('low')),
+      lowShell: tris(split.lit),
+      lowEnergy: tris(split.energy),
+    };
   }
 
   resize() {

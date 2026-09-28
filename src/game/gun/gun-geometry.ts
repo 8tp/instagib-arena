@@ -6,9 +6,9 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 // Railgun geometry (procedural, no asset). A chunky Q3-style rail: a heavy
 // receiver with heat-sink fins on top and a charge window in each flank, a
 // rear capacitor in a strut cage, a skeletal stock, an angled rubber grip, and
-// an accelerator — a glowing energy core running the whole barrel between four
-// square conductor rails, ringed by four bold coils, ending in a pronged
-// emitter.
+// an accelerator — a glowing energy core running the whole barrel in an
+// open-top channel (vented side walls on a keel), ringed by four bold coils,
+// ending in a pronged emitter.
 //
 // Every part is merged into ONE geometry per LOD (built once, module-cached,
 // shared by every gun). A `gun` vec3 attribute tells the surface shader
@@ -307,10 +307,14 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   for (let i = 0; i < COIL_COUNT; i++) {
     const c = COIL_Z[i];
     const ring = hi ? 30 : 12;
-    b.lathe(P.METAL, [
+    b.lathe(P.METAL, hi ? [
       [0.052, c - 0.025], [0.057, c - 0.025], [0.063, c - 0.019], [0.063, c - 0.015], [0.059, c - 0.015],
       [0.059, c + 0.015], [0.063, c + 0.015], [0.063, c + 0.019], [0.057, c + 0.025], [0.052, c + 0.025],
       [0.052, c - 0.025],
+    ] : [
+      // Third person: a plain sleeve (the inside never shows at range).
+      [0.052, c - 0.025], [0.063, c - 0.025], [0.063, c - 0.015], [0.059, c - 0.015],
+      [0.059, c + 0.015], [0.063, c + 0.015], [0.063, c + 0.025], [0.052, c + 0.025],
     ], ring);
     b.lathe(P.COIL0 + i, [[0.059, c - 0.015], [COIL_R, c - 0.011], [COIL_R, c + 0.011], [0.059, c + 0.015]], ring);
   }
@@ -353,7 +357,7 @@ export function railgunGeometry(lod: GunLod): THREE.BufferGeometry {
 
 // Glowing parts (drawn by a per-gun material in third person) vs the rest.
 export function isEnergyPart(part: number): boolean {
-  return part >= PART.GLOW && part !== PART.CARBON;
+  return part >= PART.GLOW;
 }
 
 const splitCache = new Map<GunLod, { lit: THREE.BufferGeometry; energy: THREE.BufferGeometry }>();
