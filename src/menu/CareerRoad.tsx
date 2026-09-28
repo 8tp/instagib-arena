@@ -201,9 +201,11 @@ export function CareerRoad({
           </div>
         </div>
       )}
-      <DeckButton onClick={() => scrollToLevel(true)} size='sm' className='shrink-0'>
-        Jump to my level
-      </DeckButton>
+      {!guest && (
+        <DeckButton onClick={() => scrollToLevel(true)} size='sm' className='shrink-0'>
+          Jump to my level
+        </DeckButton>
+      )}
     </div>
   );
 

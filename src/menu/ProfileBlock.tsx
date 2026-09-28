@@ -31,16 +31,25 @@ export function ProfileBlock({
   if (!account) {
     return (
       <div className='menu-profile clip-deck-sm'>
-        <div className='menu-level menu-level-guest' aria-hidden='true'>
-          <span className='menu-level-num'>1</span>
-          <span className='menu-level-cap'>LV</span>
-        </div>
-        <div className='min-w-0 flex-1'>
-          <div className='menu-profile-name text-white/80'>Guest</div>
-          <p className='mt-1 font-sans text-[12.5px] leading-snug text-white/50'>
-            Log in to keep your level, unlocks and challenge progress.
-          </p>
-        </div>
+        <button
+          type='button'
+          onClick={onOpenRoad}
+          {...sfxProps('uiClick')}
+          aria-label='Guest. Preview the Career Road'
+          className='menu-profile-guest flex min-w-0 flex-1 items-center gap-[0.85rem] text-left'
+        >
+          <span className='menu-level menu-level-guest' aria-hidden='true'>
+            <span className='menu-level-num'>1</span>
+            <span className='menu-level-cap'>LV</span>
+          </span>
+          <span className='min-w-0 flex-1'>
+            <span className='menu-profile-name block text-white/80'>Guest</span>
+            <span className='mt-1 block font-sans text-[12.5px] leading-snug text-white/50'>
+              Log in to keep your level, unlocks and challenge progress.{' '}
+              <span className='menu-profile-link whitespace-nowrap'>Career Road</span>
+            </span>
+          </span>
+        </button>
         <button
           type='button'
           onClick={onLogin}

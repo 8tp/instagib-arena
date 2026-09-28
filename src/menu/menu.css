@@ -243,6 +243,7 @@ button.menu-profile:hover {
   text-transform: uppercase;
   color: #67e8f9;
 }
+.menu-profile-guest:hover .menu-profile-link,
 button.menu-profile:hover .menu-profile-link {
   color: #cffafe;
 }
