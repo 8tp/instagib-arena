@@ -673,6 +673,7 @@ export class Game {
     this.lowSpec = !!lowSpec;
     this.applyPixelRatio();
     this.effects.setQuality(lowSpec ? 0.5 : 1);
+    this.viewmodelRail?.setLowSpec(this.lowSpec);
     this.audio.setLowSpec(this.lowSpec); // shorter reverb, cheaper panning, fewer voices
     this.postFx.setWorldQuality(this.lowSpec); // sky drops its procedural detail on the low tier
     setCharacterFxQuality({ lowSpec: this.lowSpec }); // fewer gib chunks
@@ -879,7 +880,7 @@ export class Game {
   setRailColor(id: string) {
     const safe = isRailColor(id) ? id : DEFAULT_RAIL_COLOR;
     const c = railColorById(safe);
-    this.weapon.setBeamColors(c.data.core, c.data.helix);
+    this.weapon.setBeamColors(c.data.core, c.data.helix, c.mode);
     this.net?.setLocalRailColor(safe);
   }
 
@@ -893,21 +894,24 @@ export class Game {
   // from the constructor and whenever the finish changes (Locker equip / a
   // spectator switching to a player whose gun skin differs).
   private buildViewmodel() {
-    if (this.viewmodel) {
-      this.camera.remove(this.viewmodel);
-      disposeGroup(this.viewmodel);
-    }
     // Spectators show the WATCHED player's finish; normal play shows the local one.
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
+    if (this.viewmodelRail) {
+      this.viewmodelRail.setFinish(finish); // recolour only — the geometry is shared
+      return;
+    }
     const vm = buildRailgun(finish);
     this.viewmodelRail = vm;
+    vm.setLowSpec(this.lowSpec);
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
     this.viewmodelMuzzle = vm.muzzleFlash;
     this.applyViewmodelTransform();
-    this.camera.add(this.viewmodel);
+    // Drawn in the viewmodel layer (after the world, depth cleared) so the gun
+    // never clips into walls; its camera mirrors the world camera every frame.
+    this.postFx.viewmodel.camera.add(this.viewmodel);
   }
 
   // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
@@ -1181,6 +1185,7 @@ export class Game {
     this.scene.environment = null;
     this.disposeScene();
     this.postFx.dispose();
+    this.viewmodelRail?.dispose();
     // Drop the viewmodel muzzle link (fx/rail-state.ts) so the module-level
     // ref can't keep this disposed Game's scene alive in the menu.
     localRail.muzzle = null;
@@ -1369,8 +1374,10 @@ export class Game {
     const origin = new THREE.Vector3(b.ox, b.oy, b.oz);
     const end = new THREE.Vector3(b.ex, b.ey, b.ez);
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
-    const c = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR).data;
-    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map);
+    const rc = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR);
+    const c = rc.data;
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
+    if (b.id) this.remotePlayers.get(b.id)?.notifyFire(); // their 3rd-person gun flashes + recharges
     // Their discharge flash at the muzzle, in their rail colour.
     this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
     if (this.spectator && b.id === this.spectatedId) {
@@ -2249,7 +2256,7 @@ export class Game {
     this.viewmodelMotion.onFire();
     this.viewKick = this.reducedEffects ? 0 : 0.03; // camera pitch-punch — gated for reduced motion
     if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
-    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, undefined, this.tmpForward, true);
+    this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, this.weapon.beamColors.core, this.tmpForward, true);
 
     // Training range: count the shot, pop any targets the rail passed through,
     // and break the streak on a clean miss. Live stats refresh to the HUD.
@@ -2441,6 +2448,7 @@ export class Game {
     const end = origin.clone().addScaledVector(dir, victimPos ? bestT : wallT);
     this.weapon.spawnBeam(origin, end, this.scene, undefined, undefined, this.map);
     this.effects.spawnMuzzleFlash(this.scene, origin, undefined, dir);
+    this.bots?.bots.find((b) => b.state.id === intent.botId)?.notifyFire();
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
       end: { x: end.x, y: end.y, z: end.z },

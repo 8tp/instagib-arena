@@ -24,7 +24,7 @@ import {
 import { movePlayer, rayAabb, type ArenaMap } from './map';
 import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
-import { attachRailgun, disposeRailgun } from './character/gun';
+import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
@@ -251,7 +251,7 @@ export class Bot {
   state: BotState;
   group: THREE.Group;
   private hat: WornHat | null = null;
-  private gun: THREE.Group | null = null; // third-person railgun (disposed with the bot)
+  private gun: AttachedRailgun | null = null; // third-person railgun (disposed with the bot)
   // Reused animator input (no per-frame allocation).
   private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
   // Shared third-person animator (gait, aim, jump/land, gibs) — the same
@@ -917,6 +917,11 @@ export class Bot {
   }
   getTeam(): number | null {
     return this.team;
+  }
+
+  // The bot fired: its 3rd-person gun flashes and recharges.
+  notifyFire() {
+    this.gun?.notifyFire();
   }
 
   // `style` = the killer's finisher (how this body breaks apart).
