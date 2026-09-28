@@ -490,9 +490,16 @@ export class Game {
   private tauntBody: RemotePlayer | null = null; // your own 3rd-person body, shown during a taunt only
   private tauntCooldownUntil = 0; // performance.now() ms
   private tauntCode = 'KeyG';
+  private inspectCode = 'KeyF';
   private readonly tauntKeyHandler = (e: KeyboardEvent) => {
-    if (e.code === this.tauntCode && !e.repeat) this.tryTaunt();
+    if (e.repeat) return;
+    if (e.code === this.tauntCode) this.tryTaunt();
+    else if (e.code === this.inspectCode) this.tryInspect();
   };
+  // Weapon inspect (first-person gun look-over): the HUD card listens.
+  private inspectShown = false;
+  private lastShotMs = -1e9;
+  private inspectListener: ((active: boolean, strangeKills: number | null) => void) | null = null;
   private readonly tmpM4 = new THREE.Matrix4();
   private readonly tmpQ1 = new THREE.Quaternion();
   private readonly tmpQ2 = new THREE.Quaternion();
@@ -648,6 +655,7 @@ export class Game {
   setKeybinds(binds: Record<KeybindAction, string>) {
     this.input.setBindings(binds);
     this.tauntCode = binds.taunt || '';
+    this.inspectCode = binds.inspect || '';
   }
 
   // ── In-game chat (online only) ────────────────────────────────────────
@@ -1031,6 +1039,29 @@ export class Game {
     }
   }
 
+  // ── Weapon inspect ──────────────────────────────────────────────────────
+  // Inspect key: swing the first-person railgun up and turn it to show the side
+  // and top (viewmodel-motion.ts). Purely cosmetic and never a disadvantage:
+  // firing, zooming, dying or taunting cancels it at once, and it won't start in
+  // the first 0.2 s after a shot.
+  setInspectListener(fn: ((active: boolean, strangeKills: number | null) => void) | null) {
+    this.inspectListener = fn;
+  }
+
+  private currentStrangeKills(): number | null {
+    if (this.strangeBase === null) return null;
+    return this.strangeBase + (this.net ? this.net.localFrags : this.playerFrags);
+  }
+
+  tryInspect(): boolean {
+    if (this.spectator || !this.locked || this.matchOver || this.vote || this.killcam || this.replay) return false;
+    if (this.chatOpen || this.taunt || this.hideViewmodel || this.viewmodelMotion.inspecting) return false;
+    if (performance.now() - this.lastShotMs < 200) return false;
+    if (this.wantZoom) return false;
+    this.viewmodelMotion.startInspect(this.reducedEffects);
+    return true;
+  }
+
   // ── Taunts ──────────────────────────────────────────────────────────────
   // Taunt key: play your equipped emote in-match. The camera swings out to a
   // third-person orbit around your body (wall-clamped along the line from your
@@ -1050,6 +1081,7 @@ export class Game {
 
   private startTaunt(kind: AnyEmoteKind, look: Look | undefined, now: number): boolean {
     if (!this.botModel) return false;
+    this.viewmodelMotion.cancelInspect(true);
     let body = this.tauntBody;
     if (!body) {
       body = new RemotePlayer('local-taunt', this.playerName, this.scene, this.botModel);
@@ -2539,6 +2571,7 @@ export class Game {
       end: { x: result.end.x, y: result.end.y, z: result.end.z },
       killerId: 'you',
     });
+    this.lastShotMs = performance.now();
     this.audio.play('fire', 0.55);
     if (!trainingShot) this.audio.chargeStart(this.weapon.cooldown); // coils recharge hum
     this.addShake(SHAKE_FIRE);
@@ -2827,6 +2860,7 @@ export class Game {
     this.addShake(SHAKE_DEATH);
     if (!this.reducedEffects) this.damageFlash = 1;
     this.medals.onDeath();
+    this.viewmodelMotion.cancelInspect(true);
     this.playerDeaths += 1;
     // Invuln spans the killcam plus a short grace once you respawn.
     this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
@@ -3182,6 +3216,7 @@ export class Game {
       this.addShake(SHAKE_DEATH);
       if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
+      this.viewmodelMotion.cancelInspect(true);
       this.playerDeaths += 1;
       const killer = this.remotePlayers.get(ev.killerId);
       this.killcam = {
@@ -3768,7 +3803,8 @@ export class Game {
     this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
     if (this.viewmodelGlow) {
       const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
-      this.viewmodelGlow.emissiveIntensity += (0.8 - this.viewmodelGlow.emissiveIntensity) * g;
+      // (Inspect holds the coils glowing so the whole gun reads.)
+      this.viewmodelGlow.emissiveIntensity += ((this.viewmodelMotion.inspecting ? 2.2 : 0.8) - this.viewmodelGlow.emissiveIntensity) * g;
     }
     // Viewmodel: show while actively playing in first person, OR while watching a
     // player in first-person spectator POV (so you see THEIR gun skin). The
@@ -3777,6 +3813,10 @@ export class Game {
     // position + the user's offset (viewmodel-motion.ts; all exp/spring-smoothed
     // on real dt, so the feel is identical at 60fps and uncapped).
     this.applyViewmodelV3();
+    if (this.viewmodelMotion.inspecting !== this.inspectShown) {
+      this.inspectShown = this.viewmodelMotion.inspecting;
+      this.inspectListener?.(this.inspectShown, this.currentStrangeKills());
+    }
     if (this.viewmodel) {
       const specSnap =
         this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;

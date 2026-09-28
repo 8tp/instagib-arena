@@ -62,6 +62,8 @@ import {
   type RankedResult,
 } from './game/net';
 import { withLegacyFromLooks } from './game/look-runtime';
+import { itemDef } from './game/items/catalog';
+import { TIER_META, qualityPrefix, wearName } from './game/items/types';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
   AIR_JUMPS,
@@ -766,6 +768,8 @@ function GameView({
   const gameRef = useRef<Game | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
+  // Weapon inspect: while the first-person gun look-over plays, the item card shows.
+  const [inspect, setInspect] = useState<{ kills: number | null } | null>(null);
   // Every HudState push (20 Hz + events) lands in this store. GameView itself
   // only re-renders on the SLOW fields it gates overlays with; the in-match
   // HUD pieces subscribe to their own slices inside HudOverlay. The paused
@@ -861,6 +865,7 @@ function GameView({
       }
     };
     window.addEventListener('keydown', onDebugKey);
+    game.setInspectListener((active, kills) => setInspect(active ? { kills } : null));
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
         setJoinDuplicate(ev.reason === 'duplicate');
@@ -1133,6 +1138,7 @@ function GameView({
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge && loggedIn} />}
+      {!hud.pom && inspect && <InspectCard settings={settings} kills={inspect.kills} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1881,6 +1887,44 @@ function JoinErrorOverlay({
 }
 
 /* ───────────────────────── HUD layout ───────────────────────── */
+
+// The equipped finish's card while you inspect the gun: full name (quality
+// prefix + name), Strange kills + rank, wear, pattern seed, mint number, in the
+// tier colour. Data is the equipped instance the hub put in Settings.finishItem;
+// a plain stock/bought finish shows just its name.
+function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const item = settings.finishItem ?? null;
+  const def = itemDef(item?.def ?? settings.looks?.finish?.d ?? settings.railgunFinish);
+  const tier = item?.tier ?? def?.tier ?? 'common';
+  const color = TIER_META[tier].color;
+  const attrs = item?.attrs ?? {};
+  const base = attrs.customName ?? def?.name ?? 'Railgun';
+  const prefix = item ? qualityPrefix(item.quality, { ...attrs, kills: kills ?? attrs.kills }) : '';
+  const title = prefix ? `${prefix} ${base}` : base;
+  const bits: string[] = [];
+  if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
+  if (typeof attrs.wear === 'number') bits.push(wearName(attrs.wear));
+  if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
+  if (item) bits.push(`#${item.mint}`);
+  return (
+    <div
+      aria-hidden='true'
+      className='pointer-events-none absolute bottom-28 right-8 max-w-[22rem] text-right font-mono'
+      style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
+    >
+      <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
+      <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
+        {title}
+      </div>
+      {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
+    </div>
+  );
+}
 
 function HudOverlay({
   store,
