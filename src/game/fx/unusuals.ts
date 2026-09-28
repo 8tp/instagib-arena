@@ -4,7 +4,7 @@ import { UNUSUAL_EFFECTS } from '../items/types';
 import { fxFlags } from './fx-settings';
 import { lightningPath, RibbonBatch } from './ribbon';
 import { CELL, unusualAtlas } from './unusual-atlas';
-import { Field, GOLDEN, TAU, hash, hsv, mix, now, rnd, smooth, tmpVp, type SharedUniforms } from './unusual-core';
+import { Field, GOLDEN, TAU, hash, hsv, mix, now, rnd, smooth, tmpVp, views, type SharedUniforms } from './unusual-core';
 
 // ── Unusual effects (TF2-style particle crowns) ──────────────────────────────
 //
@@ -78,6 +78,14 @@ for (const l of Object.values(LAYOUTS)) l.count = l.roles.reduce((s, [, n]) => s
 type FirePalette = { c: readonly number[]; scale: number; tongue: number; waveK: number };
 // hot (rgb), mid, cool — linear HDR.
 const FIRE_EMBERS: FirePalette = { c: [2.1, 1.55, 0.6, 1.7, 0.55, 0.07, 0.5, 0.06, 0.0], scale: 1, tongue: 1, waveK: 6 };
+
+// Fairness: kinds that sit right at the head are dimmed, and every crown fades
+// to nothing with distance (near, far metres) so no wearer is a beacon; the
+// bright "beacon" kinds fade earlier.
+const KIND_GAIN: Partial<Record<EffectKind, number>> = { storm: 0.7, voidrift: 0.65, bubbles: 0.7, aura: 0.65, sunbeams: 0.75, cosmic: 0.75, halo: 0.9 };
+const FAR_FADE: Partial<Record<EffectKind, readonly [number, number]>> = { sunbeams: [10, 24], aura: [10, 24], cosmic: [10, 24], voidrift: [14, 28], storm: [14, 28] };
+// Extra lift (m) above the crown so the effect never sits on the face.
+const KIND_LIFT: Partial<Record<EffectKind, number>> = { storm: 0.03, voidrift: 0.04, bubbles: 0.02, aura: 0.05 };
 
 // How much each kind's particles dim what's behind them (0 = pure additive).
 const OCCLUDE: Record<EffectKind, number> = {
@@ -161,12 +169,16 @@ export class UnusualEffect {
   private readonly xt = new Float32Array(4);
   private readonly xl = new Float32Array(4);
   private readonly xa = new Float32Array(16);
+  private readonly xsV = views(this.xs, 27);
+  private readonly xfV = views(this.xf, 18);
+  private readonly arcPathV = views(this.arcPath, 30);
+  private readonly arcBrV = views(this.arcBr, 18);
 
   constructor(kind: EffectKind) {
     this.kind = kind;
     this.group.name = 'unusual';
     // Origin a touch above the anchor (which WornHat seats over the hat crown).
-    this.group.position.y = 0.04;
+    this.group.position.y = 0.04 + (KIND_LIFT[kind] ?? 0);
     this.u = THREE.UniformsUtils.merge([THREE.UniformsLib.fog]) as SharedUniforms & Record<string, THREE.IUniform>;
     this.u.uAtlas = { value: unusualAtlas() };
     this.u.uViewH = { value: 900 };
@@ -217,9 +229,11 @@ export class UnusualEffect {
       this.camZ = ce[14];
       const ppm = (p11 * vh * 0.5) / d;
       this.u.uViewH.value = vh;
-      this.u.uGain.value = 0.5 + 0.5 * smooth(8, 60, ppm);
+      const ff = FAR_FADE[this.kind] ?? [20, 32];
+      const far = 1 - smooth(ff[0], ff[1], d);
+      this.u.uGain.value = (0.5 + 0.5 * smooth(8, 60, ppm)) * (KIND_GAIN[this.kind] ?? 1) * far;
       this.u.uHdrCap.value = 1.0 + 1.4 * smooth(10, 80, ppm);
-      this.u.uMinLum.value = 0.85 * (1 - smooth(25, 90, ppm));
+      this.u.uMinLum.value = 0.85 * (1 - smooth(25, 90, ppm)) * far;
       mat.uniformsNeedUpdate = true;
       this.lastSeen = now();
       // Keep the closest view's size for the LOD decision.
@@ -717,7 +731,7 @@ export class UnusualEffect {
       const r = mix(0.12 * shade + 0.04, 0.55, l);
       const g = mix(0.13 * shade + 0.045, 0.62, l);
       const b = mix(0.17 * shade + 0.06, 0.88, l);
-      cloud.put(j, this.wx, this.wy, this.wz, r, g, b, 0.94, 0.1 + 0.04 * hash(j + 1.3), CELL.puff, s * TAU + t * 0.12);
+      cloud.put(j, this.wx, this.wy, this.wz, r, g, b, 0.94, 0.085 + 0.035 * hash(j + 1.3), CELL.puff, s * TAU + t * 0.12);
     }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
@@ -813,12 +827,12 @@ export class UnusualEffect {
       if (this.arcJag[k] <= 0) {
         this.arcJag[k] = calm ? 0.12 : 1 / 28;
         this.arcFlick[k] = calm ? 0.8 : 0.7 + rnd() * 0.3;
-        const path = this.arcPath.subarray(k * 30, k * 30 + 30);
+        const path = this.arcPathV[k];
         lightningPath(path, 10, this.arcS[k * 3], this.arcS[k * 3 + 1], this.arcS[k * 3 + 2], this.arcT[k * 3], this.arcT[k * 3 + 1], this.arcT[k * 3 + 2], 0.034);
         // A short fork off the middle of the arc.
         const m = 4 + Math.floor(rnd() * 3);
         const mx = path[m * 3], my = path[m * 3 + 1], mz = path[m * 3 + 2];
-        lightningPath(this.arcBr.subarray(k * 18, k * 18 + 18), 6, mx, my, mz, mx + (rnd() - 0.5) * 0.15, my + (rnd() - 0.5) * 0.15, mz + (rnd() - 0.5) * 0.15, 0.02);
+        lightningPath(this.arcBrV[k], 6, mx, my, mz, mx + (rnd() - 0.5) * 0.15, my + (rnd() - 0.5) * 0.15, mz + (rnd() - 0.5) * 0.15, 0.02);
       }
       if (k >= arcs) continue;
       const fl = this.arcFlick[k];
@@ -1258,7 +1272,7 @@ export class UnusualEffect {
         p.y += p.vy * dt;
         const fr = p.age / p.life;
         const popK = calm ? 0 : smooth(0.9, 1, fr);
-        const size = (0.05 + 0.045 * p.seed) * smooth(0, 0.25, p.age) * (1 + 0.06 * Math.sin(p.age * 9 + p.seed * 20)) * (1 + popK * 0.4);
+        const size = (0.04 + 0.035 * p.seed) * smooth(0, 0.25, p.age) * (1 + 0.06 * Math.sin(p.age * 9 + p.seed * 20)) * (1 + popK * 0.4);
         const al = calm ? 1 - smooth(0.75, 1, fr) : 1 - popK;
         const c = hsv((p.seed + p.age * 0.3) % 1, 0.42, 1.3);
         f.put(i, p.x, p.y, p.z, c[0], c[1], c[2], al * 0.95, size, CELL.bubble, 0);
@@ -1372,12 +1386,12 @@ export class UnusualEffect {
     this.faceCam(cx, cz);
     const rx = this.fvz, rz = -this.fvx;
     const nx = this.fvx, nz = this.fvz;
-    const R = 0.1 * (1 + 0.04 * Math.sin(t * 3.1));
+    const R = 0.085 * (1 + 0.04 * Math.sin(t * 3.1));
     // The dark core: a few near-black puffs (normal blending: reads as a hole).
     for (let j = 0; j < this.cps.length; j++) {
       const a = j * 2.1 + t * 0.6;
       const o = j === 0 ? 0 : 0.025;
-      cloud.put(j, cx + rx * Math.cos(a) * o, cy + Math.sin(a) * o, cz + rz * Math.cos(a) * o, 0.004, 0.002, 0.012, 0.97, 0.19 - j * 0.012, CELL.puff, a);
+      cloud.put(j, cx + rx * Math.cos(a) * o, cy + Math.sin(a) * o, cz + rz * Math.cos(a) * o, 0.004, 0.002, 0.012, 0.97, 0.16 - j * 0.01, CELL.puff, a);
     }
     for (let j = 0; j < P; j++) {
       const a = (j / (P - 1)) * TAU;
@@ -1403,7 +1417,7 @@ export class UnusualEffect {
         }
         const a = this.xa[k];
         const ex = Math.cos(a) * R * (2.0 + rnd() * 0.5), ey = Math.sin(a) * R * (2.0 + rnd() * 0.5);
-        lightningPath(this.xs.subarray(k * 27, k * 27 + 27), 9, Math.cos(a) * R, Math.sin(a) * R, 0, ex, ey, (rnd() - 0.5) * 0.05, 0.03);
+        lightningPath(this.xsV[k], 9, Math.cos(a) * R, Math.sin(a) * R, 0, ex, ey, (rnd() - 0.5) * 0.05, 0.03);
       }
       this.xl[k] -= dt;
       if (this.xl[k] < 0.12) continue; // gap between cracks
@@ -1586,10 +1600,10 @@ export class UnusualEffect {
         const az = this.xa[k], el = this.xa[4 + k];
         const L = 0.3 + rnd() * 0.1 + flash * 0.1;
         const ex = Math.cos(az) * Math.cos(el) * L, ey = 0.02 + Math.sin(el) * L, ez = Math.sin(az) * Math.cos(el) * L;
-        lightningPath(this.xs.subarray(k * 27, k * 27 + 27), 9, 0, 0.02, 0, ex, ey, ez, 0.035);
+        lightningPath(this.xsV[k], 9, 0, 0.02, 0, ex, ey, ez, 0.035);
         const m = 3 + Math.floor(rnd() * 3);
         const mx = this.xs[k * 27 + m * 3], my = this.xs[k * 27 + m * 3 + 1], mz = this.xs[k * 27 + m * 3 + 2];
-        lightningPath(this.xf.subarray(k * 18, k * 18 + 18), 6, mx, my, mz, mx + (rnd() - 0.5) * 0.26, my + 0.04 + rnd() * 0.08, mz + (rnd() - 0.5) * 0.26, 0.025);
+        lightningPath(this.xfV[k], 6, mx, my, mz, mx + (rnd() - 0.5) * 0.26, my + 0.04 + rnd() * 0.08, mz + (rnd() - 0.5) * 0.26, 0.025);
         this.xa[12 + k] = calm ? 0.8 : 0.7 + rnd() * 0.3;
       }
       if (k >= bolts || this.xa[8 + k] > 0) continue;

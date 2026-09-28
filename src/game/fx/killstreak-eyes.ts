@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { fxFlags } from './fx-settings';
 import { lightningPath, RibbonBatch } from './ribbon';
 import { CELL, unusualAtlas } from './unusual-atlas';
-import { Field, TAU, hash, hsv, mix, rnd, smooth, tmpVp, type SharedUniforms } from './unusual-core';
+import { Field, TAU, hash, hsv, mix, rnd, smooth, tmpVp, views, type SharedUniforms } from './unusual-core';
 
 // ── Professional killstreak eyes ─────────────────────────────────────────────
 // TF2's "Professional Killstreak" eye effects, on the combatant's visor: while
@@ -49,6 +49,7 @@ export class KillstreakEyes {
   private readonly arcPath = new Float32Array(3 * 9 * 3);
   private readonly arcT = new Float32Array(3);
   private readonly arcF = new Float32Array(3);
+  private readonly arcPathV = views(this.arcPath, 27);
   private readonly seed = new Float32Array(N * 3);
   // Last local → world transform target.
   private wx = 0;
@@ -85,9 +86,9 @@ export class KillstreakEyes {
       this.ppm = ppm;
       this.u.uViewH.value = vh;
       // Subtle: stay under the bloom threshold up close, dimmer with range.
-      this.u.uGain.value = 0.45 + 0.4 * smooth(10, 70, ppm);
-      this.u.uHdrCap.value = 0.9 + 0.6 * smooth(10, 80, ppm);
-      this.u.uMinLum.value = 0.6 * (1 - smooth(20, 80, ppm));
+      this.u.uGain.value = 1.0 + 0.4 * smooth(10, 70, ppm);
+      this.u.uHdrCap.value = 1.5 + 0.7 * smooth(10, 80, ppm);
+      this.u.uMinLum.value = 1.0 * (1 - smooth(20, 80, ppm));
       this.f.mat.uniformsNeedUpdate = true;
     };
     this.group.traverse((o) => {
@@ -144,7 +145,7 @@ export class KillstreakEyes {
     const k = this.env * (0.6 + 0.4 * smooth(KS_MIN_STREAK, 15, this.streak));
     const fx = this.effect!;
     // Far away the effect is a smear: thin it out.
-    const per = Math.max(4, Math.round(PER * (fxFlags.low ? 0.5 : 1) * (this.ppm > 30 ? 1 : 0.6)));
+    const per = Math.max(4, Math.round(PER * (fxFlags.low ? 0.5 : 1) * (this.ppm > 12 ? 1 : 0.6)));
     const f = this.f;
     const rib = this.rib;
     rib.begin();
@@ -155,7 +156,7 @@ export class KillstreakEyes {
         if (this.arcT[a] <= 0) {
           this.arcT[a] = 0.04 + rnd() * 0.06;
           this.arcF[a] = rnd() < 0.35 ? 0 : 0.7 + rnd() * 0.3;
-          const P = this.arcPath.subarray(a * 27, a * 27 + 27);
+          const P = this.arcPathV[a];
           if (a < 2) {
             const sx = a === 0 ? -1 : 1;
             lightningPath(P, 9, sx * EX, EY + 0.012, EZ, sx * (0.115 + rnd() * 0.03), EY + 0.1 + rnd() * 0.05, EZ - 0.04, 0.012);
@@ -303,7 +304,7 @@ export class KillstreakEyes {
       if (al * k <= 0.003) { f.hide(i); continue; }
       this.lw(x, y, z);
       const flick = calm ? 1 : 0.88 + 0.12 * Math.sin(t * 31 + s1 * 50);
-      f.put(i, this.wx, this.wy, this.wz, r * flick, g * flick, b * flick, al * k, size, cell, rot);
+      f.put(i, this.wx, this.wy, this.wz, r * flick, g * flick, b * flick, Math.min(1, al * k * 1.25), size * 1.5, cell, rot);
     }
     f.commit();
   }

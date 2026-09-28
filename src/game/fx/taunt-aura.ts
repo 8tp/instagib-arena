@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { fxFlags } from './fx-settings';
 import { lightningPath, RibbonBatch } from './ribbon';
 import { CELL, unusualAtlas } from './unusual-atlas';
-import { Field, GOLDEN, TAU, hash, hsv, mix, rnd, smooth, tmpVp, type SharedUniforms } from './unusual-core';
+import { Field, GOLDEN, TAU, hash, hsv, mix, rnd, smooth, tmpVp, views, type SharedUniforms } from './unusual-core';
 import type { EffectKind } from './unusuals';
 
 // ── Unusual taunts ───────────────────────────────────────────────────────────
@@ -90,6 +90,7 @@ export class TauntAura {
   private readonly arcT = new Float32Array(ARCS);
   private readonly arcPath = new Float32Array(ARCS * 10 * 3);
   private readonly arcF = new Float32Array(ARCS);
+  private readonly arcPathV = views(this.arcPath, 30);
 
   constructor(kind: EffectKind) {
     this.style = STYLES[kind];
@@ -218,7 +219,7 @@ export class TauntAura {
           this.arcT[k] = 0.05 + rnd() * 0.06;
           const a = rnd() * TAU;
           const ex = Math.cos(a) * RING_R * (0.4 + rnd() * 0.5), ez = Math.sin(a) * RING_R * (0.4 + rnd() * 0.5);
-          lightningPath(this.arcPath.subarray(k * 30, k * 30 + 30), 10, Math.cos(a) * RING_R, 0.03, Math.sin(a) * RING_R, ex, 0.6 + rnd() * 1.4, ez, 0.16);
+          lightningPath(this.arcPathV[k], 10, Math.cos(a) * RING_R, 0.03, Math.sin(a) * RING_R, ex, 0.6 + rnd() * 1.4, ez, 0.16);
           this.arcF[k] = rnd() < 0.3 ? 0 : 0.7 + rnd() * 0.3;
         }
         const fl = this.arcF[k] * env;
