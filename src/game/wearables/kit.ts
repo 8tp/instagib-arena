@@ -40,7 +40,7 @@ export const hardLight = (c: number, e = 1.6, t: 0 | 1 = 0): Surf => ({ c, r: 0.
 // A few shared materials-as-surfaces.
 export const GOLD = surf(0xe2b04a, 0.28, 1);
 export const GOLD_DARK = surf(0xa8792c, 0.34, 1);
-export const STEEL = surf(0xb8c0ca, 0.4, 0.45);
+export const STEEL = surf(0xb4bcc6, 0.46, 0.3);
 export const GUNMETAL = surf(0x3e4552, 0.3, 0.9);
 export const DARK = surf(0x1b1e24, 0.55, 0.3);
 export const LEATHER = surf(0x5a3a22, 0.72, 0.05);

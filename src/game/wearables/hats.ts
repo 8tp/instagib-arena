@@ -710,27 +710,18 @@ export const HAT_SPECS: Record<string, WearSpec> = {
     keepCrest: true,
     build(k) {
       const m0 = k.mark();
-      const A: V3 = [0.052, 1.782, -0.032];
-      const B: V3 = [0.132, 1.742, -0.022];
-      const C: V3 = [0.096, 1.76, 0.038];
-      const D: V3 = [0.12, 1.892, -0.012];
+      const A: V3 = [0.05, 1.783, -0.036];
+      const B: V3 = [0.136, 1.738, -0.026];
+      const C: V3 = [0.096, 1.762, 0.044];
+      const D: V3 = [0.124, 1.9, -0.014];
       k.add(hull([A, B, C, D]), accent(0xe6e6e6, 0.55, 0.05));
       // Inner (pink) — a thin inset on the front face.
       const cen = [(A[0] + B[0] + D[0]) / 3, (A[1] + B[1] + D[1]) / 3, (A[2] + B[2] + D[2]) / 3];
       const sh = (p: V3, f: number, dz: number): V3 => [cen[0] + (p[0] - cen[0]) * f, cen[1] + (p[1] - cen[1]) * f - 0.008, cen[2] + (p[2] - cen[2]) * f + dz];
       k.add(hull([sh(A, 0.62, -0.006), sh(B, 0.62, -0.006), sh(D, 0.62, -0.006), sh(A, 0.62, 0.004), sh(B, 0.62, 0.004), sh(D, 0.62, 0.004)]), surf(0xff9ec4, 0.7, 0));
-      // Mount collar.
-      k.add(
-        hull([
-          [A[0] - 0.006, A[1] - 0.012, A[2] - 0.006],
-          [B[0] + 0.008, B[1] - 0.012, B[2] - 0.004],
-          [C[0], C[1] - 0.012, C[2] + 0.008],
-          [A[0] - 0.004, A[1] + 0.006, A[2] - 0.004],
-          [B[0] + 0.006, B[1] + 0.006, B[2] - 0.002],
-          [C[0], C[1] + 0.006, C[2] + 0.006],
-        ]),
-        GUNMETAL,
-      );
+      // Mount: a low gunmetal base plate hugging the dome.
+      const base = (p: V3, f: number): V3 => [p[0] + (p[0] - 0.093) * f, p[1] - 0.012, p[2] + (p[2] + 0.005) * f];
+      k.add(hull([base(A, 0.08), base(B, 0.08), base(C, 0.08), [A[0], A[1] - 0.002, A[2]], [B[0], B[1] - 0.002, B[2]], [C[0], C[1] - 0.002, C[2]]]), accent(0x6a6a6a, 0.5, 0.2));
       k.mirrorFrom(m0);
     },
     festive(k) {
@@ -749,21 +740,21 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       brim(k, 1.69, helmR(1.69) + 0.01, 0.06, 0.9, 0.01, 0.01, paint(0xe03a3a, 0.55, 0.05), surf(0x2b2b30, 0.7, 0));
       const top = capTop(0.012, 1.684, 1.02);
       k.add(cyl([0, top - 0.003, HELM_Z0], [0, top + 0.004, HELM_Z0], 0.016, 0.012, 8), paint(0xf5c518, 0.4, 0.3));
-      k.add(cyl([0, top, HELM_Z0], [0, top + 0.036, HELM_Z0], 0.0055, 0.0045, 6), STEEL);
+      k.add(cyl([0, top, HELM_Z0], [0, top + 0.05, HELM_Z0], 0.0065, 0.0055, 6), STEEL);
     },
     subs: [
       {
-        pivot: [0, 1.844, HELM_Z0],
+        pivot: [0, 1.858, HELM_Z0],
         anim: { kind: 'spin', axis: [0, 1, 0], rate: 7, move: 2.2 },
         build(k) {
-          const c: V3 = [0, 1.844, HELM_Z0];
+          const c: V3 = [0, 1.858, HELM_Z0];
           k.add(cyl([c[0], c[1] - 0.006, c[2]], [c[0], c[1] + 0.008, c[2]], 0.014, 0.01, 8), paint(0xe03a3a, 0.4, 0.2));
           for (const s of [1, -1]) {
             k.addPlate(
               plate(
                 (u, v) => {
-                  const x = s * (0.012 + 0.118 * u);
-                  const w = (0.03 - 0.008 * u) * (v - 0.5);
+                  const x = s * (0.012 + 0.15 * u);
+                  const w = (0.04 - 0.01 * u) * (v - 0.5);
                   const tw = 0.42 - 0.2 * u;
                   return [x, c[1] + w * Math.sin(tw) * s, c[2] + w * Math.cos(tw)] as V3;
                 },
@@ -968,8 +959,8 @@ export const HAT_SPECS: Record<string, WearSpec> = {
   // Kabuto — ribbed lacquer bowl, flared neck guard with lacing, gold crest.
   'hat.samurai': {
     build(k) {
-      const lac = surf(0x3a0d12, 0.24, 0.3);
-      const lame = surf(0x16141a, 0.3, 0.35);
+      const lac = surf(0x3a0d12, 0.32, 0.12);
+      const lame = surf(0x16141a, 0.36, 0.2);
       const lace = accent(0xd0d0d0, 0.7, 0.02);
       k.add(skullcap(0.022, 1.684, k.seg(32, 16), 1.04, { rmul: (phi, t) => (t > 0.05 ? 1 + 0.02 * Math.abs(Math.cos(8 * phi)) * (1 - t) : 1) }), lac);
       const top = capTop(0.022, 1.684, 1.04);
@@ -1139,7 +1130,7 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       k.add(band(1.69, 1.752, 0.012, 0.006, seg), gold);
       k.add(band(1.69, 1.695, 0.019, 0.002, seg), hardLight(0xffd98a, 1.1));
       const prof = domeProfile(0.006, 1.748, 1.794, 5).map(([r, y]) => [r, 1.748 + (y - 1.748) * 1.5] as [number, number]);
-      k.add(shell(prof, k.seg(16, 10)), accent(0xb0b0b0, 0.82, 0));
+      k.add(shell(prof, k.seg(16, 10)), paint(0x8a1025, 0.85, 0.02));
       const N = 8;
       for (let i = 0; i < N; i++) {
         const phi = (i / N) * PI * 2;
@@ -1285,8 +1276,11 @@ export const HAT_SPECS: Record<string, WearSpec> = {
           const zo = { zs: HELM_ZS, z0: HELM_Z0 };
           const seg = k.seg(40, 24);
           const R = 0.152;
-          k.add(revolve([[R, 1.734], [R + 0.006, 1.736], [R + 0.007, 1.762], [R + 0.001, 1.764], [R, 1.734]], seg, zo), GOLD);
-          k.add(revolve([[R + 0.0075, 1.742], [R + 0.0075, 1.756]], seg, zo), hardLight(0xfff4d6, 1.9));
+          k.add(revolve([[R, 1.728], [R + 0.007, 1.73], [R + 0.008, 1.764], [R + 0.001, 1.766], [R, 1.728]], seg, zo), GOLD);
+          k.add(revolve([[R + 0.0085, 1.737], [R + 0.0085, 1.757]], seg, zo), hardLight(0xfff4d6, 2.0));
+          k.add(revolve([[R + 0.009, 1.727], [R + 0.013, 1.729], [R + 0.013, 1.733], [R + 0.009, 1.735]], seg, zo), GOLD_DARK);
+          // Front jewel on the band.
+          k.add(faceOut(octa(0, 0, 0, 0.013, 1.3), PI, [0, 1.747, HELM_Z0 - HELM_ZS * (R + 0.013)]), hardLight(0xffffff, 2.8));
           const N = 5;
           for (let i = 0; i < N; i++) {
             const phi = PI + (i / N) * PI * 2;
@@ -1298,10 +1292,11 @@ export const HAT_SPECS: Record<string, WearSpec> = {
               return [Math.sin(a) * r, y, HELM_Z0 + Math.cos(a) * HELM_ZS * r];
             };
             // Fleur point: a gold frame around a hard-light blade.
-            k.add(hull([side(-1, R + 0.007, 1.762), side(1, R + 0.007, 1.762), side(-1, R + 0.001, 1.762), side(1, R + 0.001, 1.762), pt(R + 0.012, 1.845), pt(R + 0.006, 1.845)]), GOLD);
-            k.add(hull([side(-0.55, R + 0.009, 1.768), side(0.55, R + 0.009, 1.768), pt(R + 0.013, 1.828), pt(R + 0.012, 1.828), side(-0.55, R + 0.0085, 1.768), side(0.55, R + 0.0085, 1.768)]), hardLight(0xffffff, 2.2));
-            const tp = pt(R + 0.012, 1.852);
-            k.add(octa(tp[0], tp[1], tp[2], 0.01, 1.5), hardLight(0xfff4d6, 2.6));
+            const H = i === 0 ? 1.872 : 1.848;
+            k.add(hull([side(-1, R + 0.008, 1.764), side(1, R + 0.008, 1.764), side(-1, R + 0.001, 1.764), side(1, R + 0.001, 1.764), pt(R + 0.014, H), pt(R + 0.006, H)]), GOLD);
+            k.add(hull([side(-0.55, R + 0.0095, 1.77), side(0.55, R + 0.0095, 1.77), pt(R + 0.0145, H - 0.02), pt(R + 0.0135, H - 0.02), side(-0.55, R + 0.009, 1.77), side(0.55, R + 0.009, 1.77)]), hardLight(0xffffff, 2.2));
+            const tp = pt(R + 0.013, H + 0.009);
+            k.add(octa(tp[0], tp[1], tp[2], i === 0 ? 0.014 : 0.01, 1.5), hardLight(0xfff4d6, 2.6));
             // Hard-light arcs between the points.
             const a0 = phi + w;
             const a1 = phi + (PI * 2) / N - w;

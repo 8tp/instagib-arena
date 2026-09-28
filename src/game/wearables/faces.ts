@@ -446,12 +446,14 @@ export const FACE_SPECS: Record<string, WearSpec> = {
   'face.cyber': {
     build(k) {
       const holo = (e: number): Surf => hardLight(0xffffff, e, 1);
-      k.add(cbox(0.17, 1.662, 0.0, 0.02, 0.052, 0.064, 0.005), GUNMETAL);
-      k.add(cbox(0.181, 1.662, 0.0, 0.004, 0.036, 0.046, 0.001), holo(1.4));
+      k.add(cbox(0.172, 1.664, 0.0, 0.024, 0.06, 0.074, 0.006), GUNMETAL);
+      k.add(cbox(0.185, 1.664, 0.0, 0.004, 0.042, 0.054, 0.001), holo(1.6));
+      k.add(hull([[0.168, 1.694, 0.02], [0.176, 1.694, 0.02], [0.168, 1.694, -0.02], [0.176, 1.694, -0.02], [0.172, 1.74, 0.03]]), GUNMETAL);
+      k.add(cyl([0.172, 1.738, 0.03], [0.172, 1.744, 0.031], 0.004, 0.004, 5), holo(2.4));
       k.add(sweep([[0.172, 1.674, -0.03], [0.158, 1.676, -0.098], [0.118, 1.676, -0.148], [0.086, 1.674, -0.168]], 0.0035, 4, { smooth: 2 }), GUNMETAL);
       const cx = 0.05;
       const phi = visorPhi(cx);
-      const at: V3 = [cx, 1.655, visorZ(cx) - 0.022];
+      const at: V3 = [cx + 0.004, 1.656, visorZ(cx) - 0.024];
       const m0 = k.mark();
       // Eyepiece frame (4 bars) + corner brackets.
       const W = 0.034;
@@ -475,7 +477,7 @@ export const FACE_SPECS: Record<string, WearSpec> = {
       // Data glyphs.
       for (let i = 0; i < 3; i++) k.add(cbox(-0.02 + i * 0.004, -0.013 + 0.0, -0.0005, 0.0025, 0.004 + i * 0.002, 0.001, 0.0002), holo(1.6));
       k.add(plate((u, v) => [(u - 0.5) * W * 2, (v - 0.5) * H * 2, 0.0012] as V3, 1, 1).top, hardLight(0xffffff, 0.35, 1));
-      k.xf(m0, new THREE.Matrix4().makeRotationY(phi + PI).setPosition(at[0], at[1], at[2]));
+      k.xf(m0, new THREE.Matrix4().makeRotationY(phi + PI).multiply(new THREE.Matrix4().makeScale(1.3, 1.3, 1)).setPosition(at[0], at[1], at[2]));
       // Scan line across the visor.
       const pts: V3[] = [];
       for (let i = 0; i <= 10; i++) {

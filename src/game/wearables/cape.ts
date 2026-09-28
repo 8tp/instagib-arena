@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { fxFlags } from '../fx/fx-settings';
 import type { Surf, V3 } from './kit';
 import type { CapeSpec } from './spec';
 
@@ -233,6 +234,7 @@ export class CapeSim {
       const h = dt / steps;
       const damp = Math.pow(DAMP60, h * 60);
       const iters = C > 4 ? 3 : 2;
+      const flutter = fxFlags.reduced ? 0.15 : 0.55; // calmer cloth under reduced effects
       for (let s = 1; s <= steps; s++) {
         this.t += h;
         const f = s / steps;
@@ -251,7 +253,7 @@ export class CapeSim {
           const rz = vz / h + wind.z;
           const sp = Math.sqrt(rx * rx + ry * ry + rz * rz);
           const row = Math.floor(n / C);
-          const fl = Math.min(sp, 14) * 0.55 * (row / (R - 1)) * Math.sin(this.t * 11 + (n % C) * 1.9 + row * 2.7);
+          const fl = Math.min(sp, 14) * flutter * (row / (R - 1)) * Math.sin(this.t * 11 + (n % C) * 1.9 + row * 2.7);
           const ax = -DRAG * rx + fl * 0.5;
           const ay = GRAV - DRAG * ry + fl;
           const az = -DRAG * rz;
