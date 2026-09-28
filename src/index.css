@@ -826,7 +826,7 @@ canvas {
      your combatant isn't dimmed, and stays light along the bottom so the
      spawn pad glows. */
   background:
-    linear-gradient(90deg, rgba(3, 4, 6, 0.94) 0%, rgba(3, 4, 6, 0.82) 24%, rgba(3, 4, 6, 0.5) 36%, rgba(3, 4, 6, 0) 50%),
+    linear-gradient(90deg, rgba(3, 4, 6, 0.95) 0%, rgba(3, 4, 6, 0.88) 26%, rgba(3, 4, 6, 0.72) 34%, rgba(3, 4, 6, 0.3) 42%, rgba(3, 4, 6, 0) 52%),
     linear-gradient(0deg, rgba(3, 4, 6, 0.6) 0%, rgba(3, 4, 6, 0) 16%),
     linear-gradient(180deg, rgba(3, 4, 6, 0.6) 0%, rgba(3, 4, 6, 0) 16%);
 }

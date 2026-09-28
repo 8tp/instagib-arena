@@ -28,9 +28,10 @@ export function ChallengeIcon({ metric, size = 16 }: { metric?: string; size?: n
     case 'headshots':
       body = (
         <>
-          <circle {...p} cx='12' cy='10' r='6' />
-          <path {...p} d='M9 20h6M12 16v4' />
-          <circle cx='12' cy='10' r='1.8' fill='currentColor' />
+          <path {...p} d='M12 3a7 7 0 0 0-7 7c0 2.4 1.2 4.3 3 5.4V20h8v-4.6c1.8-1.1 3-3 3-5.4a7 7 0 0 0-7-7z' />
+          <circle cx='9.3' cy='10.5' r='1.7' fill='currentColor' />
+          <circle cx='14.7' cy='10.5' r='1.7' fill='currentColor' />
+          <path {...p} d='M10.5 20v-2.5M13.5 20v-2.5' />
         </>
       );
       break;
@@ -88,26 +89,42 @@ function pctOf(c: ChallengeView): number {
   return c.goal > 0 ? Math.min(100, (Math.min(c.progress, c.goal) / c.goal) * 100) : 0;
 }
 
+// The active challenge nearest completion (highlighted as the one to chase).
+function closestId(lists: ChallengeLists | null): string | null {
+  if (!lists) return null;
+  let best: ChallengeView | null = null;
+  for (const c of [...lists.daily, ...lists.weekly]) {
+    if (challengeState(c) !== 'active' || c.progress <= 0) continue;
+    if (!best || pctOf(c) > pctOf(best)) best = c;
+  }
+  return best?.id ?? null;
+}
+
 /* ── Menu widget ────────────────────────────────────────────────────────── */
 
 function StripRow({
   c,
   guest,
+  closest,
   claiming,
   onClaim,
 }: {
   c: ChallengeView;
   guest: boolean;
+  closest: boolean;
   claiming: boolean;
   onClaim: (id: string) => void;
 }) {
   const state = guest ? 'locked' : challengeState(c);
   return (
-    <div className='menu-ch-row' data-state={state} data-challenge={c.id}>
-      <span className='menu-ch-icon'>{guest ? <LockGlyph /> : <ChallengeIcon metric={c.metric} />}</span>
+    <div className='menu-ch-row' data-state={state} data-closest={closest ? '1' : '0'} data-challenge={c.id}>
+      <span className='menu-ch-icon'>
+        {guest ? <LockGlyph /> : state === 'done' ? <CheckGlyph size={15} /> : <ChallengeIcon metric={c.metric} />}
+      </span>
       <span className='menu-ch-name' title={c.title}>
         {c.title}
       </span>
+      <span className='menu-ch-xp'>+{c.rewardXp} XP</span>
       {state === 'claimable' ? (
         <button
           type='button'
@@ -118,20 +135,12 @@ function StripRow({
         >
           {claiming ? 'Claiming' : 'Claim'}
         </button>
-      ) : state === 'done' ? (
-        <span className='menu-ch-done'>
-          <CheckGlyph /> Done
-        </span>
       ) : (
-        <span className='menu-ch-mini'>
-          <span className='menu-ch-mini-bar'>
-            <span style={{ width: `${pctOf(c)}%` }} />
-          </span>
-          <span className='menu-ch-count'>
-            {Math.min(c.progress, c.goal)}/{c.goal}
-          </span>
-        </span>
+        <span className='menu-ch-count'>{state === 'done' ? 'Done' : `${Math.min(c.progress, c.goal)}/${c.goal}`}</span>
       )}
+      <span className='menu-ch-line' aria-hidden='true'>
+        <span style={{ width: `${pctOf(c)}%` }} />
+      </span>
     </div>
   );
 }
@@ -156,6 +165,7 @@ export function ChallengesStrip({
     if (await claimChallengeReward(id)) onClaimed();
     setClaiming(null);
   };
+  const closest = guest ? null : closestId(lists);
   const group = (period: 'daily' | 'weekly', rows: ChallengeView[]) => (
     <div key={period}>
       <div className='menu-ch-group'>
@@ -163,7 +173,7 @@ export function ChallengesStrip({
         <span>Resets in {fmtCountdown(resetTime(period, lists, now) - now)}</span>
       </div>
       {rows.map((c) => (
-        <StripRow key={c.id} c={c} guest={guest} claiming={claiming === c.id} onClaim={claim} />
+        <StripRow key={c.id} c={c} guest={guest} closest={closest === c.id} claiming={claiming === c.id} onClaim={claim} />
       ))}
     </div>
   );
@@ -215,11 +225,13 @@ function RewardChips({ xp, credits }: { xp: number; credits: number }) {
 function ModalRow({
   c,
   guest,
+  closest,
   claiming,
   onClaim,
 }: {
   c: ChallengeView;
   guest: boolean;
+  closest: boolean;
   claiming: boolean;
   onClaim: (id: string) => void;
 }) {
@@ -230,16 +242,22 @@ function ModalRow({
       data-complete={c.complete ? '1' : '0'}
       data-claimed={c.claimed ? '1' : '0'}
       data-state={state}
+      data-closest={closest ? '1' : '0'}
       className='menu-chm-row'
     >
-      <span className='menu-chm-icon'>{state === 'locked' ? <LockGlyph size={18} /> : <ChallengeIcon metric={c.metric} size={22} />}</span>
+      <span className='menu-chm-icon'>
+        {state === 'locked' ? <LockGlyph size={18} /> : state === 'done' ? <CheckGlyph size={22} /> : <ChallengeIcon metric={c.metric} size={22} />}
+      </span>
       <div className='min-w-0 flex-1'>
-        <div className='menu-chm-title'>{c.title}</div>
+        <div className='menu-chm-title'>
+          {c.title}
+          {closest && <span className='menu-chm-tag'>Almost there</span>}
+        </div>
         <div className='menu-chm-bar'>
           <span style={{ width: `${pctOf(c)}%` }} />
         </div>
       </div>
-      <div className='flex shrink-0 flex-col items-end gap-1.5'>
+      <div className='menu-chm-side'>
         <RewardChips xp={c.rewardXp} credits={c.rewardCredits} />
         {state === 'claimable' ? (
           <button
@@ -248,12 +266,12 @@ function ModalRow({
             disabled={claiming}
             onClick={() => onClaim(c.id)}
             {...sfxProps('uiConfirm')}
-            className='menu-ch-claim'
+            className='menu-chm-claim'
           >
             {claiming ? 'Claiming' : 'Claim reward'}
           </button>
         ) : state === 'done' ? (
-          <span className='menu-ch-done'>
+          <span className='menu-chm-done'>
             <CheckGlyph /> Done
           </span>
         ) : (
@@ -261,6 +279,35 @@ function ModalRow({
             {Math.min(c.progress, c.goal)} / {c.goal}
           </span>
         )}
+      </div>
+    </div>
+  );
+}
+
+function Summary({ lists, guest }: { lists: ChallengeLists; guest: boolean }) {
+  const all = [...lists.daily, ...lists.weekly];
+  const done = all.filter((c) => c.complete).length;
+  const open = all.filter((c) => !c.complete);
+  const xp = open.reduce((n, c) => n + c.rewardXp, 0);
+  const cr = open.reduce((n, c) => n + c.rewardCredits, 0);
+  return (
+    <div className='menu-chm-sum'>
+      <div className='min-w-0 flex-1'>
+        <div className='font-sans text-[14px] text-white/70'>
+          {guest ? 'Up for grabs with an account' : open.length ? 'Still up for grabs' : 'Everything done — new ones at the reset'}
+        </div>
+        {open.length > 0 && (
+          <div className='mt-1.5 flex items-center gap-2'>
+            <RewardChips xp={xp} credits={cr} />
+          </div>
+        )}
+      </div>
+      <div className='flex flex-col items-end gap-1.5'>
+        <span className='font-display text-[22px] font-bold tabular-nums text-white'>
+          {done}
+          <span className='text-[15px] text-white/45'> / {all.length}</span>
+        </span>
+        <span className='font-sans text-[12px] text-white/50'>done</span>
       </div>
     </div>
   );
@@ -290,12 +337,13 @@ export function ChallengesModal({ guest, onClose, onLogin }: { guest: boolean; o
     setClaiming(null);
   };
 
+  const closest = guest ? null : closestId(data);
   const section = (period: 'daily' | 'weekly', rows: ChallengeView[]) => {
     const done = rows.filter((c) => c.complete).length;
     return (
       <section>
         <div className='mb-2.5 flex items-baseline justify-between gap-3'>
-          <h3 className='font-display text-[17px] font-bold uppercase tracking-[0.06em] text-white/90'>
+          <h3 className='font-sans text-[17px] font-semibold text-white/90'>
             {period === 'daily' ? 'Daily' : 'Weekly'}
             <span className='ml-2.5 font-sans text-[13px] font-medium normal-case tracking-normal text-white/50'>
               {done} of {rows.length} done
@@ -307,7 +355,7 @@ export function ChallengesModal({ guest, onClose, onLogin }: { guest: boolean; o
         </div>
         <div className='flex flex-col gap-2'>
           {rows.map((c) => (
-            <ModalRow key={c.id} c={c} guest={guest} claiming={claiming === c.id} onClaim={claim} />
+            <ModalRow key={c.id} c={c} guest={guest} closest={closest === c.id} claiming={claiming === c.id} onClaim={claim} />
           ))}
         </div>
       </section>
@@ -342,6 +390,7 @@ export function ChallengesModal({ guest, onClose, onLogin }: { guest: boolean; o
       )}
       {state === 'ready' && data && (
         <div className='flex flex-col gap-6'>
+          <Summary lists={data} guest={guest} />
           {section('daily', data.daily)}
           {section('weekly', data.weekly)}
         </div>

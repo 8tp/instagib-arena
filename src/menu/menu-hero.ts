@@ -57,14 +57,14 @@ const SPAWN_SECONDS = 1.1; // materialise-in on first show
 const FIRST_EMOTE_S = 5.5;
 const EMOTE_GAP_MIN = 20;
 const EMOTE_GAP_MAX = 30;
-const RIM = 4.2;
+const RIM = 3.6;
 const HERO_HEIGHT = 0.7; // the combatant stands ~70% of the viewport tall
 const BODY_M = 1.9; // helmet-crown height in metres (what HERO_HEIGHT measures)
 const FOOT_REST_Y = 0.095; // planted ankle height (rig rest)
 const HOVER_HZ = 7;
 
 const ORIGIN = new THREE.Vector3();
-const WHITE = new THREE.Color(1, 1, 1);
+const RIM_COLOR = new THREE.Color(0xc9f4ff);
 
 // Soft radial falloff (white → transparent) for the pad glow + contact shadow.
 function radialTexture(stops: [number, number][]): THREE.CanvasTexture | null {
@@ -138,30 +138,32 @@ export class MenuHero {
     fill.position.set(3.5, 1.2, 3);
     scene.add(fill);
     this.rim = new THREE.DirectionalLight(this.color, RIM);
-    this.rim.position.set(2.4, 2.2, -5);
+    this.rim.position.set(2.8, 1.3, -5);
     scene.add(this.rim);
     this.back = new THREE.DirectionalLight(this.color, RIM * 0.6);
-    this.back.position.set(-2.6, 2.8, -5);
+    this.back.position.set(-3, 1.6, -5);
     scene.add(this.back);
 
-    // Soft halo behind the body (separation from a busy arena) — camera-facing,
-    // so it lives in the scene, not the turning holder.
+    // A dark vignette behind the body (camera-facing, in the scene — not the
+    // turning holder): quiets the arena right behind the hero (neon trims,
+    // bright floors) so the silhouette cuts out, Valorant-style.
     const haloTex = radialTexture([
-      [0, 0.55],
-      [0.35, 0.22],
+      [0, 0.92],
+      [0.5, 0.7],
+      [0.82, 0.22],
       [1, 0],
     ]);
     this.haloMat = new THREE.MeshBasicMaterial({
-      color: this.color,
+      color: 0x02040a,
       map: haloTex,
       transparent: true,
-      opacity: 0.16,
-      blending: THREE.AdditiveBlending,
+      opacity: 0.9,
       depthWrite: false,
+      toneMapped: false,
     });
-    const haloGeo = new THREE.PlaneGeometry(2.6, 3.4);
+    const haloGeo = new THREE.PlaneGeometry(5.6, 5.2);
     const halo = new THREE.Mesh(haloGeo, this.haloMat);
-    halo.position.set(0, 1.12, -0.9);
+    halo.position.set(0, 1.05, -1.4);
     halo.renderOrder = -2;
     scene.add(halo);
 
@@ -398,9 +400,9 @@ export class MenuHero {
   }
 
   private applyColor() {
-    this.rim.color.copy(this.color).lerp(WHITE, 0.08);
-    this.back.color.copy(this.color).lerp(WHITE, 0.25);
-    this.haloMat.color.copy(this.color);
+    // Contrast, not tint: an icy rim cuts any armour colour out of any map.
+    this.rim.color.copy(RIM_COLOR);
+    this.back.color.copy(this.color).lerp(RIM_COLOR, 0.65);
     this.poolMat.color.copy(this.color);
     this.ringMat.color.copy(this.color).multiplyScalar(2.1);
   }
