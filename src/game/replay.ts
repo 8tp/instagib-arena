@@ -264,7 +264,7 @@ export type ReplayDeps = {
   botModel: BotModel | null;
   spawnBeam: (origin: Vec3, end: Vec3) => void;
   spawnMuzzleFlash: (at: Vec3) => void;
-  spawnKillEffect: (at: THREE.Vector3, headshot: boolean) => void;
+  spawnKillEffect: (at: THREE.Vector3, headshot: boolean, killerId: string) => void;
   reducedEffects: () => boolean;
   // Fired when the POV star (whose eyes we're in) scores a kill in the clip, so
   // the HUD can flash a hit-marker over the crosshair.
@@ -489,7 +489,7 @@ export class ReplayPlayer {
       const k = this.kills[this.nextKillIdx++];
       const vp = poses[k.victimId] ?? this.poseAt(k.victimId, k.t);
       if (vp) {
-        this.deps.spawnKillEffect(new THREE.Vector3(vp.x, vp.y + 0.9, vp.z), k.headshot);
+        this.deps.spawnKillEffect(new THREE.Vector3(vp.x, vp.y + 0.9, vp.z), k.headshot, k.killerId);
       }
       // A kill BY the star we're spectating → flash a hit-marker on the crosshair.
       if (k.killerId === this.clip.starId) this.deps.onStarKill?.(k.headshot);

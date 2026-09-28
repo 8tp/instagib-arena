@@ -444,6 +444,8 @@ export class Game {
   private viewmodelOffset = { x: 0, y: 0, z: 0 };
   private hideViewmodel = false;
   private killEffectStyle: KillEffectStyle = DEFAULT_KILL_EFFECT;
+  // Online: each killer's server-stamped finisher, remembered for replays.
+  private readonly finisherSeen = new Map<string, KillEffectStyle>();
   private localRailgunFinish: string = DEFAULT_RAILGUN_FINISH; // viewmodel skin (local)
   private localNameColor: string = DEFAULT_NAME_COLOR; // nameplate tint (broadcast)
   private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
@@ -1785,6 +1787,15 @@ export class Game {
     return this.net && netId === this.net.clientId ? 'you' : netId;
   }
 
+  // The finisher a replayed kill plays: yours, a bot's stable one, or the one
+  // the server stamped on that player's last live kill.
+  private replayFinisher(killerId: string): KillEffectStyle {
+    if (killerId === 'you') return this.killEffectStyle;
+    const seen = this.finisherSeen.get(killerId);
+    if (seen) return seen;
+    return this.bots ? this.botFinisher(killerId) : DEFAULT_KILL_EFFECT;
+  }
+
   // One downsampled frame for the match recorder: the pose of every entity the
   // client can see (local player, remotes, bots), keyed by replay actor id.
   // Also lazily captures each entity's static profile (name + cosmetics).
@@ -2685,7 +2696,7 @@ export class Game {
         ),
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
-      spawnKillEffect: (at, headshot) => this.spawnKillEffect(at, headshot, this.killEffectStyle),
+      spawnKillEffect: (at, headshot, killerId) => this.spawnKillEffect(at, headshot, this.replayFinisher(killerId)),
       reducedEffects: () => this.reducedEffects,
       // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
       // it reads as "they just fragged someone" during the cinematic.
@@ -2796,6 +2807,7 @@ export class Game {
       : ev.finisher && isKillEffectStyle(ev.finisher)
         ? ev.finisher
         : DEFAULT_KILL_EFFECT;
+    if (!iAmKiller) this.finisherSeen.set(ev.killerId, finisher);
     this.spawnKillEffect(burstAt, ev.headshot, finisher);
 
     if (iAmKiller) {
