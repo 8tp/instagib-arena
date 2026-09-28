@@ -58,6 +58,9 @@ export function ItemTile({
   const interactive = !!onClick;
   const Tag = interactive ? 'button' : 'div';
   const lit = selected || equipped;
+  // Unusual effects are glow on dark: the tile stays dark behind the effect,
+  // the rarity colour lives on the rim, bar and name band.
+  const darkFill = item?.slot === 'unusual';
   // Every locked tile says how to get it (price / level / case / achievement).
   const shownHint: ReactNode =
     hint === 'none' || !locked
@@ -106,8 +109,10 @@ export function ItemTile({
       <span
         className='relative block h-full w-full overflow-hidden'
         style={{
-          background: `radial-gradient(115% 85% at 50% 22%, ${c.from}, ${c.to} 78%)`,
-          boxShadow: `inset 0 0 0 1px ${c.edge}${lit ? 'cc' : '55'}`,
+          background: darkFill
+            ? `radial-gradient(110% 80% at 50% 30%, #1a1f29, #07090d 75%)`
+            : `radial-gradient(115% 85% at 50% 22%, ${c.from}, ${c.to} 78%)`,
+          boxShadow: `inset 0 0 0 ${darkFill ? 2 : 1}px ${c.edge}${lit ? 'cc' : darkFill ? '99' : '55'}`,
         }}
       >
         {/* Diagonal sheen — sells the "card" read. */}
@@ -137,7 +142,11 @@ export function ItemTile({
           // never "Standard Iss…", never covering the art mid-tile.
           <span
             className='absolute inset-x-0 bottom-[3px] flex flex-col items-stretch gap-[2.5cqw] px-[6cqw] pb-[5cqw] pt-[16cqw]'
-            style={{ background: 'linear-gradient(180deg, rgba(4,6,10,0) 0%, rgba(4,6,10,0.74) 42%, rgba(4,6,10,0.9) 100%)' }}
+            style={{
+              background: darkFill
+                ? `linear-gradient(180deg, rgba(4,6,10,0) 0%, rgba(4,6,10,0.7) 40%, ${c.from}70 100%)`
+                : 'linear-gradient(180deg, rgba(4,6,10,0) 0%, rgba(4,6,10,0.74) 42%, rgba(4,6,10,0.9) 100%)',
+            }}
           >
             {shownHint && <span className='self-end leading-none'>{shownHint}</span>}
             <span
@@ -197,23 +206,45 @@ export function ItemTile({
   );
 }
 
-// Compact unlock routes for the name row. Currency always reads "⛁ 1,234";
-// levels use the filled level badge.
-function CreditsHint({ amount }: { amount: number }) {
-  return <span className='font-mono text-[12px] font-semibold tabular-nums leading-none text-amber-200'>⛁ {amount.toLocaleString()}</span>;
-}
+// Unlock routes as ONE chip style (clipped corners, tinted fill, display
+// type): ⛁ price gold, Lv cyan, Case gold with the key glyph, the rest
+// neutral. Levels double as the shared level badge.
+const ROUTE_TONE = {
+  gold: '#ffd35a',
+  cyan: '#67e8f9',
+  plain: '#e2e8f0',
+} as const;
 
-export function LevelBadge({ level }: { level: number }) {
+function RouteChip({ tone, children }: { tone: keyof typeof ROUTE_TONE; children: ReactNode }) {
+  const col = ROUTE_TONE[tone];
   return (
     <span
-      className='inline-block px-[5px] py-[2px] font-display text-[12px] font-bold leading-none text-[#021216]'
+      className='inline-flex items-center gap-[3px] px-[6px] py-[3px] font-display text-[12px] font-bold leading-none tabular-nums'
       style={{
-        background: 'linear-gradient(150deg, #67e8f9 0%, #22d3ee 40%, #0e7490 100%)',
+        color: col,
+        background: tone === 'plain' ? 'rgba(226,232,240,0.14)' : `${col}24`,
         clipPath: 'polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px)',
       }}
     >
-      Lv {level}
+      {children}
     </span>
+  );
+}
+
+function CreditsHint({ amount }: { amount: number }) {
+  return <RouteChip tone='gold'>⛁ {amount.toLocaleString()}</RouteChip>;
+}
+
+export function LevelBadge({ level }: { level: number }) {
+  return <RouteChip tone='cyan'>Lv {level}</RouteChip>;
+}
+
+function KeyMark() {
+  return (
+    <svg width={12} height={12} viewBox='0 0 24 24' aria-hidden='true' className='shrink-0'>
+      <circle cx='8' cy='12' r='4.2' fill='none' stroke='currentColor' strokeWidth='2.6' />
+      <path d='M12.2 12H21M17.5 12v3.4M20.2 12v2.4' fill='none' stroke='currentColor' strokeWidth='2.6' strokeLinecap='square' />
+    </svg>
   );
 }
 
@@ -222,16 +253,19 @@ function compactCount(n: number): string {
 }
 
 function UnlockHint({ source }: { source: CosmeticSource }) {
-  const muted = 'font-sans text-[12px] font-medium leading-none text-white/75';
   switch (source.type) {
     case 'credits':
       return <CreditsHint amount={source.price} />;
     case 'level':
       return <LevelBadge level={source.level} />;
     case 'case':
-      return <span className={`${muted} text-amber-200`}>Case</span>;
+      return (
+        <RouteChip tone='gold'>
+          <KeyMark /> Case
+        </RouteChip>
+      );
     case 'admin':
-      return <span className={muted}>Staff</span>;
+      return <RouteChip tone='plain'>Staff</RouteChip>;
     case 'achievement': {
       const n = compactCount(source.min);
       const label =
@@ -246,7 +280,7 @@ function UnlockHint({ source }: { source: CosmeticSource }) {
                 : source.stat === 'games'
                   ? `${n} games`
                   : `${source.min}% acc`;
-      return <span className={muted}>{label}</span>;
+      return <RouteChip tone='plain'>{label}</RouteChip>;
     }
     default:
       return null;

@@ -39,7 +39,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v10:';
+const STORE_PREFIX = 'ig-thumb:v13:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 // Hats sit on a mid-slate helmet: white caps read lighter, black hats darker.
@@ -253,8 +253,6 @@ function release() {
   studio = null;
   if (peekFxContext(s.scene)) disposeFxContext(s.scene);
   s.env.dispose();
-  backdropTex?.dispose();
-  backdropTex = null;
   s.renderer.dispose();
   s.renderer.forceContextLoss();
 }
@@ -270,6 +268,11 @@ type Subject = {
   elev?: number;
   azim?: number;
   fov?: number;
+  // Optional: pull the camera in/out until this box fills `fill` of the frame
+  // (its larger projected side), centred on the box.
+  fitBox?: THREE.Box3;
+  fill?: number;
+  exposure?: number; // tone-mapping exposure for this shot (default 0.95)
   // Advance any simulation before the shot (called once, after the subject
   // is in the scene).
   settle?: () => void;
@@ -290,28 +293,16 @@ function combatant(turn = 0, clip: EmoteKind = 'idle', t = 0.6, skin = THUMB_SKI
   return { holder, ch, anim };
 }
 
-// Camera-facing dark radial disc (thumbnail backdrop for glow effects). The
-// texture is cached for the studio's life.
-let backdropTex: THREE.CanvasTexture | null = null;
-function darkBackdrop(size = 1.25): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> {
-  if (!backdropTex) {
-    const S = 128;
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const ctx = cv.getContext('2d')!;
-    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    g.addColorStop(0, 'rgba(6,8,14,0.92)');
-    g.addColorStop(0.55, 'rgba(6,8,14,0.7)');
-    g.addColorStop(1, 'rgba(6,8,14,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, S, S);
-    backdropTex = new THREE.CanvasTexture(cv);
-    backdropTex.colorSpace = THREE.SRGBColorSpace;
-  }
-  return new THREE.Mesh(
-    new THREE.PlaneGeometry(size, size),
-    new THREE.MeshBasicMaterial({ map: backdropTex, transparent: true, depthWrite: false, toneMapped: false }),
-  );
+// Swap a thumbnail combatant to a near-black silhouette so the item (hat,
+// unusual) is the only thing that reads. Returns an undo.
+function silhouette(ch: Character): () => void {
+  const body = ch.mesh.material;
+  const dark = new THREE.MeshStandardMaterial({ color: 0x07090d, roughness: 0.9, metalness: 0, envMapIntensity: 0.12 });
+  ch.mesh.material = dark;
+  return () => {
+    ch.mesh.material = body;
+    dark.dispose();
+  };
 }
 
 function disposeCombatant(c: { ch: Character; anim: CharacterAnimator }) {
@@ -372,26 +363,38 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       const c = combatant(-0.42, 'idle', 0.6, HAT_SKIN);
       const hat = new WornHat(c.ch.sockets.headTop);
       await hat.setHat(entry.id);
-      // Frame on the hat itself so it fills ~60% of the tile (cropped just
-      // above the visor), rather than a bust with a small hat on top.
+      // The hat is the subject: a dark silhouette head (no white mannequin
+      // dome competing) and the camera fitted so the hat fills ~60%.
+      const undo = silhouette(c.ch);
       c.holder.updateMatrixWorld(true);
       const box = new THREE.Box3();
-      for (const child of c.ch.sockets.headTop.children) box.expandByObject(child);
-      let target = new THREE.Vector3(0, 1.74, 0);
-      let win = 0.5; // bare helmet
-      if (!box.isEmpty() && box.max.y - box.min.y > 0.02) {
-        const size = box.getSize(new THREE.Vector3());
-        win = Math.max(size.y, size.x, size.z) / 0.6;
-        const centre = box.getCenter(new THREE.Vector3());
-        target = new THREE.Vector3(centre.x, centre.y - win * 0.06, centre.z);
-      }
+      const tmp = new THREE.Box3();
+      const visit = (o: THREE.Object3D) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.geometry) {
+          if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+          if (m.geometry.boundingBox) box.union(tmp.copy(m.geometry.boundingBox).applyMatrix4(m.matrixWorld));
+        }
+        for (const k of o.children) visit(k);
+      };
+      for (const child of c.ch.sockets.headTop.children) visit(child);
+      const bare = box.isEmpty() || box.max.y - box.min.y < 0.02;
+      if (bare) box.setFromCenterAndSize(new THREE.Vector3(0, 1.72, 0), new THREE.Vector3(0.34, 0.26, 0.34));
+      // Aim a little below the hat so it sits above the tile's name band. The
+      // fit uses the hat's world AABB, whose 3/4 projection is ~1.4× the
+      // silhouette — hence the generous fill.
+      const size = box.getSize(new THREE.Vector3());
+      const aim = box.getCenter(new THREE.Vector3()).addScaledVector(new THREE.Vector3(0, 1, 0), -size.y * 0.3);
       return {
         root: c.holder,
-        target,
-        dist: win / 2 / Math.tan((15 * Math.PI) / 180),
-        elev: 0.34, // from a little above: brims and crowns read
+        target: aim,
+        dist: 1.6,
+        elev: 0.3,
+        fitBox: box,
+        fill: bare ? 0.6 : 0.88,
         dispose: () => {
           hat.dispose();
+          undo();
           disposeCombatant(c);
         },
       };
@@ -401,32 +404,24 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       const hat = new WornHat(c.ch.sockets.headTop);
       hat.setUnusual(entry.id);
       const none = unusualById(entry.id).kind === 'none';
-      // The head is a dark silhouette so it never competes with the effect;
-      // a soft dark halo behind keeps warm effects readable on the gold tile.
-      const body = c.ch.mesh.material;
-      const shadow = new THREE.MeshStandardMaterial({ color: 0x07090d, roughness: 0.9, metalness: 0, envMapIntensity: 0.12 });
-      if (!none) c.ch.mesh.material = shadow;
-      const backdrop = darkBackdrop(1.5);
-      backdrop.position.set(0, 2.0, -0.5);
-      backdrop.visible = !none;
-      const root = new THREE.Group();
-      root.add(c.holder, backdrop);
+      // Dark head silhouette; the tile itself is dark for unusuals (rarity
+      // colour on the rim + name band only), so the effect reads in its own
+      // colours and fills most of the frame.
+      const undo = none ? () => {} : silhouette(c.ch);
       return {
-        root,
+        root: c.holder,
         target: new THREE.Vector3(0, none ? 1.74 : 1.98, 0),
-        dist: none ? 1.9 : 1.45,
-        elev: 0.1,
+        dist: none ? 1.9 : 0.86,
+        elev: 0.12,
+        exposure: none ? 0.95 : 1.25,
         settle: () => {
           // Unusuals only simulate while seeded — step ~1 s in.
           for (let i = 0; i < 60; i++) hat.update(1 / 60);
         },
         dispose: () => {
           hat.dispose();
-          c.ch.mesh.material = body;
-          shadow.dispose();
+          undo();
           disposeCombatant(c);
-          backdrop.geometry.dispose();
-          backdrop.material.dispose();
         },
       };
     }
@@ -579,6 +574,25 @@ function encode(s: Studio, cam: THREE.Camera): string | null {
   return s.webp ? s.out.toDataURL('image/webp', 0.9) : s.out.toDataURL('image/png');
 }
 
+// Dolly the camera along its view line until the box's larger projected side
+// fills `fill` of the (square) frame. A few fixed-point steps converge.
+const _corner = new THREE.Vector3();
+function fitCamera(cam: THREE.PerspectiveCamera, box: THREE.Box3, target: THREE.Vector3, fill: number) {
+  for (let it = 0; it < 4; it++) {
+    cam.updateMatrixWorld(true);
+    let ext = 0;
+    for (let i = 0; i < 8; i++) {
+      _corner.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z);
+      _corner.project(cam);
+      ext = Math.max(ext, Math.abs(_corner.x), Math.abs(_corner.y));
+    }
+    if (ext <= 1e-4) return;
+    const d = cam.position.distanceTo(target);
+    const nd = d * (ext / fill);
+    cam.position.sub(target).setLength(nd).add(target);
+  }
+}
+
 async function renderThumb(id: string): Promise<string | null> {
   const entry = cosmeticById(id);
   if (!renderable(entry)) return null;
@@ -604,6 +618,8 @@ async function renderThumb(id: string): Promise<string | null> {
     );
     cam.lookAt(subj.target);
     cam.updateProjectionMatrix();
+    if (subj.fitBox) fitCamera(cam, subj.fitBox, subj.target, subj.fill ?? 0.6);
+    s.renderer.toneMappingExposure = subj.exposure ?? 0.95;
     subj.root.updateMatrixWorld(true);
     subj.settle?.();
     // Compile off the main thread where the browser allows it, then render in

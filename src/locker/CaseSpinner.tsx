@@ -6,6 +6,7 @@ import { sfxProps, uiSfx } from '../deck-core';
 import { playUi } from '../game/audio';
 import { RARITY_RANK } from '../ui/rarity';
 import { HAT_CASE_COST, cosmeticById, type Rarity } from '../game/cosmetics';
+import { KeyGlyph } from '../menu/RewardTile';
 import { ItemTile } from '../ui/item-tile';
 import { RARITY_COLOR, RARITY_LABEL } from '../ui/rarity';
 import { caseJackpotItems, casePool, credits as fmtCredits, type LockerItem } from './slots';
@@ -60,8 +61,8 @@ export function HatCaseCard({
         <div className='flex flex-wrap items-center gap-2'>
           <div className='lk-case-title'>Hat Case</div>
           {keys > 0 && (
-            <span className='lk-chip' style={{ background: '#ffc23d', color: '#1c1204' }}>
-              {keys} key{keys === 1 ? '' : 's'}
+            <span className='lk-keys' title={`${keys} hat case key${keys === 1 ? '' : 's'}`}>
+              <KeyGlyph size={15} /> {keys}
             </span>
           )}
         </div>
