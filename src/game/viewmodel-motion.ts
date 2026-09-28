@@ -43,6 +43,29 @@ export type ViewmodelPose = {
 
 const TWO_PI = Math.PI * 2;
 
+// ── Weapon inspect ───────────────────────────────────────────────────────────
+// A CS-style look-over of the railgun: swing it up to the centre of the view,
+// turn it to show the side (muzzle toward the right of the screen), then roll it
+// to show the top, and lower it again. Each key is a viewmodel pose DELTA on top
+// of the resting placement (camera-local units / rad); segments ease with a
+// smootherstep so every key is a brief held pose. Authored at 2.5 s; the
+// reduced/low-intensity version is shorter and calmer.
+type InspectKey = { t: number; x: number; y: number; z: number; rx: number; ry: number; rz: number };
+const INSPECT_KEYS: readonly InspectKey[] = [
+  { t: 0, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
+  // raise + centre, tilt the muzzle up a touch
+  { t: 0.5, x: -0.2, y: 0.12, z: 0.09, rx: 0.32, ry: 0.15, rz: 0.06 },
+  // show the side: yaw the barrel across the view, coils facing the camera
+  { t: 1.15, x: -0.17, y: 0.11, z: 0.11, rx: 0.1, ry: 1.38, rz: 0.1 },
+  // show the top: roll the receiver up toward the camera
+  { t: 1.85, x: -0.2, y: 0.12, z: 0.1, rx: 0.5, ry: 0.55, rz: -0.85 },
+  // lower it back to the carry
+  { t: 2.5, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
+];
+const INSPECT_SEC = INSPECT_KEYS[INSPECT_KEYS.length - 1].t;
+const INSPECT_OUT_RATE = 30; // 1/s exponential when cancelled — snaps back in ~0.1 s
+const smootherstep = (x: number) => x * x * x * (x * (x * 6 - 15) + 10);
+
 // Resting placement layered onto VIEWMODEL_BASE (camera-local units / rad):
 // the classic right-handed arena carry — the gun sits low and to the right and
 // is toed in so its muzzle points up toward the crosshair from the lower right,
@@ -152,6 +175,14 @@ export class ViewmodelMotion {
   // Zoom tuck (own easing so the gun moves a touch slower than the FOV)
   private tuck = 0;
 
+  // Inspect: clock (s) over the authored curve, `iw` = envelope that kills the
+  // cancelled inspect fast; `iScale` = curve amplitude (calmer when reduced).
+  private inspectT = -1;
+  private inspectSpan = INSPECT_SEC;
+  private inspectAmp = 1;
+  private inspectCancelled = false;
+  private iw = 0;
+
   private readonly pose: ViewmodelPose = {
     x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, camPitch: 0, muzzle: 0,
   };
@@ -166,7 +197,37 @@ export class ViewmodelMotion {
 
   // ── Events ──────────────────────────────────────────────────────────────
 
+  // Start the inspect. Under a low motion intensity / reduced effects it plays
+  // shorter (×0.65) and at half amplitude.
+  startInspect(reduced: boolean): void {
+    const calm = reduced || this.intensity < 0.5;
+    this.inspectT = 0;
+    this.inspectSpan = INSPECT_SEC * (calm ? 0.65 : 1);
+    this.inspectAmp = calm ? 0.5 : 1;
+    this.inspectCancelled = false;
+    this.iw = 1;
+  }
+
+  // Stop it: snaps back (immediately with `now`, else in ~0.1 s).
+  cancelInspect(now = false): void {
+    if (this.inspectT < 0) return;
+    if (now) {
+      this.inspectT = -1;
+      this.iw = 0;
+    } else this.inspectCancelled = true;
+  }
+
+  get inspecting(): boolean {
+    return this.inspectT >= 0;
+  }
+
+  // Seconds into the authored (un-scaled) curve, or -1.
+  get inspectProgress(): number {
+    return this.inspectT < 0 ? -1 : this.inspectT / this.inspectSpan;
+  }
+
   onFire(): void {
+    this.cancelInspect(); // firing always wins
     this.kickA = 1;
     this.kickB.kick(T.recoilB.kick);
     this.kickSide = -this.kickSide;
@@ -202,15 +263,43 @@ export class ViewmodelMotion {
     ]) s.reset();
     this.kickA = 0;
     this.muzzle = 0;
+    this.inspectT = -1;
+    this.iw = 0;
   }
 
   // ── Per-frame ───────────────────────────────────────────────────────────
 
   update(f: ViewmodelMotionFrame): ViewmodelPose {
     const dt = Number.isFinite(f.dt) ? clamp(f.dt, 0, T.maxDt) : 0;
-    const k = this.intensity;
     const zoom = clamp(f.zoom, 0, 1);
     this.t += dt;
+    // Inspect: zooming cancels; the authored curve gives a pose delta scaled by
+    // the envelope. Bob / sway / idle fade out while it plays.
+    if (this.inspectT >= 0 && zoom > 0.05) this.inspectCancelled = true;
+    let ix = 0, iy = 0, iz = 0, irx = 0, iry = 0, irz = 0;
+    if (this.inspectT >= 0) {
+      if (this.inspectCancelled) this.iw *= Math.exp(-INSPECT_OUT_RATE * dt);
+      else this.inspectT += dt;
+      if (this.inspectT >= this.inspectSpan || this.iw < 0.01) {
+        this.inspectT = -1;
+        this.iw = 0;
+      } else {
+        const ct = (this.inspectT / this.inspectSpan) * INSPECT_SEC;
+        let i = 1;
+        while (i < INSPECT_KEYS.length - 1 && INSPECT_KEYS[i].t < ct) i++;
+        const a = INSPECT_KEYS[i - 1];
+        const b = INSPECT_KEYS[i];
+        const e = smootherstep(clamp((ct - a.t) / (b.t - a.t), 0, 1));
+        const m = this.iw * this.inspectAmp;
+        ix = (a.x + (b.x - a.x) * e) * m;
+        iy = (a.y + (b.y - a.y) * e) * m;
+        iz = (a.z + (b.z - a.z) * e) * m;
+        irx = (a.rx + (b.rx - a.rx) * e) * m;
+        iry = (a.ry + (b.ry - a.ry) * e) * m;
+        irz = (a.rz + (b.rz - a.rz) * e) * m;
+      }
+    }
+    const k = this.intensity * (1 - 0.85 * this.iw);
 
     // Look deltas → rates (rad/s), so the sway is independent of frame rate.
     let yawRate = 0;
@@ -281,17 +370,17 @@ export class ViewmodelMotion {
     const i2 = Math.sin(this.t * TWO_PI * T.idle.hzB + 1.7);
 
     const p = this.pose;
-    p.x = PLACEMENT.x + bobX + this.swayX.x + this.dashX.x + tk * (T.zoomTuck.x + ZOOM_EXTRA.x) + T.idle.x * i2 * k;
+    p.x = ix + PLACEMENT.x + bobX + this.swayX.x + this.dashX.x + tk * (T.zoomTuck.x + ZOOM_EXTRA.x) + T.idle.x * i2 * k;
     p.y =
-      PLACEMENT.y + bobY + this.swayY.x + landY + a * T.recoilA.y + b * T.recoilB.y +
+      iy + PLACEMENT.y + bobY + this.swayY.x + landY + a * T.recoilA.y + b * T.recoilB.y +
       tk * (T.zoomTuck.y + ZOOM_EXTRA.y) + T.idle.y * i1 * k;
-    p.z = PLACEMENT.z + this.dashZ.x + a * T.recoilA.z + b * T.recoilB.z + tk * T.zoomTuck.z;
+    p.z = iz + PLACEMENT.z + this.dashZ.x + a * T.recoilA.z + b * T.recoilB.z + tk * T.zoomTuck.z;
     p.rx =
-      PLACEMENT.pitch + this.swayPitch.x + landY * T.landPitch + a * T.recoilA.pitch + b * T.recoilB.pitch +
+      irx + PLACEMENT.pitch + this.swayPitch.x + landY * T.landPitch + a * T.recoilA.pitch + b * T.recoilB.pitch +
       tk * T.zoomTuck.pitch + T.idle.pitch * i1 * k;
-    p.ry = PLACEMENT.yaw + this.swayYaw.x;
+    p.ry = iry + PLACEMENT.yaw + this.swayYaw.x;
     p.rz =
-      bobRoll + this.swayRoll.x + this.lean.x + b * T.recoilB.roll * this.kickSide +
+      irz + bobRoll + this.swayRoll.x + this.lean.x + b * T.recoilB.roll * this.kickSide +
       T.idle.roll * i2 * k;
     p.camPitch = f.reducedEffects
       ? 0

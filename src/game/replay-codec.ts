@@ -12,6 +12,7 @@
 // i16 ×256 (~3.9 mm) over ±128 m, angles as i16 over [-π, π].
 
 import type { Vec3 } from './types';
+import type { Loadout } from './items/types';
 
 export type ReplayActorKind = 'local' | 'remote' | 'bot';
 
@@ -23,6 +24,7 @@ export type ReplayActorProfile = {
   unusual: string;
   nameColor: string;
   team: number | null;
+  looks?: Loadout; // v3 (replay v2): the actor's equipped Looks — absent in v1 replays
 };
 
 export type ReplayPose = {
@@ -63,7 +65,10 @@ export type ReplayData = {
   shots: ReplayShot[];
 };
 
-export const REPLAY_VERSION = 1;
+// v2 adds a per-actor Looks JSON string after `team`. The decoder still reads v1
+// (stored weekly-challenge replays live for 26 weeks); the encoder writes v2.
+export const REPLAY_VERSION = 2;
+const MIN_REPLAY_VERSION = 1;
 const MAGIC = 0x49475231; // "IGR1"
 
 const POS_SCALE = 256; // i16 ×256 → ±127.99 m at ~3.9 mm
@@ -181,6 +186,7 @@ export function encodeReplay(data: ReplayData): Uint8Array {
     w.str(p.unusual);
     w.str(p.nameColor);
     w.i8(p.team == null ? -1 : Math.max(-1, Math.min(127, p.team | 0)));
+    w.str(p.looks && Object.keys(p.looks).length > 0 ? JSON.stringify(p.looks) : '');
   }
 
   // Frames: absolute time (ms) + a presence bitmask + each present actor's pose.
@@ -240,7 +246,7 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
 
   if (r.u32() !== MAGIC) throw new Error('replay: bad magic');
   const version = r.u8();
-  if (version !== REPLAY_VERSION) throw new Error(`replay: unsupported version ${version}`);
+  if (version < MIN_REPLAY_VERSION || version > REPLAY_VERSION) throw new Error(`replay: unsupported version ${version}`);
   const hz = r.u8();
   const won = r.u8() === 1;
   const localIdx = r.u16();
@@ -261,7 +267,19 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
     const unusual = r.str();
     const nameColor = r.str();
     const teamRaw = r.i8();
-    profiles.push({ id, name, kind, hat, unusual, nameColor, team: teamRaw < 0 ? null : teamRaw });
+    let looks: Loadout | undefined;
+    if (version >= 2) {
+      const raw = r.str();
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === 'object') looks = parsed as Loadout;
+        } catch {
+          // a malformed looks string only costs cosmetics — never the replay
+        }
+      }
+    }
+    profiles.push({ id, name, kind, hat, unusual, nameColor, team: teamRaw < 0 ? null : teamRaw, looks });
   }
   const idName = (idx: number) => (idx === NONE ? '' : profiles[idx]?.name ?? '');
   const idAt = (idx: number) => (idx === NONE ? '' : profiles[idx]?.id ?? '');
