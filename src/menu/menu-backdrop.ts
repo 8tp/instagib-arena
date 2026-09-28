@@ -22,6 +22,9 @@ import { MenuHero, type HeroFrame, type HeroLoadout } from './menu-hero';
 // The rotation (the practice range is the one bright, empty room — skip it).
 export const BACKDROP_MAPS: readonly string[] = ['reactor', 'causeway', 'lounge', 'nuketown', 'containeryard', 'derrick'];
 
+// The menu runs a calmer bloom than a match: the backdrop is mostly neon trims
+// and glossy floors, and at full strength they glared behind the menu.
+const MENU_BLOOM = 0.5;
 const SHOT_SECONDS = 24; // one orbit segment per map before the crossfade
 const CROSSFADE_MS = 1400;
 const FOV = 58; // cinematic, not the 90° gameplay FOV
@@ -460,6 +463,7 @@ export class MenuBackdrop {
     this.onMap = opts.onMap;
     this.shift = opts.shift ?? 0.26;
     this.stage = new Stage(canvas, { shadows: !opts.lowSpec, bloom: true });
+    this.stage.postFx.setBloomScale(MENU_BLOOM);
     const want = opts.startMap ?? lastMapId;
     const start = want ? this.maps.indexOf(want) : -1;
     this.mapIndex = start >= 0 ? start : Math.floor(this.rand() * this.maps.length);
@@ -486,6 +490,13 @@ export class MenuBackdrop {
   setActive(active: boolean) {
     this.active = active;
     this.syncLoop();
+  }
+
+  // The player's Bloom intensity setting (0..1.5), on top of the menu's own
+  // calmer baseline — the backdrop's neon trims + reflections were glaring.
+  setBloomScale(k: number) {
+    this.stage.postFx.setBloomScale(MENU_BLOOM * k);
+    this.redrawIfIdle();
   }
 
   get currentMap(): string {

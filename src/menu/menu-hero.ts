@@ -321,8 +321,8 @@ export class MenuHero {
     this.rim.intensity = RIM * (1 + 0.5 * this.hover);
     this.back.intensity = RIM * 0.6 * (1 + 0.5 * this.hover);
     const pulse = 0.5 + 0.5 * Math.sin(this.t * 1.7);
-    this.ringMat.color.copy(this.color).multiplyScalar(2.1 + 0.35 * pulse + 1.4 * this.hover);
-    this.poolMat.opacity = 0.5 + 0.1 * pulse + 0.25 * this.hover;
+    this.ringMat.color.copy(this.color).multiplyScalar(1.5 + 0.25 * pulse + 0.9 * this.hover);
+    this.poolMat.opacity = 0.32 + 0.06 * pulse + 0.18 * this.hover;
 
     // Emote cadence: idle at the ready, the equipped emote every 20–30 s.
     if (this.emoteLeft > 0) {
@@ -404,6 +404,6 @@ export class MenuHero {
     this.rim.color.copy(RIM_COLOR);
     this.back.color.copy(this.color).lerp(RIM_COLOR, 0.65);
     this.poolMat.color.copy(this.color);
-    this.ringMat.color.copy(this.color).multiplyScalar(2.1);
+    this.ringMat.color.copy(this.color).multiplyScalar(1.5);
   }
 }
