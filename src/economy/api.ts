@@ -145,7 +145,18 @@ const qs = (o: Record<string, string | number | undefined>): string => {
 
 type Mock = typeof import('./mock');
 let mockMod: Promise<Mock> | null = null;
-const mock = (): Promise<Mock> => (mockMod ??= import('./mock'));
+const mock = async (): Promise<Mock> => {
+  // A failed dynamic import (dev-server hiccup) must not stick: retry once.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await (mockMod ??= import('./mock'));
+    } catch (err) {
+      mockMod = null;
+      if (attempt >= 2) throw err;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+};
 
 // One place that decides real vs mock, so every call site is a one-liner.
 async function call<T>(method: 'GET' | 'POST', url: string, body: unknown, m: (mk: Mock) => Res<T> | Promise<Res<T>>): Promise<Res<T>> {

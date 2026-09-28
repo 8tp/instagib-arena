@@ -428,7 +428,7 @@ async function buildGearSubject(slot: GearSlot, look: Look): Promise<Subject | n
   return {
     root: c.holder,
     target,
-    dist: slot === 'face' ? 1.05 : slot === 'back' ? 3.1 : look.e ? 1.5 : 1.35,
+    dist: slot === 'face' ? 1.2 : slot === 'back' ? 3.1 : look.e ? 1.5 : 1.35,
     elev: slot === 'back' ? 0.16 : 0.08,
     exposure: look.e ? 1.2 : 0.95,
     dispose: () => {

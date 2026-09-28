@@ -26,7 +26,10 @@ export function qualityRows(qo: CaseInfo['qualityOdds']): QualityRow[] {
 // What can drop from a case (the client catalog's view of its pool).
 export function poolOf(c: Pick<CaseInfo, 'slots' | 'pool'>): ItemDef[] {
   const pool = casePoolFor(c.slots);
-  return c.pool.unobtainable > 0 ? [...pool, ...vaultUnobtainables().filter((d) => c.slots.includes(d.slot))] : pool;
+  if (c.pool.unobtainable <= 0) return pool;
+  // Unobtainables may already be in the slot pool (inCases) — never list a def twice.
+  const have = new Set(pool.map((d) => d.id));
+  return [...pool, ...vaultUnobtainables().filter((d) => c.slots.includes(d.slot) && !have.has(d.id))];
 }
 
 // Fallback case list from the shared contract (nominal odds, no server fallback

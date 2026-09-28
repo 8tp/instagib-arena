@@ -92,7 +92,7 @@ const FRAMES: Record<PreviewView, Framing> = {
   full: { tx: 0, ty: 1.0, tz: 0, dist: 4.7, elev: 0.3, fov: 30 },
   head: { tx: 0, ty: 1.52, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
   crown: { tx: 0, ty: 1.66, tz: 0, dist: 2.4, elev: 0.1, fov: 30 },
-  face: { tx: 0, ty: 1.6, tz: 0, dist: 1.25, elev: 0.04, fov: 30 },
+  face: { tx: 0, ty: 1.58, tz: 0, dist: 1.55, elev: 0.04, fov: 30 },
   back: { tx: 0, ty: 1.2, tz: 0, dist: 3.5, elev: 0.14, fov: 30 },
   character: { tx: 0, ty: 1.66, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
   identity: { tx: 0, ty: 1.3, tz: 0, dist: 4.4, elev: 0.1, fov: 30 },

@@ -616,11 +616,11 @@ function Details({
                 <span>
                   Salvage{inst.quality.includes('unusual') || TIER_META[tier].rank >= 3 ? ` this ${TIER_META[tier].label}${inst.quality.includes('unusual') ? ' Unusual' : ''}` : ''} for {fmtCredits(gain)}? Can’t be undone.
                 </span>
-                <button type='button' className='ec-btn ec-btn-danger' data-action='salvage-confirm' disabled={busy} onClick={() => onSalvage(inst)}>Salvage · +{fmtCredits(gain)}</button>
+                <button type='button' className='ec-btn ec-btn-danger' data-action='salvage-confirm' disabled={busy} onClick={() => onSalvage(inst)}>Salvage · {fmtCredits(gain)}</button>
                 <button type='button' className='ec-btn' onClick={() => setConfirm(null)}>Cancel</button>
               </span>
             ) : (
-              <button type='button' className='ec-btn ec-btn-danger' data-action='salvage' onClick={() => setConfirm(inst.uid)} {...sfxProps('uiClick')}>Salvage +{fmtCredits(gain)}</button>
+              <button type='button' className='ec-btn ec-btn-danger' data-action='salvage' onClick={() => setConfirm(inst.uid)} {...sfxProps('uiClick')}>Salvage · {fmtCredits(gain)}</button>
             )}
           </div>
         )}

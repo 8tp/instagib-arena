@@ -115,7 +115,7 @@ export function CaseReveal({
     <ModalShell label={`${caseDef.name} result`} tone='amber' fixed z='z-[70]' size='xl' backdrop='heavy' onClose={revealed ? onClose : undefined}>
       {({ close }) => (
         <div className={`ec-reveal-wrap ${revealed && big && !reduced ? 'ec-big' : ''}`} style={{ ['--rc' as string]: c.edge }}>
-          {revealed && big && !reduced && <div className={`ec-flash ${isIridescent(tier) ? 'ec-iri-bg' : ''}`} aria-hidden />}
+          {revealed && big && !reduced && <div className='ec-flash' aria-hidden />}
           <div className='mb-2 text-center font-sans text-[14px] font-medium text-amber-200/85' aria-live='polite'>
             {revealed ? (unusual ? 'Unusual!' : big ? `${TIER_LABEL[tier]}!` : 'Unboxed!') : `Opening ${caseDef.name}…`}
           </div>

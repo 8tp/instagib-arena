@@ -7,6 +7,8 @@
 // "Rewards coming" placeholder elsewhere — so it degrades to something true.
 
 import { ALL_COSMETICS, cosmeticById, type CosmeticSlot } from '../game/cosmetics';
+import { itemDef } from '../game/items/catalog';
+import { TIER_META } from '../game/items/types';
 import { CAREER_ROAD, MAX_LEVEL, type RoadReward, type RoadStep } from '../game/progression';
 import type { InstagibProfile } from '../app-types';
 
@@ -60,7 +62,9 @@ export function rewardKind(r: RoadReward): string {
   if (r.type === 'case') return (r.count ?? 1) > 1 ? `${r.count} free case rolls` : 'Free case roll';
   const c = cosmeticById(r.id);
   if (!c) return 'Cosmetic';
-  const rarity = c.rarity.charAt(0).toUpperCase() + c.rarity.slice(1);
+  // The v3 tier label (the item catalog re-tiers the legacy 4 rarities into 7).
+  const tier = itemDef(r.id)?.tier;
+  const rarity = tier ? TIER_META[tier].label : c.rarity.charAt(0).toUpperCase() + c.rarity.slice(1);
   return `${rarity} ${SLOT_NOUN[c.slot] ?? 'cosmetic'}`;
 }
 

@@ -525,16 +525,17 @@
   text-shadow: 0 0 14px currentColor;
 }
 .ec-flash {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
+  position: absolute;
+  inset: -20px;
+  z-index: 0;
   pointer-events: none;
-  background: radial-gradient(60% 50% at 50% 50%, var(--rc), transparent 70%);
-  animation: ec-flash 1.4s ease-out both;
+  background: radial-gradient(60% 55% at 50% 45%, var(--rc), transparent 72%);
+  mix-blend-mode: screen;
+  animation: ec-flash 1.1s ease-out both;
 }
 @keyframes ec-flash {
   0% {
-    opacity: 0.9;
+    opacity: 0.6;
   }
   100% {
     opacity: 0;
