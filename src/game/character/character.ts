@@ -40,6 +40,13 @@ export function skinColorFor(seed: string): string {
 
 export type LookMode = 'natural' | 'highlight';
 
+// Socket → owning combatant (lets socket-based APIs like the legacy WornHat
+// reach the whole character). Weak: no retention, nothing on userData.
+const SOCKET_OWNER = new WeakMap<THREE.Object3D, Character>();
+export function characterOfSocket(socket: THREE.Object3D): Character | undefined {
+  return SOCKET_OWNER.get(socket);
+}
+
 const WHITE = new THREE.Color(1, 1, 1);
 
 // Remember the viewer (finishers aim their debris away from them). Module
@@ -96,6 +103,7 @@ export class Character {
       o.position.set(def.pos[0], def.pos[1], def.pos[2]);
       this.rig.bones[def.bone].add(o);
       sockets[name] = o;
+      SOCKET_OWNER.set(o, this);
     }
     this.sockets = sockets;
     // Hats report equip changes through the crown socket: hide the crest fin

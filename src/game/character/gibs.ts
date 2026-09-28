@@ -350,6 +350,10 @@ export class GibBurst {
     // size ignores object scale, so an unusual-effect cloud would collapse into
     // one full-size additive blob. Hide the whole hat socket while gibbed.
     ch.sockets.headTop.visible = false;
+    // Face + back gear ride the head/chest too (and a cape would hang in the
+    // air where the body was): hide them for the burst as well.
+    ch.sockets.face.visible = false;
+    ch.sockets.back.visible = false;
     // Styles that cut the body with discard would leave a whole-body shadow.
     this.castShadow0 = ch.mesh.castShadow;
     ch.mesh.castShadow = this.castShadow0 && !(this.style === 'derez' || this.style === 'vaporize' || this.style === 'ember');
@@ -1502,6 +1506,8 @@ export class GibBurst {
     ch.mesh.castShadow = this.castShadow0;
     ch.sockets.gun.visible = true;
     ch.sockets.headTop.visible = true;
+    ch.sockets.face.visible = true;
+    ch.sockets.back.visible = true;
     ch.resetDeathLook();
     this.fx = null;
     if (this.flash) {
