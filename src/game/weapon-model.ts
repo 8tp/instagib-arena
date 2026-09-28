@@ -4,7 +4,7 @@ import type { RailgunFinish } from './cosmetics';
 import { flashTexture } from './fx-pool';
 import { localRail, nowMs } from './fx/rail-state';
 import { BARREL_Y, COIL_COUNT, MUZZLE_Z, railgunGeometry, type GunLod } from './gun/gun-geometry';
-import { GunMaterial, STOCK_FINISH, type GunUniforms } from './gun/gun-material';
+import { GunMaterial, STOCK_FINISH, gunFx, type GunUniforms } from './gun/gun-material';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Procedural railgun (no external asset — the art pipeline is all procedural).
@@ -40,7 +40,7 @@ import { GunMaterial, STOCK_FINISH, type GunUniforms } from './gun/gun-material'
 // bloom threshold (1.5, knee to 2.5): a charged gun carries a restrained glow
 // on its coils, not a lamp under the crosshair. The fire flash blooms hard;
 // the fill edge + ready glint lift a little more.
-const COIL_REST = 1.45;
+const COIL_REST = 2.0;
 const COIL_DARK = 0.03;
 const COIL_EDGE = 1.6; // leading-edge glint while a coil fills
 const COIL_FLASH = 7;
@@ -73,8 +73,8 @@ export type RailgunModel = {
   setCharge(charge: number): void;
   // Flash the coils for a shot (explicit drive only; pairs with setCharge).
   notifyFire(): void;
-  // Swap the finish in place (uniforms; a pattern change swaps the shader
-  // program) — no geometry rebuild. Same as recolorRailgun(model, finish).
+  // Swap the finish in place (uniforms only — no shader compile, no geometry
+  // rebuild). Same as recolorRailgun(model, finish).
   setFinish(finish?: RailgunFinish): void;
   // Low-spec tier: drop the per-pixel extras (pattern relief, bounce light).
   setLowSpec(low: boolean): void;
@@ -141,7 +141,10 @@ class CoilDriver {
     // The first ~12 % of the recharge stays dark so the discharge reads, then
     // the coils relight one after another from the back toward the muzzle.
     const fill = Math.max(0, Math.min(1, (charge - 0.12) / 0.86));
-    const t = (now / 1000) % 3600;
+    // Reduced effects: animated finishes + the coil shimmer hold still.
+    const calm = gunFx.reduced;
+    const t = calm ? 0 : (now / 1000) % 3600;
+    u.uCalm.value = calm ? 1 : 0;
     for (let i = 0; i < COIL_COUNT; i++) {
       // i = 0 is the front coil: it lights last.
       const p = Math.max(0, Math.min(1, fill * COIL_COUNT - (COIL_COUNT - 1 - i)));
@@ -149,7 +152,7 @@ class CoilDriver {
       const edge = p > 0 && p < 1 ? 4 * p * (1 - p) : 0;
       // Charged coils carry a faint wave running back along the barrel, so a
       // ready gun reads as live energy rather than a static light.
-      const hum = 1 + 0.12 * level * Math.sin(t * 5.2 + i * 1.1);
+      const hum = calm ? 1 : 1 + 0.12 * level * Math.sin(t * 5.2 + i * 1.1);
       const k = (COIL_DARK + (COIL_REST - COIL_DARK) * level) * hum + COIL_EDGE * edge + COIL_FLASH * flash + COIL_READY * ready;
       const h = Math.min(1, 0.08 + flash * 1.4 + edge * 0.7 + ready * 0.8);
       u.uCoil.value[i].copy(accent).lerp(WHITE, u.coilWhite.value).lerp(hot, h).multiplyScalar(k);
@@ -268,6 +271,13 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     },
   };
   return model;
+}
+
+// Reduced effects (accessibility) for every railgun, first and third person:
+// animated finishes (plasma veins, glitch bands, void stars, spectrum drift)
+// and the coil shimmer hold still; the glitch finish stops flickering.
+export function setRailgunReducedEffects(on: boolean): void {
+  gunFx.reduced = !!on;
 }
 
 // Recolour a built railgun in place (no geometry rebuild): the finish's

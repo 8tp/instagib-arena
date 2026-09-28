@@ -350,10 +350,24 @@ export class ViewmodelLayer {
     src.matrixWorld.decompose(this.camera.position, this.camera.quaternion, this.tmpScale);
     const cam = this.camera;
     if (src.isPerspectiveCamera) {
-      if (cam.fov !== src.fov || cam.aspect !== src.aspect || cam.zoom !== src.zoom) {
+      const v = src.view;
+      const cv = cam.view;
+      const viewChanged =
+        !v !== !cv ||
+        (!!v && !!cv &&
+          (v.fullWidth !== cv.fullWidth || v.fullHeight !== cv.fullHeight || v.offsetX !== cv.offsetX ||
+            v.offsetY !== cv.offsetY || v.width !== cv.width || v.height !== cv.height));
+      if (
+        cam.fov !== src.fov || cam.aspect !== src.aspect || cam.zoom !== src.zoom ||
+        cam.filmOffset !== src.filmOffset || cam.filmGauge !== src.filmGauge || viewChanged
+      ) {
         cam.fov = src.fov;
         cam.aspect = src.aspect;
         cam.zoom = src.zoom;
+        cam.filmOffset = src.filmOffset;
+        cam.filmGauge = src.filmGauge;
+        if (v) cam.setViewOffset(v.fullWidth, v.fullHeight, v.offsetX, v.offsetY, v.width, v.height);
+        else cam.clearViewOffset(); // both refresh the projection
         cam.updateProjectionMatrix();
       }
     }
@@ -610,6 +624,28 @@ export class PostFxPipeline {
       this.renderer.render(this.scene, this.camera);
       if (drawVm) vm.render(this.renderer);
     }
+  }
+
+  // Compile `objects`' materials ahead of their first draw, for the world or
+  // the viewmodel layer — with that layer's lights + IBL AND the render target
+  // the frame will actually use (composer buffer vs canvas changes the tone-
+  // mapping key), so the programs match and nothing compiles mid-match.
+  async prewarm(objects: THREE.Object3D, layer: 'world' | 'viewmodel'): Promise<void> {
+    const r = this.renderer;
+    const prev = r.getRenderTarget();
+    r.setRenderTarget(this.usingComposer && this.composer ? this.composer.readBuffer : null);
+    let pending: Promise<unknown>;
+    try {
+      if (layer === 'viewmodel') {
+        this.viewmodel.sync();
+        pending = r.compileAsync(objects, this.viewmodel.camera, this.viewmodel.scene);
+      } else {
+        pending = r.compileAsync(objects, this.camera, this.scene);
+      }
+    } finally {
+      r.setRenderTarget(prev); // compile itself is synchronous; only the wait is async
+    }
+    await pending;
   }
 
   dispose() {

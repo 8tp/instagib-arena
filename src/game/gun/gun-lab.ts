@@ -13,6 +13,7 @@ import { Character, skinColorFor } from '../character/character';
 import { CharacterAnimator } from '../character-anim';
 import { attachRailgun, type AttachedRailgun } from '../character/gun';
 import { railgunGeometry, railgunGeometrySplit } from './gun-geometry';
+import { prewarmGuns } from './prewarm';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 //     &overlay=0   old path: gun parented to the world camera (clips)
 //     &post=0      every post pass off (the direct-render path)
 //   ?view=sheet   contact sheet of every finish (&lod=low, &fire=…)
-//   ?view=beams   every rail colour side by side (&age=0.12 &gap=0.5), or one
+//   ?view=beams   every rail colour as a row (&age=0.12 &top=1.5 &bottom=-1.1), or one
 //                 shot across the arena into a wall (&only=rail.spectrum)
 //   ?view=tp      third-person guns on combatants (&far=1 &from=6 &count=6
 //                 &fireidx=1 &fire=<s since that gun's shot>)
@@ -35,7 +36,9 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 // window.__gunlab.coverage() → fraction of the screen the viewmodel covers.
 // ─────────────────────────────────────────────────────────────────────────
 
-type Label = { x: number; y: number; text: string };
+// anchor 'below' (default): centred under the point; 'left': to the left of
+// the point, vertically centred on it (row labels).
+type Label = { x: number; y: number; text: string; anchor?: 'below' | 'left' };
 type LabelSink = (labels: Label[], caption: string) => void;
 
 const T0 = 10_000; // virtual ms at the start of every timeline
@@ -57,6 +60,7 @@ export class GunLab {
   private readonly motion = new ViewmodelMotion();
   private readonly railgun = new Railgun();
   private frame: (() => void) | null = null;
+  prewarmMs = -1;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -102,6 +106,13 @@ export class GunLab {
     const postOn = p.get('post') !== '0';
     this.post = new PostFxPipeline(this.renderer, this.scene, this.camera);
     this.post.setOptions({ bloom: postOn, shadows: postOn, aa: postOn, vignette: postOn });
+    // &prewarm=1: time the shader warm-up (window.__gunlab.prewarmMs).
+    if (p.get('prewarm') === '1') {
+      const t0 = this.realNow();
+      void prewarmGuns(this.post).then(() => {
+        this.prewarmMs = this.realNow() - t0;
+      });
+    }
 
     const finish = railgunFinishById(p.get('finish') ?? 'gun.stock').data;
     const gun = buildRailgun(finish);
@@ -286,14 +297,20 @@ export class GunLab {
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
     const eye = this.camera.position.clone();
-    const dist = this.num('dist', 7);
+    const dist = this.num('dist', only ? 7 : 8);
     const labels: Label[] = [];
     if (only && list[0]) {
       // One beam, the way you see someone else's shot: from beside you, out
       // across the arena into a wall (the flare lands there).
       const c = list[0];
-      const a = eye.clone().addScaledVector(right, 1.4).addScaledVector(up, -0.35).addScaledVector(fwd, 1.2);
-      const dir = fwd.clone().multiplyScalar(1).addScaledVector(right, -0.55).addScaledVector(up, 0.02).normalize();
+      // &near=1: an enemy rail from 25 m out that skims ~0.7 m past your head.
+      const nearPass = p.get('near') === '1';
+      const a = nearPass
+        ? eye.clone().addScaledVector(fwd, 25).addScaledVector(right, -3).addScaledVector(up, -0.2)
+        : eye.clone().addScaledVector(right, 1.4).addScaledVector(up, -0.35).addScaledVector(fwd, 1.2);
+      const dir = nearPass
+        ? eye.clone().addScaledVector(right, 0.7).addScaledVector(up, -0.3).sub(a).normalize()
+        : fwd.clone().multiplyScalar(1).addScaledVector(right, -0.55).addScaledVector(up, 0.02).normalize();
       let t = 60;
       for (const box of map.boxes) {
         const h = rayAabb({ x: a.x, y: a.y, z: a.z }, { x: dir.x, y: dir.y, z: dir.z }, box);
@@ -302,14 +319,18 @@ export class GunLab {
       beams.spawn(a, a.clone().addScaledVector(dir, t), c.data.core, c.data.helix, false, { mode: c.mode, impact: true });
       labels.push({ x: 0.5, y: 0.04, text: c.name });
     } else {
-      const gap = this.num('gap', 0.5);
+      // Every colour as a row: top 1.5 m above the eye … bottom 0.5 m off the
+      // floor, each label centred on its own beam's left end.
+      const top = this.num('top', 1.5);
+      const bottom = this.num('bottom', -1.1);
+      const gap = list.length > 1 ? (top - bottom) / (list.length - 1) : 0;
       list.forEach((c, i) => {
-        const yOff = ((list.length - 1) / 2 - i) * gap;
-        const a = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -6).addScaledVector(up, yOff);
-        const b = eye.clone().addScaledVector(fwd, dist + 5).addScaledVector(right, 7).addScaledVector(up, yOff);
+        const yOff = top - i * gap;
+        const a = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -4.5).addScaledVector(up, yOff);
+        const b = eye.clone().addScaledVector(fwd, dist + 4).addScaledVector(right, 6).addScaledVector(up, yOff);
         beams.spawn(a, b, c.data.core, c.data.helix, false, { mode: c.mode, impact: true });
-        const l = eye.clone().addScaledVector(fwd, dist).addScaledVector(right, -6.2).addScaledVector(up, yOff + 0.12).project(this.camera);
-        labels.push({ x: (l.x + 1) / 2, y: (1 - l.y) / 2 - 0.03, text: c.name });
+        const l = a.clone().project(this.camera);
+        labels.push({ x: (l.x + 1) / 2, y: (1 - l.y) / 2, text: c.name, anchor: 'left' });
       });
     }
     const age = this.num('age', 0.12);
