@@ -58,6 +58,7 @@ export type KillEvent = {
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
+  finisher?: string; // the killer's equipped finisher (kill-effect style) — validate before use
   t: number;
 };
 
@@ -112,6 +113,7 @@ type KillBroadcast = {
   victimPos: Vec3;
   respawnPos: Vec3;
   killerCard?: CardPayload;
+  finisher?: string;
   t: number;
 };
 type JoinedMessage = {
@@ -367,6 +369,7 @@ export class NetClient {
   localEmote = 'emote.cheer'; // equipped podium-emote id (shown on the results podium)
   localNameColor = 'name.default'; // equipped nameplate-color id (seen by others)
   localSpawnEffect = 'spawn.beam'; // equipped spawn-in-effect id (seen by others)
+  localKillEffect = 'pulse'; // equipped finisher (stamped by the server on our kills)
   localTitle = 'title.none'; // equipped title id (flair shown under the name, seen by others)
   localTitleText = ''; // server-resolved flair for our own title (dynamic ranked → "#N"/tier)
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
@@ -655,6 +658,11 @@ export class NetClient {
     this.send({ type: 'spawnEffect', id });
   }
 
+  setLocalKillEffect(id: string): void {
+    this.localKillEffect = id;
+    this.send({ type: 'killEffect', id });
+  }
+
   setLocalTitle(id: string): void {
     this.localTitle = id;
     this.send({ type: 'title', id });
@@ -921,6 +929,7 @@ export class NetClient {
       this.send({ type: 'emote', id: this.localEmote });
       this.send({ type: 'nameColor', id: this.localNameColor });
       this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
+      this.send({ type: 'killEffect', id: this.localKillEffect });
       this.send({ type: 'title', id: this.localTitle });
       this.send({ type: 'railColor', id: this.localRailColor });
       this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
@@ -1051,6 +1060,7 @@ export class NetClient {
         victimPos: msg.victimPos,
         respawnPos: msg.respawnPos,
         killerCard: msg.killerCard,
+        finisher: typeof msg.finisher === 'string' ? msg.finisher : undefined,
         t: msg.t,
       });
       return;

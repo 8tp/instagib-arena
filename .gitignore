@@ -24,6 +24,8 @@ npm-debug.log*
 # critique captures
 design/shots/*.png
 design/shots/*.jpg
+design/shots/**/*.jpg
+design/shots/**/*.png
 
 # agent worktrees
 .claude/worktrees/

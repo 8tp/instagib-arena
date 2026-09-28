@@ -86,6 +86,7 @@ import {
   railgunFinishById,
   spawnEffectById,
   SPAWN_EFFECTS,
+  KILL_EFFECTS,
   titleById,
   type KillEffectStyle,
 } from './cosmetics';
@@ -859,6 +860,14 @@ export class Game {
   // can never break rendering.
   setKillEffect(id: string) {
     this.killEffectStyle = isKillEffectStyle(id) ? id : DEFAULT_KILL_EFFECT;
+    this.net?.setLocalKillEffect(this.killEffectStyle);
+  }
+
+  // A stable per-bot finisher so solo play shows the whole range of death
+  // animations (and what's worth unlocking) without any netcode.
+  private botFinisher(botId: string): KillEffectStyle {
+    const pool = KILL_EFFECTS.filter((k) => k.source.type !== 'admin');
+    return pool[hashStr(botId) % pool.length].id;
   }
 
   // Equipped rail-beam color cosmetic — recolors the local player's beam, and is
@@ -2311,7 +2320,7 @@ export class Game {
         hit.headshot,
         this.killEffectStyle,
       );
-      bot.kill();
+      bot.kill(this.killEffectStyle);
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2445,12 +2454,13 @@ export class Game {
     } else {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (victim) {
+        const finisher = this.botFinisher(intent.botId);
         this.spawnKillEffect(
           new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
           false,
-          DEFAULT_KILL_EFFECT,
+          finisher,
         );
-        victim.kill();
+        victim.kill(finisher);
         this.botDeathCounts.set(victimId, (this.botDeathCounts.get(victimId) ?? 0) + 1);
         this.audio.gibAt(victim.state.pos.x, victim.centerY(), victim.state.pos.z, 0.6);
       }
@@ -2776,10 +2786,14 @@ export class Game {
       ev.victimPos.y + 0.9,
       ev.victimPos.z,
     );
-    // Your equipped kill effect plays on YOUR frags; everyone else's frags use
-    // the default until the server broadcasts each player's equipped cosmetics
-    // (progression Phase 1 — remote cosmetics in the snapshot payload).
-    this.spawnKillEffect(burstAt, ev.headshot, iAmKiller ? this.killEffectStyle : DEFAULT_KILL_EFFECT);
+    // The KILLER's finisher decides how the victim dies — yours on your frags,
+    // the server-stamped one (ownership-checked at equip) on everyone else's.
+    const finisher: KillEffectStyle = iAmKiller
+      ? this.killEffectStyle
+      : ev.finisher && isKillEffectStyle(ev.finisher)
+        ? ev.finisher
+        : DEFAULT_KILL_EFFECT;
+    this.spawnKillEffect(burstAt, ev.headshot, finisher);
 
     if (iAmKiller) {
       // Killer: trust the server-authoritative score (next snapshot will
@@ -2863,14 +2877,14 @@ export class Game {
     } else {
       // Bystander — just hide the dead remote player briefly.
       const rp = this.remotePlayers.get(ev.victimId);
-      if (rp) rp.markDead();
+      if (rp) rp.markDead(finisher);
       this.audio.gibAt(burstAt.x, burstAt.y, burstAt.z, 0.6); // hear frags around you
     }
 
     // For non-victim clients that are local-rendering the victim, hide them.
     if (!iAmVictim) {
       const rp = this.remotePlayers.get(ev.victimId);
-      if (rp) rp.markDead();
+      if (rp) rp.markDead(finisher);
     }
 
     // Killfeed everywhere.

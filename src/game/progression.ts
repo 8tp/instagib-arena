@@ -88,3 +88,56 @@ export function baseMatchXp(d: MatchXpInput): number {
 export function creditsForXp(xp: number): number {
   return Math.floor(xp * CREDITS_PER_XP);
 }
+
+// ── Reward contract (server → client), shared by the results screen ─────────
+// The server returns these alongside the legacy { xpGained, creditsGained,
+// leveledUp, newUnlocks, progression } fields — for the offline POST
+// /api/stats reply and the online WS `progression` push alike.
+
+export type XpLineKey =
+  | 'base'
+  | 'kills'
+  | 'headshots'
+  | 'streak'
+  | 'win'
+  | 'accuracy'
+  | 'firstWin'
+  | 'challenge'
+  | 'offline' // the offline scale-down (a negative line)
+  | 'cap'; // a per-match/per-day cap trim (a negative line)
+
+// One itemized row of the end-of-match XP breakdown, in display order.
+export type XpLine = {
+  key: XpLineKey;
+  label: string; // "Kills", "First win of the day", "Daily: 10 headshots"…
+  xp: number; // signed
+  detail?: string; // "12 × 10", "43% accuracy"…
+};
+
+// One Career Road reward. Every level on the road grants at least one.
+export type RoadReward =
+  | { type: 'cosmetic'; id: string }
+  | { type: 'credits'; amount: number }
+  | { type: 'case' }; // one free hat-case opening
+
+export type RoadStep = { level: number; rewards: RoadReward[] };
+
+// A daily/weekly challenge completed (and auto-granted) by this match.
+export type ChallengeCompletion = { id: string; label: string; xp: number; credits: number };
+
+export type RewardExtras = {
+  saved: boolean; // false for guests: computed so the UI can show what they'd earn, never persisted
+  offline: boolean;
+  xpLines: XpLine[];
+  levelBefore: number;
+  totalXpBefore: number;
+  roadRewards: RoadStep[]; // Career Road steps reached by this match (levelBefore+1 … levelAfter)
+  challenges: ChallengeCompletion[];
+};
+
+// The Career Road: level → rewards. Filled in by the progression track.
+export const CAREER_ROAD: readonly RoadStep[] = [];
+
+export function roadStepAt(level: number): RoadStep | undefined {
+  return CAREER_ROAD.find((s) => s.level === level);
+}

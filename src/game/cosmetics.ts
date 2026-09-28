@@ -8,7 +8,10 @@
 // Quakecraft's firework "barrels"). Future slots (rail beam color, crosshair,
 // name color, announcer) slot in next to KILL_EFFECTS using the same shape.
 
-export type Rarity = 'common' | 'rare' | 'epic';
+// Four tiers (Fortnite-style colour language in the Locker): grey / blue /
+// purple / gold. Legendary = the showpieces (unusuals, top finishers).
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
+export const RARITIES: readonly Rarity[] = ['common', 'rare', 'epic', 'legendary'];
 
 // A career-stat an achievement-earned cosmetic (titles) keys off. Evaluated
 // server-side against the player's clamped aggregate stats (see titleGrantsFrom).
@@ -24,11 +27,14 @@ export type CosmeticSource =
   | { type: 'level'; level: number }
   | { type: 'credits'; price: number }
   | { type: 'achievement'; stat: AchievementStat; min: number; minGames?: number }
+  | { type: 'case' } // case-exclusive: only ever drops from the hat case (the "jackpot")
   | { type: 'admin' }; // staff-exclusive: auto-granted to admins, never earnable/buyable
 
-// ── Kill-effect slot ────────────────────────────────────────────────────────
-// The visual that plays at the victim when you frag them. Each style is a
-// self-contained recipe in EffectsManager.spawnKillBurst().
+// ── Kill-effect slot ("Finisher") ─────────────────────────────────────────────
+// How your victims die: the KILLER's equipped finisher picks both the death
+// animation (how the body breaks apart — character/gibs.ts) and the burst
+// (EffectsManager.spawnKillBurst). Broadcast: the server stamps the killer's
+// finisher on every kill, so the victim and bystanders see it too.
 export type KillEffectStyle =
   | 'pulse'
   | 'nova'
@@ -36,7 +42,13 @@ export type KillEffectStyle =
   | 'voxel'
   | 'ember'
   | 'gibstorm'
-  | 'singularity';
+  | 'singularity'
+  | 'prism'
+  | 'derez'
+  | 'shatter'
+  | 'confetti'
+  | 'overload'
+  | 'vaporize';
 
 export const DEFAULT_KILL_EFFECT: KillEffectStyle = 'pulse';
 
@@ -57,7 +69,14 @@ export const KILL_EFFECTS: readonly KillEffectCosmetic[] = [
   { id: 'voxel',       name: 'Voxel',       blurb: 'Shatters the target into a burst of glowing cubes.',    rarity: 'rare',   source: { type: 'credits', price: 800 } },
   { id: 'ember',       name: 'Pyre',        blurb: 'A rising column of embers and drifting sparks.',         rarity: 'rare',   source: { type: 'credits', price: 800 } },
   { id: 'gibstorm',    name: 'Gibstorm',    blurb: 'A violent, heavy shard explosion that rains down.',      rarity: 'epic',   source: { type: 'level', level: 12 } },
-  { id: 'singularity', name: 'Singularity', blurb: 'Collapses inward to a point, then detonates white-hot.', rarity: 'epic',   source: { type: 'credits', price: 2500 } },
+  { id: 'singularity', name: 'Singularity', blurb: 'Collapses inward to a point, then detonates white-hot.', rarity: 'legendary', source: { type: 'credits', price: 2500 } },
+  // Finisher wave 2 — full death animations (Ratz-Instagib flavoured).
+  { id: 'shatter',     name: 'Glass Jaw',   blurb: 'The body shatters like glass into glinting shards.',     rarity: 'rare',      source: { type: 'credits', price: 900 } },
+  { id: 'confetti',    name: 'Party Foul',  blurb: 'Pops like a party cannon: confetti and streamers.',      rarity: 'rare',      source: { type: 'level', level: 15 } },
+  { id: 'derez',       name: 'Derez',       blurb: 'Sliced into glowing bands that scatter and blink out.',  rarity: 'epic',      source: { type: 'level', level: 20 } },
+  { id: 'vaporize',    name: 'Vaporize',    blurb: 'Flash-burned to ash that drifts away on the wind.',      rarity: 'epic',      source: { type: 'credits', price: 1800 } },
+  { id: 'overload',    name: 'Overload',    blurb: 'Arcs rip through the armour, then a blue-white blast.',  rarity: 'epic',      source: { type: 'credits', price: 2200 } },
+  { id: 'prism',       name: 'Prism',       blurb: 'Detonates into a spray of rainbow shards and rings.',    rarity: 'legendary', source: { type: 'level', level: 40 } },
 ] as const;
 
 export function killEffectById(id: string): KillEffectCosmetic {
@@ -80,6 +99,8 @@ export type RailColorCosmetic = {
   rarity: Rarity;
   source: CosmeticSource;
   data: { core: number; helix: number }; // beam core + helix colors
+  // 'spectrum' = the helix hue cycles along the beam (rail-beam.ts shader).
+  mode?: 'spectrum';
 };
 
 export const RAIL_COLORS: readonly RailColorCosmetic[] = [
@@ -89,6 +110,9 @@ export const RAIL_COLORS: readonly RailColorCosmetic[] = [
   { id: 'rail.ember',  name: 'Ember',  blurb: 'Molten orange-red beam.',        rarity: 'rare',   source: { type: 'credits', price: 600 },  data: { core: 0xffe0b0, helix: 0xff6a1a } },
   { id: 'rail.gold',   name: 'Gold',   blurb: 'A regal gold beam.',             rarity: 'epic',   source: { type: 'credits', price: 1800 }, data: { core: 0xfff4c0, helix: 0xffb000 } },
   { id: 'rail.admin',  name: 'Sovereign', blurb: 'Staff-gold rail — admin only.', rarity: 'epic', source: { type: 'admin' },              data: { core: 0xfff6d0, helix: 0xffd700 } },
+  { id: 'rail.ratz',   name: 'Ratz',     blurb: 'Hot-pink neon, straight out of 2003.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, data: { core: 0xfff0fb, helix: 0xff3ec8 } },
+  { id: 'rail.void',   name: 'Void',     blurb: 'A deep violet slash of light.',        rarity: 'rare',   source: { type: 'level', level: 17 },     data: { core: 0xf0e4ff, helix: 0x7c3aed } },
+  { id: 'rail.spectrum', name: 'Spectrum', blurb: 'The helix cycles through every hue.', rarity: 'legendary', source: { type: 'level', level: 50 }, data: { core: 0xffffff, helix: 0xff4fd8 }, mode: 'spectrum' },
 ];
 
 export function railColorById(id: string): RailColorCosmetic {
@@ -105,12 +129,17 @@ export function isRailColor(id: string): boolean {
 // default look (the original constants in weapon-model.ts).
 export const DEFAULT_RAILGUN_FINISH = 'gun.stock';
 
+// Surface pattern / material treatment a finish applies on top of its palette
+// (rendered in weapon-model.ts). 'plain' (default) = the palette on stock PBR.
+export type FinishPattern = 'plain' | 'carbon' | 'hex' | 'hazard' | 'plasma' | 'spectrum' | 'digital' | 'ceramic';
+
 export type RailgunFinish = {
   body: number; // dark receiver
   metal: number; // gunmetal
   metalLt: number; // lighter frame edges
   accent: number; // energy rail base color
   accentHot: number; // bright energy color
+  pattern?: FinishPattern;
 };
 
 export type RailgunFinishCosmetic = {
@@ -126,10 +155,17 @@ export const RAILGUN_FINISHES: readonly RailgunFinishCosmetic[] = [
   { id: 'gun.stock',   name: 'Standard Issue', blurb: 'The factory gunmetal-and-cyan rail.', rarity: 'common', source: { type: 'default' },              data: { body: 0x171b22, metal: 0x2c333f, metalLt: 0x515d6e, accent: 0x37a6ff, accentHot: 0x8af2ff } },
   { id: 'gun.crimson', name: 'Crimson',        blurb: 'Blackened frame, hot red rails.',     rarity: 'rare',   source: { type: 'level', level: 6 },       data: { body: 0x1a1012, metal: 0x33252a, metalLt: 0x6e515a, accent: 0xff3b4e, accentHot: 0xff9aa6 } },
   { id: 'gun.toxic',   name: 'Biohazard',      blurb: 'Acid-green accelerator rails.',       rarity: 'rare',   source: { type: 'level', level: 11 },      data: { body: 0x121a14, metal: 0x29332b, metalLt: 0x51604f, accent: 0x6fff3b, accentHot: 0xc6ffaa } },
-  { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1200 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff } },
+  { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1200 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff, pattern: 'carbon' } },
   { id: 'gun.gold',    name: 'Midas',          blurb: 'A gilded receiver fit for a champ.',  rarity: 'epic',   source: { type: 'credits', price: 2200 },  data: { body: 0x241a08, metal: 0x6e5520, metalLt: 0xb0902f, accent: 0xffd24a, accentHot: 0xfff4c0 } },
   { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 2800 },  data: { body: 0x12081a, metal: 0x271333, metalLt: 0x4c2d75, accent: 0xa855f7, accentHot: 0xe9d5ff } },
   { id: 'gun.admin',   name: 'Regalia',        blurb: 'Gilded staff rail — admin only.',     rarity: 'epic',   source: { type: 'admin' },                 data: { body: 0x2a2208, metal: 0x7a5f15, metalLt: 0xd4af37, accent: 0xffe9a0, accentHot: 0xffffff } },
+  // Finish wave 2 — patterned / animated treatments.
+  { id: 'gun.arctic',  name: 'Arctic',         blurb: 'White ceramic plates, ice-blue rails.', rarity: 'rare',     source: { type: 'level', level: 19 },      data: { body: 0xc9d3dc, metal: 0x8b98a6, metalLt: 0xeef3f7, accent: 0x6fd6ff, accentHot: 0xe0f7ff, pattern: 'ceramic' } },
+  { id: 'gun.hazard',  name: 'Hazard',         blurb: 'Industrial chevrons. Handle with care.', rarity: 'rare',    source: { type: 'credits', price: 1000 },  data: { body: 0x1a1a14, metal: 0x3a3a30, metalLt: 0xd9b400, accent: 0xffc400, accentHot: 0xfff0a0, pattern: 'hazard' } },
+  { id: 'gun.ratz',    name: 'Ratz',           blurb: 'Hex-plated neon, pink and cyan.',        rarity: 'epic',    source: { type: 'credits', price: 2000 },  data: { body: 0x15101c, metal: 0x2a1f38, metalLt: 0xff5fcf, accent: 0xff3ec8, accentHot: 0x9ff8ff, pattern: 'hex' } },
+  { id: 'gun.glitch',  name: 'Glitch',         blurb: 'Digital camo that won\'t sit still.',    rarity: 'epic',    source: { type: 'level', level: 30 },      data: { body: 0x0d1410, metal: 0x1d2a22, metalLt: 0x3f5a48, accent: 0x3bff8a, accentHot: 0xd4ffe6, pattern: 'digital' } },
+  { id: 'gun.plasma',  name: 'Plasma Core',    blurb: 'Black frame, veins of living energy.',   rarity: 'epic',    source: { type: 'credits', price: 3000 },  data: { body: 0x0a0710, metal: 0x1b1426, metalLt: 0x3b2a55, accent: 0xc23bff, accentHot: 0xffc2ff, pattern: 'plasma' } },
+  { id: 'gun.spectrum', name: 'Spectrum',      blurb: 'Iridescent chrome that shifts with the light.', rarity: 'legendary', source: { type: 'level', level: 45 }, data: { body: 0x1a1d24, metal: 0x9aa3b2, metalLt: 0xe6ebf2, accent: 0xff4fd8, accentHot: 0xffffff, pattern: 'spectrum' } },
 ];
 
 export function railgunFinishById(id: string): RailgunFinishCosmetic {
@@ -257,7 +293,19 @@ export function isHat(id: string): boolean {
 // tier: high level, big credits, or the case jackpot.
 export const DEFAULT_UNUSUAL = 'unusual.none';
 
-export type UnusualKind = 'none' | 'embers' | 'orbit' | 'halo' | 'storm' | 'aura';
+export type UnusualKind =
+  | 'none'
+  | 'embers'
+  | 'orbit'
+  | 'halo'
+  | 'storm'
+  | 'aura'
+  | 'plasma'
+  | 'prism'
+  | 'galaxy'
+  | 'ghostfire'
+  | 'hearts'
+  | 'binary';
 
 export type UnusualCosmetic = {
   id: string;
@@ -270,11 +318,19 @@ export type UnusualCosmetic = {
 
 export const UNUSUALS: readonly UnusualCosmetic[] = [
   { id: 'unusual.none',   name: 'None',          blurb: 'No effect.',                          rarity: 'common', source: { type: 'default' },              kind: 'none' },
-  { id: 'unusual.embers', name: 'Searing Embers',blurb: 'Rising embers crown your hat.',        rarity: 'epic',   source: { type: 'level', level: 18 },     kind: 'embers' },
-  { id: 'unusual.orbit',  name: 'Orbiting Energy',blurb: 'Motes of energy circle overhead.',    rarity: 'epic',   source: { type: 'credits', price: 3000 }, kind: 'orbit' },
-  { id: 'unusual.halo',   name: 'Radiant Halo',  blurb: 'A glowing ring hovers above you.',      rarity: 'epic',   source: { type: 'level', level: 25 },     kind: 'halo' },
-  { id: 'unusual.storm',  name: 'Storm Cloud',   blurb: 'A tiny thundercloud follows your head.',rarity: 'epic',   source: { type: 'credits', price: 5000 }, kind: 'storm' },
-  { id: 'unusual.aura',   name: 'Sovereign Aura',blurb: 'A regal ring of golden motes — staff only.', rarity: 'epic', source: { type: 'admin' },         kind: 'aura' },
+  { id: 'unusual.embers', name: 'Searing Embers',blurb: 'Rising embers crown your hat.',        rarity: 'legendary', source: { type: 'level', level: 18 },     kind: 'embers' },
+  { id: 'unusual.orbit',  name: 'Orbiting Energy',blurb: 'Motes of energy circle overhead.',    rarity: 'legendary', source: { type: 'credits', price: 3000 }, kind: 'orbit' },
+  { id: 'unusual.halo',   name: 'Radiant Halo',  blurb: 'A glowing ring hovers above you.',      rarity: 'legendary', source: { type: 'level', level: 25 },     kind: 'halo' },
+  { id: 'unusual.storm',  name: 'Storm Cloud',   blurb: 'A tiny thundercloud follows your head.',rarity: 'legendary', source: { type: 'credits', price: 5000 }, kind: 'storm' },
+  { id: 'unusual.aura',   name: 'Sovereign Aura',blurb: 'A regal ring of golden motes — staff only.', rarity: 'legendary', source: { type: 'admin' },         kind: 'aura' },
+  // Wave 2 — Ratz-flavoured showpieces. Prismatic + Galaxy are case-exclusive
+  // (the hat case's jackpot roll).
+  { id: 'unusual.ghostfire', name: 'Ghostfire',    blurb: 'Spectral green flames that trail as you run.', rarity: 'legendary', source: { type: 'level', level: 35 },     kind: 'ghostfire' },
+  { id: 'unusual.plasma',    name: 'Plasma Arcs',  blurb: 'Crackling arcs leap around your head.',        rarity: 'legendary', source: { type: 'credits', price: 4000 }, kind: 'plasma' },
+  { id: 'unusual.hearts',    name: 'Lovestruck',   blurb: 'Hearts float up and pop. Adorable. Lethal.',   rarity: 'legendary', source: { type: 'credits', price: 3500 }, kind: 'hearts' },
+  { id: 'unusual.binary',    name: 'Overclocked',  blurb: 'A falling cascade of glowing digits.',         rarity: 'legendary', source: { type: 'level', level: 60 },     kind: 'binary' },
+  { id: 'unusual.prism',     name: 'Prismatic',    blurb: 'A spiral of rainbow light — case jackpot.',    rarity: 'legendary', source: { type: 'case' },                 kind: 'prism' },
+  { id: 'unusual.galaxy',    name: 'Galaxy',       blurb: 'A tiny spiral galaxy turns overhead — case jackpot.', rarity: 'legendary', source: { type: 'case' },          kind: 'galaxy' },
 ];
 
 export function unusualById(id: string): UnusualCosmetic {
@@ -289,7 +345,7 @@ export function isUnusual(id: string): boolean {
 // the "no randomized paid boxes" pillar. The roll is server-authoritative.
 export const HAT_CASE_COST = 500;
 export const DUPE_REFUND_FRAC = 0.4; // duplicate roll refunds this much of the cost
-export const RARITY_WEIGHT: Record<Rarity, number> = { common: 100, rare: 40, epic: 12 };
+export const RARITY_WEIGHT: Record<Rarity, number> = { common: 100, rare: 40, epic: 12, legendary: 4 };
 
 // Droppable hats (everything but bare-head and staff-exclusive items), the
 // case's pool — admin cosmetics never drop from a credits-funded case.
@@ -582,6 +638,8 @@ export function sourceLabel(source: CosmeticSource): string {
       }
       return 'Achievement';
     }
+    case 'case':
+      return 'Hat Case';
     case 'admin':
       return 'Admin';
   }

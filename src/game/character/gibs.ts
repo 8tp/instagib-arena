@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { getBodyGeometry } from './body';
+import type { KillEffectStyle } from '../cosmetics';
 import type { Character } from './character';
 import { B, BONE_COUNT, REST_ABS } from './rig';
 
@@ -165,7 +166,12 @@ export class GibBurst {
   }
 
   // Burst now. (vx, vy, vz) = the victim's world velocity at death.
-  start(vx: number, vy: number, vz: number, floor: GibFloor): void {
+  // The killer's finisher — which death animation this burst plays. Every
+  // style currently shares the rigid-chunk burst below.
+  style: KillEffectStyle = 'pulse';
+
+  start(vx: number, vy: number, vz: number, floor: GibFloor, style: KillEffectStyle = 'pulse'): void {
+    this.style = style;
     const ch = this.ch;
     const root = ch.root;
     const rig = ch.rig;

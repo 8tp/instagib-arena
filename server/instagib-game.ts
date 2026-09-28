@@ -56,6 +56,8 @@ import {
   isRailColor,
   isRailgunFinish,
   isSpawnEffect,
+  isKillEffectStyle,
+  DEFAULT_KILL_EFFECT,
   isTitle,
   isUnusual,
   titleById,
@@ -324,6 +326,7 @@ type ClientRecord = {
   emote: string; // equipped podium-emote cosmetic id
   nameColor: string; // equipped nameplate-color cosmetic id (echoed in snapshots)
   spawnEffect: string; // equipped spawn-in-effect cosmetic id (echoed in snapshots)
+  killEffect: string; // equipped finisher (kill-effect style) — stamped on this player's kills
   title: string; // equipped title cosmetic id (flair under the name; echoed in snapshots)
   railColor: string; // equipped rail-beam color cosmetic id (echoed so others/spectators see your beam)
   railgunFinish: string; // equipped railgun-finish (gun skin) cosmetic id (echoed for the 3rd-person gun)
@@ -384,6 +387,7 @@ type ClientMessage =
   | { type: 'emote'; id?: string }
   | { type: 'nameColor'; id?: string }
   | { type: 'spawnEffect'; id?: string }
+  | { type: 'killEffect'; id?: string }
   | { type: 'title'; id?: string }
   | { type: 'railColor'; id?: string }
   | { type: 'railgunFinish'; id?: string }
@@ -1038,6 +1042,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.emote = old.emote;
     record.nameColor = old.nameColor;
     record.spawnEffect = old.spawnEffect;
+    record.killEffect = old.killEffect;
     record.title = old.title;
     record.railColor = old.railColor;
     record.railgunFinish = old.railgunFinish;
@@ -1670,6 +1675,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       firstBlood,
       victimPos: { ...victim.pos },
       respawnPos,
+      finisher: shooter.killEffect, // the killer's finisher → how the victim dies, for everyone
       // The killer's playercard → victim's killcam. Re-resolve the title here so a
       // live ranked title (#N) on the card reflects the killer's CURRENT standing,
       // not whatever it was when they last equipped the card.
@@ -1777,6 +1783,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       emote: 'emote.cheer',
       nameColor: 'name.default',
       spawnEffect: 'spawn.beam',
+      killEffect: DEFAULT_KILL_EFFECT,
       title: 'title.none',
       railColor: DEFAULT_RAIL_COLOR,
       railgunFinish: DEFAULT_RAILGUN_FINISH,
@@ -2185,6 +2192,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
               ? msg.id
               : 'spawn.beam';
           if (next !== record.spawnEffect) { record.spawnEffect = next; bumpMeta(record); }
+          break;
+        }
+
+        case 'killEffect': {
+          // Finisher: how this player's victims die. Not meta — the server
+          // stamps it on each kill broadcast (below), so everyone sees it.
+          record.killEffect =
+            typeof msg.id === 'string' && isKillEffectStyle(msg.id) && owns(record, msg.id)
+              ? msg.id
+              : DEFAULT_KILL_EFFECT;
           break;
         }
 

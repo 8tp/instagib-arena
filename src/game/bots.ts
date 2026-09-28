@@ -28,7 +28,7 @@ import { attachRailgun, disposeRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
-import { HATS, UNUSUALS } from './cosmetics';
+import { HATS, UNUSUALS, type KillEffectStyle } from './cosmetics';
 import type { BotState, EntityId, Vec3 } from './types';
 
 // Bots wear a random (non-bare) hat — and sometimes an unusual effect — so the
@@ -919,7 +919,8 @@ export class Bot {
     return this.team;
   }
 
-  kill() {
+  // `style` = the killer's finisher (how this body breaks apart).
+  kill(style?: KillEffectStyle) {
     if (!this.state.alive) return;
     this.state.alive = false;
     this.state.respawnTimer = BOT_RESPAWN_DELAY;
@@ -931,7 +932,7 @@ export class Bot {
       const y = floorBelow(this.lastMap.boxes, this.state.pos.x, this.state.pos.y, this.state.pos.z);
       if (y !== null && this.state.pos.y - y < 4) floor = { y };
     }
-    if (!this.anim?.die(floor)) this.group.visible = false;
+    if (!this.anim?.die(floor, style)) this.group.visible = false;
     this.nameSprite.visible = false; // no floating name over the gibs
   }
 

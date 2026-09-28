@@ -12,6 +12,7 @@ import {
   nameColorById,
   railgunFinishById,
   titleById,
+  type KillEffectStyle,
 } from './cosmetics';
 import type { RemotePlayerSnapshot } from './net';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from './constants';
@@ -197,11 +198,12 @@ export class RemotePlayer {
     }
   }
 
-  markDead() {
+  // `style` = the killer's finisher (how this body breaks apart).
+  markDead(style?: KillEffectStyle) {
     this.deadTimer = DEAD_HIDE_DURATION_SEC;
     this.shieldMesh.visible = false;
     const p = this.group.position;
-    if (this.anim?.die(probeGibFloor(p.x, p.y, p.z) ?? undefined)) {
+    if (this.anim?.die(probeGibFloor(p.x, p.y, p.z) ?? undefined, style)) {
       // Instagib: the body bursts into gibs where it stood (the killer's kill
       // effect plays on top from Game); it hides once the chunks are gone.
       this.deadHidden = false;

@@ -150,8 +150,11 @@ class ParticleField {
   }
 }
 
+// Wave-2 kinds (plasma … binary) fall back to an existing recipe until their
+// own emitters land (see update()).
 const FIELD_COUNTS: Record<Exclude<UnusualKind, 'none'>, number> = {
   embers: 48, aura: 42, orbit: 46, halo: 60, storm: 26,
+  plasma: 46, prism: 60, galaxy: 60, ghostfire: 48, hearts: 42, binary: 46,
 };
 
 class UnusualEffect {
@@ -205,6 +208,10 @@ class UnusualEffect {
       case 'orbit':  this.orbit(f); break;
       case 'halo':   this.halo(f); break;
       case 'storm':  this.storm(dt, f); break;
+      case 'ghostfire': this.flame(dt, f, [0.8, 1.0, 0.9], [0.2, 1.0, 0.55], [0.0, 0.35, 0.2], 0.05, 0.3); break;
+      case 'hearts': this.flame(dt, f, [1.0, 0.8, 0.9], [1.0, 0.3, 0.6], [0.5, 0.05, 0.25], 0.07, 0.2); break;
+      case 'plasma': case 'binary': this.orbit(f); break;
+      case 'prism': case 'galaxy': this.halo(f); break;
     }
     f.commit();
   }
