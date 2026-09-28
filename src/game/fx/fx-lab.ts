@@ -3,7 +3,9 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { KILL_EFFECTS, UNUSUALS, type KillEffectStyle } from '../cosmetics';
+import { KILL_EFFECTS, type KillEffectStyle } from '../cosmetics';
+import { UNUSUAL_EFFECTS } from '../items/types';
+import { UnusualEffect, unusualKindForEffect } from './unusuals';
 import { BLOOM_TUNING, createRenderer, createScene, getArenaLighting } from '../renderer';
 import { CharacterAnimator } from '../character-anim';
 import { Character, SKIN_PALETTE } from '../character/character';
@@ -40,6 +42,7 @@ type Actor = {
   ch: Character;
   anim: CharacterAnimator;
   hat: WornHat | null;
+  fx: UnusualEffect | null; // v3 unusual (any kind), parked on the hat anchor
   style: KillEffectStyle;
   // unusuals + move: strafe path
   base: THREE.Vector3;
@@ -183,12 +186,17 @@ export class FxLab {
     const anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     anim.updateStatic(0);
     let hat: WornHat | null = null;
+    let fx: UnusualEffect | null = null;
     if (hatId || unusualId) {
       hat = new WornHat(ch.sockets.headTop);
       if (hatId) void hat.setHat(hatId);
-      if (unusualId) hat.setUnusual(unusualId);
+      const kind = unusualKindForEffect(unusualId);
+      if (kind) {
+        fx = new UnusualEffect(kind);
+        (hat as unknown as { unusualAnchor: THREE.Group }).unusualAnchor.add(fx.group);
+      }
     }
-    const a: Actor = { slot, ch, anim, hat, style, base: slot.position.clone(), moving: false };
+    const a: Actor = { slot, ch, anim, hat, fx, style, base: slot.position.clone(), moving: false };
     this.actors.push(a);
     return a;
   }
@@ -261,12 +269,13 @@ export class FxLab {
   private kinds: string[] = [];
 
   private buildUnusuals() {
-    const all = UNUSUALS.filter((u) => u.kind !== 'none').map((u) => u.id);
+    const all = UNUSUAL_EFFECTS.map((u) => u.id);
     const pick = this.params.get('kinds');
-    let kinds = pick ? pick.split(',').map((k) => (k.startsWith('unusual.') ? k : `unusual.${k}`)) : all;
+    // `kinds=` takes effect ids (fx.storm) or bare kinds (storm).
+    let kinds = pick ? pick.split(',').map((k) => (k.startsWith('fx.') ? k : `fx.${k}`)) : all;
     if (!pick) {
       const page = Number(this.params.get('page') ?? 0);
-      kinds = page === 0 ? all.slice(0, 6) : all.slice(6);
+      kinds = all.slice(page * 5, page * 5 + 5);
     }
     this.kinds = kinds;
     const hat = this.params.get('hat') ?? 'hat.cap';
@@ -305,7 +314,7 @@ export class FxLab {
         const cx = (crown.x * 0.5 + 0.5) * fullW;
         const cy = (1 - (crown.y * 0.5 + 0.5)) * fullH;
         cam.setViewOffset(fullW, fullH, cx - tw / 2, cy - th / 2, tw, th);
-        const name = UNUSUALS.find((u) => u.id === this.kinds[c])?.name ?? this.kinds[c];
+        const name = UNUSUAL_EFFECTS.find((u) => u.id === this.kinds[c])?.name ?? this.kinds[c];
         this.tiles.push({ x: c * tw, y: v * th, w: tw, h: th, cam, label: `${name} · ${view.label}`, camX: cam.position.x });
       }
     }
@@ -362,6 +371,7 @@ export class FxLab {
         }
         a.anim.updateStatic(dt);
         a.hat?.update(dt);
+        a.fx?.update(dt);
       }
     }
     this.effects.step(dt, this.scene);
@@ -371,6 +381,7 @@ export class FxLab {
     this.disposed = true;
     if (this.raf !== null) cancelAnimationFrame(this.raf);
     for (const a of this.actors) {
+      a.fx?.dispose();
       a.hat?.dispose();
       a.anim.dispose();
       a.ch.dispose();
