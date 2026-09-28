@@ -14,6 +14,7 @@ import {
   TITLES,
   UNUSUALS,
   caseHats,
+  caseJackpots,
   sourceLabel,
   type CosmeticSource,
   type KillEffectStyle,
@@ -197,18 +198,13 @@ export function unlockInfo(source: CosmeticSource, level: number | null, stats: 
 // progression catalog makes caseHats() the case-exclusive hats and adds
 // caseJackpots(); the older one's caseHats() is every droppable hat. The
 // jackpots are always the case-sourced unusuals.
-// TODO(integration): switch to cosmetics.casePool(owned) / caseJackpots()
-// once the progression catalog is merged (same result).
+// Everything the Hat Case can drop: the case-exclusive hats + the jackpot
+// unusuals (the server rolls only among the ones you don't own yet).
 export function caseJackpotItems(): LockerItem[] {
-  return UNUSUALS.filter((u) => u.source.type === 'case');
+  return caseJackpots();
 }
 export function casePool(): LockerItem[] {
   return [...caseHats(), ...caseJackpotItems()];
-}
-
-// A non-case-exclusive hat that can ALSO drop from the case (older catalog).
-export function dropsFromCase(id: string): boolean {
-  return caseHats().some((h) => h.id === id && h.source.type !== 'case');
 }
 
 // ── "NEW" tracking ───────────────────────────────────────────────────────────

@@ -34,7 +34,6 @@ import {
   SLOT_DEFS,
   SLOT_GROUPS,
   casePool,
-  dropsFromCase,
   loadSeen,
   saveSeen,
   slotOfItem,
@@ -332,7 +331,7 @@ export function Locker({
     const apply = () => {
       onChange(sl.apply(settingsRef.current, id));
       if (opts.fx !== 'none') flourish(id, 'equip');
-      if (!opts.quiet) toast(`Equipped · ${itemName(id)}`, { tone: 'ok' });
+      if (!opts.quiet) toast(`Equipped · ${itemName(id)}`, { tone: 'ok', sound: 'equip' });
     };
     markSeen(id);
     if (!profile) {
@@ -378,7 +377,7 @@ export function Locker({
       if (res.ok && d.ok) {
         setProfile((p) => (p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? [...p.unlocked, id] } : p));
         flourish(id, 'unlock');
-        toast(`Unlocked · ${itemName(id)}`, { tone: 'ok' });
+        toast(`Unlocked · ${itemName(id)}`, { tone: 'ok', sound: 'purchase' });
         setBusy(null);
         await equip(id, { quiet: true, fx: 'none' });
         return;
@@ -670,7 +669,7 @@ export function Locker({
                         dot={hasNew}
                         tabIndex={slot === s ? 0 : -1}
                         onClick={() => {
-                          uiSfx('uiClick');
+                          uiSfx('tabSwitch');
                           setSlot(s);
                         }}
                         onPointerEnter={uiHover}
@@ -947,7 +946,6 @@ function ItemDetails({
       {owned && item.source.type !== 'default' && !loading && credits != null && (
         <div className='lk-unlock text-white/40'>{info.line.replace(/^Shop · .*/, 'Purchased')}</div>
       )}
-      {dropsFromCase(item.id) && !owned && !loading && <div className='lk-unlock text-amber-200/70'>Also drops from the Hat Case</div>}
       {reducedNote && <div className='lk-unlock text-white/40'>{reducedNote}</div>}
       <div className='mt-1 flex items-center gap-3'>{action}</div>
     </div>

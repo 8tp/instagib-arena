@@ -2,7 +2,9 @@
 // Krunker-style unboxing reel that lands on the server-decided winner.
 import { useEffect, useRef, useState } from 'react';
 import { ModalShell } from '../deck';
-import { sfxProps } from '../deck-core';
+import { sfxProps, uiSfx } from '../deck-core';
+import { playUi } from '../game/audio';
+import { RARITY_RANK } from '../ui/rarity';
 import { HAT_CASE_COST, cosmeticById, type Rarity } from '../game/cosmetics';
 import { ItemTile } from '../ui/item-tile';
 import { RARITY_COLOR, RARITY_LABEL } from '../ui/rarity';
@@ -134,7 +136,13 @@ export function CaseSpinner({
     const jitter = reduced ? 0 : (Math.random() - 0.5) * (CARD * 0.55); // land a touch off-centre
     const target = LAND * STRIDE + CARD / 2 - vp / 2 + jitter;
     const a = requestAnimationFrame(() => requestAnimationFrame(() => setOffset(-target)));
-    const t = window.setTimeout(() => setRevealed(true), SPIN_MS + 120);
+    const t = window.setTimeout(() => {
+      setRevealed(true);
+      // Reveal cue, then a sting that rises with the drop's rarity.
+      uiSfx('caseReveal');
+      const won = cosmeticById(win.won);
+      if (won) window.setTimeout(() => playUi('unlock', RARITY_RANK[won.rarity]), 140);
+    }, SPIN_MS + 120);
     return () => {
       cancelAnimationFrame(a);
       window.clearTimeout(t);
