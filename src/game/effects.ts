@@ -860,9 +860,14 @@ export async function prewarmFx(renderer: THREE.WebGLRenderer, scene: THREE.Scen
   // A parked storm unusual: additive + normal-blended point clouds and a
   // ribbon (every unusual kind shares these programs).
   const probe = new UnusualEffect('storm');
-  scene.add(probe.group);
   try {
-    await renderer.compileAsync(scene, camera);
+    // Compile ONLY the FX objects (against the scene's lights), never the whole
+    // live scene: compileAsync polls program readiness across frames, and a
+    // bot/hat material disposed meanwhile makes three throw (undefined program).
+    await Promise.all([
+      renderer.compileAsync(ctx.group, camera, scene),
+      renderer.compileAsync(probe.group, camera, scene),
+    ]);
   } finally {
     restore();
     probe.dispose();

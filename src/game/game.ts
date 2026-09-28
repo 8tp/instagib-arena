@@ -536,8 +536,12 @@ export class Game {
     this.effects.warm(this.scene); // FX lights present before the first compile
     // Compile every FX / gun shader variant now (async), not on the first kill
     // or the first remote with a new finish mid-match.
-    void prewarmFx(this.renderer, this.scene, this.camera);
-    void prewarmGuns(this.postFx, { lowSpec: this.lowSpec });
+    // One after the other: each temporarily adds/unhides probe objects, and two
+    // concurrent compileAsync polls over the same scene race (one sees the
+    // other's probe material after it's gone). Best-effort — never throws.
+    void prewarmFx(this.renderer, this.scene, this.camera)
+      .then(() => (this.disposed ? undefined : prewarmGuns(this.postFx, { lowSpec: this.lowSpec })))
+      .catch(() => {});
     this.player = new Player(this.map.spawn);
     // Gibs bounce on the real floor under the victim (closure reads the current map).
     setGibFloorProbe((x, y, z) => floorBelow(this.map.boxes, x, y, z));
