@@ -396,6 +396,15 @@ export class CharacterPreview {
     const W = Math.max(2, Math.round(cw * dpr));
     const H = Math.max(2, Math.round(ch * dpr));
     if (!force && W === this.bgW && H === this.bgH) return;
+    if (W !== this.bgW || H !== this.bgH) {
+      // A texture's GPU storage is immutable once uploaded: a new size needs a
+      // new texture (re-uploading a resized canvas into the old storage
+      // garbles it — the old watermark bleeding through).
+      this.bgTex.dispose();
+      this.bgTex = new THREE.CanvasTexture(cv);
+      this.bgTex.colorSpace = THREE.SRGBColorSpace;
+      this.scene.background = this.bgTex;
+    }
     this.bgW = W;
     this.bgH = H;
     cv.width = W;

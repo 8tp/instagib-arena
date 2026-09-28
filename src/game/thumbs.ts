@@ -39,7 +39,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v11:';
+const STORE_PREFIX = 'ig-thumb:v13:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 // Hats sit on a mid-slate helmet: white caps read lighter, black hats darker.
@@ -380,13 +380,18 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       for (const child of c.ch.sockets.headTop.children) visit(child);
       const bare = box.isEmpty() || box.max.y - box.min.y < 0.02;
       if (bare) box.setFromCenterAndSize(new THREE.Vector3(0, 1.72, 0), new THREE.Vector3(0.34, 0.26, 0.34));
+      // Aim a little below the hat so it sits above the tile's name band. The
+      // fit uses the hat's world AABB, whose 3/4 projection is ~1.4× the
+      // silhouette — hence the generous fill.
+      const size = box.getSize(new THREE.Vector3());
+      const aim = box.getCenter(new THREE.Vector3()).addScaledVector(new THREE.Vector3(0, 1, 0), -size.y * 0.3);
       return {
         root: c.holder,
-        target: box.getCenter(new THREE.Vector3()),
+        target: aim,
         dist: 1.6,
         elev: 0.3,
         fitBox: box,
-        fill: bare ? 0.5 : 0.64,
+        fill: bare ? 0.6 : 0.88,
         dispose: () => {
           hat.dispose();
           undo();
@@ -405,8 +410,8 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       const undo = none ? () => {} : silhouette(c.ch);
       return {
         root: c.holder,
-        target: new THREE.Vector3(0, none ? 1.74 : 1.99, 0),
-        dist: none ? 1.9 : 1.2,
+        target: new THREE.Vector3(0, none ? 1.74 : 1.98, 0),
+        dist: none ? 1.9 : 0.86,
         elev: 0.12,
         exposure: none ? 0.95 : 1.25,
         settle: () => {
