@@ -7,6 +7,7 @@ import { buildSeraph } from './seraph';
 import { buildOblivion } from './oblivion';
 import { buildCelestial } from './celestial';
 import { buildSovereign } from './sovereign';
+import { registerCustomGun } from './registry';
 
 // Every custom railgun model, keyed by RailgunFinish.model (cosmetics.ts).
 // Registered with the weapon track's registry on import (custom/load.ts
@@ -24,8 +25,5 @@ export const CUSTOM_GUN_BUILDS: Record<string, CustomGunBuild> = {
 
 export const CUSTOM_GUN_KEYS = Object.keys(CUSTOM_GUN_BUILDS);
 
-// Registry shim until registry.ts (weapon track) is merged: at merge, replace
-// with `import { registerCustomGun } from './registry';`.
-const registerCustomGun = (_key: string, _build: CustomGunBuild): void => {};
 
 for (const key of CUSTOM_GUN_KEYS) registerCustomGun(key, CUSTOM_GUN_BUILDS[key]);
