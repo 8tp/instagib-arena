@@ -625,7 +625,7 @@ export function Locker({
           )
         )}
         <button type='button' className='lk-close' onClick={close} aria-label='Close the Locker' {...sfxProps('none')}>
-          ✕ Esc
+          ✕ ESC
         </button>
       </header>
 
