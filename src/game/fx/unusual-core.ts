@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { unusualAtlas } from './unusual-atlas';
 
 // Shared point-cloud engine for the unusual effects (unusuals.ts), the
 // full-body taunt auras (taunt-aura.ts) and the professional-killstreak eyes

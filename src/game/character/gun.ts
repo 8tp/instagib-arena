@@ -2,6 +2,11 @@ import * as THREE from 'three';
 import type { RailgunFinish } from '../cosmetics';
 import { RAIL_COOLDOWN } from '../constants';
 import { nowMs } from '../fx/rail-state';
+import { fxFlags } from '../fx/fx-settings';
+import '../gun/custom/load';
+import { customGun } from '../gun/custom/registry';
+import { makeTicker } from '../gun/custom/ticker';
+import type { CustomGunInstance } from '../gun/custom/types';
 import { BARREL_Y, COIL_COUNT, MUZZLE_Z, PART, railgunGeometrySplit } from '../gun/gun-geometry';
 import { GunMaterial, STOCK_FINISH, gunFx } from '../gun/gun-material';
 import type { Character } from './character';
@@ -174,6 +179,13 @@ export class AttachedRailgun extends THREE.Group {
   private fireMs = -1e9;
   private charge = 1;
   private chargeMs = -1e9; // last explicit setCharge
+  // Custom model (finish.model → gun/custom registry): replaces the shell +
+  // energy meshes; driven by a ticker with charge / firing / streak.
+  private custom: CustomGunInstance | null = null;
+  private customKey: string | null = null;
+  private ticker: THREE.Mesh | null = null;
+  private tickMs = 0;
+  private streak = 0;
 
   constructor(finish?: RailgunFinish) {
     super();
@@ -220,13 +232,69 @@ export class AttachedRailgun extends THREE.Group {
     this.setFinish(f);
   }
 
-  // Swap the finish: shared shell material + this gun's glow colours.
+  // Swap the finish: shared shell material + this gun's glow colours. A finish
+  // with a (registered) custom `model` swaps the whole gun for that model.
   setFinish(finish?: RailgunFinish) {
     const f = finish ?? STOCK_FINISH;
+    const key = customGun(f.model) ? (f.model ?? null) : null;
+    if (key !== this.customKey) this.applyModel(f, key);
+    else this.custom?.setFinish?.(f);
     this.shell.material = shellMaterial(f);
     this.u.uAccent.value.setHex(f.accent);
     this.u.uHot.value.setHex(f.accentHot);
     if (!this.hasRail) this.u.uRail.value.setHex(f.accentHot);
+  }
+
+  // The custom-model key currently shown (null = the standard gun).
+  get modelKey(): string | null {
+    return this.customKey;
+  }
+
+  private applyModel(f: RailgunFinish, key: string | null) {
+    if (this.custom) {
+      this.custom.dispose();
+      this.custom.group.removeFromParent();
+      this.custom = null;
+    }
+    if (this.ticker) {
+      this.ticker.removeFromParent();
+      this.ticker = null;
+    }
+    this.customKey = key;
+    const build = customGun(key);
+    if (key && build) {
+      this.custom = build({ lod: 'low', finish: f });
+      this.add(this.custom.group);
+      this.custom.muzzle.add(this.claw);
+      this.claw.position.set(0, 0, -0.02);
+      this.tickMs = nowMs();
+      this.ticker = makeTicker(() => this.tickCustom(nowMs()));
+      this.add(this.ticker);
+      this.shell.visible = false;
+      this.energy.visible = false;
+    } else {
+      this.add(this.claw);
+      this.claw.position.set(0, BARREL_Y, MUZZLE_Z - 0.02);
+      this.shell.visible = true;
+      this.energy.visible = true;
+    }
+  }
+
+  private tickCustom(now: number) {
+    const c = this.custom;
+    if (!c) return;
+    this.drive(now); // claw + shared charge/flash bookkeeping
+    const dt = Math.min(0.1, Math.max(0, (now - this.tickMs) / 1000));
+    this.tickMs = now;
+    const since = (now - this.fireMs) / 1000;
+    const charge = now - this.chargeMs < EXTERNAL_LAPSE_MS ? this.charge : Math.max(0, Math.min(1, since / RAIL_COOLDOWN));
+    c.update(dt, {
+      charge,
+      firing: since >= 0 && since < 0.25 ? 1 - since / 0.25 : 0,
+      streak: this.streak,
+      reduced: gunFx.reduced,
+      lowSpec: fxFlags.low,
+    });
   }
 
   // A shot: the muzzle claw flashes (in `railColor`, the shooter's rail
@@ -246,6 +314,10 @@ export class AttachedRailgun extends THREE.Group {
   // beam / discharge from this gun should start.
   muzzleWorld(out: THREE.Vector3): THREE.Vector3 {
     this.updateWorldMatrix(true, false);
+    if (this.custom) {
+      this.custom.muzzle.updateWorldMatrix(true, false);
+      return this.custom.muzzle.getWorldPosition(out);
+    }
     return this.localToWorld(out.set(0, BARREL_Y, MUZZLE_Z));
   }
 
@@ -276,6 +348,8 @@ export class AttachedRailgun extends THREE.Group {
 
   dispose() {
     this.removeFromParent();
+    this.custom?.dispose();
+    this.custom = null;
     this.energy.material.dispose(); // the shell + geometry are shared caches
     this.claw.material.dispose();
   }

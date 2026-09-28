@@ -1,10 +1,16 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { RailgunFinish } from './cosmetics';
+import type { CustomGunBuild } from './gun/custom/types';
 import { flashTexture } from './fx-pool';
 import { localRail, nowMs } from './fx/rail-state';
 import { BARREL_Y, COIL_COUNT, MUZZLE_Z, railgunGeometry, type GunLod } from './gun/gun-geometry';
 import { GunMaterial, STOCK_FINISH, gunFx, type GunUniforms } from './gun/gun-material';
+import { fxFlags } from './fx/fx-settings';
+import './gun/custom/load';
+import { customGun } from './gun/custom/registry';
+import { makeTicker } from './gun/custom/ticker';
+import type { CustomGunInstance } from './gun/custom/types';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Procedural railgun (no external asset — the art pipeline is all procedural).
@@ -67,6 +73,10 @@ export type RailgunModel = {
   // Additive discharge flare seated on the muzzle, hidden at rest. The first-
   // person viewmodel drives it (visible + opacity 1→0 + scale 1→1.9) per shot.
   muzzleFlash: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  // The custom-model key this gun was built from (finish.model), or null for the
+  // standard gun. A finish with a DIFFERENT model needs a rebuild (setFinish only
+  // recolours): compare with `finish.model ?? null` and rebuild when they differ.
+  readonly modelKey: string | null;
   // Drive the coils explicitly: 0 = just fired … 1 = ready. Once called, the
   // gun ignores the shared local-rail state (fx/rail-state.ts). A first-person
   // viewmodel parented to a camera follows that state automatically.
@@ -105,8 +115,11 @@ class CoilDriver {
   private fireMs = -1e9;
   private readyMs = -1e9;
   private prevCharge = 1;
+  // Sampled every update: 1 at the shot fading to 0 over ~0.25 s (custom guns).
+  firing = 0;
 
-  constructor(private readonly u: GunUniforms) {}
+  // `u` is null for a custom model, which only needs the sampled charge/firing.
+  constructor(private readonly u: GunUniforms | null) {}
 
   fire(now: number) {
     this.fireMs = now;
@@ -115,6 +128,12 @@ class CoilDriver {
   // `live` = follow the local rail (first-person viewmodel); otherwise the
   // explicit drive, or a full charge (locker / showcase).
   update(now: number, live: boolean) {
+    this.sample(now, live);
+    if (this.u) this.writeUniforms(now);
+  }
+
+  // Charge + shot state only (no uniform writes).
+  sample(now: number, live: boolean) {
     if (this.external && now - this.externalMs > EXTERNAL_LAPSE_MS) this.external = false;
     if (!this.external) {
       if (live) {
@@ -127,12 +146,18 @@ class CoilDriver {
         this.charge = 1;
       }
     }
-    const u = this.u;
-    const accent = u.uAccent.value;
-    const hot = u.uAccentHot.value;
     const charge = Math.max(0, Math.min(1, this.charge));
     if (charge >= 1 && this.prevCharge < 1) this.readyMs = now;
     this.prevCharge = charge;
+    const since = (now - this.fireMs) / 1000;
+    this.firing = since >= 0 && since < 0.25 ? 1 - since / 0.25 : 0;
+  }
+
+  private writeUniforms(now: number) {
+    const u = this.u!;
+    const accent = u.uAccent.value;
+    const hot = u.uAccentHot.value;
+    const charge = Math.max(0, Math.min(1, this.charge));
 
     const sinceFire = (now - this.fireMs) / 1000;
     const flash = sinceFire >= 0 && sinceFire < 0.4 ? Math.exp(-sinceFire * 26) : 0;
@@ -183,6 +208,10 @@ let flareGeo: THREE.BufferGeometry | null = null;
 export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions = {}): RailgunModel {
   const lod: RailgunLod = opts.lod ?? 'high';
   const f = finish ?? STOCK_FINISH;
+  // High-tier finishes swap in a custom model (gun/custom registry); an unknown
+  // key falls back to the standard gun.
+  const custom = customGun(f.model);
+  if (custom) return buildCustomRailgun(custom, f, lod);
   const group = new THREE.Group();
   group.name = 'railgun';
 
@@ -195,32 +224,7 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
   muzzle.position.set(0, BARREL_Y, MUZZLE_Z);
   group.add(muzzle);
 
-  // Discharge flare: a camera-facing-ish star (disc across the bore) plus two
-  // crossed streak planes blown forward along the barrel. Additive, unlit, no
-  // depth write — reads as a burst of energy, never as a solid ball.
-  flareGeo ??= buildFlareGeometry();
-  const muzzleFlash = new THREE.Mesh(
-    flareGeo,
-    new THREE.MeshBasicMaterial({
-      // Bright enough to bloom hard on the first frames; the Game fades the
-      // opacity to 0 over ~100 ms.
-      color: flareColor(f.accentHot),
-      map: flashTexture(),
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      // Drawn over the shroud (the flare engulfs the muzzle, never hides
-      // behind it); it lives ~100 ms.
-      depthTest: false,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-    }),
-  );
-  muzzleFlash.name = 'railgun-flare';
-  muzzleFlash.position.set(0, 0, -0.01);
-  muzzleFlash.visible = false;
-  muzzleFlash.renderOrder = 2;
+  const muzzleFlash = makeMuzzleFlash(f);
   muzzle.add(muzzleFlash);
 
   // ── Coil drive ─────────────────────────────────────────────────────────────
@@ -247,6 +251,7 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     muzzle,
     glow: material,
     muzzleFlash,
+    modelKey: null,
     setCharge(charge: number) {
       driver.external = true;
       driver.externalMs = nowMs();
@@ -271,6 +276,104 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     },
   };
   return model;
+}
+
+// Discharge flare: a camera-facing-ish star (disc across the bore) plus two
+// crossed streak planes blown forward along the barrel. Additive, unlit, no
+// depth write — reads as a burst of energy, never as a solid ball.
+function makeMuzzleFlash(f: RailgunFinish): THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> {
+  flareGeo ??= buildFlareGeometry();
+  const muzzleFlash = new THREE.Mesh(
+    flareGeo,
+    new THREE.MeshBasicMaterial({
+      // Bright enough to bloom hard on the first frames; the Game fades the
+      // opacity to 0 over ~100 ms.
+      color: flareColor(f.accentHot),
+      map: flashTexture(),
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      // Drawn over the shroud (the flare engulfs the muzzle, never hides
+      // behind it); it lives ~100 ms.
+      depthTest: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    }),
+  );
+  muzzleFlash.name = 'railgun-flare';
+  muzzleFlash.position.set(0, 0, -0.01);
+  muzzleFlash.visible = false;
+  muzzleFlash.renderOrder = 2;
+  return muzzleFlash;
+}
+
+// A custom model (finish.model → gun/custom registry): the model's own group +
+// muzzle, driven every frame it is drawn with charge / firing / streak. Same
+// RailgunModel surface as the standard gun, so the Game code is unchanged.
+function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: RailgunLod): RailgunModel {
+  const inst: CustomGunInstance = build({ lod, finish: f });
+  const group = new THREE.Group();
+  group.name = 'railgun';
+  group.add(inst.group);
+  const muzzle = inst.muzzle;
+  const muzzleFlash = makeMuzzleFlash(f);
+  muzzle.add(muzzleFlash);
+  const glow = new THREE.MeshStandardMaterial(); // never drawn: the Game's glow knob has nothing to pop here
+  const driver = new CoilDriver(null);
+  let lowSpec = false;
+  let last = nowMs();
+  group.add(
+    makeTicker(() => {
+      const parent = group.parent as (THREE.Object3D & { isCamera?: boolean }) | null;
+      const isViewmodel = !!parent?.isCamera;
+      const now = nowMs();
+      if (isViewmodel) {
+        localRail.muzzle = muzzle;
+        localRail.muzzleSeenMs = now;
+      }
+      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+      last = now;
+      driver.sample(now, isViewmodel);
+      inst.update(dt, {
+        charge: driver.charge,
+        firing: driver.firing,
+        streak: 0,
+        reduced: gunFx.reduced,
+        lowSpec: lowSpec || fxFlags.low,
+      });
+    }),
+  );
+  return {
+    group,
+    muzzle,
+    glow,
+    muzzleFlash,
+    modelKey: f.model ?? null,
+    setCharge(charge: number) {
+      driver.external = true;
+      driver.externalMs = nowMs();
+      driver.charge = Number.isFinite(charge) ? charge : 1;
+    },
+    notifyFire() {
+      driver.external = true;
+      driver.externalMs = nowMs();
+      driver.fire(nowMs());
+    },
+    setFinish(next?: RailgunFinish) {
+      const nf = next ?? STOCK_FINISH;
+      inst.setFinish?.(nf);
+      muzzleFlash.material.color.copy(flareColor(nf.accentHot));
+    },
+    setLowSpec(low: boolean) {
+      lowSpec = low;
+    },
+    dispose() {
+      inst.dispose();
+      glow.dispose();
+      muzzleFlash.material.dispose();
+    },
+  };
 }
 
 // Reduced effects (accessibility) for every railgun, first and third person:
