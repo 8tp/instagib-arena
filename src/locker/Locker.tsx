@@ -136,7 +136,10 @@ export function Locker({
   // 'loading' until /api/profile answers: the grid shows skeletons instead of
   // a flash of "everything owned" that then snaps to locks. 'offline' = no
   // backend → local-only selection (everything equippable, nothing buyable).
-  const [profileState, setProfileState] = useState<'loading' | 'ready' | 'offline'>('loading');
+  // 'error' = a logged-in profile that wouldn't load after retries — never fall
+  // back to "everything owned" for an account (it would equip locally only).
+  const [profileState, setProfileState] = useState<'loading' | 'ready' | 'offline' | 'error'>('loading');
+  const [loadKey, setLoadKey] = useState(0);
   const [slot, setSlotState] = useState<LockerSlot>('hat');
   const [selected, setSelected] = useState<string>(() => settings.hat);
   const [hover, setHover] = useState<string | null>(null);
@@ -159,7 +162,8 @@ export function Locker({
   // ── Profile (ownership, credits) + one-time server → settings sync ─────────
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    let retry = 0;
+    const run = (attempt: number) => fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no profile'))))
       .then((d: { profile?: InstagibProfile & { caseKeys?: number } }) => {
         if (!active) return;
@@ -203,14 +207,20 @@ export function Locker({
         }
       })
       .catch(() => {
-        /* offline / no backend → local-only selection */
-        if (active) setProfileState('offline');
+        if (!active) return;
+        // A logged-in player retries (backoff), then gets a Retry state; a
+        // guest / no-backend session falls back to local-only selection.
+        if (account && attempt < 3) retry = window.setTimeout(() => void run(attempt + 1), 700 * 2 ** attempt);
+        else setProfileState(account ? 'error' : 'offline');
       });
+    setProfileState('loading');
+    void run(0);
     return () => {
       active = false;
+      window.clearTimeout(retry);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadKey]);
 
   const owns = useCallback(
     (id: string, source: CosmeticSource) => !profile || profile.unlocked.includes(id) || source.type === 'default',
@@ -232,7 +242,11 @@ export function Locker({
   );
 
   const def = SLOT_DEFS[slot];
-  const items = useMemo(() => sortItems(def.items), [def]);
+  // Staff-only items are listed only for whoever actually owns them.
+  const items = useMemo(
+    () => sortItems(def.items).filter((i) => i.source.type !== 'admin' || !!profile?.unlocked.includes(i.id)),
+    [def, profile],
+  );
   const shown = useMemo(
     () => (filter === 'owned' && profileState !== 'loading' ? items.filter((i) => owns(i.id, i.source)) : items),
     [filter, items, owns, profileState],
@@ -688,7 +702,7 @@ export function Locker({
             <div>
               <h3 className='lk-slot-title'>{def.noun}</h3>
               <div className='lk-count'>
-                {loading ? 'Loading…' : `${ownedCount} / ${items.length} owned`}
+                {loading ? 'Loading…' : profileState === 'error' ? 'Not loaded' : `${ownedCount} / ${items.length} owned`}
               </div>
             </div>
             <div className='flex gap-1' role='group' aria-label='Filter'>
@@ -713,7 +727,15 @@ export function Locker({
                 onOpen={() => void openCase()}
               />
             )}
-            <div
+            {profileState === 'error' && (
+              <div className='lk-empty'>
+                Couldn&rsquo;t load your Locker.{' '}
+                <button type='button' className='underline underline-offset-2 hover:text-white' onClick={() => setLoadKey((k) => k + 1)}>
+                  Try again
+                </button>
+              </div>
+            )}
+            {profileState !== 'error' && <div
               className='lk-grid'
               role='listbox'
               aria-label={`${def.label} items`}
@@ -762,8 +784,8 @@ export function Locker({
                       />
                     );
                   })}
-            </div>
-            {!loading && shown.length === 0 && (
+            </div>}
+            {!loading && profileState !== 'error' && shown.length === 0 && (
               <div className='lk-empty'>Nothing owned in this slot yet — switch the filter to All to see what you can unlock.</div>
             )}
             {slot === 'card' && (
