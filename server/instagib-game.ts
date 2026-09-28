@@ -50,18 +50,13 @@ import {
   DEFAULT_RAIL_COLOR,
   DEFAULT_RAILGUN_FINISH,
   isCard,
-  isEmote,
-  isHat,
-  isNameColor,
-  isRailColor,
-  isRailgunFinish,
-  isSpawnEffect,
   isKillEffectStyle,
   DEFAULT_KILL_EFFECT,
-  isTitle,
   isUnusual,
   titleById,
 } from '../src/game/cosmetics';
+import type { Loadout, Look } from '../src/game/items/types';
+import { addStrangeKills, resolveEquipped, resolveTokens } from './economy';
 import {
   encodeState,
   decodePos,
@@ -78,7 +73,6 @@ import {
   logEvent,
   recordMatch,
   recordRankedResult,
-  unlockedSetFor,
 } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
@@ -369,6 +363,9 @@ type ClientRecord = {
   title: string; // equipped title cosmetic id (flair under the name; echoed in snapshots)
   railColor: string; // equipped rail-beam color cosmetic id (echoed so others/spectators see your beam)
   railgunFinish: string; // equipped railgun-finish (gun skin) cosmetic id (echoed for the 3rd-person gun)
+  looks: Loadout; // v3: resolved Looks of the equipped items (broadcast in `meta`)
+  strangeUids: string[]; // equipped Strange instances that earn this match's counted frags
+  lastTauntMs: number; // taunt rate-limit
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
@@ -434,6 +431,8 @@ type ClientMessage =
   | { type: 'title'; id?: string }
   | { type: 'railColor'; id?: string }
   | { type: 'railgunFinish'; id?: string }
+  | { type: 'loadout'; uids?: unknown }
+  | { type: 'taunt' }
   | { type: 'crosshair'; code?: string }
   | { type: 'card'; card?: unknown }
   | { type: 'chat'; text?: string }
@@ -473,11 +472,39 @@ type ChatBroadcast = {
   spectator?: boolean; // true when the sender is watching, not playing
 };
 
-// Does this connection's progression identity own the given cosmetic id? Read
-// fresh each time so an item just bought in the Locker is immediately equippable
-// (defaults + anonymous players always pass for default-unlocked ids).
-function owns(record: { playerId: string }, id: string): boolean {
-  return unlockedSetFor(record.playerId).has(id);
+// Economy v3: what a player wears is a set of Looks resolved SERVER-SIDE from
+// their equipped item instances (server/economy.ts) — the client only names the
+// uids it wants shown ({type:'loadout'}), and each is ownership-checked. The
+// legacy per-slot fields on ClientRecord (hat, railColor…) are derived from the
+// Looks so pre-v3 code paths keep working.
+const TAUNT_COOLDOWN_MS = 3_000;
+
+// Unusual-effect id ('fx.embers') → the legacy per-slot unusual id, if one exists.
+function legacyUnusual(look: Look | undefined): string {
+  const id = look?.e ? `unusual.${look.e.replace(/^fx\./, '')}` : '';
+  return id && isUnusual(id) ? id : 'unusual.none';
+}
+
+// Copy resolved Looks onto a record (+ the derived legacy fields).
+function applyLooks(c: ClientRecord, looks: Loadout, strangeUids: string[]): void {
+  c.looks = looks;
+  c.strangeUids = strangeUids;
+  c.hat = looks.hat?.d ?? 'hat.none';
+  c.unusual = legacyUnusual(looks.hat);
+  c.emote = looks.emote?.d ?? 'emote.cheer';
+  c.nameColor = looks.nameColor?.d ?? 'name.default';
+  c.spawnEffect = looks.spawn?.d ?? 'spawn.beam';
+  const fin = looks.finisher?.d;
+  c.killEffect = fin && isKillEffectStyle(fin) ? fin : DEFAULT_KILL_EFFECT;
+  c.title = looks.title?.d ?? 'title.none';
+  c.railColor = looks.beam?.d ?? DEFAULT_RAIL_COLOR;
+  c.railgunFinish = looks.finish?.d ?? DEFAULT_RAILGUN_FINISH;
+  // Keep the killcard in step with the equipped card + title.
+  if (c.card) {
+    const cardId = looks.card?.d;
+    c.card.style = cardId && isCard(cardId) ? cardId : 'card.slate';
+    c.card.title = titleById(c.title).text;
+  }
 }
 
 // Per-connection room-creation budget: a client may mint at most ROOM_BUDGET
@@ -504,7 +531,7 @@ function chargeRoomCreate(record: ClientRecord, ts: number): boolean {
 function sanitizeCard(
   raw: unknown,
   serverName: string,
-  owned: Set<string>,
+  equippedStyle: string,
   flags: { admin: boolean; verified: boolean; title: string; level: number },
 ): CardPayload | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -512,8 +539,8 @@ function sanitizeCard(
   const name = serverName.slice(0, 24);
   // The account's real (XP-derived) level — never the client's claim.
   const level = flags.level;
-  const style =
-    typeof o.style === 'string' && isCard(o.style) && owned.has(o.style) ? o.style : 'card.slate';
+  // The card style is the server-validated equipped card, never the client's claim.
+  const style = isCard(equippedStyle) ? equippedStyle : 'card.slate';
   const stats: { label: string; value: string }[] = [];
   if (Array.isArray(o.stats)) {
     for (const s of o.stats.slice(0, 3)) {
@@ -1036,6 +1063,15 @@ export function attachInstagibWs(wss: WebSocketServer) {
       },
       now,
     });
+    // Strange items: each counted frag ticks the equipped Strange finish / beam /
+    // finisher instances (batched here, not per kill — keeps the WS loop cheap).
+    if (c.mKills > 0 && c.strangeUids.length > 0 && c.playerId) {
+      try {
+        addStrangeKills(c.playerId, c.strangeUids, c.mKills);
+      } catch (err) {
+        console.error('[instagib] addStrangeKills failed', err);
+      }
+    }
     // Keep the killcam card's level in step with the account's real level.
     if (reply.saved && c.card) c.card.level = reply.progression.level;
     const msg = { type: 'progression' as const, mode, partial, ...reply };
@@ -1274,6 +1310,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.railColor = old.railColor;
     record.railgunFinish = old.railgunFinish;
     record.crosshair = old.crosshair;
+    record.looks = old.looks;
+    record.strangeUids = old.strangeUids;
+    record.lastTauntMs = old.lastTauntMs;
     record.card = old.card;
     record.invulnUntilMs = Date.now() + SPAWN_INVULN_MS; // brief grace on return
     record.history.length = 0;
@@ -1502,6 +1541,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     titleText: resolveTitleText(c.playerId, c.title),
     railColor: c.railColor,
     railgunFinish: c.railgunFinish,
+    looks: c.looks,
     crosshair: c.crosshair,
     admin: c.admin,
     verified: c.verified,
@@ -2069,6 +2109,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       title: 'title.none',
       railColor: DEFAULT_RAIL_COLOR,
       railgunFinish: DEFAULT_RAILGUN_FINISH,
+      looks: {},
+      strangeUids: [],
+      lastTauntMs: 0,
       crosshair: '',
       card: null,
       playerId,
@@ -2098,6 +2141,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
       undeliveredProgression: null,
       team: null,
     };
+    // Start from the account's persisted equipment (guests: stock defaults) so
+    // even a client that never sends `loadout` is shown correctly.
+    if (playerId) {
+      try {
+        const eq = resolveEquipped(playerId);
+        applyLooks(record, eq.looks, eq.strangeUids);
+      } catch (err) {
+        console.error('[instagib] resolveEquipped failed', err);
+      }
+    }
     clients.set(id, record);
     sendRaw(socket, { type: 'welcome', clientId: id, serverTime: now, resumeToken: record.resumeToken });
     schedulePresence(); // a new socket bumps the online count for everyone in the menu
@@ -2444,100 +2497,48 @@ export function attachInstagibWs(wss: WebSocketServer) {
           break;
         }
 
-        case 'hat': {
-          // Cosmetic only — validate against the manifest AND the player's owned
-          // set (so locked hats can't be equipped in MP by a modified client),
-          // then echo it via the meta channel so other players render it. Else =
-          // bare. bumpMeta only fires on an actual change (debounces the burst of
-          // equip messages a client sends right after the welcome handshake).
-          const next =
-            typeof msg.id === 'string' && isHat(msg.id) && owns(record, msg.id) ? msg.id : 'hat.none';
-          if (next !== record.hat) { record.hat = next; bumpMeta(record); }
+        // Economy v3 loadout: the client names the equipped tokens (instance uids,
+        // or `def:<id>` for defaults / entitlements); the server checks ownership
+        // and resolves the Looks itself. Guests: stock defaults only.
+        case 'loadout': {
+          const tokens = Array.isArray(msg.uids) ? (msg.uids as unknown[]).filter((u): u is string => typeof u === 'string') : [];
+          if (!record.playerId) break;
+          const res = resolveTokens(record.playerId, tokens);
+          const before = JSON.stringify(record.looks);
+          applyLooks(record, res.looks, res.strangeUids);
+          if (JSON.stringify(record.looks) !== before) bumpMeta(record);
           break;
         }
 
-        case 'unusual': {
-          const next =
-            typeof msg.id === 'string' && isUnusual(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : 'unusual.none';
-          if (next !== record.unusual) { record.unusual = next; bumpMeta(record); }
-          break;
-        }
-
-        case 'emote': {
-          const next =
-            typeof msg.id === 'string' && isEmote(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : 'emote.cheer';
-          if (next !== record.emote) { record.emote = next; bumpMeta(record); }
-          break;
-        }
-
-        case 'nameColor': {
-          const next =
-            typeof msg.id === 'string' && isNameColor(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : 'name.default';
-          if (next !== record.nameColor) { record.nameColor = next; bumpMeta(record); }
-          break;
-        }
-
-        case 'spawnEffect': {
-          const next =
-            typeof msg.id === 'string' && isSpawnEffect(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : 'spawn.beam';
-          if (next !== record.spawnEffect) { record.spawnEffect = next; bumpMeta(record); }
-          break;
-        }
-
-        case 'killEffect': {
-          // Finisher: how this player's victims die. Not meta — the server
-          // stamps it on each kill broadcast (below), so everyone sees it.
-          record.killEffect =
-            typeof msg.id === 'string' && isKillEffectStyle(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : DEFAULT_KILL_EFFECT;
-          break;
-        }
-
-        case 'title': {
-          // Achievement-earned flair shown under the name. Validate against the
-          // manifest + the player's owned set (a modified client can't equip a
-          // title it hasn't earned), then echo via meta. Keep the killcard's title
-          // in sync so a mid-match equip updates the card others see too.
-          const next =
-            typeof msg.id === 'string' && isTitle(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : 'title.none';
-          if (next !== record.title) {
-            record.title = next;
-            if (record.card) record.card.title = titleById(next).text;
-            bumpMeta(record);
-          }
-          break;
-        }
-
-        case 'railColor': {
-          // Rail-beam color — echoed so other players + spectators render this
-          // player's beam in their chosen color (was previously local-only).
-          const next =
-            typeof msg.id === 'string' && isRailColor(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : DEFAULT_RAIL_COLOR;
-          if (next !== record.railColor) { record.railColor = next; bumpMeta(record); }
-          break;
-        }
-
+        // Pre-v3 per-slot cosmetic messages: the payload is ignored (ownership is
+        // instance-based now) — re-read the account's persisted equipment instead.
+        case 'hat':
+        case 'unusual':
+        case 'emote':
+        case 'nameColor':
+        case 'spawnEffect':
+        case 'killEffect':
+        case 'title':
+        case 'railColor':
         case 'railgunFinish': {
-          // Railgun finish (gun skin) — echoed so the 3rd-person gun on this
-          // player + the spectator viewmodel use the right skin.
-          const next =
-            typeof msg.id === 'string' && isRailgunFinish(msg.id) && owns(record, msg.id)
-              ? msg.id
-              : DEFAULT_RAILGUN_FINISH;
-          if (next !== record.railgunFinish) { record.railgunFinish = next; bumpMeta(record); }
+          if (!record.playerId) break;
+          const eq = resolveEquipped(record.playerId);
+          const before = JSON.stringify(record.looks);
+          applyLooks(record, eq.looks, eq.strangeUids);
+          if (JSON.stringify(record.looks) !== before) bumpMeta(record);
+          break;
+        }
+
+        case 'taunt': {
+          // Plays the equipped emote for everyone in the room. Alive players only,
+          // 3 s cooldown; the payload carries the emote Look (incl. an unusual effect).
+          if (!record.roomId || record.disconnectedAt > 0) break;
+          const room = rooms.get(record.roomId);
+          if (!room || !room.members.has(record.id) || room.state !== 'active') break;
+          if (record.respawnAt > ts) break; // dead / in the killcam
+          if (ts - record.lastTauntMs < TAUNT_COOLDOWN_MS) break;
+          record.lastTauntMs = ts;
+          broadcastRoom(room, { type: 'taunt', id: record.id, look: record.looks.emote ?? { d: 'emote.cheer' } });
           break;
         }
 
@@ -2551,7 +2552,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         }
 
         case 'card':
-          record.card = sanitizeCard(msg.card, record.name, unlockedSetFor(record.playerId), {
+          record.card = sanitizeCard(msg.card, record.name, record.looks.card?.d ?? 'card.slate', {
             admin: record.admin,
             verified: record.verified,
             title: resolveTitleText(record.playerId, record.title),

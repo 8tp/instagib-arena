@@ -162,3 +162,57 @@ cancel by jumping), the server relays a `taunt` event to the room so everyone se
   `{player, credits?, rolls?}`, `GET /api/admin/items/:uid/history`, `GET /api/admin/inventory/:player`
 - WS: `{type:'equipLooks'}` is no longer needed — the client sends `{type:'loadout', uids}` and
   the server resolves Looks from the DB; `{type:'taunt'}` → broadcast `{type:'taunt', id, look}`.
+
+---
+
+## 11. Server implementation notes (as built)
+
+Files: `server/economy.ts` (tables, migration, mint, entitlements, equip/looks, salvage, cases,
+strange, admin ops), `server/market.ts`, `server/trades.ts`, `server/economy-routes.ts` (REST),
+admin routes in `server/admin.ts`, WS in `server/instagib-game.ts`, shared connection `server/sqlite.ts`.
+
+- **Entitlements vs instances.** Cards, titles, announcer packs and the staff name colour are
+  *entitlements*: an owned-def set computed live (`entitlementsFor`): defaults ∪ level-gated cards /
+  announcers ∪ achievement titles (from career stats) ∪ `title.founder` (account created before the
+  v3 deploy, `instagib_meta.econ_v3_at`) ∪ staff-only card/name/title (live from `is_admin`) ∪
+  credit-priced cards/titles bought before the reset (`legacy_unlocked`, grandfathered). Nothing is
+  minted for them. Everything else equippable is an instance.
+- **Equip tokens.** `equipped_items` maps slot → token: an instance `uid`, or `def:<id>` for a
+  virtual default / entitlement (`def:title.champion`, `def:card.ember`, `def:gun.stock`). `uid: null`
+  clears the slot (→ stock default). Every read re-validates (an item that was listed / traded /
+  salvaged / revoked silently drops out and the map is pruned).
+- **Free rolls** open any *standard* case; the Vault (premium) needs credits.
+- **Tier fallback.** Pools with no defs at a rolled tier fall to the nearest lower tier (then higher).
+  `GET /api/cases` reports the EFFECTIVE odds (`odds`) and the configured ones (`nominalOdds`).
+  Currently the Weapon case has no Common defs (its Commons roll as Uncommon).
+- **Market.** Fee `max(1, round(2%))` on listing (non-refundable); tax `max(1, ceil(10%))` burned on
+  sale; floor `max(5, ceil(salvage × 1.5))` of the instance tier; ≤ 25 active listings. Market has no
+  level gate (spec) — only login; the trade gates apply to trading only.
+- **Trades.** Gates at offer *and* accept for both parties; max 10 pending outgoing per sender;
+  credits per offer ≤ 5,000; 20 accepted trades / rolling 24 h and 5,000 credits moved / rolling 24 h
+  per account. Items are not escrowed (an offer whose item was listed/moved fails at accept as
+  `offer_stale`). Expiry sweep every minute + lazily.
+- **Origin** on the instance row is updated on transfer (`market` / `trade`); the full history is in
+  `instagib_item_events` (mint / list / unlist / sale / trade / salvage / revoke).
+- **New accounts** get the same onboarding as migrated ones (level-1 bundle: 325 ⛁ + 3 rolls) the
+  moment they register (`createUser`).
+- **Admin promotion** mints the staff instances (bound, origin `admin`); demotion revokes them.
+
+### REST (all JSON; errors `{ ok:false, error }`, guest → 401, rate-limit → 429)
+See §10 for routes. Shapes: `GET /api/inventory` → `{ items, equipped, looks, credits, freeRolls,
+entitlements }`; `POST /api/inventory/equip {slot, uid|null}` → `{ ok, equipped, looks }`;
+`POST /api/inventory/salvage {uids}` → `{ ok, credits, gained, removed }`; `GET /api/cases` (guests OK)
+→ `{ cases: [{id,name,blurb,cost,premium,slots,odds,nominalOdds,pool,qualityOdds}], qualityOdds,
+credits, freeRolls }`; `POST /api/cases/open {caseId, useRoll}` → `{ ok, item, tier, credits,
+freeRolls, usedRoll }`; market list → `{ ok, listing, credits, fee }`, buy → `{ ok, item, price,
+credits }`; `GET /api/market` → `{ listings, page, pageSize, total }` (listing = `{id, price, sellerId,
+seller, createdAt, item, tier, suggested}`); `GET /api/trades` → `{ incoming, outgoing, history, gate }`.
+
+### WS
+- Client → server: `{type:'loadout', uids: string[]}` (uids or `def:<id>` tokens; unknown / foreign /
+  unearned ones are dropped), `{type:'taunt'}`.
+- Server → clients: `meta.players[i].looks` (a `Loadout`) plus the legacy per-slot fields derived from
+  it; `{type:'taunt', id, look}` (to everyone in the room incl. the sender; `look` = the emote Look,
+  with `e` = unusual effect). Kill broadcasts still carry `finisher` (the killer's finisher def id).
+- Old per-slot messages (`hat`, `railColor`, …) are ignored except that they make the server re-read
+  the account's persisted equipment.
