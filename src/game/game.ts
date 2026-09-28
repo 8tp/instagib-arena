@@ -58,7 +58,9 @@ import {
   type GameMode,
   type KeybindAction,
 } from './constants';
-import { EffectsManager } from './effects';
+import { EffectsManager, prewarmFx } from './effects';
+import { prewarmGuns } from './gun/prewarm';
+import { setRailBeamsReduced } from './fx/rail-beam';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, setMapBuildQuality, type ArenaMap } from './map';
@@ -126,7 +128,7 @@ import {
   SHADOW_TUNING,
   type PostFxOptions,
 } from './renderer';
-import { buildRailgun, type RailgunModel } from './weapon-model';
+import { buildRailgun, setRailgunReducedEffects, type RailgunModel } from './weapon-model';
 import { POS_FLAG_HOLD } from './netcodec';
 import { localRail } from './fx/rail-state';
 import { ViewmodelMotion } from './viewmodel-motion';
@@ -532,6 +534,10 @@ export class Game {
     applyMapShadowFlags(this.mapMesh, this.map);
     this.scene.add(this.mapMesh);
     this.effects.warm(this.scene); // FX lights present before the first compile
+    // Compile every FX / gun shader variant now (async), not on the first kill
+    // or the first remote with a new finish mid-match.
+    void prewarmFx(this.renderer, this.scene, this.camera);
+    void prewarmGuns(this.postFx, { lowSpec: this.lowSpec });
     this.player = new Player(this.map.spawn);
     // Gibs bounce on the real floor under the victim (closure reads the current map).
     setGibFloorProbe((x, y, z) => floorBelow(this.map.boxes, x, y, z));
@@ -978,6 +984,8 @@ export class Game {
   setReducedEffects(v: boolean) {
     this.reducedEffects = v;
     setCharacterFxQuality({ reducedEffects: v }); // fewer gib chunks, no bounce
+    setRailgunReducedEffects(v); // animated finishes + coil shimmer hold still
+    setRailBeamsReduced(v); // muted white-hot flash, no helix sparkle
   }
 
   private applyEnemyStyle() {
@@ -1381,7 +1389,7 @@ export class Game {
     this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
     if (b.id) this.remotePlayers.get(b.id)?.notifyFire(c.helix); // their 3rd-person gun flashes + recharges
     // Their discharge flash at the muzzle, in their rail colour.
-    this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
+    if (!b.id || !this.remotePlayers.get(b.id)) this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
     if (this.spectator && b.id === this.spectatedId) {
       this.spectatedShotMs = performance.now();
       this.viewmodelRail?.notifyFire();
@@ -2453,7 +2461,9 @@ export class Game {
     const shooter = this.bots?.bots.find((b) => b.state.id === intent.botId);
     const visible = shooter?.gunMuzzle(this.tmpBotMuzzle) ?? origin;
     this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
-    this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
+    // A bot holding a gun flashes its own muzzle claw; the world flash is only
+    // the fallback (a gunless capsule).
+    if (!shooter?.gunMuzzle(this.tmpBotMuzzle)) this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
     shooter?.notifyFire(RAIL_HELIX_COLOR);
     this.recorder.logShot({
       origin: { x: origin.x, y: origin.y, z: origin.z },
