@@ -42,11 +42,16 @@ export function findDeath(x: number, y: number, z: number, maxDist: number, maxA
   return best;
 }
 
+// Where the viewer was when a combatant was last drawn (character.ts sets
+// it). Vaporize blows its ash away from the viewer — "in the shot direction"
+// for the killer, who is the one looking.
+export const viewPos = { x: 0, y: 0, z: 0, set: false };
+
 // Finisher timing shared by the death animation (gibs.ts) and the burst
 // (effects.ts) so their beats line up without a callback between them.
 export const FINISHER_TIMING = {
   // Singularity: chunks spiral into the point, then the white-hot pop.
-  singularityPop: 0.3,
+  singularityPop: 0.2,
   // Overload: arcs crawl over the armour, then the blue-white blast.
-  overloadBlast: 0.26,
+  overloadBlast: 0.18,
 } as const;

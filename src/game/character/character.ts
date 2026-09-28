@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createCharacterMaterial, getBodyGeometry, resetDeathLook, type CharacterUniforms } from './body';
 import { B, Rig, SOCKETS, type SocketName } from './rig';
+import { viewPos } from '../fx/fx-settings';
 
 // One arena combatant: a Rig (flat bones + FK/IK), ONE SkinnedMesh sharing the
 // cached body geometry, a per-instance material (for the player colour), and
@@ -41,6 +42,16 @@ export type LookMode = 'natural' | 'highlight';
 
 const WHITE = new THREE.Color(1, 1, 1);
 
+// Remember the viewer (finishers aim their debris away from them). Module
+// scope: one shared function for every combatant.
+function recordViewer(_r: THREE.WebGLRenderer, _s: THREE.Scene, cam: THREE.Camera): void {
+  const e = cam.matrixWorld.elements;
+  viewPos.x = e[12];
+  viewPos.y = e[13];
+  viewPos.z = e[14];
+  viewPos.set = true;
+}
+
 export class Character {
   readonly root = new THREE.Group();
   readonly rig: Rig;
@@ -69,6 +80,7 @@ export class Character {
     // disable culling while they fly).
     this.mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.95, 0), 1.75);
     this.mesh.frustumCulled = true;
+    this.mesh.onBeforeRender = recordViewer;
     this.root.add(this.mesh);
     this.mesh.bind(this.rig.skeleton, new THREE.Matrix4());
     // The body geometry is a module-level cache shared by every character:

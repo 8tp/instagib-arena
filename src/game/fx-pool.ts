@@ -464,6 +464,12 @@ export class FxParticle {
   r2 = 0; g2 = 0; b2 = 0; ramp = false; // colour → (r2,g2,b2) over the life
   scaleFade = false; // solid shapes: shrink out at the end instead of dimming
   rot = 0; // billboard in-plane angle
+  // Bouncing debris (bounce ≥ 0): integrated per frame instead of closed
+  // form, so it can hit the floor, bounce (restitution `bounce`), skid and
+  // settle into a pile. Needs `floor`.
+  bounce = -1;
+  private live = false;
+  cx = 0; cy = 0; cz = 0; cvx = 0; cvy = 0; cvz = 0; ang = 0; spinNow = 0;
 
   reset(shape: number) {
     this.shape = shape;
@@ -487,6 +493,9 @@ export class FxParticle {
     this.ramp = false;
     this.scaleFade = false;
     this.rot = 0;
+    this.bounce = -1;
+    this.live = false;
+    this.ang = 0;
   }
 
   setColor(hex: number, intensity = 1) {
@@ -508,6 +517,41 @@ export class FxParticle {
     this.g2 = g;
     this.b2 = b;
     this.ramp = true;
+  }
+
+  // Integrate one step of bouncing debris (see `bounce`); `dt` is the part
+  // of this frame since the particle appeared.
+  integrate(dt: number, s: number) {
+    if (!this.live) {
+      this.live = true;
+      this.cx = this.x; this.cy = this.y; this.cz = this.z;
+      this.cvx = this.vx; this.cvy = this.vy; this.cvz = this.vz;
+      this.spinNow = this.spin;
+    }
+    this.cvy -= this.gravity * dt;
+    if (this.drag > 0) {
+      const d = Math.exp(-this.drag * dt);
+      this.cvx *= d; this.cvy *= d; this.cvz *= d;
+    }
+    this.cx += this.cvx * dt;
+    this.cy += this.cvy * dt;
+    this.cz += this.cvz * dt;
+    const h = 0.5 * this.sy * s;
+    if (this.cy < this.floor + h) {
+      this.cy = this.floor + h;
+      if (this.cvy < 0) {
+        this.cvy = -this.cvy * this.bounce;
+        if (this.cvy < 0.4) this.cvy = 0;
+        const f = Math.exp(-6 * dt) * 0.7; // floor friction
+        this.cvx *= f; this.cvz *= f;
+        this.spinNow *= 0.55;
+      } else {
+        const f = Math.exp(-8 * dt);
+        this.cvx *= f; this.cvz *= f;
+        this.spinNow *= f;
+      }
+    }
+    this.ang += this.spinNow * dt;
   }
 
   // Tumble about a random axis at `rate` rad/s.
@@ -569,7 +613,7 @@ export class FxPool {
       let mat: THREE.Material;
       if (shell) mat = shellMaterial();
       else if (shape === 'cube') mat = solidMaterial(0.45, 1.4, false);
-      else if (shape === 'flake') mat = solidMaterial(0.32, 0, true);
+      else if (shape === 'flake') mat = solidMaterial(0.14, 0, true);
       else if (shape === 'shard') mat = shardMaterial();
       else if (shape === 'mote') mat = billboardMaterial(glowTexture());
       else if (shape === 'glint') mat = billboardMaterial(starTexture());
@@ -632,7 +676,11 @@ export class FxPool {
 
       // Ballistic (optionally with linear drag) in closed form.
       let vxT = p.vx, vyT = p.vy - p.gravity * t, vzT = p.vz;
-      if (p.drag > 0) {
+      if (p.bounce >= 0) {
+        p.integrate(Math.min(dt, t), s);
+        tmpPos.set(p.cx, p.cy, p.cz);
+        vxT = p.cvx; vyT = p.cvy; vzT = p.cvz;
+      } else if (p.drag > 0) {
         const k = p.drag;
         const e = Math.exp(-k * t);
         const f = (1 - e) / k;
@@ -671,7 +719,7 @@ export class FxPool {
         } else {
           tmpQuat.set(p.qx, p.qy, p.qz, p.qw);
           if (p.spin !== 0) {
-            tmpQ2.setFromAxisAngle(tmpAxis.set(p.sax, p.say, p.saz), p.spin * t);
+            tmpQ2.setFromAxisAngle(tmpAxis.set(p.sax, p.say, p.saz), p.bounce >= 0 ? p.ang : p.spin * t);
             tmpQuat.premultiply(tmpQ2);
           }
         }

@@ -253,34 +253,82 @@ function glints(pool: FxPool, x: number, y: number, z: number, count: number, ra
   }
 }
 
-// Pulse (default): an instagib energy detonation in the victim's colour — a
-// hot flash behind a crisp star, a spherical shock front, a shockwave across
-// the floor, a hard spray of spark streaks and a few slow energy motes.
+// The frag flash: a soft glow in the victim's colour with a small hot star —
+// at most ~1.5 body widths and 80 ms (fairness: it must never white-out a
+// second enemy standing behind the victim).
+function fragFlash(ctx: FxContext, x: number, y: number, z: number, glow: THREE.Color, star: THREE.Color, delay = 0, scale = 1) {
+  spriteC(ctx, glowTexture(), x, y, z, 0.75 * scale, -0.15, 0.08, 1.6, glow, 1.7, false, delay);
+  spriteC(ctx, flashTexture(), x, y, z, 0.55 * scale, 0.25, 0.06, 1.5, star, 2.0, true, delay);
+}
+
+// A thin, bright, fast shockwave flat on the floor (textured annulus — no
+// thick torus "pool toy").
+function groundRing(pool: FxPool, x: number, y: number, z: number, c: THREE.Color, gain: number, r0: number, grow: number, life: number, fadePow: number, delay = 0) {
+  const p = pool.alloc('ring');
+  if (!p) return;
+  p.x = x; p.y = y + 0.03; p.z = z;
+  p.setScale(r0 / 0.31); // the ring texture's bright annulus sits at ~0.31 of the quad
+  p.setQuaternion(FLAT);
+  p.grow = growRate(grow);
+  p.life = life;
+  p.fadePow = fadePow;
+  p.delay = delay;
+  p.setRGB(c.r * gain, c.g * gain, c.b * gain);
+}
+
+// Pulse (default): a FLOOR shockwave — a thin bright ring racing out across
+// the ground, a second echo, sparks skimming low along the floor (the chunks
+// skim with them — gibs.ts).
 function killPulse(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  const cy = at.y + 0.1;
-  // Sized like the paid styles (fairness: the free default must not hide the
-  // kill spot longer or wider than a cosmetic one).
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.25, 0.12, 1.6, kTint, 1.8);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.7, 0.25, 0.08, 1.5, kHot, 2.2, true);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -3.4, 0.28, 1.4, kAcc, 2.0);
-  ringC(pool, at.x, at.y - 0.85, at.z, kAcc, RING_GAIN, 0.3, true, 0.36, 6.5, 1.3);
-  streaks(pool, at.x, cy, at.z, 24, 5.5, 6.5, 0.2, 14, 0, 0.3, 0.42, kHot, kAcc, 2.0);
-  motes(pool, at.x, cy, at.z, 8, 0.8, 1.6, 0.5, 2, 3, 0, 0.12, 0.55, kAcc, 1.6);
+  const fy = at.y - 0.88;
+  fragFlash(ctx, at.x, at.y + 0.1, at.z, kTint, kHot);
+  groundRing(pool, at.x, fy, at.z, kAcc, 2.6, 0.25, 9, 0.24, 1.4);
+  groundRing(pool, at.x, fy, at.z, kHot, 1.6, 0.18, 7, 0.3, 1.6, 0.05);
+  // Sparks skimming out low along the floor.
+  const n = Math.max(6, Math.round(22 * getFxQuality()));
+  for (let i = 0; i < n; i++) {
+    const p = pool.alloc('box');
+    if (!p) break;
+    const a = Math.random() * TWO_PI, sp = 6 + Math.random() * 5;
+    p.x = at.x; p.y = fy + 0.08 + Math.random() * 0.25; p.z = at.z;
+    p.setScale(0.022, 0.022, 0.3 + Math.random() * 0.15);
+    p.align = true;
+    p.vx = Math.cos(a) * sp; p.vy = Math.random() * 0.8; p.vz = Math.sin(a) * sp;
+    p.drag = 2;
+    p.gravity = 4;
+    p.life = 0.25 + Math.random() * 0.1;
+    p.fadePow = 1.4;
+    const c = i % 3 === 0 ? kAcc : kHot;
+    p.setRGB(c.r * 2.0, c.g * 2.0, c.b * 2.0);
+  }
   killLight(ctx, at, kAcc, 9);
 }
 
-// Nova: a big soft bloom in the victim's colour with twin shock shells.
+// Nova: a vertical PILLAR of light in the victim's colour punching up out
+// of the body (the chunks go straight up with it — gibs.ts).
 function killNova(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  const cy = at.y + 0.3;
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.55, 0.18, 1.5, kTint, 1.6);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.6, 0.3, 0.07, 1.5, kHot, 2.1, true);
-  // The nova's planetary ring: a flat band racing out at chest height.
-  ringC(ctx.pool, at.x, cy, at.z, kAcc, 1.9, 0.3, true, 0.38, 5.2, 1.3);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -5.5, 0.32, 1.3, kAcc, 1.9);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -4.5, 0.36, 1.5, kHot, 1.3, false, 0.06);
-  glints(pool, at.x, cy, at.z, 6, 1.1, 0.18, kHot, 2.4, 0.04);
+  const fy = at.y - 0.9;
+  fragFlash(ctx, at.x, at.y + 0.2, at.z, kTint, kHot, 0, 0.9);
+  const col = pool.alloc('column');
+  if (col) {
+    col.x = at.x; col.y = fy + 1.7; col.z = at.z;
+    col.setScale(0.3, 3.4, 0.3);
+    col.life = 0.28;
+    col.grow = growRate(-1.2);
+    col.fadePow = 1.4;
+    col.setRGB(kAcc.r * 2.2, kAcc.g * 2.2, kAcc.b * 2.2);
+  }
+  const core = pool.alloc('column');
+  if (core) {
+    core.x = at.x; core.y = fy + 1.6; core.z = at.z;
+    core.setScale(0.12, 3.2, 0.12);
+    core.life = 0.2;
+    core.fadePow = 1.6;
+    core.setRGB(kHot.r * 2.4, kHot.g * 2.4, kHot.b * 2.4);
+  }
+  groundRing(pool, at.x, fy, at.z, kAcc, 2.0, 0.2, 5, 0.26, 1.4);
   killLight(ctx, at, kAcc, 8);
 }
 
@@ -289,8 +337,7 @@ function killNova(ctx: FxContext, at: THREE.Vector3) {
 function killStarburst(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.35;
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 1.25, 0.3, 0.1, 1.6, kHot, 2.5, true);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.8, -0.2, 0.12, 1.6, kTint, 1.6);
+  fragFlash(ctx, at.x, cy, at.z, kTint, kHot);
   const n = Math.max(8, Math.round(16 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const p = pool.alloc('box');
@@ -306,7 +353,7 @@ function killStarburst(ctx: FxContext, at: THREE.Vector3) {
     const sp = 10;
     p.vx = kDir.x * sp; p.vy = kDir.y * sp; p.vz = kDir.z * sp;
     p.drag = 7;
-    p.life = 0.3;
+    p.life = 0.28;
     p.fadePow = 1.6;
     const c = i % 2 === 0 ? kHot : kAcc;
     p.setRGB(c.r * 2.1, c.g * 2.1, c.b * 2.1);
@@ -314,9 +361,9 @@ function killStarburst(ctx: FxContext, at: THREE.Vector3) {
       const g = pool.alloc('glint');
       if (g) {
         g.x = at.x + kDir.x * 1.35; g.y = cy + kDir.y * 1.35; g.z = at.z + kDir.z * 1.35;
-        g.setScale(0.32);
+        g.setScale(0.3);
         g.rot = Math.random() * TWO_PI;
-        g.life = 0.12;
+        g.life = 0.11;
         g.delay = 0.1 + Math.random() * 0.06;
         g.fadePow = 1.4;
         g.setRGB(kHot.r * 2.6, kHot.g * 2.6, kHot.b * 2.6);
@@ -327,20 +374,19 @@ function killStarburst(ctx: FxContext, at: THREE.Vector3) {
 }
 
 // Voxel: a blocky flash and an expanding square ring of glowing pixels (the
-// body itself breaks into voxel cubes — gibs.ts).
+// body itself becomes a pile of voxel cubes — gibs.ts).
 function killVoxel(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  const cy = at.y + 0.3;
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.9, -0.2, 0.1, 1.7, kHot, 1.8);
+  const cy = at.y + 0.2;
+  fragFlash(ctx, at.x, cy, at.z, kTint, kHot, 0, 0.85);
   const n = Math.max(8, Math.round(20 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const p = pool.alloc('box');
     if (!p) break;
     const a = (i / n) * TWO_PI;
-    // A square ring: push directions onto the unit square's edge.
     const cx = Math.cos(a), cz = Math.sin(a);
     const m = Math.max(Math.abs(cx), Math.abs(cz));
-    p.x = at.x; p.y = cy; p.z = at.z;
+    p.x = at.x; p.y = at.y - 0.75; p.z = at.z;
     p.setScale(0.07);
     p.vx = (cx / m) * 4.2; p.vy = 0; p.vz = (cz / m) * 4.2;
     p.drag = 3;
@@ -349,39 +395,38 @@ function killVoxel(ctx: FxContext, at: THREE.Vector3) {
     const c = i % 4 === 0 ? kHot : kAcc;
     p.setRGB(c.r * 2, c.g * 2, c.b * 2);
   }
-  motes(pool, at.x, cy, at.z, 6, 0.6, 1.2, 1, 2, 4, 0, 0.1, 0.4, kAcc, 1.4);
   killLight(ctx, at, kAcc, 6);
 }
 
-// Pyre: a rising column of fire, a ground fire ring and a spray of embers
-// (the body burns and crumbles — gibs.ts).
+// Pyre: a tall column of fire, a thin ground fire ring and a spray of
+// short-lived embers (the body buckles, burns and crumbles — gibs.ts).
 function killEmber(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  const core = kTmp.setRGB(1.0, 0.55, 0.16);
-  spriteC(ctx, glowTexture(), at.x, at.y + 0.3, at.z, 1.0, -0.2, 0.15, 1.7, core, 1.8);
+  const core = kTmp.setRGB(1.0, 0.5, 0.12);
+  const hot = kTmp2.setRGB(1.0, 0.8, 0.45);
+  fragFlash(ctx, at.x, at.y + 0.1, at.z, core, hot, 0, 0.85);
   const col = pool.alloc('cone');
   if (col) {
-    col.x = at.x; col.y = at.y + 0.7; col.z = at.z;
-    col.setScale(0.18, 1.0, 0.18);
-    col.vy = 1.6;
-    col.life = 0.32;
-    col.grow = growRate(1.6);
-    col.fadePow = 1.6;
-    col.setRGB(core.r * 1.5, core.g * 1.5, core.b * 1.5);
+    col.x = at.x; col.y = at.y + 0.3; col.z = at.z;
+    col.setScale(0.26, 1.9, 0.26);
+    col.vy = 0.8;
+    col.life = 0.34;
+    col.grow = growRate(0.8);
+    col.fadePow = 1.5;
+    col.setRGB(core.r * 1.8, core.g * 1.8, core.b * 1.8);
   }
-  ringC(pool, at.x, at.y - 0.85, at.z, kHs(core), 1.4, 0.25, true, 0.4, 5, 1.3);
-  motes(pool, at.x, at.y - 0.3, at.z, 18, 0.3, 1.0, 3, 3.5, 1.5, 1.4, 0.09, 0.7, kTmp2.setRGB(2.2, 1.0, 0.25), 1);
+  groundRing(pool, at.x, at.y - 0.88, at.z, kHs(core), 2.0, 0.2, 5, 0.3, 1.4);
+  motes(pool, at.x, at.y - 0.3, at.z, 16, 0.3, 1.0, 3, 3.5, 1.5, 1.4, 0.09, 0.4, kTmp2.setRGB(2.2, 1.0, 0.25), 1);
   killLight(ctx, at, core, 8);
 }
 
-// Gibstorm: a heavier, more violent pulse — bigger flash, a shock shell and
-// a dense spray of hot shards that rains down hard.
+// Gibstorm: the meaty one — a hot shell and a dense spray of hot shards that
+// rains down hard.
 function killGibstorm(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.35;
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.05, -0.3, 0.13, 1.6, kTint, 1.9);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.25, 0.08, 1.5, kHot, 2.3, true);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -4.0, 0.3, 1.3, kAcc, 2.0);
+  fragFlash(ctx, at.x, cy, at.z, kTint, kHot);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -3.6, 0.24, 1.4, kAcc, 2.0);
   const n = Math.max(8, Math.round(26 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const p = pool.alloc('ico');
@@ -389,19 +434,20 @@ function killGibstorm(ctx: FxContext, at: THREE.Vector3) {
     const a = Math.random() * TWO_PI, rad = 2.2 + Math.random() * 2.4;
     p.x = at.x; p.y = cy + 0.2; p.z = at.z;
     p.setScale(0.05 + Math.random() * 0.03);
-    p.vx = Math.cos(a) * rad; p.vy = 5 + Math.random() * 3.5; p.vz = Math.sin(a) * rad;
-    p.gravity = 14;
-    p.life = 0.7;
+    p.vx = Math.cos(a) * rad; p.vy = 3 + Math.random() * 3; p.vz = Math.sin(a) * rad;
+    p.gravity = 16;
+    p.life = 0.42;
     p.fadePow = 1.0;
     if (i % 2 === 0) p.setRGB(kAcc.r * 1.4, kAcc.g * 1.4, kAcc.b * 1.4);
     else p.setRGB(2.2, 0.9, 0.25);
   }
-  streaks(pool, at.x, cy, at.z, 14, 6, 6, 0.3, 16, 0, 0.3, 0.45, kHot, kAcc, 2.0);
+  streaks(pool, at.x, cy, at.z, 14, 6, 6, 0.3, 16, 0, 0.3, 0.4, kHot, kAcc, 2.0);
   killLight(ctx, at, kAcc, 9);
 }
 
 // Singularity: a ring collapses inward to a point over the pull (the body
-// spirals in — gibs.ts), then a white-hot core detonates with twin shells.
+// spirals in — gibs.ts), then the RELEASE: a small hard pop, a sharp violet
+// shockwave racing out and a floor ring.
 function killSingularity(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const POP = FINISHER_TIMING.singularityPop;
@@ -409,27 +455,24 @@ function killSingularity(ctx: FxContext, at: THREE.Vector3) {
   const halo = kTmp.setRGB(0.45, 0.35, 1.0);
   if (kIsHs) halo.copy(AMBER);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 2.0, 0.92, POP, 0.5, halo, 1.7);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.2, -2.5, POP, 0.3, halo, 1.4);
-  // The pop.
-  const white = kTmp2.setRGB(1, 0.97, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.75, -0.35, 0.08, 1.7, white, 1.9, false, POP);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.85, 0.25, 0.07, 1.5, white, 2.4, true, POP);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -5.5, 0.3, 1.3, white, 1.8, false, POP);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -4.6, 0.36, 1.2, halo, 2.4, false, POP + 0.03);
-  motes(pool, at.x, cy, at.z, 10, 2.4, 1.6, 1.5, 2.5, 6, 0, 0.1, 0.4, white, 2.0, POP);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.2, -2.0, POP, 0.3, halo, 1.3);
+  const white = kTmp2.setRGB(0.85, 0.8, 1);
+  fragFlash(ctx, at.x, cy, at.z, halo, white, POP, 0.8);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -6.5, 0.24, 1.2, halo, 2.6, false, POP);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.2, -4.5, 0.26, 1.5, white, 1.4, false, POP + 0.03);
+  groundRing(pool, at.x, at.y - 0.88, at.z, halo, 2.2, 0.2, 8, 0.26, 1.4, POP);
 }
 
-// Prism: a white flash split into chromatic (R/G/B) shock rings, rainbow
-// spikes and rainbow motes.
+// Prism: a small white flash split into chromatic (R/G/B) shock rings,
+// rainbow spikes and rainbow motes.
 function killPrism(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.35;
   const white = kTmp.setRGB(1, 1, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.9, -0.3, 0.11, 1.7, white, 1.8);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.25, 0.08, 1.5, white, 2.3, true);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -4.4, 0.3, 1.4, kTmp2.setRGB(1, 0.1, 0.18), 2.3);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.5, 0.3, 1.4, kTmp2.setRGB(0.12, 1, 0.22), 2.0, false, 0.035);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -2.7, 0.3, 1.4, kTmp2.setRGB(0.18, 0.32, 1), 2.5, false, 0.07);
+  fragFlash(ctx, at.x, cy, at.z, kTint, white, 0, 0.85);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -4.4, 0.28, 1.4, kTmp2.setRGB(1, 0.1, 0.18), 2.3);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.5, 0.28, 1.4, kTmp2.setRGB(0.12, 1, 0.22), 2.0, false, 0.035);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -2.7, 0.28, 1.4, kTmp2.setRGB(0.18, 0.32, 1), 2.5, false, 0.07);
   const n = Math.max(6, Math.round(14 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const p = pool.alloc('box');
@@ -443,7 +486,7 @@ function killPrism(ctx: FxContext, at: THREE.Vector3) {
     p.align = true;
     p.vx = kDir.x * 8; p.vy = kDir.y * 8; p.vz = kDir.z * 8;
     p.drag = 4;
-    p.life = 0.34;
+    p.life = 0.32;
     p.fadePow = 1.5;
     kTmp2.setHSL(i / n, 1, 0.55);
     p.setRGB(kTmp2.r * 2.3, kTmp2.g * 2.3, kTmp2.b * 2.3);
@@ -455,9 +498,9 @@ function killPrism(ctx: FxContext, at: THREE.Vector3) {
 // they read as bright scan lines) plus a short pixel spray.
 function killDerez(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  spriteC(ctx, glowTexture(), at.x, at.y + 0.3, at.z, 0.8, -0.2, 0.09, 1.7, kHot, 1.6);
+  fragFlash(ctx, at.x, at.y + 0.3, at.z, kTint, kHot, 0, 0.8);
   for (let k = 0; k < 3; k++) {
-    ringC(pool, at.x, at.y - 0.55 + k * 0.6, at.z, kAcc, 1.7, 0.3, true, 0.3, 5.5, 1.4, k * 0.05);
+    ringC(pool, at.x, at.y - 0.55 + k * 0.6, at.z, kAcc, 1.7, 0.3, true, 0.28, 5.5, 1.4, k * 0.04);
   }
   const n = Math.max(4, Math.round(10 * getFxQuality()));
   for (let i = 0; i < n; i++) {
@@ -468,90 +511,81 @@ function killDerez(ctx: FxContext, at: THREE.Vector3) {
     p.setScale(0.04);
     p.vx = Math.cos(a) * r; p.vy = 0; p.vz = Math.sin(a) * r;
     p.drag = 3;
-    p.life = 0.35;
+    p.life = 0.32;
     p.setRGB(kAcc.r * 2, kAcc.g * 2, kAcc.b * 2);
   }
   killLight(ctx, at, kAcc, 6);
 }
 
-// Glass Jaw: an icy star flash, a crisp shock ring and glints popping in the
-// air (the body freezes to glass and shatters — gibs.ts).
+// Glass Jaw: an icy star, a crisp ring and glints (the body freezes, cracks
+// and drops as shards that break on the floor — gibs.ts).
 function killShatter(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.35;
   const ice = kTmp.copy(kTint).lerp(kTmp2.setRGB(0.75, 0.9, 1), 0.6);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 1.0, 0.3, 0.08, 1.5, kTmp2.setRGB(1, 1, 1), 2.4, true);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.8, -0.2, 0.1, 1.7, ice, 1.5);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.35, -3.2, 0.24, 1.6, kIsHs ? AMBER : ice, 2.0, false, 0.05);
-  glints(pool, at.x, cy, at.z, 8, 1.0, 0.3, kTmp2.setRGB(1, 1, 1), 2.6, 0.06);
+  fragFlash(ctx, at.x, cy, at.z, ice, kTmp2.setRGB(1, 1, 1), 0, 0.8);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.35, -3.2, 0.22, 1.6, kIsHs ? AMBER : ice, 2.0, false, 0.05);
+  glints(pool, at.x, cy, at.z, 6, 0.8, 0.15, kTmp2.setRGB(1, 1, 1), 2.6, 0.05);
   killLight(ctx, at, ice, 6);
 }
 
-// Party Foul: a pop, two candy-coloured rings and sparkles (the confetti
-// itself comes out of the body — gibs.ts).
+// Party Foul: a pop (the victim's colour), two candy-coloured rings and
+// sparkles (the confetti cannon itself fires out of the body — gibs.ts).
 function killConfetti(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
-  const cy = at.y + 0.4;
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.9, -0.25, 0.09, 1.7, kTmp.setRGB(1, 0.95, 0.9), 1.9);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.6, 0.3, 0.07, 1.5, kTmp, 2.2, true);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.6, 0.26, 1.4, kIsHs ? AMBER : kTmp2.setRGB(1, 0.2, 0.6), 1.9);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -3.0, 0.28, 1.4, kTmp2.setRGB(0.15, 0.85, 1), 1.9, false, 0.05);
+  const cy = at.y + 0.35;
+  fragFlash(ctx, at.x, cy, at.z, kTint, kTmp.setRGB(1, 0.95, 0.9), 0, 0.9);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -4.2, 0.24, 1.4, kIsHs ? AMBER : kTmp2.setRGB(1, 0.2, 0.6), 2.0);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -3.4, 0.26, 1.4, kTmp2.setRGB(0.15, 0.85, 1), 2.0, false, 0.04);
   const n = Math.max(4, Math.round(10 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const p = pool.alloc('glint');
     if (!p) break;
     const a = Math.random() * TWO_PI, u = Math.random();
-    p.x = at.x + Math.cos(a) * (0.4 + u); p.y = cy + 0.2 + Math.random() * 1.2; p.z = at.z + Math.sin(a) * (0.4 + u);
+    p.x = at.x + Math.cos(a) * (0.4 + u); p.y = cy + 0.2 + Math.random() * 1.0; p.z = at.z + Math.sin(a) * (0.4 + u);
     p.setScale(0.24);
     p.rot = Math.random() * TWO_PI;
-    p.life = 0.14;
-    p.delay = 0.05 + Math.random() * 0.3;
+    p.life = 0.12;
+    p.delay = 0.04 + Math.random() * 0.25;
     kTmp2.setHSL(Math.random(), 1, 0.65);
     p.setRGB(kTmp2.r * 2.6, kTmp2.g * 2.6, kTmp2.b * 2.6);
   }
   killLight(ctx, at, kTmp.setRGB(1, 0.6, 0.85), 6);
 }
 
-// Overload: blue-white arcs lash out from the body while it's held, then a
-// delayed blast — flash, star and twin shells (the twitching + armour arcs
-// are the body's — gibs.ts).
+// Overload: blue-white arcs lash out from the collapsing body, then the
+// blast at ~0.18 s — a small flash and twin shells.
 function killOverload(ctx: FxContext, at: THREE.Vector3) {
   const T = FINISHER_TIMING.overloadBlast;
-  const cy = at.y + 0.3;
+  const cy = at.y + 0.2;
   const blue = kTmp.setRGB(0.55, 0.75, 1.0);
   if (kIsHs) blue.copy(AMBER);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.6, 0, 0.07, 1.6, blue, 1.6);
   const arcs = ctx.arcs;
   const n = Math.max(3, Math.round(8 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const a = Math.random() * TWO_PI;
-    const y0 = at.y - 0.5 + Math.random() * 1.3;
+    const y0 = at.y - 0.5 + Math.random() * 1.1;
     const r = 0.6 + Math.random() * 0.5;
     arcs.spawn(
       at.x + Math.cos(a) * 0.15, y0, at.z + Math.sin(a) * 0.15,
       at.x + Math.cos(a) * r, y0 + (Math.random() - 0.3) * 0.5, at.z + Math.sin(a) * r,
-      blue.r * 3, blue.g * 3, blue.b * 3, 0.03, 0.08, 0.14, (i / n) * (T - 0.06), 30,
+      blue.r * 3, blue.g * 3, blue.b * 3, 0.03, 0.07, 0.14, (i / n) * (T - 0.05), 30,
     );
   }
-  const white = kTmp2.setRGB(0.85, 0.93, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.3, 0.11, 1.6, white, 1.8, false, T);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.9, 0.25, 0.08, 1.5, white, 2.4, true, T);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -4.4, 0.3, 1.3, blue, 2.2, false, T);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.4, 0.34, 1.5, white, 1.4, false, T + 0.05);
+  const white = kTmp2.setRGB(0.8, 0.9, 1);
+  fragFlash(ctx, at.x, cy, at.z, blue, white, T, 0.9);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.35, -4.6, 0.26, 1.3, blue, 2.2, false, T);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -3.4, 0.28, 1.5, white, 1.3, false, T + 0.04);
 }
 
-// Vaporize: a white-hot flash and a heat shell (the body flash-burns to ash
-// and blows away — gibs.ts).
+// Vaporize: a flash-burn in the victim's colour and a heat shell (the body
+// chars to ash and the wind peels it away as a sheet — gibs.ts).
 function killVaporize(ctx: FxContext, at: THREE.Vector3) {
-  const pool = ctx.pool;
   const cy = at.y + 0.3;
-  const warm = kTmp.setRGB(1, 0.92, 0.78);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.3, 0.1, 1.7, warm, 1.9);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.3, 0.07, 1.5, warm, 2.3, true);
+  fragFlash(ctx, at.x, cy, at.z, kTint, kTmp.setRGB(1, 0.9, 0.75), 0, 0.85);
   const heat = kTmp2.setRGB(1, 0.42, 0.1);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.35, -3.6, 0.3, 1.4, kIsHs ? AMBER : heat, 1.8, false, 0.03);
-  motes(pool, at.x, cy, at.z, 10, 0.3, 0.9, 0.8, 1.6, -0.5, 1.2, 0.08, 0.7, heat, 2.0, 0.05);
-  killLight(ctx, at, warm, 9);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.35, -3.6, 0.28, 1.4, kIsHs ? AMBER : heat, 1.8, false, 0.03);
+  killLight(ctx, at, kTint, 8);
 }
 
 // Headshot: one consistent amber beat at head height on every style — a
@@ -582,7 +616,7 @@ function setKillPalette(style: KillEffectStyle, headshot: boolean, tint: THREE.C
   // Keep the key saturated but never too dark to glow: lift its peak to 1.
   const peak = Math.max(kTint.r, kTint.g, kTint.b, 1e-3);
   kTint.multiplyScalar(1 / peak);
-  kHot.copy(kTint).lerp(kTmp.setRGB(1, 1, 1), 0.6);
+  kHot.copy(kTint).lerp(kTmp.setRGB(1, 1, 1), 0.35);
   if (headshot) {
     kAcc.copy(AMBER);
     kHot.setRGB(1, 0.94, 0.78);
@@ -599,8 +633,9 @@ function spawnBeamIn(ctx: FxContext, at: THREE.Vector3, fp: boolean) {
   const col = 0x37a6ff;
   ring(pool, at.x, at.y + 0.05, at.z, col, 0.2, 0.045, 0.42, 7, 1.3);
   if (fp) return; // first person: rising column/flash/motes would pass through the camera
-  column(pool, at.x, at.y, at.z, hot, 0.16, 2.2, 0.4, 1.0, 1.6);
-  flash(ctx, at.x, at.y + 0.9, at.z, hot, 0.22, 0.22, 4, 1.8);
+  // Short and see-through: the player spawning inside it must stay visible.
+  column(pool, at.x, at.y, at.z, hot, 0.16, 2.2, 0.26, 1.0, 2.2);
+  flash(ctx, at.x, at.y + 0.9, at.z, hot, 0.12, 0.12, 4, 1.8);
   spray(pool, at.x, at.y, at.z, hot, { count: 12, y: 0.1, radial: [0.5, 0.6], up: [4.5, 2.5], size: 0.05, life: 0.5, gravity: 5, fadePow: 1.2 });
 }
 

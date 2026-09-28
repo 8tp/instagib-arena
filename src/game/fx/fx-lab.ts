@@ -207,7 +207,8 @@ export class FxLab {
     this.tiles = this.actors.map((a, i) => {
       const cam = new THREE.PerspectiveCamera(fov, tw / th, 0.05, 400);
       const c = a.slot.position;
-      cam.position.set(c.x + dist * 0.28, 1.65, dist);
+      if (this.params.get('side') === '1') cam.position.set(c.x + dist, 1.3, 0.4);
+      else cam.position.set(c.x + dist * 0.28, 1.65, dist);
       cam.lookAt(c.x, 1.0, 0);
       const name = KILL_EFFECTS.find((k) => k.id === a.style)?.name ?? a.style;
       return { x: (i % cols) * tw, y: Math.floor(i / cols) * th, w: tw, h: th, cam, label: `${name} (${a.style})` };
@@ -292,7 +293,7 @@ export class FxLab {
         cam.lookAt(p.x, view.key === 'locker' ? 1.56 : view.eye, 0);
         // Crop a tile-sized window around the crown at true pixel scale.
         cam.updateMatrixWorld();
-        const crown = new THREE.Vector3(p.x, 1.95, 0).project(cam);
+        const crown = new THREE.Vector3(p.x, view.key === 'locker' ? 2.04 : 1.95, 0).project(cam);
         const cx = (crown.x * 0.5 + 0.5) * fullW;
         const cy = (1 - (crown.y * 0.5 + 0.5)) * fullH;
         cam.setViewOffset(fullW, fullH, cx - tw / 2, cy - th / 2, tw, th);
