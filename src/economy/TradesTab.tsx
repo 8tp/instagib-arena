@@ -6,8 +6,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ModalShell, SegButton, Skeleton } from '../deck';
 import { sfxProps, toast } from '../deck-core';
 import { TRADE, type ItemInstanceWire } from '../game/items/types';
-import { econ as api, reasonText, type Trade, type TradeGate, type TradesResp } from './api';
-import { fmtCredits, gateRows, instBaseName, timeAgo, timeLeft } from './display';
+import { econ as api, reasonText, type Trade, type TradesResp } from './api';
+import { fmtCredits, gateRows, instBaseName, partnerGateRows, timeAgo, timeLeft, type GateRow } from './display';
 import { InstTile } from './parts';
 import type { Econ } from './useEconomy';
 
@@ -87,7 +87,7 @@ export function TradesTab({
         {view === 'new' && (
           <NewTrade
             econ={econ}
-            gate={data?.me}
+            gate={data?.gate}
             preload={preload}
             onSent={() => {
               setPreload(null);
@@ -149,14 +149,14 @@ function Side({ items, credits, label }: { items: ItemInstanceWire[]; credits: n
 
 function TradeRow({ t, dir, past, onOpen }: { t: Trade; dir: 'in' | 'out'; past: boolean; onOpen: (t: Trade) => void }) {
   const incoming = dir === 'in';
-  const recv = incoming ? { items: t.give, credits: t.giveCredits } : { items: t.get, credits: t.getCredits };
-  const give = incoming ? { items: t.get, credits: t.getCredits } : { items: t.give, credits: t.giveCredits };
+  const recv = incoming ? t.give : t.get;
+  const give = incoming ? t.get : t.give;
   return (
     <div className='ec-traderow' data-trade={t.id} data-state={t.state}>
       <div className='ec-trade-who'>
         <b>{dir === 'in' ? t.from : t.to}</b>
         <span>{past ? t.state : dir === 'in' ? 'sent you an offer' : 'offer sent'}</span>
-        <small>{timeAgo(t.createdAt)}{t.expiresAt && t.state === 'pending' ? ` · ${timeLeft(t.expiresAt)}` : ''}</small>
+        <small>{timeAgo(t.createdAt)}{t.state === 'pending' ? ` · ${timeLeft(t.expiresAt)}` : ''}</small>
       </div>
       <Side items={recv.items} credits={recv.credits} label={dir === 'out' ? 'They receive' : 'You receive'} />
       <span className='ec-swap' aria-hidden>⇄</span>
@@ -174,8 +174,8 @@ function ReviewDialog({ t, dir, econ, onClose, onDone }: { t: Trade; dir: 'in' |
   const [busy, setBusy] = useState(false);
   const incoming = dir === 'in';
   // What lands in MY inventory vs what leaves it.
-  const recv = incoming ? { items: t.give, credits: t.giveCredits } : { items: t.get, credits: t.getCredits };
-  const give = incoming ? { items: t.get, credits: t.getCredits } : { items: t.give, credits: t.giveCredits };
+  const recv = incoming ? t.give : t.get;
+  const give = incoming ? t.get : t.give;
   const afford = give.credits <= econ.credits;
   const act = async (a: 'accept' | 'decline' | 'cancel') => {
     setBusy(true);
@@ -199,7 +199,7 @@ function ReviewDialog({ t, dir, econ, onClose, onDone }: { t: Trade; dir: 'in' |
         <div className='ec-swap ec-swap-lg' aria-hidden>⇄</div>
         <ReviewSide title='You give' tone='out' items={give.items} credits={give.credits} />
       </div>
-      {t.note && <blockquote className='ec-note'>“{t.note}” <cite>— {t.from}</cite></blockquote>}
+      {t.note !== '' && <blockquote className='ec-note'>“{t.note}” <cite>— {t.from}</cite></blockquote>}
       <div className='ec-dialog-foot'>
         <div className='font-sans text-[12.5px] text-white/50'>
           {t.state === 'pending' ? (t.expiresAt ? `Expires ${timeLeft(t.expiresAt)}` : 'Pending') : `This offer was ${t.state}.`} · Your balance {fmtCredits(econ.credits)}
@@ -238,9 +238,9 @@ function ReviewSide({ title, tone, items, credits }: { title: string; tone: 'in'
 
 // ── New trade ───────────────────────────────────────────────────────────────
 
-function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradeGate; preload: string | null; onSent: () => void }) {
+function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradesResp['gate']; preload: string | null; onSent: () => void }) {
   const [name, setName] = useState('');
-  const [partner, setPartner] = useState<{ name: string; items: ItemInstanceWire[]; gate?: TradeGate } | null>(null);
+  const [partner, setPartner] = useState<{ name: string; items: ItemInstanceWire[]; canTrade: boolean } | null>(null);
   const [looking, setLooking] = useState(false);
   const [lookErr, setLookErr] = useState<string | null>(null);
   const [mine, setMine] = useState<string[]>(preload ? [preload] : []);
@@ -263,7 +263,7 @@ function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradeGat
       setPartner(null);
       return;
     }
-    setPartner({ name: r.name, items: r.items, gate: r.gate });
+    setPartner({ name: r.name, items: r.items, canTrade: r.canTrade });
     setTheirs([]);
   };
 
@@ -276,8 +276,8 @@ function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradeGat
   const gc = Math.max(0, Math.floor(Number(giveC) || 0));
   const rc = Math.max(0, Math.floor(Number(getC) || 0));
   const myGate = gateRows(gate);
-  const theirGate = gateRows(partner?.gate);
-  const blocked = [...myGate, ...theirGate].some((g) => !g.ok);
+  const theirGate = partnerGateRows(partner?.canTrade);
+  const blocked = (!!gate && !gate.ok) || (!!partner && !partner.canTrade);
   const empty = mine.length + theirs.length + gc + rc === 0;
   const canSend = !!partner && !blocked && !empty && gc <= econ.credits && gc <= TRADE.maxCreditsPerDay && rc <= TRADE.maxCreditsPerDay;
 
@@ -341,7 +341,7 @@ function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradeGat
           ) : (
             'Pick a player to start.'
           )}
-          {blocked && <span className='ml-2 text-rose-300'>Trading is locked until the requirements above are met.</span>}
+          {blocked && <span className='ml-2 text-rose-300'>{partner && !partner.canTrade ? `${partner.name} doesn’t meet the trade requirements yet.` : 'Trading is locked until you meet the requirements above.'}</span>}
           {gc > econ.credits && <span className='ml-2 text-rose-300'>Not enough credits.</span>}
         </div>
         <button type='button' className={`lk-action ${canSend ? 'lk-action-buy' : 'lk-action-muted'}`} data-action='send-offer' disabled={!canSend || sending} onClick={() => void send()} {...sfxProps('uiConfirm')}>
@@ -352,13 +352,13 @@ function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradeGat
   );
 }
 
-function GateList({ who, rows }: { who: string; rows: { label: string; have: string; ok: boolean }[] }) {
+function GateList({ who, rows }: { who: string; rows: GateRow[] }) {
   return (
     <div className='ec-gatecol'>
       <div className='ec-side-label'>{who}</div>
       {rows.map((g) => (
-        <div key={g.label} className={g.ok ? 'is-ok' : 'is-no'}>
-          <span aria-hidden>{g.ok ? '✓' : '✕'}</span> {g.label} <small>· {g.have}</small>
+        <div key={g.label} className={g.ok === true ? 'is-ok' : g.ok === false ? 'is-no' : 'is-unk'}>
+          <span aria-hidden>{g.ok === true ? '✓' : g.ok === false ? '✕' : '·'}</span> {g.label}
         </div>
       ))}
     </div>

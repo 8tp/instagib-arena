@@ -215,7 +215,7 @@ export function Locker({
           }}
         />
       )}
-      {tab === 'market' && <MarketTab econ={econ} loggedIn={loggedIn} sellUid={sellUid} clearSell={() => setSellUid(null)} />}
+      {tab === 'market' && <MarketTab econ={econ} loggedIn={loggedIn} sellUid={sellUid} clearSell={() => setSellUid(null)} myName={mock ? 'MockPlayer' : (account?.username ?? '')} />}
       {tab === 'trades' && (
         <TradesTab econ={econ} loggedIn={loggedIn} offerUid={offerUid} clearOffer={() => setOfferUid(null)} myName={mock ? 'MockPlayer' : (account?.username ?? '')} />
       )}

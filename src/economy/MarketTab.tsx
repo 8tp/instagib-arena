@@ -32,11 +32,13 @@ export function MarketTab({
   loggedIn,
   sellUid,
   clearSell,
+  myName,
 }: {
   econ: Econ;
   loggedIn: boolean;
   sellUid: string | null;
   clearSell: () => void;
+  myName: string;
 }) {
   const [sub, setSub] = useState<Sub>(sellUid ? 'sell' : 'browse');
   const [sellItem, setSellItem] = useState<ItemInstanceWire | null>(null);
@@ -67,7 +69,7 @@ export function MarketTab({
             Listing fee {MARKET.listingFeePct * 100}% · sale tax {MARKET.saleTaxPct * 100}% · escrowed while listed
           </span>
         </div>
-        {sub === 'browse' && <Browse econ={econ} loggedIn={loggedIn} />}
+        {sub === 'browse' && <Browse econ={econ} loggedIn={loggedIn} myName={myName} />}
         {sub === 'sell' && <SellPicker econ={econ} loggedIn={loggedIn} onPick={setSellItem} />}
         {sub === 'mine' && <MyListings key={mineTick} econ={econ} />}
       </div>
@@ -97,8 +99,8 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: 'festive', label: 'Festive' },
 ];
 
-function Browse({ econ, loggedIn }: { econ: Econ; loggedIn: boolean }) {
-  const [f, setF] = useState<MarketQuery>({ sort: 'newest', page: 1 });
+function Browse({ econ, loggedIn, myName }: { econ: Econ; loggedIn: boolean; myName: string }) {
+  const [f, setF] = useState<MarketQuery>({ sort: 'newest', page: 0 });
   const [text, setText] = useState('');
   const [data, setData] = useState<MarketResp | null>(null);
   const [err, setErr] = useState(false);
@@ -118,11 +120,12 @@ function Browse({ econ, loggedIn }: { econ: Econ; loggedIn: boolean }) {
   }, [f, load]);
   // Debounced text search.
   useEffect(() => {
-    const t = window.setTimeout(() => setF((p) => (p.q === text ? p : { ...p, q: text, page: 1 })), 260);
+    const t = window.setTimeout(() => setF((p) => (p.q === text ? p : { ...p, q: text, page: 0 })), 260);
     return () => window.clearTimeout(t);
   }, [text]);
 
-  const set = (patch: Partial<MarketQuery>) => setF((p) => ({ ...p, ...patch, page: patch.page ?? 1 }));
+  const set = (patch: Partial<MarketQuery>) => setF((p) => ({ ...p, ...patch, page: patch.page ?? 0 }));
+  const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
 
   return (
     <>
@@ -136,7 +139,7 @@ function Browse({ econ, loggedIn }: { econ: Econ; loggedIn: boolean }) {
           label='Sort'
           value={f.sort ?? 'newest'}
           onChange={(v) => set({ sort: v as MarketQuery['sort'] })}
-          options={[['newest', 'Newest'], ['price-asc', 'Price ↑'], ['price-desc', 'Price ↓'], ['tier', 'Rarest']]}
+          options={[['newest', 'Newest'], ['price_asc', 'Price ↑'], ['price_desc', 'Price ↓']]}
         />
       </div>
       {err ? (
@@ -154,11 +157,11 @@ function Browse({ econ, loggedIn }: { econ: Econ; loggedIn: boolean }) {
               <ListingCard key={l.id} l={l} onOpen={setOpen} />
             ))}
           </div>
-          {data.pages > 1 && (
+          {pages > 1 && (
             <div className='mt-5 flex items-center justify-center gap-3'>
-              <button type='button' className='ec-btn' disabled={data.page <= 1} onClick={() => set({ page: data.page - 1 })}>‹ Prev</button>
-              <span className='font-mono text-[12px] text-white/55'>Page {data.page} / {data.pages} · {data.total} listings</span>
-              <button type='button' className='ec-btn' disabled={data.page >= data.pages} onClick={() => set({ page: data.page + 1 })}>Next ›</button>
+              <button type='button' className='ec-btn' disabled={data.page <= 0} onClick={() => set({ page: data.page - 1 })}>‹ Prev</button>
+              <span className='font-mono text-[12px] text-white/55'>Page {data.page + 1} / {pages} · {data.total} listings</span>
+              <button type='button' className='ec-btn' disabled={data.page + 1 >= pages} onClick={() => set({ page: data.page + 1 })}>Next ›</button>
             </div>
           )}
         </>
@@ -168,6 +171,7 @@ function Browse({ econ, loggedIn }: { econ: Econ; loggedIn: boolean }) {
           l={open}
           econ={econ}
           loggedIn={loggedIn}
+          myName={myName}
           onClose={() => setOpen(null)}
           onBought={() => {
             setOpen(null);
@@ -210,6 +214,8 @@ function ListingCard({ l, onOpen }: { l: Listing; onOpen: (l: Listing) => void }
 
 // ── Listing detail + buy ────────────────────────────────────────────────────
 
+const salePoints = (h: HistoryResp) => [...h.sales].reverse().map((x) => ({ ts: x.soldAt, price: x.price }));
+
 function useHistory(def: string): HistoryResp | null | 'err' {
   const [h, setH] = useState<HistoryResp | null | 'err'>(null);
   useEffect(() => {
@@ -223,8 +229,9 @@ function useHistory(def: string): HistoryResp | null | 'err' {
   return h;
 }
 
-function ListingDialog({ l, econ, loggedIn, onClose, onBought }: { l: Listing; econ: Econ; loggedIn: boolean; onClose: () => void; onBought: () => void }) {
+function ListingDialog({ l, econ, loggedIn, myName, onClose, onBought }: { l: Listing; econ: Econ; loggedIn: boolean; myName: string; onClose: () => void; onBought: () => void }) {
   const it = l.item;
+  const mine = !!myName && l.seller.toLowerCase() === myName.toLowerCase();
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const hist = useHistory(it.def);
@@ -236,7 +243,7 @@ function ListingDialog({ l, econ, loggedIn, onClose, onBought }: { l: Listing; e
     setBusy(false);
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });
-      if (r.reason === 'gone' || r.reason === 'sold') onBought();
+      if (r.reason === 'not_active') onBought();
       return;
     }
     econ.setBalance({ credits: r.credits });
@@ -265,7 +272,7 @@ function ListingDialog({ l, econ, loggedIn, onClose, onBought }: { l: Listing; e
           </div>
           <div>
             <div className='ec-sub'>Price history · {instBaseName(it)}</div>
-            {hist === null ? <Skeleton className='h-16 w-full' /> : hist === 'err' ? <div className='text-[13px] text-white/45'>No history available.</div> : <Sparkline points={hist.sales} color={TIER_COLOR[tier].edge} label={`Recent sale prices of ${instBaseName(it)}`} />}
+            {hist === null ? <Skeleton className='h-16 w-full' /> : hist === 'err' ? <div className='text-[13px] text-white/45'>No history available.</div> : <Sparkline points={salePoints(hist)} color={TIER_COLOR[tier].edge} label={`Recent sale prices of ${instBaseName(it)}`} />}
           </div>
         </div>
       </div>
@@ -275,8 +282,8 @@ function ListingDialog({ l, econ, loggedIn, onClose, onBought }: { l: Listing; e
           {loggedIn && <div className={`font-sans text-[12.5px] ${after < 0 ? 'text-rose-300' : 'text-white/50'}`}>{after < 0 ? `Need ${fmtCredits(-after)} more` : `Balance after: ${fmtCredits(after)}`}</div>}
         </div>
         {!confirm ? (
-          <button type='button' className={`lk-action ${loggedIn && after >= 0 && !l.mine ? 'lk-action-buy' : 'lk-action-muted'}`} data-action='buy' disabled={!loggedIn || after < 0 || l.mine} onClick={() => setConfirm(true)} {...sfxProps('uiConfirm')}>
-            {!loggedIn ? 'Log in to buy' : l.mine ? 'Your listing' : 'Buy'}
+          <button type='button' className={`lk-action ${loggedIn && after >= 0 && !mine ? 'lk-action-buy' : 'lk-action-muted'}`} data-action='buy' disabled={!loggedIn || after < 0 || mine} onClick={() => setConfirm(true)} {...sfxProps('uiConfirm')}>
+            {!loggedIn ? 'Log in to buy' : mine ? 'Your listing' : 'Buy'}
           </button>
         ) : (
           <div className='ec-confirm'>
@@ -316,7 +323,7 @@ function SellDialog({ inst, econ, onClose, onListed }: { inst: ItemInstanceWire;
   const tier = instTier(inst);
   const floor = marketFloor(tier);
   const hist = useHistory(inst.def);
-  const suggested = hist && hist !== 'err' ? hist.suggested : undefined;
+  const suggested = hist && hist !== 'err' ? (hist.suggested ?? undefined) : undefined;
   const [price, setPrice] = useState<string>('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -372,7 +379,7 @@ function SellDialog({ inst, econ, onClose, onListed }: { inst: ItemInstanceWire;
             </tbody>
           </table>
           <div className='ec-sub'>Price history</div>
-          {hist === null ? <Skeleton className='h-14 w-full' /> : hist === 'err' ? <div className='text-[13px] text-white/45'>No history available.</div> : <Sparkline points={hist.sales} color={TIER_COLOR[tier].edge} height={52} label={`Recent sale prices of ${instBaseName(inst)}`} />}
+          {hist === null ? <Skeleton className='h-14 w-full' /> : hist === 'err' ? <div className='text-[13px] text-white/45'>No history available.</div> : <Sparkline points={salePoints(hist)} color={TIER_COLOR[tier].edge} height={52} label={`Recent sale prices of ${instBaseName(inst)}`} />}
         </div>
       </div>
       <div className='ec-dialog-foot'>

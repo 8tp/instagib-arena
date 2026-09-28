@@ -7,7 +7,6 @@ import type { Settings } from '../app-types';
 import { toast } from '../deck-core';
 import type { ItemInstanceWire, ItemSlot, Loadout } from '../game/items/types';
 import { econ, reasonText, type Equipped } from './api';
-import { instLook } from './display';
 
 export type EconStatus = 'loading' | 'ready' | 'error' | 'guest';
 
@@ -17,6 +16,7 @@ export type EconState = {
   equipped: Equipped;
   credits: number;
   freeRolls: number;
+  entitlements: readonly string[]; // defs equippable without an instance (cards, titles, defaults)
 };
 
 export type Econ = EconState & {
@@ -25,7 +25,8 @@ export type Econ = EconState & {
   addItem: (it: ItemInstanceWire) => void;
   removeItems: (uids: readonly string[]) => void;
   patchItem: (uid: string, patch: Partial<ItemInstanceWire>) => void;
-  equip: (slot: ItemSlot, uid: string | null, id?: string) => Promise<boolean>;
+  // token = instance uid, `def:<id>` (default / entitlement) or null (stock default)
+  equip: (slot: ItemSlot, token: string | null) => Promise<boolean>;
   salvage: (uids: string[]) => Promise<boolean>;
   busy: string | null;
 };
@@ -35,7 +36,7 @@ export function useEconomy(
   onChange: (s: Settings) => void,
   loggedIn: boolean,
 ): Econ {
-  const [st, setSt] = useState<EconState>({ status: loggedIn ? 'loading' : 'guest', items: [], equipped: {}, credits: 0, freeRolls: 0 });
+  const [st, setSt] = useState<EconState>({ status: loggedIn ? 'loading' : 'guest', items: [], equipped: {}, credits: 0, freeRolls: 0, entitlements: [] });
   const [busy, setBusy] = useState<string | null>(null);
   const [key, setKey] = useState(0);
   const settingsRef = useRef(settings);
@@ -51,7 +52,7 @@ export function useEconomy(
 
   useEffect(() => {
     if (!loggedIn) {
-      setSt({ status: 'guest', items: [], equipped: {}, credits: 0, freeRolls: 0 });
+      setSt({ status: 'guest', items: [], equipped: {}, credits: 0, freeRolls: 0, entitlements: [] });
       return;
     }
     let live = true;
@@ -64,13 +65,9 @@ export function useEconomy(
         else setSt((s) => ({ ...s, status: 'error' }));
         return;
       }
-      setSt({ status: 'ready', items: r.items, equipped: r.equipped ?? {}, credits: r.credits, freeRolls: r.freeRolls });
-      // Bring the live settings in line with the server's equipped instances.
-      const looks: Loadout = {};
-      for (const [slot, uid] of Object.entries(r.equipped ?? {})) {
-        const it = r.items.find((i) => i.uid === uid);
-        if (it) looks[slot as ItemSlot] = instLook(it);
-      }
+      setSt({ status: 'ready', items: r.items, equipped: r.equipped ?? {}, credits: r.credits, freeRolls: r.freeRolls, entitlements: r.entitlements ?? [] });
+      // Bring the live settings in line with the server's equipped Looks.
+      const looks: Loadout = r.looks ?? {};
       const cur = settingsRef.current;
       if (JSON.stringify(cur.equippedUids ?? {}) !== JSON.stringify(r.equipped ?? {}) || JSON.stringify(cur.looks ?? {}) !== JSON.stringify(looks)) {
         publish(r.equipped ?? {}, looks);
@@ -105,11 +102,11 @@ export function useEconomy(
   }, []);
 
   const equip = useCallback(
-    async (slot: ItemSlot, uid: string | null, id?: string): Promise<boolean> => {
+    async (slot: ItemSlot, token: string | null): Promise<boolean> => {
       const seq = (equipSeq.current[slot] ?? 0) + 1;
       equipSeq.current[slot] = seq;
-      setBusy(uid ?? id ?? `default:${slot}`);
-      const r = await econ.equip(slot, uid, id);
+      setBusy(token ?? `default:${slot}`);
+      const r = await econ.equip(slot, token);
       if (equipSeq.current[slot] !== seq) return false; // a newer equip owns the outcome
       setBusy(null);
       if (!r.ok) {

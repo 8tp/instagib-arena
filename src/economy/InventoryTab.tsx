@@ -9,7 +9,7 @@ import type { InstagibProfile, Settings } from '../app-types';
 import { SegButton, Skeleton } from '../deck';
 import { sfxProps, toast, uiHover, uiSfx } from '../deck-core';
 import { CARD_STYLES, cosmeticById, nameColorById, sourceLabel, titleById } from '../game/cosmetics';
-import { DEFAULT_LOADOUT, itemDef } from '../game/items/catalog';
+import { DEFAULT_LOADOUT, ITEM_DEFS, itemDef } from '../game/items/catalog';
 import { TIER_META, strangeRank, STRANGE_RANKS, wearName, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
 import { prefetchThumbnails } from '../game/thumbs';
 import { LockerStage, type StageNameplate } from '../locker/LockerStage';
@@ -61,37 +61,38 @@ function onTileArrows(e: ReactKeyboardEvent<HTMLElement>) {
 
 type Sort = 'rarity' | 'newest' | 'name';
 
-// Slots' entries: the virtual default, your instances, and (cards) the
-// level-unlock collection.
-function buildEntries(slot: ItemSlot, items: readonly ItemInstanceWire[], level: number | null, loggedIn: boolean): Entry[] {
+// Slots' entries: the virtual default, your instances, and the entitlement
+// collection (level-unlocked cards, earned titles, staff extras): owned ones,
+// plus — for cards and titles — the locked ones with how to get them.
+const COLLECTION_SLOTS: readonly ItemSlot[] = ['card', 'title'];
+function buildEntries(slot: ItemSlot, items: readonly ItemInstanceWire[], ent: ReadonlySet<string>): Entry[] {
   const out: Entry[] = [];
   const dflt = itemDef(DEFAULT_LOADOUT[slot]);
   if (dflt) out.push({ key: `def:${dflt.id}`, slot, def: dflt });
-  if (slot === 'card') {
-    for (const c of CARD_STYLES) {
-      const def = itemDef(c.id);
-      if (!def || def.default) continue;
-      if (c.source.type === 'admin') continue;
-      const need = c.source.type === 'level' ? c.source.level : null;
-      const owned = need != null && level != null && level >= need;
-      out.push({
-        key: `def:${c.id}`,
-        slot,
-        def,
-        locked: !owned,
-        lockNote: need != null ? `Lv ${need}` : sourceLabel(c.source),
-      });
-    }
-    out.sort((a, b) => Number(a.locked ?? false) - Number(b.locked ?? false) || levelNeed(a) - levelNeed(b));
-    // Staff cards etc. that exist as instances.
-    void loggedIn;
+  const coll: Entry[] = [];
+  for (const def of ITEM_DEFS) {
+    if (def.slot !== slot || def.id === DEFAULT_LOADOUT[slot]) continue;
+    const owned = ent.has(def.id);
+    if (!owned && !COLLECTION_SLOTS.includes(slot)) continue;
+    const src = cosmeticById(def.id)?.source;
+    if (!owned && (!src || src.type === 'admin' || src.type === 'default')) continue;
+    coll.push({
+      key: `def:${def.id}`,
+      slot,
+      def,
+      locked: !owned,
+      lockNote: !owned && src ? (src.type === 'level' ? `Lv ${src.level}` : sourceLabel(src)) : undefined,
+    });
   }
+  coll.sort((a, b) => Number(a.locked ?? false) - Number(b.locked ?? false) || levelNeed(a) - levelNeed(b) || a.def.name.localeCompare(b.def.name));
+  out.push(...coll);
   for (const i of items.filter((x) => instSlot(x) === slot)) {
     const def = itemDef(i.def);
     if (def) out.push({ key: i.uid, slot, def, inst: i });
   }
   return out;
 }
+const isDefaultEntry = (e: Entry): boolean => !e.inst && e.def.id === DEFAULT_LOADOUT[e.slot];
 function levelNeed(e: Entry): number {
   const s = cosmeticById(e.def.id)?.source;
   return s?.type === 'level' ? s.level : 0;
@@ -167,32 +168,32 @@ export function InventoryTab({
     [owner],
   );
 
-  const entries = useMemo(() => buildEntries(slot, econ.items, level, loggedIn), [slot, econ.items, level, loggedIn]);
+  const entSet = useMemo(() => new Set(econ.entitlements), [econ.entitlements]);
+  const entries = useMemo(() => buildEntries(slot, econ.items, entSet), [slot, econ.items, entSet]);
   const shown = useMemo(() => {
     const text = q.trim().toLowerCase();
     const rank = (e: Entry) => (e.inst ? TIER_META[instTier(e.inst)].rank : TIER_META[e.def.tier].rank);
     const list = entries.filter((e) => {
-      if (e.def.default && !e.inst) return true; // the default tile is always there
+      if (isDefaultEntry(e)) return true; // the default tile is always there
       if (tradableOnly && !(e.inst?.tradable && e.inst.state === 'owned')) return false;
       if (text && !(e.inst ? instFullName(e.inst) : e.def.name).toLowerCase().includes(text)) return false;
       return true;
     });
-    const head = list.filter((e) => e.def.default && !e.inst);
+    const head = list.filter(isDefaultEntry);
     const insts = list.filter((e) => e.inst).sort((a, b) => (sort === 'newest' ? b.inst!.createdAt - a.inst!.createdAt : sort === 'name' ? instBaseName(a.inst!).localeCompare(instBaseName(b.inst!)) || a.inst!.mint - b.inst!.mint : compareInst(a.inst!, b.inst!)));
-    const coll = list.filter((e) => !e.inst && !e.def.default).sort((a, b) => (sort === 'rarity' ? rank(b) - rank(a) : 0));
+    const coll = list.filter((e) => !e.inst && !isDefaultEntry(e)).sort((a, b) => (sort === 'rarity' ? rank(b) - rank(a) : 0));
     return { head, insts, coll };
   }, [entries, q, sort, tradableOnly]);
   const flat = useMemo(() => [...shown.head, ...shown.insts, ...shown.coll], [shown]);
 
   const equippedKey = useCallback(
     (e: Entry): boolean => {
-      const eq = econ.equipped[e.slot];
+      const eq = econ.equipped[e.slot]; // instance uid, `def:<id>`, or unset (→ stock default)
       if (e.inst) return eq === e.inst.uid;
-      if (e.slot === 'card' && !e.def.default) return settings.looks?.card?.d === e.def.id || eq === e.def.id;
-      const anyOther = !!eq || (e.slot === 'card' && settings.looks?.card && settings.looks.card.d !== DEFAULT_LOADOUT.card);
-      return e.def.default === true && !anyOther;
+      if (e.def.id === DEFAULT_LOADOUT[e.slot]) return !eq || eq === `def:${e.def.id}`;
+      return eq === `def:${e.def.id}`;
     },
-    [econ.equipped, settings.looks],
+    [econ.equipped],
   );
 
   const sel = flat.find((e) => e.key === selected) ?? flat.find((e) => equippedKey(e)) ?? flat[0] ?? null;
@@ -261,7 +262,7 @@ export function InventoryTab({
   // ── Actions ──────────────────────────────────────────────────────────────
   const doEquip = async (e: Entry) => {
     if (e.inst) markSeen(e.inst.uid);
-    const ok = e.inst ? await econ.equip(e.slot, e.inst.uid) : e.def.default ? await econ.equip(e.slot, null) : await econ.equip(e.slot, null, e.def.id);
+    const ok = await econ.equip(e.slot, e.inst ? e.inst.uid : e.def.id === DEFAULT_LOADOUT[e.slot] ? null : `def:${e.def.id}`);
     if (ok) {
       setStamp(Date.now());
       setPulseKey((k) => k + 1);

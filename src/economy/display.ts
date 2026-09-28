@@ -170,17 +170,26 @@ export function legacyUnusualFor(effectId: string | undefined, unusuals: readonl
   return (kind && unusuals.find((u) => u.kind === kind)?.id) || 'unusual.none';
 }
 
-// The three trade gates as a checklist (null gate = unknown → assume open,
-// the server has the final say).
-export function gateRows(g: TradeGate | undefined): { label: string; have: string; ok: boolean }[] {
+// The three trade gates as a checklist. The server reports only the FIRST unmet
+// requirement (level → matches → age), so earlier rows are known-good and later
+// ones unknown (`ok: null`). A partner only reports pass / fail (`canTrade`).
+export type GateRow = { label: string; ok: boolean | null; note?: string };
+const GATE_LABELS = [
+  `Level ${TRADE.minLevel}+`,
+  `${TRADE.minMatches}+ recorded matches`,
+  'Account 24 h old',
+] as const;
+const GATE_ORDER = ['level', 'matches', 'age'] as const;
+export function gateRows(g: TradeGate | undefined): GateRow[] {
   if (!g) return [];
-  return [
-    { label: `Level ${TRADE.minLevel}+`, have: `Level ${g.level}`, ok: g.level >= TRADE.minLevel },
-    { label: `${TRADE.minMatches}+ recorded matches`, have: `${g.matches} match${g.matches === 1 ? '' : 'es'}`, ok: g.matches >= TRADE.minMatches },
-    { label: 'Account 24 h old', have: g.accountAgeMs >= 86_400_000 ? `${Math.floor(g.accountAgeMs / 86_400_000)} d old` : `${Math.floor(g.accountAgeMs / 3_600_000)} h old`, ok: g.accountAgeMs >= TRADE.minAccountAgeMs },
-  ];
+  if (g.ok) return GATE_LABELS.map((label) => ({ label, ok: true }));
+  const at = GATE_ORDER.indexOf(g.reason as (typeof GATE_ORDER)[number]);
+  return GATE_LABELS.map((label, i) => ({ label, ok: at < 0 ? null : i < at ? true : i === at ? false : null }));
 }
-
+export function partnerGateRows(canTrade: boolean | undefined): GateRow[] {
+  if (canTrade === undefined) return [];
+  return GATE_LABELS.map((label) => ({ label, ok: canTrade ? true : null, note: canTrade ? undefined : undefined }));
+}
 
 // Only what changes the picture is part of the thumbnail key (an unusual
 // effect); pattern seeds / wear are shown as text.

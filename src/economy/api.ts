@@ -1,28 +1,44 @@
-// Economy REST client (docs/economy.md §10) + the response shapes the UI
-// codes against. With `?mockEconomy=1` (sticky for the tab) every call is
-// answered by an in-memory mock (./mock.ts) instead of the server, so the
-// screens can be developed and screenshotted without the server track.
-import type { CaseDef, CaseId, ItemAttrs, ItemInstanceWire, ItemOrigin, ItemSlot, Quality, Tier } from '../game/items/types';
+// Economy REST client (docs/economy.md §10–11) + the response shapes as the
+// server (server/economy-routes.ts) sends them. With `?mockEconomy=1`
+// (sticky for the tab) every call is answered by an in-memory mock (./mock.ts)
+// that mirrors the same shapes, so the screens can be developed and
+// screenshotted without a server.
+import type { CaseDef, CaseId, ItemAttrs, ItemInstanceWire, ItemSlot, Loadout, Quality, Tier } from '../game/items/types';
 
+// slot → token: an instance uid, or `def:<id>` for a default / entitlement.
 export type Equipped = Partial<Record<ItemSlot, string>>;
 
-export type InventoryResp = { items: ItemInstanceWire[]; equipped: Equipped; credits: number; freeRolls: number };
-export type EquipResp = { equipped: Equipped; looks: import('../game/items/types').Loadout };
-export type SalvageResp = { credits: number; removed: string[] };
+export type InventoryResp = {
+  items: ItemInstanceWire[]; // owned + listed
+  equipped: Equipped;
+  looks: Loadout;
+  credits: number;
+  freeRolls: number;
+  entitlements: string[]; // def ids equippable without an instance (cards, titles, defaults…)
+};
+export type EquipResp = { equipped: Equipped; looks: Loadout };
+export type SalvageResp = { credits: number; gained: number; removed: string[] };
 
-// GET /api/cases. `cases` is optional (the client has CASES). No pity: rates are
-// fixed and published (CASES odds + QUALITY_ODDS), shown to everyone.
-export type CasesResp = { cases?: CaseDef[]; freeRolls: number; credits: number };
-export type OpenCaseResp = { item: ItemInstanceWire; tier: Tier; credits: number; freeRolls: number };
+// GET /api/cases (public — guests too). `odds` are the EFFECTIVE tier odds
+// (after empty-tier fallback) — show those; `nominalOdds` are the configured ones.
+export type CaseInfo = Omit<CaseDef, 'odds'> & {
+  odds: Record<Tier, number>;
+  nominalOdds: Record<Tier, number>;
+  pool: Record<Tier, number>; // defs per tier in this case
+  qualityOdds: Partial<Record<'unusualHat' | 'unusualHatLegendaryPlus' | 'unusualEmote' | 'strange' | 'killstreak' | 'professional', number>>;
+};
+export type CasesResp = { cases: CaseInfo[]; credits: number; freeRolls: number };
+export type OpenCaseResp = { item: ItemInstanceWire; tier: Tier; credits: number; freeRolls: number; usedRoll: boolean };
 
 export type Listing = {
-  id: number | string;
-  item: ItemInstanceWire;
+  id: number;
   price: number;
+  sellerId: string;
   seller: string;
   createdAt: number;
-  suggested?: number; // median of the last 10 sales of the same def + quality
-  mine?: boolean;
+  item: ItemInstanceWire;
+  tier: Tier;
+  suggested: number | null; // median of the last 10 sales of the same def + quality
 };
 export type MarketQuery = {
   slot?: ItemSlot | '';
@@ -30,56 +46,65 @@ export type MarketQuery = {
   quality?: Quality | '';
   effect?: string;
   q?: string;
-  sort?: 'newest' | 'price-asc' | 'price-desc' | 'tier';
-  page?: number;
+  sort?: 'newest' | 'price_asc' | 'price_desc';
+  page?: number; // 0-based
 };
-export type MarketResp = { listings: Listing[]; total: number; page: number; pages: number };
-export type HistoryResp = { def: string; sales: { ts: number; price: number; quality?: Quality[] }[]; suggested?: number };
-export type ListResp = { listing?: Listing; fee: number; credits: number };
-export type BuyResp = { item: ItemInstanceWire; credits: number };
+export type MarketResp = { listings: Listing[]; page: number; pageSize: number; total: number };
+export type HistoryResp = {
+  def: string;
+  known: boolean;
+  sales: { price: number; soldAt: number; quality: string[] }[]; // newest first
+  suggested: number | null;
+  floor: number | null;
+};
+export type ListResp = { listing: Listing; credits: number; fee: number };
+export type BuyResp = { item: ItemInstanceWire; price: number; credits: number };
+export type MineResp = { listings: Listing[]; recentSales: { id: number; price: number; def: string; soldAt: number; buyer: string }[] };
 
 export type TradeState = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired';
 // `give` = what the SENDER gives (the recipient receives it); `get` = what the
 // sender asks for in return.
 export type Trade = {
-  id: number | string;
-  from: string; // sender name
-  to: string; // recipient name
-  give: ItemInstanceWire[];
-  get: ItemInstanceWire[];
-  giveCredits: number;
-  getCredits: number;
-  note?: string;
+  id: number;
+  fromId: string;
+  from: string;
+  toId: string;
+  to: string;
+  give: { items: ItemInstanceWire[]; credits: number };
+  get: { items: ItemInstanceWire[]; credits: number };
+  note: string;
   state: TradeState;
   createdAt: number;
-  expiresAt?: number;
-  resolvedAt?: number;
+  expiresAt: number;
+  resolvedAt: number;
 };
-export type TradeGate = { level: number; matches: number; accountAgeMs: number };
-export type TradesResp = { incoming: Trade[]; outgoing: Trade[]; history?: Trade[]; me?: TradeGate; credits?: number };
+// The gate reports the first unmet requirement (level → matches → age).
+export type TradeGate = { ok: true } | { ok: false; reason: 'guest' | 'level' | 'matches' | 'age'; need?: number };
+export type TradesResp = { incoming: Trade[]; outgoing: Trade[]; history: Trade[]; gate: TradeGate };
 export type OfferBody = { to: string; giveItems: string[]; giveCredits: number; getItems: string[]; getCredits: number; note?: string };
-export type PlayerInvResp = { name: string; items: ItemInstanceWire[]; gate?: TradeGate };
+export type PlayerInvResp = { name: string; items: ItemInstanceWire[]; canTrade: boolean };
 
 export type AdminInvResp = {
   player: string;
+  id?: string;
   credits: number;
   freeRolls: number;
-  level?: number;
-  items: (ItemInstanceWire & { ownerState?: string })[];
+  equipped: Equipped;
+  items: ItemInstanceWire[];
 };
 export type MintBody = {
   player: string;
-  def?: string; // catalog def …
-  custom?: { name: string; desc?: string; slot: ItemSlot; tier: Tier; tint?: string; art?: string }; // … or a one-off
+  def: string; // catalog def (its art) — a one-off adds custom attrs / tier on top
   quality?: Quality[];
-  attrs?: ItemAttrs;
+  attrs?: ItemAttrs; // customName / customDesc / tint / effect / kills / sheen / ksEffect / seed / wear / nameTag / festive
+  tier?: Tier; // override the def's tier (incl. unobtainable)
   bound?: boolean;
-  origin?: ItemOrigin;
+  count?: number; // 1–25
 };
-export type ItemEvent = { id: number | string; ts: number; kind: string; from?: string | null; to?: string | null; meta?: Record<string, unknown> };
-export type ItemHistoryResp = { item: ItemInstanceWire; owner?: string; events: ItemEvent[] };
+export type ItemEvent = { id: number; uid: string; ts: number; kind: string; from: string; to: string; meta: unknown };
+export type ItemHistoryResp = { item: ItemInstanceWire; owner: string; events: ItemEvent[] };
 
-export type Res<T> = (T & { ok: true }) | { ok: false; status: number; reason?: string; error?: string };
+export type Res<T> = (T & { ok: true }) | { ok: false; status: number; reason?: string; error?: string; need?: number };
 
 export function mockOn(): boolean {
   if (typeof window === 'undefined') return false;
@@ -104,7 +129,8 @@ async function real<T>(method: 'GET' | 'POST', url: string, body?: unknown): Pro
     });
     const d = (await r.json().catch(() => ({}))) as Record<string, unknown>;
     if (r.ok && d.ok !== false) return { ...d, ok: true } as unknown as Res<T>;
-    return { ok: false, status: r.status, reason: typeof d.reason === 'string' ? d.reason : undefined, error: typeof d.error === 'string' ? d.error : undefined };
+    const code = typeof d.error === 'string' ? d.error : typeof d.reason === 'string' ? d.reason : undefined;
+    return { ok: false, status: r.status, reason: code, error: code, need: typeof d.need === 'number' ? d.need : undefined };
   } catch {
     return { ok: false, status: 0, reason: 'network' };
   }
@@ -122,22 +148,15 @@ let mockMod: Promise<Mock> | null = null;
 const mock = (): Promise<Mock> => (mockMod ??= import('./mock'));
 
 // One place that decides real vs mock, so every call site is a one-liner.
-async function call<T>(
-  method: 'GET' | 'POST',
-  url: string,
-  body: unknown,
-  m: (mk: Mock) => Res<T> | Promise<Res<T>>,
-): Promise<Res<T>> {
+async function call<T>(method: 'GET' | 'POST', url: string, body: unknown, m: (mk: Mock) => Res<T> | Promise<Res<T>>): Promise<Res<T>> {
   if (mockOn()) return m(await mock());
   return real<T>(method, url, body);
 }
 
 export const econ = {
   inventory: () => call<InventoryResp>('GET', '/api/inventory', undefined, (m) => m.inventory()),
-  // `uid` = an owned instance (null → the slot's default); `id` = a level-unlocked
-  // entitlement (player cards) by def id.
-  equip: (slot: ItemSlot, uid: string | null, id?: string) =>
-    call<EquipResp>('POST', '/api/inventory/equip', id ? { slot, id } : { slot, uid }, (m) => m.equip(slot, uid, id)),
+  // `token` = an owned instance uid, `def:<id>` (default / entitlement), or null (→ stock default).
+  equip: (slot: ItemSlot, token: string | null) => call<EquipResp>('POST', '/api/inventory/equip', { slot, uid: token }, (m) => m.equip(slot, token)),
   salvage: (uids: string[]) => call<SalvageResp>('POST', '/api/inventory/salvage', { uids }, (m) => m.salvage(uids)),
   cases: () => call<CasesResp>('GET', '/api/cases', undefined, (m) => m.cases()),
   openCase: (caseId: CaseId, useRoll: boolean) => call<OpenCaseResp>('POST', '/api/cases/open', { caseId, useRoll }, (m) => m.openCase(caseId, useRoll)),
@@ -145,53 +164,81 @@ export const econ = {
     call<MarketResp>('GET', `/api/market${qs({ slot: q.slot, tier: q.tier, quality: q.quality, effect: q.effect, q: q.q, sort: q.sort, page: q.page })}`, undefined, (m) => m.market(q)),
   history: (def: string) => call<HistoryResp>('GET', `/api/market/history/${encodeURIComponent(def)}`, undefined, (m) => m.history(def)),
   list: (uid: string, price: number) => call<ListResp>('POST', '/api/market/list', { uid, price }, (m) => m.list(uid, price)),
-  unlist: (id: Listing['id']) => call<{ credits?: number }>('POST', '/api/market/unlist', { id }, (m) => m.unlist(id)),
+  unlist: (id: Listing['id']) => call<{ item: ItemInstanceWire }>('POST', '/api/market/unlist', { id }, (m) => m.unlist(id)),
   buy: (id: Listing['id']) => call<BuyResp>('POST', '/api/market/buy', { id }, (m) => m.buy(id)),
-  myListings: () => call<{ listings: Listing[] }>('GET', '/api/market/mine', undefined, (m) => m.myListings()),
+  myListings: () => call<MineResp>('GET', '/api/market/mine', undefined, (m) => m.myListings()),
   trades: () => call<TradesResp>('GET', '/api/trades', undefined, (m) => m.trades()),
   offer: (b: OfferBody) => call<{ trade?: Trade }>('POST', '/api/trades/offer', b, (m) => m.offer(b)),
-  tradeAct: (id: Trade['id'], act: 'accept' | 'decline' | 'cancel') =>
-    call<{ credits?: number }>('POST', `/api/trades/${id}/${act}`, {}, (m) => m.tradeAct(id, act)),
+  tradeAct: (id: Trade['id'], act: 'accept' | 'decline' | 'cancel') => call<{ trade?: Trade }>('POST', `/api/trades/${id}/${act}`, {}, (m) => m.tradeAct(id, act)),
   playerInventory: (name: string) => call<PlayerInvResp>('GET', `/api/players/${encodeURIComponent(name)}/inventory`, undefined, (m) => m.playerInventory(name)),
-  // Admin
-  adminInventory: (player: string) => call<AdminInvResp>('GET', `/api/admin/inventory/${encodeURIComponent(player)}`, undefined, (m) => m.adminInventory(player)),
-  adminMint: (b: MintBody) => call<{ item: ItemInstanceWire }>('POST', '/api/admin/items/mint', b, (m) => m.adminMint(b)),
-  adminRevoke: (uid: string, reason?: string) => call<{ done?: boolean }>('POST', '/api/admin/items/revoke', { uid, reason }, (m) => m.adminRevoke(uid)),
+  // Admin (session-only routes)
+  adminInventory: (player: string, all = false) =>
+    call<AdminInvResp>('GET', `/api/admin/inventory/${encodeURIComponent(player)}${all ? '?all=1' : ''}`, undefined, (m) => m.adminInventory(player, all)),
+  adminMint: (b: MintBody) => call<{ items: ItemInstanceWire[] }>('POST', '/api/admin/items/mint', b, (m) => m.adminMint(b)),
+  adminRevoke: (uid: string, reason?: string) => call<{ item: ItemInstanceWire }>('POST', '/api/admin/items/revoke', { uid, reason }, (m) => m.adminRevoke(uid)),
   adminGrant: (player: string, credits?: number, rolls?: number) =>
-    call<{ credits: number; freeRolls: number }>('POST', '/api/admin/grant', { player, credits, rolls }, (m) => m.adminGrant(player, credits, rolls)),
+    call<{ credits: number; freeRolls: number; username?: string }>('POST', '/api/admin/economy/grant', { player, credits, rolls }, (m) => m.adminGrant(player, credits, rolls)),
   adminHistory: (uid: string) => call<ItemHistoryResp>('GET', `/api/admin/items/${uid}/history`, undefined, (m) => m.adminHistory(uid)),
 };
 
-// Human copy for the common failure reasons (server reasons are best-effort).
-export function reasonText(r: { status: number; reason?: string; error?: string }): string {
-  switch (r.reason) {
+// Human copy for the server's error codes.
+export function reasonText(r: { status: number; reason?: string; error?: string; need?: number }): string {
+  const n = r.need != null ? r.need.toLocaleString() : '';
+  switch (r.reason ?? r.error) {
     case 'insufficient':
-    case 'credits':
-      return 'Not enough credits.';
-    case 'no-rolls':
+    case 'insufficient_fee':
+      return r.need != null ? `Not enough credits (need ⛁ ${n}).` : 'Not enough credits.';
+    case 'no_rolls':
       return 'No free rolls left.';
-    case 'gone':
-    case 'sold':
+    case 'roll_not_allowed':
+      return 'Free rolls only open standard cases — the Vault needs credits.';
+    case 'not_active':
+    case 'not_owned':
+    case 'item_unavailable':
+    case 'offer_stale':
       return 'That item is no longer available.';
-    case 'own':
+    case 'own_listing':
       return 'You can’t buy your own listing.';
-    case 'price':
-      return 'That price is out of range.';
-    case 'limit':
-      return 'Listing limit reached.';
+    case 'below_floor':
+      return `Price is below the floor (⛁ ${n}).`;
+    case 'above_max':
+      return `Price is above the maximum (⛁ ${n}).`;
+    case 'too_many_listings':
+      return `Listing limit reached (${n}).`;
+    case 'bound':
+    case 'item_bound':
+      return 'Bound items can’t be traded or listed.';
+    case 'not_salvageable':
+      return 'That item can’t be salvaged.';
+    case 'too_many_items':
+      return `Up to ${n} items per side.`;
+    case 'empty_offer':
+      return 'An offer needs something in it.';
+    case 'profanity':
+      return 'Keep the note clean.';
+    case 'no_player':
+    case 'not_found':
+      return 'Player not found.';
+    case 'self_trade':
+      return 'You can’t trade with yourself.';
+    case 'too_many_pending':
+      return 'Too many pending offers — cancel one first.';
     case 'level':
       return 'Trading needs a higher level.';
     case 'matches':
       return 'Trading needs more recorded matches.';
     case 'age':
       return 'Trading unlocks 24 h after account creation.';
-    case 'bound':
-      return 'Bound items can’t be traded or listed.';
+    case 'guest':
+      return 'Log in first.';
+    case 'rate_limited':
+      return 'Slow down a moment.';
     case 'network':
       return 'Network error.';
     default:
   }
+  if ((r.reason ?? '').startsWith('partner_')) return 'The other player can’t trade yet (level / matches / account age).';
   if (r.status === 429) return 'Slow down a moment.';
   if (r.status === 401) return 'Log in first.';
-  return r.error || 'That didn’t work.';
+  return 'That didn’t work.';
 }
