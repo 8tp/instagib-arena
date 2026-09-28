@@ -153,7 +153,12 @@ export function matchXpLines(d: MatchXpInput, ctx: MatchXpContext): { xp: number
   const presence = d.presence == null ? 1 : Math.max(0, Math.min(1, d.presence));
 
   const base = Math.round(XP_BASE * presence);
-  lines.push({ key: 'base', label: 'Match played', xp: base, detail: presence < 1 ? 'partial match' : undefined });
+  lines.push({
+    key: 'base',
+    label: 'Match played',
+    xp: base,
+    detail: presence < 1 ? `${Math.round(presence * 100)}% of a full match` : undefined,
+  });
   if (kills > 0) lines.push({ key: 'kills', label: 'Kills', xp: kills * XP_PER_KILL, detail: `${kills} × ${XP_PER_KILL}` });
   if (headshots > 0)
     lines.push({ key: 'headshots', label: 'Headshots', xp: headshots * XP_PER_HEADSHOT, detail: `${headshots} × ${XP_PER_HEADSHOT}` });

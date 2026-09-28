@@ -257,8 +257,10 @@ const CHAT_HISTORY_MAX = 50; // recent messages replayed to a client on open
 const PLAYER_RADIUS = 0.4;
 const PLAYER_HEIGHT = 1.8;
 const HEADSHOT_FRAC = 0.72;
-// Server-authoritative progression (see settleClient). The flat "match played"
-// base XP scales with time present up to this, so join/leave spam earns ~0.
+// Server-authoritative progression (see settleClient). Only a match played to
+// its frag limit earns the flat "match played" base XP in full; a partial (left
+// early) or a forfeit earns it pro rata by time present up to this, so
+// join/leave (or join/frag/forfeit) cycling earns ~0 base.
 const PRESENCE_FULL_MS = 180_000;
 // A TDM team win only counts for a member who was in the match at least this
 // long (no joining 10s before the end to collect the win + first-win bonus).
@@ -916,7 +918,16 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
   // Record one player's match (full at match end, or `partial` when they leave
   // an active match) and push the reward payload. Idempotent per match.
-  const settleClient = (c: ClientRecord, room: Room, won: boolean, partial: boolean, now: number) => {
+  // `fullBase`: the match was played to its frag limit → the full flat base XP;
+  // otherwise (partial, forfeit) the base is pro rata by time present.
+  const settleClient = (
+    c: ClientRecord,
+    room: Room,
+    won: boolean,
+    partial: boolean,
+    now: number,
+    fullBase = false,
+  ) => {
     if (c.mSettled) return;
     c.mSettled = true;
     // An empty bounce (joined, never fired/fragged/died) isn't a match.
@@ -938,7 +949,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         accuracy,
         offline: false,
         now,
-        presence: Math.max(0, Math.min(1, (now - c.mStartedAt) / PRESENCE_FULL_MS)),
+        presence: fullBase ? 1 : Math.max(0, Math.min(1, (now - c.mStartedAt) / PRESENCE_FULL_MS)),
       });
     } catch (err) {
       console.error('[instagib] recordMatch failed', err);
@@ -991,7 +1002,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
           ? c.team === winnerTeam && now - c.mStartedAt >= TDM_WIN_MIN_PRESENCE_MS
           : c.id === winnerId;
       if (won && forfeit && c.frags < minForfeitFrags) won = false; // no contest
-      settleClient(c, room, won, false, now);
+      settleClient(c, room, won, false, now, !forfeit);
     }
   };
 
