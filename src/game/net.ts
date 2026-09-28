@@ -1111,6 +1111,8 @@ export class NetClient {
       return;
     }
     if (msg.type === 'join-failed') {
+      // Already in this room in another tab: never auto-rejoin into the refusal.
+      if (msg.reason === 'duplicate') this.noReconnect = true;
       this.events.onJoinFailed?.(msg.reason);
       return;
     }
