@@ -27,20 +27,10 @@ import { Character, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
-import { WornHat } from './hats';
-import { HATS, UNUSUALS, type KillEffectStyle } from './cosmetics';
+import { BodyGear, applyFinishLook, asV3, emoteKindOfLook, randomBotLoadout, resolveCosmetics } from './look-runtime';
+import { railgunFinishById, type KillEffectStyle } from './cosmetics';
+import type { Loadout } from './items/types';
 import type { BotState, EntityId, Vec3 } from './types';
-
-// Bots wear a random (non-bare) hat — and sometimes an unusual effect — so the
-// cosmetics show up in solo play.
-const WEARABLE_HATS = HATS.filter((h) => h.model).map((h) => h.id);
-const WEARABLE_UNUSUALS = UNUSUALS.filter((u) => u.kind !== 'none').map((u) => u.id);
-function randomHatId(): string {
-  return WEARABLE_HATS[Math.floor(Math.random() * WEARABLE_HATS.length)] ?? 'hat.none';
-}
-function randomUnusualId(): string {
-  return WEARABLE_UNUSUALS[Math.floor(Math.random() * WEARABLE_UNUSUALS.length)] ?? 'unusual.none';
-}
 
 const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse', 'Echo'];
 const BOT_FACING_LERP = 12;
@@ -250,7 +240,10 @@ export function applyHighlight(
 export class Bot {
   state: BotState;
   group: THREE.Group;
-  private hat: WornHat | null = null;
+  private gear: BodyGear | null = null;
+  readonly loadout: Loadout = randomBotLoadout(); // random cosmetics for variety (solo)
+  private tauntLeft = 0;
+  private streak = 0;
   private gun: AttachedRailgun | null = null; // third-person railgun (disposed with the bot)
   // Reused animator input (no per-frame allocation).
   private readonly animIn: CharacterAnimInput = { dt: 0, yaw: 0, pitch: 0, pos: new THREE.Vector3() };
@@ -979,7 +972,35 @@ export class Bot {
 
   // Animate the hat's unusual effect (the hat itself rides the head socket).
   updateHat(dt: number) {
-    this.hat?.update(dt);
+    this.gear?.update(dt);
+    if (this.tauntLeft > 0) {
+      this.tauntLeft -= dt;
+      const over = this.tauntLeft <= 0 || !this.state.alive;
+      if (over) this.anim?.playEmote(null);
+      // A non-gun emote hides the held railgun (it would ride the raised hand).
+      if (this.gun && this.anim) this.gun.visible = over || this.anim.emoteShowsGun;
+    }
+  }
+
+  get isTaunting(): boolean {
+    return this.tauntLeft > 0 && this.state.alive;
+  }
+
+  // Play this bot's equipped emote (a brief victory taunt). Grounded only — a
+  // taunting bot stands still (and stays a normal target).
+  taunt(): boolean {
+    if (!this.anim || !this.state.alive || !this.onGround || this.tauntLeft > 0) return false;
+    const look = this.loadout.emote;
+    this.anim.playEmote(emoteKindOfLook(look), true);
+    this.tauntLeft = 2.6;
+    return true;
+  }
+
+  // Killstreak on the gun (sheen) — bots roll a random finish, some are killstreak-capable.
+  setStreak(n: number) {
+    if (n === this.streak) return;
+    this.streak = n;
+    if (this.gun) asV3(this.gun).setStreak?.(n);
   }
 
   // Footfall events for synced footstep audio (see RemotePlayer).
@@ -991,7 +1012,7 @@ export class Bot {
   }
 
   dispose(scene: THREE.Scene) {
-    this.hat?.dispose();
+    this.gear?.dispose();
     if (this.gun) disposeRailgun(this.gun); // per-bot gun geometry/materials
     this.gun = null;
     this.character?.dispose();
@@ -1016,10 +1037,11 @@ export class Bot {
     const ch = new Character({ colorHex: skinColorFor(this.state.name) });
     this.group.add(ch.root);
     this.character = ch;
-    this.hat = new WornHat(ch.sockets.headTop);
-    void this.hat.setHat(randomHatId());
-    if (Math.random() < 0.6) this.hat.setUnusual(randomUnusualId());
-    this.gun = attachRailgun(ch);
+    this.gear = new BodyGear(ch.sockets.headTop);
+    this.gear.setLooks(this.loadout);
+    const cos = resolveCosmetics(this.loadout);
+    this.gun = attachRailgun(ch, railgunFinishById(cos.railgunFinish).data);
+    applyFinishLook(this.gun, this.loadout.finish);
     // Gait, aim, gun hold, jumps/landings and gibs live in the animator — the
     // same one remote players use.
     this.anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
@@ -1101,7 +1123,7 @@ export class BotManager {
   step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent[] {
     const intents: BotFireIntent[] = [];
     for (const b of this.bots) {
-      const intent = b.step(dt, map, enemies, frozen);
+      const intent = b.step(dt, map, enemies, frozen || b.isTaunting);
       if (intent) intents.push(intent);
       b.updateHat(dt);
     }
