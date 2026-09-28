@@ -5,7 +5,7 @@ import type { AnnouncerPackId } from './game/audio';
 import type { BotDifficulty, KeybindAction } from './game/constants';
 import type { KillEffectStyle } from './game/cosmetics';
 import type { RewardExtras, RoadStep } from './game/progression';
-import type { ItemSlot, Loadout } from './game/items/types';
+import type { ItemInstanceWire, ItemSlot, Loadout } from './game/items/types';
 
 export type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
@@ -26,6 +26,10 @@ export type Settings = {
   // `looks` during the transition (runtime track).
   looks?: Loadout;
   equippedUids?: Partial<Record<ItemSlot, string>>;
+  // The equipped finish INSTANCE (server truth: mint, quality, attrs incl. the
+  // Strange kill count). The hub writes it together with looks; the match adds
+  // this game's frags to the Strange counter and the inspect card reads it.
+  finishItem?: ItemInstanceWire | null;
   sensitivity: number; // Source/CS2-style sens number
   dpi: number; // mouse DPI (feeds cm/360 readout only)
   vertScale: number; // vertical (pitch) sensitivity multiplier
@@ -51,6 +55,7 @@ export type Settings = {
   lowSpec: boolean; // cap high-DPI at 1× + thin particle effects
   // Post-processing toggles (Game.setPostFx). Low-spec forces all four off.
   bloom: boolean;
+  bloomIntensity: number; // 0..1.5 multiplier on the bloom strength (match + menu backdrop)
   shadows: boolean;
   antialias: boolean; // SMAA
   vignette: boolean;

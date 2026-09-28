@@ -61,6 +61,9 @@ import {
   type RankedRoom,
   type RankedResult,
 } from './game/net';
+import { withLegacyFromLooks } from './game/look-runtime';
+import { itemDef } from './game/items/catalog';
+import { TIER_META, qualityPrefix, wearName } from './game/items/types';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
   AIR_JUMPS,
@@ -300,6 +303,7 @@ const DEFAULT_SETTINGS: Settings = {
   resolutionScale: 1,
   lowSpec: false,
   bloom: true,
+  bloomIntensity: 0.8,
   shadows: true,
   antialias: true,
   vignette: true,
@@ -390,6 +394,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setRawInput?.(s.rawInput);
   game.setQuality?.(s.resolutionScale, s.lowSpec);
   game.setPostFx?.({ bloom: s.bloom, shadows: s.shadows, aa: s.antialias, vignette: s.vignette });
+  game.setBloomScale?.(s.bloomIntensity ?? 0.8);
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
   game.setZoomFov?.(s.zoomFov);
@@ -409,6 +414,8 @@ function applySettingsToGame(game: Game, s: Settings) {
   // Echo the crosshair (as a share-code) so a spectator can render the same
   // reticle we use; the local HUD still draws it from settings.crosshair.
   game.setCrosshairCode?.(encodeCrosshair(s.crosshair));
+  const strange = s.finishItem?.quality.includes('strange') ? (s.finishItem.attrs.kills ?? 0) : null;
+  game.setLooks?.(s.looks, s.equippedUids, strange);
   game.setHat?.(s.hat);
   game.setUnusual?.(s.unusual);
   game.setEmote?.(s.emote);
@@ -493,7 +500,13 @@ const INITIAL_HUD: HudState = {
 export default function InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // Every settings write keeps the legacy per-slot ids in step with `looks`.
+  const [settings, setSettingsRaw] = useState<Settings>(DEFAULT_SETTINGS);
+  const setSettings = useCallback(
+    (u: Settings | ((s: Settings) => Settings)) =>
+      setSettingsRaw((prev) => withLegacyFromLooks(typeof u === 'function' ? u(prev) : u)),
+    [],
+  );
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
@@ -755,6 +768,8 @@ function GameView({
   const gameRef = useRef<Game | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
+  // Weapon inspect: while the first-person gun look-over plays, the item card shows.
+  const [inspect, setInspect] = useState<{ kills: number | null } | null>(null);
   // Every HudState push (20 Hz + events) lands in this store. GameView itself
   // only re-renders on the SLOW fields it gates overlays with; the in-match
   // HUD pieces subscribe to their own slices inside HudOverlay. The paused
@@ -850,6 +865,7 @@ function GameView({
       }
     };
     window.addEventListener('keydown', onDebugKey);
+    game.setInspectListener((active, kills) => setInspect(active ? { kills } : null));
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
         setJoinDuplicate(ev.reason === 'duplicate');
@@ -1122,6 +1138,7 @@ function GameView({
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge && loggedIn} />}
+      {!hud.pom && inspect && <InspectCard settings={settings} kills={inspect.kills} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1870,6 +1887,44 @@ function JoinErrorOverlay({
 }
 
 /* ───────────────────────── HUD layout ───────────────────────── */
+
+// The equipped finish's card while you inspect the gun: full name (quality
+// prefix + name), Strange kills + rank, wear, pattern seed, mint number, in the
+// tier colour. Data is the equipped instance the hub put in Settings.finishItem;
+// a plain stock/bought finish shows just its name.
+function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const item = settings.finishItem ?? null;
+  const def = itemDef(item?.def ?? settings.looks?.finish?.d ?? settings.railgunFinish);
+  const tier = item?.tier ?? def?.tier ?? 'common';
+  const color = TIER_META[tier].color;
+  const attrs = item?.attrs ?? {};
+  const base = attrs.customName ?? def?.name ?? 'Railgun';
+  const prefix = item ? qualityPrefix(item.quality, { ...attrs, kills: kills ?? attrs.kills }) : '';
+  const title = prefix ? `${prefix} ${base}` : base;
+  const bits: string[] = [];
+  if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
+  if (typeof attrs.wear === 'number') bits.push(wearName(attrs.wear));
+  if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
+  if (item) bits.push(`#${item.mint}`);
+  return (
+    <div
+      aria-hidden='true'
+      className='pointer-events-none absolute bottom-44 right-8 max-w-[22rem] text-right font-mono'
+      style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
+    >
+      <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
+      <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
+        {title}
+      </div>
+      {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
+    </div>
+  );
+}
 
 function HudOverlay({
   store,
@@ -4261,6 +4316,7 @@ function Lobby({
         active={!modalOpen}
         still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
+        bloomScale={settings.bloomIntensity ?? 0.8}
         onMap={onBackdropMap}
         hero={heroLoadout}
         heroSlot={heroSlotRef}
@@ -5887,6 +5943,15 @@ function SettingsModal({
                   value={settings.bloom}
                   disabled={settings.lowSpec}
                   onChange={(v) => onChange({ ...settings, bloom: v })}
+                />
+                <SliderField
+                  label='Bloom intensity'
+                  value={settings.bloomIntensity ?? 0.8}
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, bloomIntensity: v })}
                 />
                 <ToggleField
                   label='Shadows'

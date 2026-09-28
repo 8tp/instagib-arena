@@ -124,6 +124,7 @@ const LEGACY_TIER: Record<string, Tier> = {
   voxel: 'epic', gibstorm: 'epic', derez: 'epic', vaporize: 'epic', overload: 'legendary',
   singularity: 'legendary', prism: 'relic',
   // spawns
+  'emote.headbang': 'uncommon', 'emote.kneel': 'uncommon',
   'spawn.ring': 'uncommon', 'spawn.ember': 'rare', 'spawn.rift': 'epic',
 };
 

@@ -625,7 +625,7 @@ export function addStrangeKills(playerId: string, uids: readonly string[], n: nu
   if (!playerId || n <= 0 || uids.length === 0) return;
   const stmt = q(
     `UPDATE instagib_items
-        SET attrs = json_set(attrs, '$.kills', COALESCE(json_extract(attrs, '$.kills'), 0) + ?), updated_at = ?
+        SET attrs = json_set(attrs, '$.kills', COALESCE(json_extract(attrs, '$.kills'), 0) + CAST(? AS INTEGER)), updated_at = ?
       WHERE uid = ? AND owner_id = ? AND state IN ('owned','listed') AND quality LIKE '%strange%'`,
   );
   const now = Date.now();

@@ -184,10 +184,13 @@ admin routes in `server/admin.ts`, WS in `server/instagib-game.ts`, shared conne
 - **Free rolls** open any *standard* case; the Vault (premium) needs credits.
 - **Tier fallback.** Pools with no defs at a rolled tier fall to the nearest lower tier (then higher).
   `GET /api/cases` reports the EFFECTIVE odds (`odds`) and the configured ones (`nominalOdds`).
-  Currently the Weapon case has no Common defs (its Commons roll as Uncommon).
+  With the Common finishes/beams added, every standard case now realises its nominal odds
+  (100k-roll sim, Weapon: 60.4 / 24.6 / 10.1 / 3.5 / 1.2 / 0.3 %).
 - **Market.** Fee `max(1, round(2%))` on listing (non-refundable); tax `max(1, ceil(10%))` burned on
-  sale; floor `max(5, ceil(salvage × 1.5))` of the instance tier; ≤ 25 active listings. Market has no
-  level gate (spec) — only login; the trade gates apply to trading only.
+  sale; floor `max(5, ceil(salvage × 1.5))` of the instance tier; ≤ 25 active listings. **List and buy
+  both apply the trade gate** (level ≥ 5, ≥ 10 matches, account ≥ 24 h; errors `gate_level|matches|age`)
+  and buying is capped at **5,000 ⛁ of purchases per rolling 24 h** (`daily_spend`, `need` = remaining),
+  so alts can't funnel credits past the trade cap.
 - **Trades.** Gates at offer *and* accept for both parties; max 10 pending outgoing per sender;
   credits per offer ≤ 5,000; 20 accepted trades / rolling 24 h and 5,000 credits moved / rolling 24 h
   per account. Items are not escrowed (an offer whose item was listed/moved fails at accept as
@@ -216,3 +219,6 @@ seller, createdAt, item, tier, suggested}`); `GET /api/trades` → `{ incoming, 
   with `e` = unusual effect). Kill broadcasts still carry `finisher` (the killer's finisher def id).
 - Old per-slot messages (`hat`, `railColor`, …) are ignored except that they make the server re-read
   the account's persisted equipment.
+- Taunts are ignored outside an `active` room (map vote / podium / dead players); verified with a scripted
+  15-frag duel: a dead player's `taunt` is dropped, and match end credits the equipped Strange item
+  (`attrs.kills` = counted frags).
