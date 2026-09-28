@@ -248,9 +248,10 @@ const MEDAL_PRIORITY: Record<Medal, number> = {
 };
 
 // Taunt camera: a third-person orbit around your own body for one emote loop.
-const TAUNT_ORBIT_RADIUS = 2.5; // metres (kept short so it can't scout far around cover)
+const TAUNT_ORBIT_RADIUS = 1.3; // metres (kept short so it can't scout around cover)
+const TAUNT_MAX_SWING = 1.15; // rad either side of straight-behind: no full rear view
 const TAUNT_ORBIT_RISE = 0.55; // camera height above the body centre
-const TAUNT_ORBIT_SPEED = 0.55; // rad/s (eased in)
+const TAUNT_ORBIT_SPEED = 0.9; // rad/s of the sweep phase (eased in)
 const TAUNT_OUT_SEC = 0.45; // the camera returns to your eyes over the last stretch
 const TAUNT_COOLDOWN_MS = 3000;
 const TAUNT_WALL_MARGIN = 0.35; // keep the camera this far off any wall
@@ -370,6 +371,8 @@ export class Game {
   // When set, buildViewmodel() uses this finish (the watched player's gun skin)
   // instead of the local player's; cleared outside spectator mode.
   private viewmodelFinishOverride: string | null = null;
+  private liftedPlate: { setPlateLift(m: number): void } | null = null;
+  private tauntHidden: THREE.Object3D[] = []; // opponents hidden from the taunt camera this frame
   private replayVmActive = false; // the viewmodel is showing the replay star's gun
   private replayVmStreak = -1;
   private posSendAccumMs = 0;
@@ -1161,14 +1164,19 @@ export class Game {
     const dt = this.frameDt;
     T.t += dt;
     const leaving = T.cancelled || T.t >= T.dur - TAUNT_OUT_SEC;
-    T.blend += ((leaving ? 0 : 1) - T.blend) * (1 - Math.exp(-(leaving ? 12 : 6) * dt));
+    // Ranked / Duel: the emote still plays for everyone else, but YOUR camera never
+    // leaves first person.
+    const camOff = this.ranked || (this.net ? this.netMode : this.botMode) === 'duel';
+    T.blend += ((leaving || camOff ? 0 : 1) - T.blend) * (1 - Math.exp(-(leaving ? 12 : 6) * dt));
     T.orbit += dt * TAUNT_ORBIT_SPEED * Math.min(1, T.t / 0.6);
     const s = T.blend * T.blend * (3 - 2 * T.blend);
     // Orbit centre = body centre; start behind you, sweep round the side.
     const cx = ex;
     const cy = ey - EYE_HEIGHT + 1.0;
     const cz = ez;
-    const th = this.player.yaw + T.orbit;
+    // Sweep behind → side → behind (never round to the front, which would look back
+    // over what's behind you).
+    const th = this.player.yaw + TAUNT_MAX_SWING * Math.sin(T.orbit);
     const dx = cx + Math.sin(th) * TAUNT_ORBIT_RADIUS - ex;
     const dy = cy + TAUNT_ORBIT_RISE - ey;
     const dz = cz + Math.cos(th) * TAUNT_ORBIT_RADIUS - ez;
@@ -1178,13 +1186,22 @@ export class Game {
     const nz = dz / len;
     // Line of sight from the EYE: never farther than the nearest wall along the
     // way (shrinks instantly, grows back smoothly — so it can't poke through).
-    const o = { x: ex, y: ey, z: ez };
+    // Sphere sweep: each wall box is inflated by the margin and the eye→camera ray
+    // tested against it, so the camera can't graze a corner or slip through a crack.
+    // t === 0 means the eye is already inside the inflated box (hugging a wall):
+    // the camera stays at the eye (allowed 0), never passes through.
     const d = { x: nx, y: ny, z: nz };
+    const o = { x: ex, y: ey, z: ez };
+    const M = TAUNT_WALL_MARGIN;
     let allowed = len;
     for (const b of this.map.boxes) {
-      const t = rayAabb(o, d, b);
-      if (t !== null && t > 0 && t - TAUNT_WALL_MARGIN < allowed) allowed = Math.max(0, t - TAUNT_WALL_MARGIN);
+      const t = rayAabb(o, d, {
+        min: { x: b.min.x - M, y: b.min.y - M, z: b.min.z - M },
+        max: { x: b.max.x + M, y: b.max.y + M, z: b.max.z + M },
+      });
+      if (t !== null && t < allowed) allowed = Math.max(0, t);
     }
+    if (T.blend > 0.02) this.hideUnseenFromEye(ex, ey, ez);
     T.dist = allowed < T.dist ? allowed : T.dist + (allowed - T.dist) * (1 - Math.exp(-10 * dt));
     const reach = T.dist * s;
     const cam = this.camera;
@@ -1199,7 +1216,8 @@ export class Game {
     // Your body appears once the camera has pulled clear of it, and leaves as it returns.
     const body = this.tauntBody;
     if (body) {
-      body.setLocalShown(s > 0.3);
+      // Pinned against a wall the camera collapses to your eyes: don't draw the body over the lens.
+      body.setLocalShown(s > 0.3 && reach > 0.7);
       const p = this.player.pos;
       body.driveLocal(p.x, p.y, p.z, this.player.yaw, dt);
     }
@@ -1208,6 +1226,42 @@ export class Game {
       body?.endTaunt();
       body?.setLocalShown(false);
     }
+  }
+
+  // Killcam: raise the killer's nameplate above their unusual crown (reset after).
+  private liftKillerPlate(t: { setPlateLift(m: number): void } | null, looks?: Loadout) {
+    if (this.liftedPlate && this.liftedPlate !== t) this.liftedPlate.setPlateLift(0);
+    this.liftedPlate = t;
+    t?.setPlateLift(looks?.hat?.e ? 0.75 : 0.2);
+  }
+
+  // FAIRNESS: the taunt camera must never reveal anything the first-person eye
+  // couldn't see. Any opponent with no clear line from the EYE to head, chest or
+  // feet is hidden for this frame (restored right after the draw), so the orbit
+  // can't scout around corners or through gaps.
+  private hideUnseenFromEye(ex: number, ey: number, ez: number) {
+    const check = (g: THREE.Object3D) => {
+      if (!g.visible) return;
+      const p = g.position;
+      for (const dy of [0.25, 1.0, 1.7]) {
+        const dx = p.x - ex;
+        const dyy = p.y + dy - ey;
+        const dz = p.z - ez;
+        const dist = Math.hypot(dx, dyy, dz);
+        if (dist < 1e-3) return;
+        const dir = { x: dx / dist, y: dyy / dist, z: dz / dist };
+        let blocked = false;
+        for (const b of this.map.boxes) {
+          const t = rayAabb({ x: ex, y: ey, z: ez }, dir, b);
+          if (t !== null && t > 0 && t < dist - 0.05) { blocked = true; break; }
+        }
+        if (!blocked) return; // seen from the eye
+      }
+      g.visible = false;
+      this.tauntHidden.push(g);
+    };
+    for (const rp of this.remotePlayers.values()) check(rp.group);
+    if (this.bots) for (const b of this.bots.bots) check(b.group);
   }
 
   // Someone else taunted: play their emote clip on their body (+ aura).
@@ -2282,7 +2336,7 @@ export class Game {
     // Always drain the accumulator so a held-but-not-applied delta (dead/paused/
     // match over) can't pile up and snap the view when control resumes.
     const look = this.input.consumeLook();
-    if (!this.locked || this.matchOver || this.killcam !== null || this.replay || this.taunt) return;
+    if (!this.locked || this.matchOver || this.killcam !== null || this.replay || (this.taunt && !this.taunt.cancelled)) return;
     this.player.yaw -= look.yawDelta;
     this.player.pitch -= look.pitchDelta;
     if (this.player.pitch < -PITCH_LIMIT) this.player.pitch = -PITCH_LIMIT;
@@ -2433,7 +2487,8 @@ export class Game {
     }
     this.weaponWasReady = ready;
 
-    if (input.firePressed && !dead && !this.inCountdown && !this.taunt) this.handleFire();
+    // A cancelled taunt (jump) hands aim and fire back at once, while the camera glides home.
+    if (input.firePressed && !dead && !this.inCountdown && !(this.taunt && !this.taunt.cancelled)) this.handleFire();
 
     // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
     // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
@@ -2847,7 +2902,9 @@ export class Game {
     this.streaks.set(intent.botId, (this.streaks.get(intent.botId) ?? 0) + 1);
     this.streaks.delete(victimId);
     // Now and then a bot celebrates a frag with its emote (solo variety).
-    if (!this.reducedEffects && Math.random() < 0.07 && shooter?.taunt()) {
+    // Purely visual (the bot keeps moving and shooting) and the roll is always taken,
+    // so the sim — and the weekly challenge — never depends on reducedEffects.
+    if (Math.random() < 0.07 && shooter?.taunt()) {
       this.recorder.logTaunt(intent.botId, shooter.loadout.emote);
     }
     this.checkMatchEnd();
@@ -3448,6 +3505,7 @@ export class Game {
       this.killcam.remaining -= dt;
       if (this.killcam.remaining <= 0) {
         this.killcam = null;
+        this.liftKillerPlate(null);
         this.playLocalSpawnEffect(); // you materialize at your new spawn
         this.maybeAnnounceSpawn(); // occasional deploy/encouragement line
       }
@@ -3656,6 +3714,7 @@ export class Game {
       killFlash: this.killFlash ? { ...this.killFlash } : null,
       damageFlash: this.damageFlash,
       killcam: this.killcam ? { ...this.killcam } : null,
+      taunting: this.taunt !== null,
       showScoreboard: this.input.scoreboardHeld,
       matchOver: this.matchOver ? { won: this.matchWon } : null,
       netStatus: this.net?.status ?? 'off',
@@ -3785,6 +3844,7 @@ export class Game {
       const killerBot = killer
         ? null
         : this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
+      this.liftKillerPlate(killer ?? killerBot ?? null, killer ? this.net?.remotes.get(killer.id ?? '')?.looks : killerBot?.loadout);
       const targetX = killer
         ? killer.group.position.x
         : killerBot
@@ -3968,6 +4028,8 @@ export class Game {
     // re-centred under the (now finalized) camera inside render().
     this.postFx.muteVignette(this.reducedEffects);
     this.postFx.render();
+    for (const g of this.tauntHidden) g.visible = true;
+    this.tauntHidden.length = 0;
   }
 
   private handleResize() {

@@ -256,6 +256,7 @@ export type HudState = {
   killFlash: KillFlash | null;
   damageFlash: number; // 0..1 red "you were hit" vignette intensity (decays)
   killcam: KillcamState | null;
+  taunting: boolean; // the 3rd-person taunt camera is out (centre prints stand down)
   showScoreboard: boolean;
   matchOver: { won: boolean } | null; // non-null freezes the match → results screen
   netStatus: NetStatus;

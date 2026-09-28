@@ -355,5 +355,5 @@ export function emoteClip(kind: AnyEmoteKind): Clip {
 export const EMOTE_KINDS = Object.keys(DEFS) as EmoteKind[]; // (lab list; includes the v3 extras at runtime)
 
 export function isEmoteKind(k: string): k is AnyEmoteKind {
-  return k in DEFS;
+  return Object.prototype.hasOwnProperty.call(DEFS, k);
 }
