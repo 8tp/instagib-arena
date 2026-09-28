@@ -26,6 +26,10 @@ export type Settings = {
   // `looks` during the transition (runtime track).
   looks?: Loadout;
   equippedUids?: Partial<Record<ItemSlot, string>>;
+  // Server-counted kills on the equipped Strange finish instance
+  // (attrs.kills; null/undefined = the finish isn't Strange). The hub writes it
+  // with looks; the game adds this match's frags for the viewmodel counter.
+  finishKills?: number | null;
   sensitivity: number; // Source/CS2-style sens number
   dpi: number; // mouse DPI (feeds cm/360 readout only)
   vertScale: number; // vertical (pitch) sensitivity multiplier

@@ -2,6 +2,8 @@ import type { GameMode } from './constants';
 import type { ProgressionResp } from '../app-types';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, encodePosTick, toView } from './netcodec';
+import type { ItemSlot, Loadout, Look } from './items/types';
+import { looksToLegacy } from './look-runtime';
 
 export type Vec3 = { x: number; y: number; z: number };
 
@@ -25,6 +27,7 @@ export type RemotePlayerSnapshot = {
   railColor: string; // equipped rail-beam color id (used for this player's beam + spectator viewmodel)
   railgunFinish: string; // equipped railgun finish id (3rd-person gun skin + spectator viewmodel)
   crosshair: string; // equipped crosshair share-code string ('' = default); rendered when spectating
+  looks?: Loadout; // v3: the player's resolved equipped Looks (meta channel); falls back to the legacy ids above
   ping: number; // this player's reported round-trip ping (ms)
   admin: boolean; // staff badge
   verified: boolean; // verified blue check
@@ -96,6 +99,7 @@ type PlayerMeta = {
   railColor: string;
   railgunFinish: string;
   crosshair: string;
+  looks?: Loadout; // v3: server-resolved Looks per slot
   admin: boolean;
   verified: boolean;
 };
@@ -103,6 +107,8 @@ type PlayerMeta = {
 type WelcomeMessage = { type: 'welcome'; clientId: string; serverTime: number; resumeToken?: string };
 type StateMessage = { type: 'state'; t: number; players: StatePlayer[]; resumeAt?: number };
 type MetaMessage = { type: 'meta'; players: PlayerMeta[] };
+// A player's taunt (relayed by the server to the whole room): `look` is their equipped emote Look.
+type TauntBroadcast = { type: 'taunt'; id: string; look?: Look };
 type KillBroadcast = {
   type: 'kill';
   killerId: string;
@@ -201,6 +207,7 @@ type ServerMessage =
   | WelcomeMessage
   | StateMessage
   | MetaMessage
+  | TauntBroadcast
   | KillBroadcast
   | JoinedMessage
   | SpectatingMessage
@@ -260,6 +267,7 @@ export type NetEvents = {
   onVoteUpdate?: (counts: Record<string, number>) => void;
   onVoteResult?: (r: { mapId: string; resumeAtClient: number; spawn?: Vec3 }) => void;
   onChat?: (m: ChatMessage) => void; // in-game (room) chat broadcast
+  onTaunt?: (id: string, look: Look | undefined) => void; // another player's (or our own echoed) taunt
   onBeam?: (b: {
     id: string;
     ox: number; oy: number; oz: number;
@@ -383,6 +391,7 @@ export class NetClient {
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
   localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
   localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
+  localUids: Partial<Record<ItemSlot, string>> | null = null; // v3 equipped item instance ids (server resolves Looks)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
@@ -688,6 +697,20 @@ export class NetClient {
     this.send({ type: 'railgunFinish', id });
   }
 
+  // v3: tell the server which owned item instances are equipped; it validates
+  // ownership and resolves the compact Looks it broadcasts in `meta`. Sent on
+  // welcome and on every change. (The legacy per-slot messages above are still
+  // sent until the server drops them.)
+  setLocalLoadout(uids: Partial<Record<ItemSlot, string>> | undefined): void {
+    this.localUids = uids ?? null;
+    if (this.localUids) this.send({ type: 'loadout', uids: this.localUids });
+  }
+
+  // Play our equipped emote for the room (server rate-limits + relays).
+  sendTaunt(): void {
+    this.send({ type: 'taunt' });
+  }
+
   setLocalCrosshair(code: string): void {
     this.localCrosshair = code;
     this.send({ type: 'crosshair', code });
@@ -698,6 +721,10 @@ export class NetClient {
   cosmeticsOf(id: string): { railColor: string; railgunFinish: string; crosshair: string } | null {
     const m = this.metaById.get(id);
     if (!m) return null;
+    if (m.looks) {
+      const l = looksToLegacy(m.looks);
+      return { railColor: l.railColor, railgunFinish: l.railgunFinish, crosshair: m.crosshair };
+    }
     return { railColor: m.railColor, railgunFinish: m.railgunFinish, crosshair: m.crosshair };
   }
 
@@ -867,7 +894,7 @@ export class NetClient {
       s = { id: b.id, name: m?.name ?? b.id, pos: { x: px, y: py, z: pz }, yaw, pitch: 0,
         frags: 0, deaths: 0, invulnMs: 0, team: null, hat: 'hat.none', unusual: 'unusual.none',
         emote: 'emote.cheer', nameColor: 'name.default', spawnEffect: 'spawn.beam', title: 'title.none',
-        railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '',
+        railColor: 'rail.cyan', railgunFinish: 'gun.stock', crosshair: '', looks: undefined,
         ping: 0, admin: false, verified: false, receivedAt: now };
       this.remotes.set(b.id, s);
     }
@@ -894,6 +921,7 @@ export class NetClient {
     s.railColor = m?.railColor ?? 'rail.cyan';
     s.railgunFinish = m?.railgunFinish ?? 'gun.stock';
     s.crosshair = m?.crosshair ?? '';
+    s.looks = m?.looks;
     s.admin = m?.admin ?? false;
     s.verified = m?.verified ?? false;
     s.receivedAt = now;
@@ -942,6 +970,7 @@ export class NetClient {
       this.send({ type: 'railColor', id: this.localRailColor });
       this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
       this.send({ type: 'crosshair', code: this.localCrosshair });
+      if (this.localUids) this.send({ type: 'loadout', uids: this.localUids });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });
       // Seed the clock from the welcome (ignores one-way latency; pings refine).
       // Keyed off performance.now() to match estimatedServerNow().
@@ -1055,6 +1084,10 @@ export class NetClient {
         }
       }
       this.emit();
+      return;
+    }
+    if (msg.type === 'taunt') {
+      if (typeof msg.id === 'string') this.events.onTaunt?.(msg.id, msg.look);
       return;
     }
     if (msg.type === 'kill') {
