@@ -592,7 +592,9 @@ export class RemotePlayer {
     this.tauntAura?.dispose();
     this.tauntAura = createTauntAura(look?.e);
     if (this.tauntAura) {
-      this.tauntAura.group.position.y = BOT_HEIGHT * 0.5;
+      // Stopgap (Unusual emitter crowning the head; scaling it breaks the
+      // world-space particles). The VFX track's TauntAura replaces it via vfxHooks.
+      this.tauntAura.group.position.y = BOT_HEIGHT + 0.05;
       this.group.add(this.tauntAura.group);
     }
   }
