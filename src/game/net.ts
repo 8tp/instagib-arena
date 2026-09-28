@@ -2,7 +2,7 @@ import type { GameMode } from './constants';
 import type { ProgressionResp } from '../app-types';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, encodePosTick, toView } from './netcodec';
-import type { ItemSlot, Loadout, Look } from './items/types';
+import type { Loadout, Look } from './items/types';
 import { looksToLegacy } from './look-runtime';
 
 export type Vec3 = { x: number; y: number; z: number };
@@ -391,7 +391,7 @@ export class NetClient {
   localRailColor = 'rail.cyan'; // equipped rail-beam color id (echoed so others see your beam)
   localRailgunFinish = 'gun.stock'; // equipped railgun finish id (echoed for the 3rd-person gun)
   localCrosshair = ''; // equipped crosshair share-code (echoed so spectators can render it)
-  localUids: Partial<Record<ItemSlot, string>> | null = null; // v3 equipped item instance ids (server resolves Looks)
+  localUids: string[] | null = null; // v3 equipped tokens: an instance uid or `def:<id>` per slot (server resolves Looks)
   localCard: CardPayload | null = null; // playercard shown on the victim's killcam
   localFrags = 0;
   localDeaths = 0;
@@ -652,57 +652,48 @@ export class NetClient {
   // other players render it). Safe to call before connect — sent on the next hello.
   setLocalHat(id: string): void {
     this.localHat = id;
-    this.send({ type: 'hat', id });
   }
 
   setLocalUnusual(id: string): void {
     this.localUnusual = id;
-    this.send({ type: 'unusual', id });
   }
 
   setLocalEmote(id: string): void {
     this.localEmote = id;
-    this.send({ type: 'emote', id });
   }
 
   setLocalNameColor(id: string): void {
     this.localNameColor = id;
-    this.send({ type: 'nameColor', id });
   }
 
   setLocalSpawnEffect(id: string): void {
     this.localSpawnEffect = id;
-    this.send({ type: 'spawnEffect', id });
   }
 
   setLocalKillEffect(id: string): void {
     this.localKillEffect = id;
-    this.send({ type: 'killEffect', id });
   }
 
   setLocalTitle(id: string): void {
     this.localTitle = id;
-    this.send({ type: 'title', id });
   }
 
   // Rail-beam color / railgun finish / crosshair: echoed to the server so other
   // players + spectators render this player's weapon loadout (previously local).
   setLocalRailColor(id: string): void {
     this.localRailColor = id;
-    this.send({ type: 'railColor', id });
   }
 
   setLocalRailgunFinish(id: string): void {
     this.localRailgunFinish = id;
-    this.send({ type: 'railgunFinish', id });
   }
 
   // v3: tell the server which owned item instances are equipped; it validates
   // ownership and resolves the compact Looks it broadcasts in `meta`. Sent on
   // welcome and on every change. (The legacy per-slot messages above are still
   // sent until the server drops them.)
-  setLocalLoadout(uids: Partial<Record<ItemSlot, string>> | undefined): void {
-    this.localUids = uids ?? null;
+  setLocalLoadout(tokens: string[] | undefined): void {
+    this.localUids = tokens ?? null;
     if (this.localUids) this.send({ type: 'loadout', uids: this.localUids });
   }
 
@@ -960,15 +951,8 @@ export class NetClient {
       this.clientId = msg.clientId;
       if (msg.resumeToken) this.resumeToken = msg.resumeToken; // for the next reconnect
       // Tell the server our equipped cosmetics so it echoes them to other players.
-      this.send({ type: 'hat', id: this.localHat });
-      this.send({ type: 'unusual', id: this.localUnusual });
-      this.send({ type: 'emote', id: this.localEmote });
-      this.send({ type: 'nameColor', id: this.localNameColor });
-      this.send({ type: 'spawnEffect', id: this.localSpawnEffect });
-      this.send({ type: 'killEffect', id: this.localKillEffect });
-      this.send({ type: 'title', id: this.localTitle });
-      this.send({ type: 'railColor', id: this.localRailColor });
-      this.send({ type: 'railgunFinish', id: this.localRailgunFinish });
+      // (The per-slot hat/unusual/emote/... messages are gone: the server resolves
+      // Looks from `loadout` — the equipped item tokens — below.)
       this.send({ type: 'crosshair', code: this.localCrosshair });
       if (this.localUids) this.send({ type: 'loadout', uids: this.localUids });
       if (this.localCard) this.send({ type: 'card', card: this.localCard });

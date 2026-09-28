@@ -97,7 +97,7 @@ import {
 import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
-import { applyFinishLook, asV3, emoteKindOfLook } from './look-runtime';
+import { applyFinishLook, asV3, emoteKindOfLook, loadoutTokens } from './look-runtime';
 import { emoteClip, type AnyEmoteKind } from './emotes';
 import type { ItemSlot, Loadout, Look } from './items/types';
 import {
@@ -478,7 +478,7 @@ export class Game {
   private botAlive = new Map<string, boolean>(); // prev alive-state per bot (spawn fx edge)
   // ── v3 Looks + killstreak/strange runtime ──
   private localLooks: Loadout | undefined = undefined; // resolved equipped Looks (Settings.looks)
-  private localUids: Partial<Record<ItemSlot, string>> | undefined = undefined;
+  private localTokens: string[] | undefined = undefined;
   private localUidsKey = ''; // dedupe of the loadout we last told the server
   private strangeBase: number | null = null; // equipped Strange finish's kills before this match
   private vmStreakShown = -1;
@@ -1006,11 +1006,12 @@ export class Game {
   ) {
     this.localLooks = looks;
     this.strangeBase = typeof strangeKills === 'number' ? strangeKills : null;
-    const key = uids ? JSON.stringify(uids) : '';
+    const tokens = looks || uids ? loadoutTokens(looks, uids) : undefined;
+    const key = tokens ? tokens.join(',') : '';
     if (key !== this.localUidsKey) {
       this.localUidsKey = key;
-      this.localUids = uids;
-      this.net?.setLocalLoadout(uids);
+      this.localTokens = tokens;
+      this.net?.setLocalLoadout(tokens);
     }
     this.applyViewmodelV3(true);
   }
@@ -1592,7 +1593,7 @@ export class Game {
           onTaunt: (id, look) => this.handleNetTaunt(id, look),
         },
       });
-      if (this.localUidsKey) this.net.setLocalLoadout(this.localUids);
+      if (this.localUidsKey) this.net.setLocalLoadout(this.localTokens);
       this.net.connect();
     } else if (!this.wantMultiplayer && this.net) {
       this.net.dispose();

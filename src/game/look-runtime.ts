@@ -33,7 +33,7 @@ import {
   isTitle,
 } from './cosmetics';
 import { ITEM_DEFS } from './items/catalog';
-import { UNUSUAL_EFFECTS, type ItemSlot, type Loadout, type Look } from './items/types';
+import { ITEM_SLOTS, UNUSUAL_EFFECTS, type ItemSlot, type Loadout, type Look } from './items/types';
 import { UnusualEffect } from './fx/unusuals';
 import type { Settings } from '../app-types';
 import { isEmoteKind, type AnyEmoteKind } from './emotes';
@@ -118,6 +118,19 @@ export function withLegacyFromLooks(s: Settings): Settings {
     title: l.title,
   };
 }
+// ── Loadout tokens ───────────────────────────────────────────────────────────
+// What `{type:'loadout', uids}` carries: per slot the equipped instance uid, or
+// `def:<id>` for a default/entitlement (the server drops anything unowned).
+export function loadoutTokens(looks: Loadout | undefined, uids: Partial<Record<ItemSlot, string>> | undefined): string[] {
+  const out: string[] = [];
+  for (const slot of ITEM_SLOTS) {
+    const uid = uids?.[slot];
+    if (uid) out.push(uid);
+    else if (looks?.[slot]?.d) out.push(`def:${looks[slot]!.d}`);
+  }
+  return out;
+}
+
 // ── Emote → clip kind ────────────────────────────────────────────────────────
 // The clip kind of a Look's emote def (unknown → the default cheer).
 export function emoteKindOfLook(look: Look | undefined): AnyEmoteKind {
