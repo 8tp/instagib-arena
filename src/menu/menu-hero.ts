@@ -49,14 +49,14 @@ export function sameLoadout(a: HeroLoadout | null, b: HeroLoadout | null): boole
 const FACE_CAMERA = Math.PI; // the combatant faces −Z; turn it to the +Z camera
 const REST_YAW = -0.36; // 3/4 turn toward the menu column
 const AIM_PITCH = -0.5; // low ready: the muzzle rests toward the floor ahead
-const SPAN_BOTTOM = -0.14; // metres framed below the feet (the pad's lip)
-const SPAN_TOP = 2.28; // …and above them (hat + unusual headroom)
+const SPAN_BOTTOM = -0.2; // metres framed below the feet (the pad's lip)
+const SPAN_TOP = 2.62; // …and above them (hat, unusual and emote headroom)
 const FOV = 19; // long lens: flattering, little perspective stretch
 const SPAWN_SECONDS = 1.1; // materialise-in on first show
 const FIRST_EMOTE_S = 5.5;
 const EMOTE_GAP_MIN = 20;
 const EMOTE_GAP_MAX = 30;
-const RIM = 3.2;
+const RIM = 2.2;
 const HOVER_HZ = 7;
 
 const ORIGIN = new THREE.Vector3();
@@ -119,15 +119,15 @@ export class MenuHero {
     this.color.set(skinColorFor(loadout.seed || 'you'));
     const scene = this.scene;
     scene.environment = env; // the arena's PMREM room (owned + freed by the stage)
-    scene.environmentIntensity = 0.5;
+    scene.environmentIntensity = 0.22;
 
     // Lighting: a warm key from camera-left, a cool fill, and a hard rim in
     // YOUR colour from behind — the silhouette reads against any arena.
-    scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x15171c, 0.75));
-    const key = new THREE.DirectionalLight(0xfff0dc, 2.3);
-    key.position.set(-3.2, 4.2, 4.5);
+    scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x15171c, 0.3));
+    const key = new THREE.DirectionalLight(0xfff0dc, 1.35);
+    key.position.set(-4.6, 3.6, 2.4);
     scene.add(key);
-    const fill = new THREE.DirectionalLight(0x8fb0ff, 0.55);
+    const fill = new THREE.DirectionalLight(0x8fb0ff, 0.22);
     fill.position.set(3.5, 1.2, 3);
     scene.add(fill);
     this.rim = new THREE.DirectionalLight(this.color, RIM);
@@ -259,9 +259,13 @@ export class MenuHero {
     if (Number.isFinite(this.emoteTimer) && this.emoteLeft <= 0) this.emoteTimer = Math.min(this.emoteTimer, 1.2);
   }
 
-  setFrame(f: HeroFrame | null) {
-    this.frame = f;
-    if (!f || f.w < 2 || f.h < 2) return;
+  setFrame(frame: HeroFrame | null) {
+    this.frame = frame;
+    if (!frame || frame.w < 2 || frame.h < 2) return;
+    // On tall screens the slot runs the full height; cap the framed height
+    // (feet stay put, bottom-aligned) so the hero doesn't swamp the menu.
+    const h = Math.min(frame.h, Math.max(360, frame.vh * 0.72));
+    const f = { ...frame, y: frame.y + frame.h - h, h };
     const cam = this.camera;
     const span = SPAN_TOP - SPAN_BOTTOM;
     const dist = span / 2 / Math.tan(THREE.MathUtils.degToRad(FOV / 2));
