@@ -17,7 +17,7 @@ const MEDAL = [0xffd24a, 0xcdd6e0, 0xd08a4a]; // gold / silver / bronze (place 1
 const SLOTS: ReadonlyArray<{ x: number; h: number }> = [
   { x: 0, h: 0.95 },
   { x: -1.7, h: 0.62 },
-  { x: 1.7, h: 0.36 },
+  { x: 1.7, h: 0.42 },
 ];
 // Stagger the three performers so they never move in lockstep.
 const TIME_OFFSET = [0, 0.55, 1.15];
@@ -87,6 +87,8 @@ export class PodiumScene {
   private clock = { last: 0 };
   private disposed = false;
   private readonly owned: Array<{ dispose(): void }> = [];
+  // Per place: the pedestal's meshes (an unused place — a duel's 3rd — hides).
+  private readonly pedestals: THREE.Object3D[][] = [];
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -213,7 +215,8 @@ export class PodiumScene {
       ctx.fillText(String(i + 1), 64, 70);
       const tex = new THREE.CanvasTexture(cv);
       tex.colorSpace = THREE.SRGBColorSpace;
-      const size = Math.min(0.36, h * 0.6);
+      // Same numeral size on every pedestal (the short bronze one included).
+      const size = Math.min(0.3, (h - 0.09) * 0.9);
       const nGeo = new THREE.PlaneGeometry(size, size);
       const nMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false, color: 0xffffff });
       const num = new THREE.Mesh(nGeo, nMat);
@@ -225,6 +228,7 @@ export class PodiumScene {
       strip.position.set(x, h - 0.09, 0.628);
       this.scene.add(strip);
       this.owned.push(geo, mat, capGeo, capMat, tex, nGeo, nMat, sGeo, sMat);
+      this.pedestals.push([ped, cap, num, strip]);
     }
     // floor
     const fGeo = new THREE.CircleGeometry(6, 48);
@@ -239,6 +243,8 @@ export class PodiumScene {
   async setWinners(winners: PodiumWinner[]): Promise<void> {
     if (this.disposed) return;
     this.clearChars();
+    const used = new Set(winners.slice(0, 3).map((w) => Math.max(0, Math.min(2, w.place - 1))));
+    this.pedestals.forEach((meshes, i) => meshes.forEach((m) => (m.visible = used.has(i))));
     for (const w of winners.slice(0, 3)) {
       const idx = Math.max(0, Math.min(2, w.place - 1));
       const slot = SLOTS[idx];
