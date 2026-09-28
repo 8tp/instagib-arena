@@ -145,6 +145,10 @@ export class FxLab {
     setCharacterFxQuality({ reducedEffects: this.reduced, lowSpec: fx === 'low' });
     this.effects.setQuality(fx === 'low' ? 0.5 : 1);
     this.effects.warm(this.scene);
+    // Mark the FX context as stepped before any freeze(): the death
+    // animations only spawn their pooled debris (voxels, shards, confetti,
+    // ash) into a context something steps.
+    this.effects.step(0, this.scene);
     this.hs = params.get('hs') === '1';
     this.mode = params.get('mode') === 'unusuals' ? 'unusuals' : 'finishers';
 
@@ -225,6 +229,8 @@ export class FxLab {
 
   // Freeze the finisher sheet at `t` seconds after death (deterministic
   // fixed-step simulation from the moment of the kill).
+  // Nothing advances while frozen (bodies, pool, sprites, arcs, lights all
+  // stop at t), so a capture is faithful however long it settles.
   freeze(t: number) {
     if (this.mode !== 'finishers') return;
     this.effects.clear(this.scene);
