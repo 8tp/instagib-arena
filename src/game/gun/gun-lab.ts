@@ -14,6 +14,7 @@ import { CharacterAnimator } from '../character-anim';
 import { attachRailgun, type AttachedRailgun } from '../character/gun';
 import { railgunGeometry, railgunGeometrySplit } from './gun-geometry';
 import { prewarmGuns } from './prewarm';
+import { sheenDebug } from './gun-extras';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -85,6 +86,22 @@ export class GunLab {
     return Number.isFinite(n) ? n : def;
   }
 
+  // Item qualities from the URL: &streak=10 &sheen=sheen.violet &ks=ks.fire
+  // (professional) &festive=1 &strange=137.
+  private applyQualities(g: {
+    setStreak(n: number): void;
+    setKillstreak(s: string | null, k: string | null): void;
+    setFestive(on: boolean): void;
+    setStrangeKills?(n: number | null): void;
+  }) {
+    const p = this.params;
+    if (p.has('sweep')) sheenDebug.phase = this.num('sweep', 0.5);
+    g.setStreak(this.num('streak', 0));
+    g.setKillstreak(p.get('sheen'), p.get('ks'));
+    g.setFestive(p.get('festive') === '1');
+    if (p.has('strange')) g.setStrangeKills?.(this.num('strange', 0));
+  }
+
   // ── First-person view ─────────────────────────────────────────────────────
   private setupViewmodel() {
     const p = this.params;
@@ -118,6 +135,7 @@ export class GunLab {
     const gun = buildRailgun(finish);
     this.gun = gun;
     gun.group.scale.setScalar(VIEWMODEL_SCALE);
+    this.applyQualities(gun);
     if (p.get('overlay') === '0') this.camera.add(gun.group);
     else this.post.viewmodel.camera.add(gun.group);
 
@@ -361,6 +379,7 @@ export class GunLab {
       slot.add(ch.root);
       const anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
       const gun = attachRailgun(ch, f.data);
+      this.applyQualities(gun);
       rows.push({ anim, slot, gun });
     });
     const yaw = this.num('cyaw', -2.4);
