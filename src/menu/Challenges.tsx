@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { sfxProps } from '../deck-core';
 import { ModalShell, Skeleton } from '../deck';
-import { claimChallengeReward, fetchChallenges, useNow } from './menu-hooks';
+import { claimChallengeReward, fetchChallenges, useNow, useRefetchAtReset } from './menu-hooks';
 import { challengeState, fmtCountdown, resetTime, type ChallengeLists, type ChallengeView } from './road-data';
 import './menu.css';
 
@@ -330,6 +330,7 @@ export function ChallengesModal({ guest, onClose, onLogin }: { guest: boolean; o
   useEffect(() => {
     load();
   }, [load]);
+  useRefetchAtReset(data, load);
 
   const claim = async (id: string) => {
     setClaiming(id);

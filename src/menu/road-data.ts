@@ -157,6 +157,11 @@ export function fmtCountdown(ms: number): string {
   return `${mm}m`;
 }
 
+// The next roll-over of either period (the lists are stale after it).
+export function nextReset(lists: ChallengeLists | null, now: number): number {
+  return Math.min(resetTime('daily', lists, now), resetTime('weekly', lists, now));
+}
+
 export type ChallengeState = 'claimable' | 'done' | 'active';
 
 // Complete + unclaimed = claim it; complete + claimed (or auto-granted) = done.
@@ -168,18 +173,16 @@ export function challengeState(c: ChallengeView): ChallengeState {
 
 /* ── Last match XP (lobby banner) ───────────────────────────────────────── */
 
-// The lobby remounts after every match, so it can't remember what the profile
-// looked like before. This module-level snapshot survives the remount: the
-// banner shows the difference between it and the fresh post-match profile.
-let lastSeen: { level: number; totalXp: number; credits: number } | null = null;
-
+// Per-match gain for the banner — ONLY from the server's reward for that match
+// (never a profile diff, which would sum several rounds). Guests' rewards are
+// computed but not saved, so they show none.
 export type MatchGain = { xp: number; credits: number; levelBefore: number; levelAfter: number };
 
-export function noteProfile(p: MenuProfile, afterMatch: boolean): MatchGain | null {
-  const prev = lastSeen;
-  lastSeen = { level: p.level, totalXp: p.totalXp, credits: p.credits };
-  if (!afterMatch || !prev) return null;
-  const xp = p.totalXp - prev.totalXp;
-  if (xp <= 0) return null;
-  return { xp, credits: Math.max(0, p.credits - prev.credits), levelBefore: prev.level, levelAfter: p.level };
+export function gainFrom(
+  p: { xpGained: number; creditsGained: number; leveledUp: boolean; saved?: boolean; levelBefore?: number; progression: { level: number } } | null,
+): MatchGain | null {
+  if (!p || p.saved === false || p.xpGained <= 0) return null;
+  const levelAfter = p.progression.level;
+  const levelBefore = p.levelBefore ?? (p.leveledUp ? levelAfter - 1 : levelAfter);
+  return { xp: p.xpGained, credits: p.creditsGained, levelBefore, levelAfter };
 }

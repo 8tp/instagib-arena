@@ -36,8 +36,8 @@ import { HeroSlot } from './menu/HeroSlot';
 import { ChallengesModal, ChallengesStrip } from './menu/Challenges';
 import { CareerRoad } from './menu/CareerRoad';
 import { LastMatchBanner } from './menu/LastMatch';
-import { fetchChallenges } from './menu/menu-hooks';
-import { freshCatchUp, noteProfile, type ChallengeLists, type MatchGain, type MenuProfile } from './menu/road-data';
+import { fetchChallenges, useMedia, useRefetchAtReset } from './menu/menu-hooks';
+import { freshCatchUp, gainFrom, type ChallengeLists, type MenuProfile } from './menu/road-data';
 import { MenuItem, MenuLink, MenuPlayButton, MenuWordmark, SocialDock, type DockTabId } from './ui/menu-parts';
 import { LoadingScreen, type LoadStep } from './ui/LoadingScreen';
 import { useLevelshot } from './ui/levelshot';
@@ -3954,9 +3954,6 @@ function Lobby({
   const [roadOpen, setRoadOpen] = useState(false);
   const [heroHover, setHeroHover] = useState(false);
   const heroSlotRef = useRef<HTMLDivElement>(null);
-  // XP the last match earned (profile diff), for the Last match banner.
-  const [matchGain, setMatchGain] = useState<MatchGain | null>(null);
-  const afterMatchRef = useRef(lastResult !== null);
   const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
@@ -4092,9 +4089,6 @@ function Lobby({
             { tone: 'ok' },
           );
         }
-        const gain = noteProfile(d.profile, afterMatchRef.current);
-        afterMatchRef.current = false;
-        if (gain) setMatchGain(gain);
       })
       .catch(() => {});
     void fetchChallenges().then((d) => {
@@ -4142,16 +4136,14 @@ function Lobby({
       settings.spawnEffect,
     ],
   );
-  const lastGain: MatchGain | null = lastProgression
-    ? lastProgression.xpGained > 0
-      ? {
-          xp: lastProgression.xpGained,
-          credits: lastProgression.creditsGained,
-          levelBefore: lastProgression.levelBefore ?? (lastProgression.leveledUp ? lastProgression.progression.level - 1 : lastProgression.progression.level),
-          levelAfter: lastProgression.progression.level,
-        }
-      : null
-    : matchGain;
+  // Per-match XP for the Last match banner: the server's reward for that match
+  // only (it may arrive a beat after the lobby mounts); nothing for guests.
+  const lastGain = gainFrom(lastProgression);
+  // The challenge set rolls over at its reset: pull the new one.
+  useRefetchAtReset(challenges, refreshMeta);
+  // Doors + challenges live in the right column on wide layouts, under the
+  // menu on narrow ones — mounted once, where they're shown.
+  const wide = useMedia('(min-width: 1024px)');
 
   const openSettingsAt = (t: SettingsTab) => {
     setSettingsTab(t);
@@ -4375,7 +4367,41 @@ function Lobby({
               )}
 
               {/* Narrow layouts: the doors + challenges ride under the menu. */}
-              <div className='menu-in mt-5 flex flex-col gap-3 lg:hidden' style={{ ['--d' as string]: 10 }}>
+              {!wide && (
+                <div className='menu-in mt-5 flex flex-col gap-3' style={{ ['--d' as string]: 10 }}>
+                  <FrontDoors
+                    profile={lobbyProfile}
+                    guest={!account}
+                    hat={settings.hat}
+                    railgunFinish={settings.railgunFinish}
+                    onRoad={() => setRoadOpen(true)}
+                    onLocker={() => setLockerOpen(true)}
+                  />
+                  <ChallengesStrip
+                    lists={challenges}
+                    guest={!account}
+                    onOpen={() => setChallengesOpen(true)}
+                    onLogin={onOpenLogin}
+                    onClaimed={refreshMeta}
+                  />
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* ── Centre: your combatant (3D, drawn by the backdrop) ─────── */}
+          <HeroSlot
+            slotRef={heroSlotRef}
+            onCustomize={() => setLockerOpen(true)}
+            onHover={setHeroHover}
+            hover={heroHover}
+            className='max-lg:hidden lg:!absolute lg:inset-y-0 lg:left-[32.5rem] lg:right-[20.5rem] 2xl:right-28'
+          />
+
+          {/* ── Right: challenges over the social dock ─────────────────── */}
+          <div className='menu-in-right flex min-h-0 flex-col gap-3 pb-2 lg:relative lg:z-10 lg:ml-auto lg:w-[19.5rem] lg:shrink-0 xl:w-[21rem] max-lg:pointer-events-none max-lg:absolute max-lg:inset-x-5 max-lg:bottom-3 max-lg:top-2 max-lg:z-10'>
+            {wide && (
+              <div className='flex flex-col gap-3'>
                 <FrontDoors
                   profile={lobbyProfile}
                   guest={!account}
@@ -4392,37 +4418,7 @@ function Lobby({
                   onClaimed={refreshMeta}
                 />
               </div>
-            </div>
-          </section>
-
-          {/* ── Centre: your combatant (3D, drawn by the backdrop) ─────── */}
-          <HeroSlot
-            slotRef={heroSlotRef}
-            onCustomize={() => setLockerOpen(true)}
-            onHover={setHeroHover}
-            hover={heroHover}
-            className='max-lg:hidden lg:!absolute lg:inset-y-0 lg:left-[32.5rem] lg:right-[20.5rem] 2xl:right-28'
-          />
-
-          {/* ── Right: challenges over the social dock ─────────────────── */}
-          <div className='menu-in-right flex min-h-0 flex-col gap-3 pb-2 lg:relative lg:z-10 lg:ml-auto lg:w-[19.5rem] lg:shrink-0 xl:w-[21rem] max-lg:pointer-events-none max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10'>
-            <div className='flex flex-col gap-3 max-lg:hidden'>
-              <FrontDoors
-                profile={lobbyProfile}
-                guest={!account}
-                hat={settings.hat}
-                railgunFinish={settings.railgunFinish}
-                onRoad={() => setRoadOpen(true)}
-                onLocker={() => setLockerOpen(true)}
-              />
-              <ChallengesStrip
-                lists={challenges}
-                guest={!account}
-                onOpen={() => setChallengesOpen(true)}
-                onLogin={onOpenLogin}
-                onClaimed={refreshMeta}
-              />
-            </div>
+            )}
             <div className='menu-dock-col pointer-events-none flex min-h-0 flex-1 flex-col items-end justify-end [&>*]:pointer-events-auto'>
               {dockCompact && (
                 <button
