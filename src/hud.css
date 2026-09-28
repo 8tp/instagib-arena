@@ -209,6 +209,69 @@
   }
 }
 
+/* ── XP ticker ("+16 XP" beside the crosshair on each frag) ───────────────
+   Sits up and to the right of the crosshair, below the centre-print and off
+   the crosshair's vertical line. Pops in, drifts up, fades — once per frag,
+   keyed on the chain step. Never scales or travels under reduced motion. */
+.hud-xp-anchor {
+  position: absolute;
+  left: calc(50% + 2.6rem);
+  top: calc(50% - 3.4rem);
+}
+.hud-xp {
+  white-space: nowrap;
+  transform-origin: 0% 100%;
+  animation: hud-xp 1300ms linear both;
+  will-change: transform, opacity;
+  text-shadow:
+    0 2px 0 rgba(0, 0, 0, 0.55),
+    0 0 14px rgba(0, 0, 0, 0.5);
+}
+@keyframes hud-xp {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(calc(1 + 0.45 * var(--hud-motion)));
+    animation-timing-function: var(--hud-ease-out);
+  }
+  10% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    animation-timing-function: linear;
+  }
+  62% {
+    opacity: 1;
+    animation-timing-function: ease-in;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(calc(-14px * var(--hud-motion))) scale(1);
+  }
+}
+.hud-xp-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.45rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #a5f3fc;
+}
+.hud-xp-unit {
+  margin-left: 0.2rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: rgba(165, 243, 252, 0.75);
+}
+.hud-xp-tag {
+  margin-top: 0.1rem;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #fcd34d;
+}
+
 /* ── Banner (BIG announce) — one orchestrated in/out ──────────────────────
    Title scales in, the bar under it draws 80 ms later, the subtitle rises
    in at 120 ms; the whole block fades out on its pre-scheduled delay. */
@@ -606,4 +669,72 @@
   position: relative;
   padding: 0.9rem 3.5rem 1rem;
   background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.55) 60%, rgba(0, 0, 0, 0));
+}
+
+/* ── Deck micro-interactions (menu chrome; src/deck.tsx) ──────────────────
+   Lives here because this sheet is global. Components layer, so any Tailwind
+   utility on the same element still wins. Everything motion-y drops out
+   under prefers-reduced-motion; focus rings (.clip-deck-sm:focus-visible)
+   are untouched. */
+@layer components {
+  /* Buttons: quick colour ease, a physical 1px press + a hair of squash,
+     and a brief brighten while held. */
+  .deck-press {
+    transition:
+      background-color 140ms ease-out,
+      border-color 140ms ease-out,
+      color 140ms ease-out,
+      filter 90ms ease-out,
+      transform 90ms ease-out;
+  }
+  .deck-press:active:not(:disabled) {
+    transform: translateY(1px) scale(0.985);
+    filter: brightness(1.12);
+    transition-duration: 40ms;
+  }
+  /* Solid CTAs: a light sheen sweeps across once per hover. */
+  .deck-sheen {
+    position: relative;
+    isolation: isolate;
+  }
+  .deck-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.5) 50%, transparent 62%);
+    transform: translateX(-115%);
+  }
+  .deck-sheen:hover:not(:disabled)::after {
+    transform: translateX(115%);
+    transition: transform 620ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  /* Modal: the tone hairline draws in from the left as the panel settles. */
+  .deck-rule-draw {
+    transform-origin: 0% 50%;
+    animation: deck-rule-draw 440ms cubic-bezier(0.2, 0.7, 0.2, 1) 70ms both;
+  }
+}
+@keyframes deck-rule-draw {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck-press,
+  .deck-press:active:not(:disabled) {
+    transform: none;
+    transition: none;
+  }
+  .deck-sheen::after {
+    display: none;
+  }
+  .deck-rule-draw {
+    animation: none;
+  }
 }

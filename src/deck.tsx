@@ -93,7 +93,8 @@ export function ModalShell({
   className = '',
   backdrop = 'dim',
   dismissOnBackdrop = true,
-  closeSound = 'uiBack',
+  openSound = 'modalOpen',
+  closeSound = 'modalClose',
   closeLabel = '✕ Esc',
 }: {
   title?: string;
@@ -114,6 +115,7 @@ export function ModalShell({
   className?: string;
   backdrop?: 'dim' | 'heavy';
   dismissOnBackdrop?: boolean;
+  openSound?: UiSoundName | 'none'; // soft whoosh on mount ('none' when the dialog brings its own sting)
   closeSound?: UiSoundName | 'none';
   closeLabel?: string;
 }) {
@@ -140,6 +142,13 @@ export function ModalShell({
     timerRef.current = window.setTimeout(() => onCloseRef.current?.(), MODAL_EXIT_MS);
   }, [closeSound]);
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
+
+  // Open cue on mount. Passive: it only sounds once the UI context is running
+  // (a modal the engine mounts never unlocks audio by itself).
+  const openSoundRef = useRef(openSound);
+  useEffect(() => {
+    if (openSoundRef.current !== 'none') playUi(openSoundRef.current);
+  }, []);
 
   // Initial focus + restore-on-close. Layout effect so a React `autoFocus`
   // inside the body (which fires during commit) is respected, not overridden.
@@ -226,7 +235,7 @@ export function ModalShell({
       >
         <div className={`clip-deck flex min-h-0 flex-1 flex-col border bg-[#0b0c0f] ${t.border} ${className}`}>
           {/* The one accent: a hairline in the dialog's tone along the top edge. */}
-          <div aria-hidden='true' className={`h-px w-full shrink-0 bg-gradient-to-r ${t.rule} via-white/10 to-transparent`} />
+          <div aria-hidden='true' className={`deck-rule-draw h-px w-full shrink-0 bg-gradient-to-r ${t.rule} via-white/10 to-transparent`} />
           {hasTitleRow && (
             <div className='flex shrink-0 items-center justify-between gap-4 border-b border-white/10 px-6 pb-3 pt-4'>
               {title ? (
@@ -345,8 +354,8 @@ export function DeckButton({
       onClick={onClick}
       disabled={disabled}
       {...sfxProps(sound ?? (solid ? 'uiConfirm' : 'uiClick'))}
-      className={`clip-deck-sm border font-display uppercase tracking-[0.12em] transition active:translate-y-px ${
-        solid ? 'font-bold' : 'font-semibold'
+      className={`deck-press clip-deck-sm border font-display uppercase tracking-[0.12em] ${
+        solid ? 'deck-sheen font-bold' : 'font-semibold'
       } ${SIZE[size]} ${tone} ${dis} ${full ? 'w-full' : ''} ${center ? 'text-center' : 'text-left'} ${className}`}
       {...rest}
     >
@@ -396,7 +405,7 @@ export function UtilButton({
       onClick={onClick}
       disabled={disabled}
       {...sfxProps(sound)}
-      className={`clip-deck-sm border px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] transition disabled:cursor-not-allowed disabled:opacity-40 ${UTIL_TONE[tone]} ${className}`}
+      className={`deck-press clip-deck-sm border px-3.5 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] disabled:cursor-not-allowed disabled:opacity-40 ${UTIL_TONE[tone]} ${className}`}
       {...rest}
     >
       {children}
@@ -451,7 +460,7 @@ export function DeckTab({
       role='tab'
       aria-selected={active}
       onClick={onClick}
-      {...sfxProps('uiClick')}
+      {...sfxProps(active ? 'none' : 'tabSwitch')}
       className={`deck-tab ${className}`}
       {...rest}
     >
@@ -482,7 +491,7 @@ export function SegButton({
       aria-pressed={active}
       onClick={onClick}
       disabled={disabled}
-      {...sfxProps('uiClick')}
+      {...sfxProps(active ? 'none' : 'uiClick')}
       className={`deck-seg ${className}`}
       {...rest}
     >
@@ -511,7 +520,7 @@ export function DeckSwitch({
       aria-label={label}
       disabled={disabled}
       onClick={() => {
-        playUi('uiToggle');
+        playUi('uiToggle', value ? 0 : 1); // pitch up when switching on
         onChange(!value);
       }}
       onPointerEnter={sfxProps('none').onPointerEnter}
