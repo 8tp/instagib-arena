@@ -710,6 +710,11 @@ export class Game {
     this.applyPostFx();
   }
 
+  // Bloom intensity multiplier (Settings → Video), on top of the Bloom toggle.
+  setBloomScale(k: number) {
+    this.postFx.setBloomScale(k);
+  }
+
   private applyPostFx() {
     const p = this.postFxPrefs;
     const on = !this.lowSpec;

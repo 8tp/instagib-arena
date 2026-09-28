@@ -300,6 +300,7 @@ const DEFAULT_SETTINGS: Settings = {
   resolutionScale: 1,
   lowSpec: false,
   bloom: true,
+  bloomIntensity: 0.8,
   shadows: true,
   antialias: true,
   vignette: true,
@@ -390,6 +391,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setRawInput?.(s.rawInput);
   game.setQuality?.(s.resolutionScale, s.lowSpec);
   game.setPostFx?.({ bloom: s.bloom, shadows: s.shadows, aa: s.antialias, vignette: s.vignette });
+  game.setBloomScale?.(s.bloomIntensity ?? 0.8);
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
   game.setZoomFov?.(s.zoomFov);
@@ -4261,6 +4263,7 @@ function Lobby({
         active={!modalOpen}
         still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
+        bloomScale={settings.bloomIntensity ?? 0.8}
         onMap={onBackdropMap}
         hero={heroLoadout}
         heroSlot={heroSlotRef}
@@ -5887,6 +5890,15 @@ function SettingsModal({
                   value={settings.bloom}
                   disabled={settings.lowSpec}
                   onChange={(v) => onChange({ ...settings, bloom: v })}
+                />
+                <SliderField
+                  label='Bloom intensity'
+                  value={settings.bloomIntensity ?? 0.8}
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, bloomIntensity: v })}
                 />
                 <ToggleField
                   label='Shadows'

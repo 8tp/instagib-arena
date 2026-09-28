@@ -55,6 +55,7 @@ export type Settings = {
   lowSpec: boolean; // cap high-DPI at 1× + thin particle effects
   // Post-processing toggles (Game.setPostFx). Low-spec forces all four off.
   bloom: boolean;
+  bloomIntensity: number; // 0..1.5 multiplier on the bloom strength (match + menu backdrop)
   shadows: boolean;
   antialias: boolean; // SMAA
   vignette: boolean;
