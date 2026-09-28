@@ -194,7 +194,7 @@ export class FxLab {
     const anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     anim.updateStatic(0);
     let hat: WornHat | null = null;
-    let fx: UnusualEffect | null = null;
+    const fx: UnusualEffect | null = null;
     if (hatId || unusualId) {
       hat = new WornHat(ch.sockets.headTop);
       if (hatId) void hat.setHat(hatId);
