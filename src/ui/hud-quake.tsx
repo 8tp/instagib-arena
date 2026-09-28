@@ -1,7 +1,8 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { TEAM_COLORS, TEAM_NAMES, type GameMode } from '../game/constants';
-import type { KillfeedEntry, PlayerScore } from '../game/types';
-import { hudTiming, useExitList } from '../hud-store';
+import { OFFLINE_XP_SCALE, XP_PER_HEADSHOT, XP_PER_KILL, XP_PER_STREAK } from '../game/progression';
+import type { KillConfirm, KillfeedEntry, PlayerScore } from '../game/types';
+import { hudTiming, useExitList, useHudSlice } from '../hud-store';
 import { NameBadges } from './badges';
 import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './hud-const';
 import { ordinal, standingOf } from './match-info';
@@ -326,4 +327,88 @@ export function FightCall({ onDone }: { onDone: () => void }) {
       </span>
     </div>
   );
+}
+
+/* ── XP ticker ──────────────────────────────────────────────────────────── */
+
+// Frags landing inside this window stack into one running "+N" (CoD style).
+const XP_CHAIN_MS = 1400;
+
+type XpTickState = {
+  id: number; // the KillConfirm id this tick answers (0 = none yet)
+  total: number; // running total of the current chain
+  at: number; // performance.now() of the last frag in the chain
+  lastBest: number; // best streak already paid for
+  headshot: boolean;
+  streak: boolean;
+};
+
+// A small "+16 XP" beside the crosshair on every frag, the XP counterpart of
+// the centre-print. A PRESENTATIONAL ESTIMATE from the progression constants
+// (kill + headshot + each new best-streak step, halved offline): the server
+// computes the real number at match end, and bonuses like the win, accuracy
+// or first-win only land there. One CSS animation keyed by the chain step
+// (.hud-xp in src/hud.css); React re-renders only when a frag lands.
+export const XpTicker = memo(function XpTicker({
+  confirm,
+  bestStreak,
+  offline,
+}: {
+  confirm: KillConfirm | null;
+  bestStreak: number;
+  offline: boolean;
+}) {
+  const [st, setSt] = useState<XpTickState>(() => ({
+    id: confirm?.id ?? 0,
+    total: 0,
+    at: 0,
+    lastBest: bestStreak,
+    headshot: false,
+    streak: false,
+  }));
+  // Derived from props during render (the documented "previous props" pattern):
+  // a new confirm id is a new frag; a best streak that went DOWN is a new match.
+  let cur = st;
+  if (confirm && confirm.id !== st.id) {
+    const scale = offline ? OFFLINE_XP_SCALE : 1;
+    const steps = Math.max(0, bestStreak - st.lastBest);
+    const raw = XP_PER_KILL + (confirm.headshot ? XP_PER_HEADSHOT : 0) + steps * XP_PER_STREAK;
+    const xp = Math.max(1, Math.round(raw * scale));
+    const now = performance.now();
+    cur = {
+      id: confirm.id,
+      total: st.total > 0 && now - st.at < XP_CHAIN_MS ? st.total + xp : xp,
+      at: now,
+      lastBest: bestStreak,
+      headshot: confirm.headshot,
+      streak: steps > 0 && bestStreak >= 2,
+    };
+    setSt(cur);
+  } else if (bestStreak < st.lastBest) {
+    cur = { ...st, lastBest: bestStreak };
+    setSt(cur);
+  }
+  if (!confirm || cur.total <= 0) return null;
+  const tags = [cur.headshot && 'Headshot', cur.streak && 'Streak'].filter(Boolean).join(' · ');
+  return (
+    <div className='hud-xp-anchor'>
+      <div key={cur.id} className='hud-xp'>
+        <span className='hud-xp-num'>+{cur.total}</span>
+        <span className='hud-xp-unit'>XP</span>
+        {tags && <div className='hud-xp-tag'>{tags}</div>}
+      </div>
+    </div>
+  );
+});
+
+// Store-connected ticker, ready to mount inside the HUD root next to the frag
+// centre-print. `enabled` = false for matches that never grant XP (weekly
+// challenge, training range); spectators never frag, so they never see it.
+export function HudXpTicker({ enabled = true }: { enabled?: boolean }) {
+  const confirm = useHudSlice((s) => s.killConfirm);
+  const bestStreak = useHudSlice((s) => s.bestStreak);
+  const offline = useHudSlice((s) => s.netStatus === 'off');
+  const training = useHudSlice((s) => s.training !== null);
+  if (!enabled || training) return null;
+  return <XpTicker confirm={confirm} bestStreak={bestStreak} offline={offline} />;
 }

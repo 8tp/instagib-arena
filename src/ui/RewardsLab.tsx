@@ -15,10 +15,14 @@
 //   ?reduced=1       reducedEffects on
 //   ?login=0         no onLogin wiring (guest CTA falls back to a note)
 //   ?clean=1         hide the lab caption
+//   ?hud=1           the in-match XP ticker instead: a fake frag every 0.9 s
+//                    (every 3rd a headshot) beside a crosshair + centre-print
 import { useEffect, useMemo, useState } from 'react';
 import type { ProgressionResp, Settings } from '../app-types';
 import type { MatchResult } from '../game/game';
-import type { PlayerScore } from '../game/types';
+import type { KillConfirm, PlayerScore } from '../game/types';
+import { FragPopup } from '../game/kill-overlays';
+import { XpTicker } from './hud-quake';
 import { creditsForXp, levelForXp, totalXpForLevel, type RewardExtras, type XpLine } from '../game/progression';
 import { MatchOverOverlay, OnlineMatchResults } from './results';
 
@@ -242,8 +246,41 @@ function fakeScores(won: boolean): PlayerScore[] {
   }));
 }
 
+// The XP ticker in context: crosshair, centre-print and a stream of frags.
+function HudTickerLab({ hold, reduced }: { hold?: number; reduced: boolean }) {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setN((k) => (hold !== undefined && k >= 3 ? k : k + 1)), 900);
+    return () => window.clearInterval(id);
+  }, [hold]);
+  useEffect(() => {
+    if (hold === undefined) return;
+    const id = window.setTimeout(() => document.getAnimations().forEach((a) => a.pause()), hold);
+    return () => window.clearTimeout(id);
+  }, [hold]);
+  const confirm: KillConfirm | null =
+    n > 0 ? { id: n, victimName: NAMES[n % NAMES.length], headshot: n % 3 === 0, remaining: 1.6, total: 1.6 } : null;
+  return (
+    <div
+      className={`hud-root absolute inset-0 bg-[radial-gradient(circle_at_50%_55%,#3a4656,#12161d)] ${reduced ? 'hud-reduced' : ''}`}
+    >
+      <div className='absolute left-1/2 top-1/2 h-5 w-[2px] -translate-x-1/2 -translate-y-1/2 bg-cyan-300' />
+      <div className='absolute left-1/2 top-1/2 h-[2px] w-5 -translate-x-1/2 -translate-y-1/2 bg-cyan-300' />
+      <FragPopup confirm={confirm} placement={n > 0 ? `1st place with ${10 + n}` : null} />
+      <XpTicker confirm={confirm} bestStreak={n} offline={false} />
+    </div>
+  );
+}
+
 export default function RewardsLab() {
   const q = useMemo(() => new URLSearchParams(window.location.search), []);
+  if (q.get('hud') === '1') {
+    return <HudTickerLab hold={q.get('hold') !== null ? Number(q.get('hold')) : undefined} reduced={q.get('reduced') === '1'} />;
+  }
+  return <ResultsLab q={q} />;
+}
+
+function ResultsLab({ q }: { q: URLSearchParams }) {
   const labCase = (CASES.includes(q.get('case') as LabCase) ? q.get('case') : 'levelup') as LabCase;
   const online = q.get('online') === '1';
   const hold = q.get('hold') !== null ? Number(q.get('hold')) : undefined;
