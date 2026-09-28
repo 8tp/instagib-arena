@@ -307,12 +307,13 @@ button.menu-profile:hover .menu-profile-link {
   flex: 1 1 0;
 }
 .menu-hero-hit {
+  /* Roughly the character's silhouette box: the hero is framed into the
+     bottom min(100%, 72vh) of the slot (menu-hero.ts), head ~22% down it. */
   position: absolute;
   left: 50%;
-  top: 7%;
   bottom: 0;
-  width: min(100%, 30%, 34vh);
-  min-width: 9rem;
+  height: min(80%, 58vh);
+  width: clamp(9rem, 24vh, 100%);
   transform: translateX(-50%);
   cursor: pointer;
   outline: none;
