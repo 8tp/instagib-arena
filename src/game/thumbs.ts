@@ -11,6 +11,7 @@ import { buildRailgun } from './weapon-model';
 import {
   cosmeticById,
   emoteById,
+  hatById,
   railColorById,
   railgunFinishById,
   spawnEffectById,
@@ -27,11 +28,15 @@ import {
 //
 //  • ONE shared offscreen WebGLRenderer, created lazily on the first request
 //    and released (context and all) after ~30 s without work.
-//  • Requests queue; at most ONE thumbnail renders per animation frame (async
-//    prep — a hat glTF load, a shader compile — happens between frames), so
-//    opening the Locker never hitches.
+//  • Requests queue; work runs in idle time (requestIdleCallback, with a
+//    timeout) one thumbnail at a time, shaders compile async, and encoding is
+//    async (toBlob → FileReader), so opening the Locker never hitches.
+//    Subjects without additive FX render once and encode straight from the
+//    WebGL canvas; only FX subjects pay for the two-pass alpha fix-up.
 //  • Cache: an in-memory Map + de-duplicated pending promises, mirrored to
-//    sessionStorage so a reload within the tab doesn't re-render.
+//    sessionStorage so a reload within the tab doesn't re-render. Only real
+//    captures are cached: a failure (lost context, a hat model that didn't
+//    load, a throw) is never cached, so a later request retries.
 //  • Slots with no 3D subject (name colours, titles, cards, announcers) return
 //    null: ItemTile draws a CSS treatment for those.
 // Transparent background — the tile's rarity gradient shows through.
@@ -39,7 +44,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v13:';
+const STORE_PREFIX = 'ig-thumb:v14:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 // Hats sit on a mid-slate helmet: white caps read lighter, black hats darker.
@@ -48,7 +53,11 @@ const FACE_CAMERA = Math.PI;
 
 const cache = new Map<string, string | null>();
 const pending = new Map<string, Promise<string | null>>();
-type Job = { id: string; resolve: (url: string | null) => void };
+const failed = new Set<string>(); // failed this session (shown as no-thumbnail until re-requested)
+type Job = { id: string; resolve: (url: string | null) => void; tries: number };
+
+// A transient failure: never cached; the job may be retried.
+class ThumbFailure extends Error {}
 const queue: Job[] = [];
 let running = false;
 let releaseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -108,12 +117,14 @@ export function getThumbnail(id: string): Promise<string | null> {
     return Promise.resolve(stored);
   }
   if (typeof document === 'undefined' || !renderable(cosmeticById(id))) {
-    cache.set(id, null);
+    cache.set(id, null); // no 3D subject: permanent, not a failure
     return Promise.resolve(null);
   }
+  if (studioFailed) return Promise.resolve(null); // no WebGL at all
   let p = pending.get(id);
   if (!p) {
-    p = new Promise<string | null>((resolve) => queue.push({ id, resolve }));
+    failed.delete(id); // a fresh request retries an earlier failure
+    p = new Promise<string | null>((resolve) => queue.push({ id, resolve, tries: 0 }));
     pending.set(id, p);
     void pump();
   }
@@ -137,13 +148,16 @@ export function prefetchThumbnails(ids: readonly string[], front = false): void 
 export function thumbnailPending(id: string): boolean {
   if (pending.has(id)) return true;
   // Not asked for yet but it will be (a tile's first paint): also pending.
-  return !cache.has(id) && !studioFailed && typeof document !== 'undefined' && renderable(cosmeticById(id));
+  return !cache.has(id) && !failed.has(id) && !studioFailed && typeof document !== 'undefined' && renderable(cosmeticById(id));
 }
 
-const nextFrame = () =>
+// Wait for idle time (the preview's frames come first); a timeout keeps the
+// queue moving on a page that never idles.
+const idle = () =>
   new Promise<void>((r) => {
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => r());
-    else setTimeout(r, 16);
+    const w = typeof window !== 'undefined' ? (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }) : null;
+    if (w?.requestIdleCallback) w.requestIdleCallback(() => r(), { timeout: 300 });
+    else setTimeout(r, 32);
   });
 
 async function pump() {
@@ -159,11 +173,21 @@ async function pump() {
     try {
       url = await renderThumb(job.id);
     } catch (err) {
+      // Lost context: the studio was dropped — retry once on a fresh one.
+      if (err instanceof ThumbFailure && err.message === 'context-lost' && job.tries < 1) {
+        job.tries++;
+        queue.unshift(job);
+        continue;
+      }
       console.warn(`[thumbs] ${job.id} failed to render`, err);
       url = null;
     }
-    cache.set(job.id, url);
-    if (url) storeSet(job.id, url);
+    if (url) {
+      cache.set(job.id, url);
+      storeSet(job.id, url);
+    } else {
+      failed.add(job.id);
+    }
     pending.delete(job.id);
     job.resolve(url);
   }
@@ -179,7 +203,7 @@ type Studio = {
   camera: THREE.PerspectiveCamera;
   env: THREE.Texture;
   effects: EffectsManager;
-  webp: boolean;
+  lost: boolean; // the WebGL context was lost: drop this studio
   out: HTMLCanvasElement; // 2D canvas the fixed-up pixels are encoded from
   px: Uint8Array;
   mask: Uint8Array;
@@ -229,19 +253,15 @@ function getStudio(): Studio | null {
     const effects = new EffectsManager();
     effects.warm(scene);
     const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 100);
-    // Does this browser encode WebP (smaller data URLs, keeps alpha)?
-    let webp = false;
-    try {
-      const probe = document.createElement('canvas');
-      probe.width = probe.height = 1;
-      webp = probe.toDataURL('image/webp').startsWith('data:image/webp');
-    } catch {
-      webp = false;
-    }
     const out = document.createElement('canvas');
     out.width = out.height = SIZE;
     const n = SIZE * SIZE * 4;
-    studio = { renderer, scene, camera, env, effects, webp, out, px: new Uint8Array(n), mask: new Uint8Array(n) };
+    const st: Studio = { renderer, scene, camera, env, effects, lost: false, out, px: new Uint8Array(n), mask: new Uint8Array(n) };
+    canvas.addEventListener('webglcontextlost', () => {
+      st.lost = true;
+      if (studio === st) studio = null;
+    });
+    studio = st;
     return studio;
   } catch {
     studioFailed = true;
@@ -253,12 +273,19 @@ function getStudio(): Studio | null {
 function release() {
   releaseTimer = null;
   if (running || !studio) return;
-  const s = studio;
-  studio = null;
-  if (peekFxContext(s.scene)) disposeFxContext(s.scene);
-  s.env.dispose();
-  s.renderer.dispose();
-  s.renderer.forceContextLoss();
+  dropStudio(studio);
+}
+
+function dropStudio(s: Studio) {
+  if (studio === s) studio = null;
+  try {
+    if (peekFxContext(s.scene)) disposeFxContext(s.scene);
+    s.env.dispose();
+    s.renderer.dispose();
+    if (!s.lost) s.renderer.forceContextLoss();
+  } catch {
+    /* already lost — nothing left to free */
+  }
 }
 
 // ── Subjects ─────────────────────────────────────────────────────────────────
@@ -383,6 +410,14 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       };
       for (const child of c.ch.sockets.headTop.children) visit(child);
       const bare = box.isEmpty() || box.max.y - box.min.y < 0.02;
+      if (bare && hatById(entry.id).model) {
+        // WornHat swallows load errors (stays bare in-game) — here that would
+        // cache a bare head under the hat's id. Fail instead; a later request retries.
+        hat.dispose();
+        undo();
+        disposeCombatant(c);
+        throw new ThumbFailure(`hat model did not load: ${entry.id}`);
+      }
       if (bare) box.setFromCenterAndSize(new THREE.Vector3(0, 1.72, 0), new THREE.Vector3(0.34, 0.26, 0.34));
       // Aim a little below the hat so it sits above the tile's name band. The
       // fit uses the hat's world AABB, whose 3/4 projection is ~1.4× the
@@ -525,13 +560,57 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
   }
 }
 
-// Render + encode with an alpha fix-up. Additive FX (bursts, beams, unusual
+// Materials that write colour without matching alpha (additive / custom
+// blends): their subjects need the alpha fix-up below.
+function hasGlowFx(scene: THREE.Scene): boolean {
+  let found = false;
+  scene.traverseVisible((o) => {
+    if (found) return;
+    const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!m) return;
+    const list = Array.isArray(m) ? m : [m];
+    if (list.some((x) => x.blending === THREE.AdditiveBlending || x.blending === THREE.CustomBlending)) found = true;
+  });
+  return found;
+}
+
+function assertAlive(s: Studio) {
+  if (s.lost || s.renderer.getContext().isContextLost()) {
+    dropStudio(s);
+    throw new ThumbFailure('context-lost');
+  }
+}
+
+const toBlob = (cv: HTMLCanvasElement) =>
+  new Promise<Blob>((resolve, reject) => {
+    // WebP keeps alpha and is small; browsers without it hand back PNG.
+    cv.toBlob((b) => (b ? resolve(b) : reject(new ThumbFailure('encode failed'))), 'image/webp', 0.9);
+  });
+
+const toDataUrl = (b: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new ThumbFailure('read failed'));
+    r.readAsDataURL(b);
+  });
+
+// Render and encode (async). Opaque subjects encode straight from the WebGL
+// canvas (no readPixels stall). Additive FX (bursts, beams, unusual
 // particles) write colour but little alpha into a transparent buffer, so they
-// would wash out over the tile's rarity backdrop. Two passes: the full scene,
-// then only the non-additive geometry (its coverage). Final alpha = max(that
-// coverage, the pixel's brightest channel); colour is un-premultiplied by it.
-function encode(s: Studio, cam: THREE.Camera): string | null {
+// would wash out over the tile's backdrop: two passes — the full scene, then
+// only the non-additive geometry (its coverage) — and final alpha = max(that
+// coverage, the pixel's brightest channel), colour un-premultiplied by it.
+async function capture(s: Studio, cam: THREE.Camera): Promise<string> {
   const gl = s.renderer.getContext();
+  if (!hasGlowFx(s.scene)) {
+    s.renderer.render(s.scene, cam);
+    assertAlive(s);
+    // preserveDrawingBuffer: toBlob snapshots the frame we just drew.
+    return toDataUrl(await toBlob(s.renderer.domElement));
+  }
+  s.px.fill(0);
+  s.mask.fill(0);
   s.renderer.render(s.scene, cam);
   gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, s.px);
   const hidden: THREE.Object3D[] = [];
@@ -547,8 +626,9 @@ function encode(s: Studio, cam: THREE.Camera): string | null {
   s.renderer.render(s.scene, cam);
   gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, s.mask);
   for (const o of hidden) o.visible = true;
+  assertAlive(s); // a lost context leaves the buffers zeroed, never stale
   const ctx = s.out.getContext('2d');
-  if (!ctx) return null;
+  if (!ctx) throw new ThumbFailure('no 2d context');
   const img = ctx.createImageData(SIZE, SIZE);
   const d = img.data;
   const px = s.px;
@@ -575,7 +655,7 @@ function encode(s: Studio, cam: THREE.Camera): string | null {
     }
   }
   ctx.putImageData(img, 0, 0);
-  return s.webp ? s.out.toDataURL('image/webp', 0.9) : s.out.toDataURL('image/png');
+  return toDataUrl(await toBlob(s.out));
 }
 
 // Dolly the camera along its view line until the box's larger projected side
@@ -600,6 +680,7 @@ function fitCamera(cam: THREE.PerspectiveCamera, box: THREE.Box3, target: THREE.
 async function renderThumb(id: string): Promise<string | null> {
   const entry = cosmeticById(id);
   if (!renderable(entry)) return null;
+  await idle();
   const s = getStudio();
   if (!s) return null;
   const subj = await buildSubject(s, entry!);
@@ -627,15 +708,15 @@ async function renderThumb(id: string): Promise<string | null> {
     subj.root.updateMatrixWorld(true);
     subj.settle?.();
     // Compile off the main thread where the browser allows it, then render in
-    // its own animation frame (≤ 1 thumbnail per frame).
+    // idle time (one thumbnail per idle slice).
     try {
       await s.renderer.compileAsync(s.scene, cam);
     } catch {
       /* compile inline on render */
     }
-    await nextFrame();
-    if (studio !== s) return null;
-    return encode(s, cam);
+    await idle();
+    if (studio !== s) throw new ThumbFailure('context-lost');
+    return await capture(s, cam);
   } finally {
     s.scene.remove(subj.root);
     subj.dispose();

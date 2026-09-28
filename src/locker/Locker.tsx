@@ -6,7 +6,7 @@
 // Server-backed (profile / equip / buy / hat case); degrades to local-only
 // selection with everything equippable when there's no backend.
 import './locker.css';
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { Account } from '../auth';
 import type { InstagibProfile, Settings } from '../app-types';
@@ -225,18 +225,27 @@ export function Locker({
     [profile],
   );
 
+  // Only a NEW item is marked seen (hovering a locked item must not pre-mark
+  // it, or it would never show NEW once unlocked). Functional update + a ref
+  // mirror, so a stale closure can't resurrect or drop badges.
+  const newIdsRef = useRef(newIds);
+  newIdsRef.current = newIds;
   const markSeen = useCallback(
     (id: string) => {
-      if (!newIds.has(id)) return;
-      const next = new Set(newIds);
-      next.delete(id);
-      setNewIds(next);
+      if (!newIdsRef.current.has(id)) return;
+      setNewIds((cur) => {
+        if (!cur.has(id)) return cur;
+        const next = new Set(cur);
+        next.delete(id);
+        return next;
+      });
       const seen = seenRef.current ?? new Set<string>();
+      if (seen.has(id)) return;
       seen.add(id);
       seenRef.current = seen;
       saveSeen(owner, seen);
     },
-    [newIds, owner],
+    [owner],
   );
 
   const def = SLOT_DEFS[slot];
@@ -250,6 +259,7 @@ export function Locker({
     [filter, items, owns, profileState],
   );
   const ownedCount = items.filter((i) => owns(i.id, i.source)).length;
+  const selVisible = shown.some((x) => x.id === selected);
 
   // Warm this slot's thumbnails (the rail's equipped ones go first).
   useEffect(() => {
@@ -338,11 +348,22 @@ export function Locker({
     setPulseKey((k) => k + 1);
   };
 
+  // Latest equip request per slot: an older reply that lands after a newer
+  // request (Equip A → Equip B) is ignored, so settings follow the last click.
+  const equipSeq = useRef<Partial<Record<LockerSlot, number>>>({});
+  // Purchases / case opens in flight: the Locker can't close mid-transaction
+  // (credits or a key spent, reveal never shown).
+  const txRef = useRef(0);
+  const clearBusy = (tag: string) => setBusy((b) => (b === tag ? null : b));
+
   // `quiet` skips the "Equipped" toast (a purchase reports itself); `fx`
   // picks the stage flourish ('none' when a celebration already played).
   const equip = async (id: string, opts: { quiet?: boolean; fx?: 'equip' | 'none' } = {}) => {
     const s = slotOfItem(id) ?? slot;
     const sl = SLOT_DEFS[s];
+    const seq = (equipSeq.current[s] ?? 0) + 1;
+    equipSeq.current[s] = seq;
+    const stale = () => equipSeq.current[s] !== seq;
     const apply = () => {
       onChange(sl.apply(settingsRef.current, id));
       if (opts.fx !== 'none') flourish(id, 'equip');
@@ -362,6 +383,7 @@ export function Locker({
         body: JSON.stringify({ slot: s, id }),
       });
       const d = (await res.json().catch(() => ({}))) as { ok?: boolean; equipped?: Record<string, string> };
+      if (stale()) return; // a newer equip for this slot owns the outcome
       if (res.ok && d.ok) {
         apply();
         setProfile((p) => (p ? { ...p, equipped: d.equipped ?? p.equipped } : p));
@@ -370,9 +392,10 @@ export function Locker({
       } else if (res.status === 429) toast('Slow down a moment.', { tone: 'warn' });
       else toast('Could not equip that.', { tone: 'err' });
     } catch {
-      toast('Network error.', { tone: 'err' });
+      if (!stale()) toast('Network error.', { tone: 'err' });
+    } finally {
+      clearBusy(id);
     }
-    setBusy(null);
   };
 
   const buy = async (id: string) => {
@@ -381,6 +404,7 @@ export function Locker({
       return;
     }
     setBusy(id);
+    txRef.current++;
     try {
       const res = await fetch('/api/shop/buy', {
         method: 'POST',
@@ -393,9 +417,16 @@ export function Locker({
         setProfile((p) => (p ? { ...p, credits: d.credits ?? p.credits, unlocked: d.unlocked ?? [...p.unlocked, id] } : p));
         flourish(id, 'unlock');
         toast(`Unlocked · ${itemName(id)}`, { tone: 'ok', sound: 'purchase' });
-        setBusy(null);
+        clearBusy(id);
         await equip(id, { quiet: true, fx: 'none' });
         return;
+      }
+      // Failure replies carry the true balance / owned set: resync (an
+      // 'owned' or 'insufficient' reply means our copy was stale).
+      if (typeof d.credits === 'number' || Array.isArray(d.unlocked)) {
+        setProfile((p) =>
+          p ? { ...p, credits: typeof d.credits === 'number' ? d.credits : p.credits, unlocked: d.unlocked ?? p.unlocked } : p,
+        );
       }
       toast(
         d.reason === 'insufficient' ? 'Not enough credits.' : d.reason === 'owned' ? 'You already own that.' : 'Could not buy that.',
@@ -403,13 +434,16 @@ export function Locker({
       );
     } catch {
       toast('Network error.', { tone: 'err' });
+    } finally {
+      txRef.current--;
+      clearBusy(id);
     }
-    setBusy(null);
   };
 
   const openCase = async () => {
     if (busy) return;
     setBusy('__case');
+    txRef.current++;
     try {
       const res = await fetch('/api/shop/open-case', {
         method: 'POST',
@@ -453,9 +487,27 @@ export function Locker({
         );
     } catch {
       toast('Network error.', { tone: 'err' });
+    } finally {
+      txRef.current--;
+      clearBusy('__case');
     }
-    setBusy(null);
   };
+
+  // Stable handlers for the memoized tiles (hovering re-renders only the
+  // tiles whose props change, not the whole grid).
+  const onTileRef = useRef<(item: LockerItem) => void>(() => {});
+  const onPick = useCallback((item: LockerItem) => onTileRef.current(item), []);
+  const markSeenRef = useRef(markSeen);
+  markSeenRef.current = markSeen;
+  const onHoverItem = useCallback((id: string) => {
+    setHover(id);
+    markSeenRef.current(id);
+  }, []);
+  const setSlotRef = useRef<(s: LockerSlot) => void>(() => {});
+  const onPickSlot = useCallback((s: LockerSlot) => {
+    uiSfx('tabSwitch');
+    setSlotRef.current(s);
+  }, []);
 
   // Tile click: select (try it on, show details); clicking the selected,
   // owned item again equips it.
@@ -468,11 +520,17 @@ export function Locker({
     uiSfx('uiClick');
     setSelected(item.id);
   };
+  onTileRef.current = onTile;
+  setSlotRef.current = setSlot;
 
   // ── Shell: Esc, focus trap, enter/exit ────────────────────────────────────
   const isTop = useModalStack();
   const close = useCallback(() => {
     if (closing) return;
+    if (txRef.current > 0) {
+      toast('Hold on, finishing your purchase…', { tone: 'warn' });
+      return;
+    }
     uiSfx('uiBack');
     if (reduced) {
       onClose();
@@ -665,24 +723,15 @@ export function Locker({
               <div className='lk-rail-grid'>
                 {g.slots.map((s) => {
                   const sd = SLOT_DEFS[s];
-                  const eq = sd.current(settings);
-                  const hasNew = sd.items.some((i) => newIds.has(i.id));
                   return (
-                    <div key={s} className='lk-rail-cell'>
-                      <ItemTile
-                        id={eq}
-                        fluid
-                        selected={slot === s}
-                        dot={hasNew}
-                        tabIndex={slot === s ? 0 : -1}
-                        onClick={() => {
-                          uiSfx('tabSwitch');
-                          setSlot(s);
-                        }}
-                        onPointerEnter={uiHover}
-                        rootProps={{ 'data-tile': '', 'data-slot': s, title: sd.label, 'aria-label': `${sd.label}: ${cosmeticById(eq)?.name ?? eq}${hasNew ? ', new items' : ''}` }}
-                      />
-                    </div>
+                    <RailTile
+                      key={s}
+                      slot={s}
+                      equippedId={sd.current(settings)}
+                      active={slot === s}
+                      hasNew={sd.items.some((i) => newIds.has(i.id))}
+                      onPick={onPickSlot}
+                    />
                   );
                 })}
               </div>
@@ -743,37 +792,18 @@ export function Locker({
                 ? items.slice(0, 8).map((i) => <Skeleton key={i.id} className='aspect-square w-full' />)
                 : shown.map((item, idx) => {
                     const owned = owns(item.id, item.source);
-                    const equipped = def.current(settings) === item.id;
                     const isSel = selected === item.id;
-                    const selVisible = shown.some((x) => x.id === selected);
                     return (
-                      <ItemTile
+                      <GridTile
                         key={item.id}
-                        id={item.id}
-                        fluid
+                        item={item}
                         selected={isSel}
-                        equipped={equipped}
-                        locked={!owned}
+                        equipped={def.current(settings) === item.id}
+                        owned={owned}
                         isNew={newIds.has(item.id)}
-                        price={!owned && item.source.type === 'credits' ? item.source.price : undefined}
-                        tabIndex={isSel || (!selVisible && idx === 0) ? 0 : -1}
-                        onClick={() => onTile(item)}
-                        onPointerEnter={(e) => {
-                          uiHover(e);
-                          setHover(item.id);
-                          markSeen(item.id);
-                        }}
-                        onFocus={() => {
-                          setHover(item.id);
-                          markSeen(item.id);
-                        }}
-                        rootProps={{
-                          'data-tile': '',
-                          'data-cosmetic': item.id,
-                          'data-state': equipped ? 'equipped' : owned ? 'owned' : item.source.type === 'credits' ? 'buyable' : 'locked',
-                          role: 'option',
-                          'aria-selected': isSel,
-                        }}
+                        tabbable={isSel || (!selVisible && idx === 0)}
+                        onPick={onPick}
+                        onHover={onHoverItem}
                       />
                     );
                   })}
@@ -819,6 +849,90 @@ export function Locker({
   );
   return typeof document !== 'undefined' ? createPortal(node, document.body) : node;
 }
+
+// One grid tile. Memoized with primitive props + stable callbacks, so a hover
+// (which only changes the preview) doesn't re-render the whole grid.
+const GridTile = memo(function GridTile({
+  item,
+  selected,
+  equipped,
+  owned,
+  isNew,
+  tabbable,
+  onPick,
+  onHover,
+}: {
+  item: LockerItem;
+  selected: boolean;
+  equipped: boolean;
+  owned: boolean;
+  isNew: boolean;
+  tabbable: boolean;
+  onPick: (item: LockerItem) => void;
+  onHover: (id: string) => void;
+}) {
+  return (
+    <ItemTile
+      id={item.id}
+      fluid
+      selected={selected}
+      equipped={equipped}
+      locked={!owned}
+      isNew={isNew}
+      price={!owned && item.source.type === 'credits' ? item.source.price : undefined}
+      tabIndex={tabbable ? 0 : -1}
+      onClick={() => onPick(item)}
+      onPointerEnter={(e) => {
+        uiHover(e);
+        onHover(item.id);
+      }}
+      onFocus={() => onHover(item.id)}
+      rootProps={{
+        'data-tile': '',
+        'data-cosmetic': item.id,
+        'data-state': equipped ? 'equipped' : owned ? 'owned' : item.source.type === 'credits' ? 'buyable' : 'locked',
+        role: 'option',
+        'aria-selected': selected,
+      }}
+    />
+  );
+});
+
+// One loadout-rail tile (the slot's equipped item).
+const RailTile = memo(function RailTile({
+  slot,
+  equippedId,
+  active,
+  hasNew,
+  onPick,
+}: {
+  slot: LockerSlot;
+  equippedId: string;
+  active: boolean;
+  hasNew: boolean;
+  onPick: (s: LockerSlot) => void;
+}) {
+  const sd = SLOT_DEFS[slot];
+  return (
+    <div className='lk-rail-cell'>
+      <ItemTile
+        id={equippedId}
+        fluid
+        selected={active}
+        dot={hasNew}
+        tabIndex={active ? 0 : -1}
+        onClick={() => onPick(slot)}
+        onPointerEnter={uiHover}
+        rootProps={{
+          'data-tile': '',
+          'data-slot': slot,
+          title: sd.label,
+          'aria-label': `${sd.label}: ${cosmeticById(equippedId)?.name ?? equippedId}${hasNew ? ', new items' : ''}`,
+        }}
+      />
+    </div>
+  );
+});
 
 // Rays + sparks + "UNLOCKED <name>" over the stage (CSS only; the rays and
 // sparks are dropped under reduced effects).
