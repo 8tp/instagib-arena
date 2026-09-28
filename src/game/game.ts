@@ -3032,8 +3032,16 @@ export class Game {
       total: replay.totalWall,
       hitId: 0,
       hitHeadshot: false,
-      kit: kitInfo(starLooks, seg.clip.starId === 'you' ? this.currentStrangeKills() : null),
+      kit: this.starKit(seg.clip.starId, starLooks),
     };
+  }
+
+  // The Play of the Match title card's setup summary. The finisher comes from the
+  // same source the replay's kills use (recorded Look → server-stamped → bot's).
+  private starKit(starId: string, looks: Loadout | undefined) {
+    const kit = kitInfo(looks, starId === 'you' ? this.currentStrangeKills() : null);
+    const fin = starId === 'you' ? this.killEffectStyle : this.replayFinisher(starId);
+    return { ...kit, finisher: fin === DEFAULT_KILL_EFFECT ? '' : killEffectById(fin).name };
   }
 
   // The star's first-person gun for a replay segment: their finish (model, sheen,
