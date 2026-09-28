@@ -440,6 +440,7 @@ export class ReplayPlayer {
   // viewmodel's sway / bob (the game feeds these to its viewmodel motion).
   get camYawNow(): number { return this.camYaw; }
   get camPitchNow(): number { return this.camPitch; }
+  get starStreak(): number { return this.streaks.get(this.clip?.starId ?? '') ?? 0; }
   get starGroundSpeed(): number { return Math.hypot(this.starVel.x, this.starVel.z); }
 
   pause() { this.paused = true; }

@@ -21,6 +21,10 @@ import {
   DEFAULT_TITLE,
   UNUSUALS,
   emoteById,
+  cardById,
+  killEffectById,
+  nameColorById,
+  titleById,
   type UnusualKind,
   isCard,
   isEmote,
@@ -33,8 +37,10 @@ import {
   isTitle,
 } from './cosmetics';
 import { ITEM_DEFS } from './items/catalog';
-import { ITEM_SLOTS, UNUSUAL_EFFECTS, type ItemSlot, type Loadout, type Look } from './items/types';
-import { UnusualEffect } from './fx/unusuals';
+import { ITEM_SLOTS, KS_EFFECTS, KS_SHEENS, UNUSUAL_EFFECTS, strangeRank, type ItemSlot, type Loadout, type Look } from './items/types';
+import { UnusualEffect, unusualKindForEffect, type EffectKind } from './fx/unusuals';
+import { TauntAura } from './fx/taunt-aura';
+import { KillstreakEyes } from './fx/killstreak-eyes';
 import type { Settings } from '../app-types';
 import { isEmoteKind, type AnyEmoteKind } from './emotes';
 
@@ -118,6 +124,46 @@ export function withLegacyFromLooks(s: Settings): Settings {
     title: l.title,
   };
 }
+// ── Kit summary (killcam card / Play of the Match title) ─────────────────────
+// What an on-screen card says about a player's setup: their gun with its
+// qualities ("Professional Killstreak Wyrmfang"), their finisher, title and card
+// style. `strangeKills` (only known for your own strange gun) adds the Strange
+// rank + counter. Cosmetic text only.
+export type KitInfo = {
+  weapon: string; // e.g. 'Festive Killstreak Wyrmfang' (or 'Railgun')
+  weaponKills?: number; // the strange counter, when known
+  finisher: string; // '' for the default finisher
+  title: string; // '' = none
+  cardBg: string; // CSS background of the equipped playercard
+  cardAccent: string;
+  nameColor: string; // CSS colour of the name
+};
+
+export function kitInfo(looks: Loadout | undefined, strangeKills?: number | null): KitInfo {
+  const l = looks ?? {};
+  const fin = l.finish;
+  const def = fin ? ITEM_DEFS.find((d) => d.id === fin.d) : undefined;
+  const base = def && !def.default ? def.name : 'Railgun';
+  const parts: string[] = [];
+  const kills = typeof strangeKills === 'number' ? strangeKills : undefined;
+  if (kills !== undefined) parts.push(strangeRank(kills));
+  if (fin?.f) parts.push('Festive');
+  if (fin?.k) parts.push('Professional Killstreak');
+  else if (fin?.s) parts.push('Killstreak');
+  const legacy = looksToLegacy(l);
+  const card = cardById(legacy.card);
+  const finisher = legacy.killEffect === DEFAULT_KILL_EFFECT ? '' : killEffectById(legacy.killEffect).name;
+  return {
+    weapon: [...parts, base].join(' '),
+    weaponKills: kills,
+    finisher,
+    title: titleById(legacy.title).text,
+    cardBg: card.bg,
+    cardAccent: card.accent,
+    nameColor: nameColorById(legacy.nameColor).color,
+  };
+}
+
 // ── Loadout tokens ───────────────────────────────────────────────────────────
 // What `{type:'loadout', uids}` carries: per slot the equipped instance uid, or
 // `def:<id>` for a default/entitlement (the server drops anything unowned).
@@ -166,9 +212,23 @@ export function randomBotLoadout(): Loadout {
   const back = Math.random() < 0.4 ? oneOf(BACK_DEFS) : undefined;
   if (back) out.back = { d: back.id };
   const finish = Math.random() < 0.6 ? oneOf(FINISH_DEFS) : undefined;
-  if (finish) out.finish = { d: finish.id };
+  if (finish) {
+    out.finish = { d: finish.id };
+    // Variety for solo: some guns are Killstreak (a few Professional) and some Festive.
+    if (Math.random() < 0.3) {
+      out.finish.s = oneOf(KS_SHEENS)?.id;
+      if (Math.random() < 0.4) out.finish.k = oneOf(KS_EFFECTS)?.id;
+    }
+    if (Math.random() < 0.12) out.finish.f = 1;
+  }
   const emote = oneOf(EMOTE_DEFS);
-  if (emote) out.emote = { d: emote.id };
+  if (emote) {
+    out.emote = { d: emote.id };
+    if (Math.random() < 0.25) {
+      const fx = oneOf(UNUSUAL_EFFECTS.filter((e) => e.taunt && unusualKindForEffect(e.id)));
+      if (fx) out.emote.e = fx.id;
+    }
+  }
   return out;
 }
 
@@ -179,6 +239,10 @@ export function randomBotLoadout(): Loadout {
 // only this class's internals change — every caller already goes through it.
 export class BodyGear {
   private hat: WornHat;
+  // A v3 Unusual (any effect kind — the legacy WornHat only knows the old set),
+  // seated on the hat's unusual anchor so it crowns whatever hat is worn.
+  private fx: UnusualEffect | null = null;
+  private fxKind: EffectKind | null = null;
   constructor(headTop: THREE.Object3D) {
     this.hat = new WornHat(headTop);
   }
@@ -186,9 +250,27 @@ export class BodyGear {
   setLook(slot: 'hat' | 'face' | 'back', look: Look | undefined): void {
     if (slot !== 'hat') return;
     void this.hat.setHat(look && isHat(look.d) ? look.d : 'hat.none');
-    this.hat.setUnusual(effectToLegacyUnusual(look?.e));
+    const kind = unusualKindForEffect(look?.e);
+    if (kind) {
+      this.hat.setUnusual('unusual.none');
+      this.setFx(kind);
+    } else {
+      this.setFx(null);
+      this.hat.setUnusual(effectToLegacyUnusual(look?.e));
+    }
+  }
+  private setFx(kind: EffectKind | null): void {
+    if (kind === this.fxKind) return;
+    this.fxKind = kind;
+    this.fx?.group.removeFromParent();
+    this.fx?.dispose();
+    this.fx = null;
+    if (!kind) return;
+    this.fx = new UnusualEffect(kind);
+    (this.hat as unknown as { unusualAnchor: THREE.Group }).unusualAnchor.add(this.fx.group);
   }
   setLegacy(hatId: string, unusualId: string): void {
+    this.setFx(null);
     void this.hat.setHat(hatId);
     this.hat.setUnusual(unusualId);
   }
@@ -199,8 +281,10 @@ export class BodyGear {
   }
   update(dt: number): void {
     this.hat.update(dt);
+    this.fx?.update(dt);
   }
   dispose(): void {
+    this.setFx(null);
     this.hat.dispose();
   }
 }
@@ -223,17 +307,47 @@ export function applyFinishLook(gun: unknown, look: Look | undefined): void {
 }
 
 // ── VFX seams ────────────────────────────────────────────────────────────────
-export type TauntAuraLike = { group: THREE.Object3D; update(dt: number): void; dispose(): void };
-export type EyesLike = { setActive(on: boolean): void; update?(dt: number): void; dispose(): void };
+export type TauntAuraLike = {
+  group: THREE.Object3D;
+  update(dt: number): void;
+  dispose(): void;
+  // The VFX track's whole-body TauntAura: parented on the character root and
+  // started for the emote's length (the legacy crown emitter has neither).
+  start?(seconds: number): void;
+  stop?(): void;
+};
+export type EyesLike = {
+  setActive(on: boolean): void;
+  setStreak?(n: number): void;
+  update?(dt: number): void;
+  dispose(): void;
+};
 export const vfxHooks: {
-  // Set by the VFX track: `(k) => new TauntAura(k)`.
   createTauntAura?: (effectKind: string) => TauntAuraLike | null;
-  // Set by the VFX track: KillstreakEyes for a professional killstreak look.
   createKillstreakEyes?: (headTop: THREE.Object3D, ksEffect: string) => EyesLike | null;
 } = {};
 
-// A taunt's effect aura: the VFX track's TauntAura when wired, else the existing
-// Unusual emitter for kinds the old renderer knows.
+// VFX track wiring: the whole-body taunt aura and the killstreak eyes.
+vfxHooks.createTauntAura = (effectKind) => {
+  const kind = unusualKindForEffect(UNUSUAL_EFFECTS.find((e) => e.kind === effectKind)?.id);
+  if (!kind) return null;
+  const a = new TauntAura(kind);
+  return { group: a.group, update: (dt) => a.update(dt), dispose: () => a.dispose(), start: (sec) => a.start(sec), stop: () => a.stop() };
+};
+vfxHooks.createKillstreakEyes = (headTop, ksEffect) => {
+  const e = new KillstreakEyes();
+  e.setEffect(ksEffect);
+  headTop.add(e.group);
+  return {
+    setActive: () => {},
+    setStreak: (n) => e.setStreak(n),
+    update: (dt) => e.update(dt),
+    dispose: () => e.dispose(),
+  };
+};
+
+// A taunt's effect aura: the VFX track's TauntAura when the effect has one, else
+// the existing Unusual emitter for kinds the old renderer knows.
 export function createTauntAura(effectId: string | undefined): TauntAuraLike | null {
   const kind = effectKind(effectId);
   if (!kind) return null;

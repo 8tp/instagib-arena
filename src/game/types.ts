@@ -169,6 +169,9 @@ export type KillcamState = {
   remaining: number;
   total: number;
   killerCard?: CardPayload; // the killer's playercard (shown on the death screen)
+  // What the killer was holding (from their equipped Looks): the gun with its
+  // qualities and their finisher — shown on the killcam card when known.
+  killerKit?: { weapon: string; weaponKills?: number; finisher: string };
 };
 
 export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -200,6 +203,16 @@ export type PomState = {
   // can flash a hit-marker (clarifies what's happening). `hitHeadshot` colours it.
   hitId: number;
   hitHeadshot: boolean;
+  // The star's setup for the Play of the Match title card (from their recorded Looks).
+  kit?: {
+    weapon: string;
+    weaponKills?: number;
+    finisher: string;
+    title: string;
+    cardBg: string;
+    cardAccent: string;
+    nameColor: string;
+  };
 };
 
 // Live net diagnostics for the in-match debug overlay (toggle). Read-only — used
