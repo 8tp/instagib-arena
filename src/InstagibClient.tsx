@@ -33,7 +33,7 @@ import { LoadingScreen, type LoadStep } from './ui/LoadingScreen';
 import { useLevelshot } from './ui/levelshot';
 import { NameBadges } from './ui/badges';
 import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './ui/hud-const';
-import { FightCall, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
+import { FightCall, HudXpTicker, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
 import { fragLimitFor, mapIdByName, mapNameById, modeLine, modeTitle, placementLine, type MatchFlavor } from './ui/match-info';
 import { CONTROLS } from './controls';
 import { MAPS, mapById } from './game/map';
@@ -601,6 +601,10 @@ export default function InstagibClient() {
         onChangeSettings={setSettings}
         onExit={exitToLobby}
         onPlayAgain={playAgain}
+        onLogin={(r) => {
+          exitToLobby(r);
+          setLoginOpen(true);
+        }}
       />
     );
   }
@@ -691,12 +695,14 @@ function GameView({
   onChangeSettings,
   onExit,
   onPlayAgain,
+  onLogin,
 }: {
   config: MatchConfig;
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
   onExit: (result: MatchResult | null) => void;
   onPlayAgain: () => void;
+  onLogin: (result: MatchResult | null) => void; // guest → back to the lobby with the login sheet open
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1049,7 +1055,7 @@ function GameView({
     <div ref={containerRef} className='fixed inset-0 z-50 bg-black text-white'>
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
-      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} />}
+      {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1072,6 +1078,11 @@ function GameView({
           settings={settings}
           result={endResult}
           progression={endProgression}
+          voteEndsAt={hud.vote?.endsAtClient}
+          onLogin={() => {
+            exitFullscreen();
+            onLogin(endResult);
+          }}
           onContinue={() => setOnlineResults(false)}
         />
       )}
@@ -1144,6 +1155,12 @@ function GameView({
             exitFullscreen();
             onExit(endResult);
           }}
+          onLogin={() => {
+            exitFullscreen();
+            onLogin(endResult);
+          }}
+          // Training never reports stats; the weekly challenge goes to its own board.
+          expectRewards={!isChallenge && reportsOwnStats}
         />
       )}
       {settingsOpen && (
@@ -1779,7 +1796,17 @@ function JoinErrorOverlay({
 
 /* ───────────────────────── HUD layout ───────────────────────── */
 
-function HudOverlay({ store, settings, info }: { store: HudStore; settings: Settings; info: HudMatchInfo }) {
+function HudOverlay({
+  store,
+  settings,
+  info,
+  xpTicker,
+}: {
+  store: HudStore;
+  settings: Settings;
+  info: HudMatchInfo;
+  xpTicker: boolean;
+}) {
   const s = settings.uiScale || 1;
   // UI scale: a counter-sized wrapper rendered at 1/s then transform-scaled by s,
   // so corner-anchored HUD elements keep their anchors while everything resizes.
@@ -1796,7 +1823,7 @@ function HudOverlay({ store, settings, info }: { store: HudStore; settings: Sett
           className='absolute left-0 top-0 origin-top-left'
           style={{ width: `${100 / s}%`, height: `${100 / s}%`, transform: `scale(${s})` }}
         >
-          <HudLayout settings={settings} info={info} />
+          <HudLayout settings={settings} info={info} xpTicker={xpTicker} />
         </div>
       </div>
     </HudStoreContext.Provider>
@@ -1806,7 +1833,15 @@ function HudOverlay({ store, settings, info }: { store: HudStore; settings: Sett
 // Static layout. Each piece below subscribes to its own slice of the store, so
 // a HudState push only re-renders the pieces whose slice actually changed (a
 // push with only `speed` changed re-renders the speed readout alone).
-const HudLayout = memo(function HudLayout({ settings, info }: { settings: Settings; info: HudMatchInfo }) {
+const HudLayout = memo(function HudLayout({
+  settings,
+  info,
+  xpTicker,
+}: {
+  settings: Settings;
+  info: HudMatchInfo;
+  xpTicker: boolean;
+}) {
   const dead = useHudSlice((s) => s.killcam !== null);
   return (
     <>
@@ -1825,6 +1860,7 @@ const HudLayout = memo(function HudLayout({ settings, info }: { settings: Settin
       <HudBanner />
       <HudCaptions captions={settings.captions} />
       <HudFragPopup />
+      <HudXpTicker enabled={xpTicker} />
       {/* Your own card is NOT shown on your kills — it's broadcast so the VICTIM
           sees it on their killcam. The killer's card shows on YOUR killcam below. */}
       <HudKillcam reduced={settings.reducedEffects} />
