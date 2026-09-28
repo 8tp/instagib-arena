@@ -93,7 +93,8 @@ export function ModalShell({
   className = '',
   backdrop = 'dim',
   dismissOnBackdrop = true,
-  closeSound = 'uiBack',
+  openSound = 'modalOpen',
+  closeSound = 'modalClose',
   closeLabel = '✕ Esc',
 }: {
   title?: string;
@@ -114,6 +115,7 @@ export function ModalShell({
   className?: string;
   backdrop?: 'dim' | 'heavy';
   dismissOnBackdrop?: boolean;
+  openSound?: UiSoundName | 'none'; // soft whoosh on mount ('none' when the dialog brings its own sting)
   closeSound?: UiSoundName | 'none';
   closeLabel?: string;
 }) {
@@ -140,6 +142,13 @@ export function ModalShell({
     timerRef.current = window.setTimeout(() => onCloseRef.current?.(), MODAL_EXIT_MS);
   }, [closeSound]);
   useEffect(() => () => window.clearTimeout(timerRef.current), []);
+
+  // Open cue on mount. Passive: it only sounds once the UI context is running
+  // (a modal the engine mounts never unlocks audio by itself).
+  const openSoundRef = useRef(openSound);
+  useEffect(() => {
+    if (openSoundRef.current !== 'none') playUi(openSoundRef.current);
+  }, []);
 
   // Initial focus + restore-on-close. Layout effect so a React `autoFocus`
   // inside the body (which fires during commit) is respected, not overridden.
