@@ -6,6 +6,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { VignetteShader } from 'three/examples/jsm/shaders/VignetteShader.js';
 import { FOV_DEG } from './constants';
 import type { ArenaMap } from './map';
@@ -282,6 +283,132 @@ export type PostFxOptions = {
   vignette: boolean;
 };
 
+// ─────────────────────────────────────────────────────────────────────────
+// First-person viewmodel layer. The held railgun lives in its OWN scene and is
+// drawn after the world into the same buffer with the depth cleared, so it can
+// never clip into a wall, a door frame or a player you are hugging. It is drawn
+// inside the composer (before bloom + AA), so its energy coils still bloom.
+//
+// Parent the gun to `camera` (a PerspectiveCamera, so the railgun's coil driver
+// still sees "parented to a camera" and treats it as the viewmodel). Every
+// frame `sync()` copies the world camera's pose + projection onto it (the same
+// projection, so the gun's muzzle lines up on screen with the world-space beam
+// that leaves from it) and mirrors the world's sun / hemisphere / fill + IBL,
+// so the gun is lit by the map it is in. The near plane is much closer than
+// the world camera's, so the stock can come right up to the lens.
+//
+// Nothing here changes what the player can see of the world: the gun covers
+// exactly the pixels it covered before, it just no longer pokes into geometry.
+// ─────────────────────────────────────────────────────────────────────────
+const VIEWMODEL_NEAR = 0.01;
+const VIEWMODEL_FAR = 20;
+// A floor under the mirrored IBL: the RoomEnvironment reflection is what shows
+// a metal gun's shape, and the darkest themes sit at 0.3. Kept below the lab
+// look (0.4–0.5) so the gun never out-shines the world around it.
+const VIEWMODEL_ENV_MIN = 0.42;
+const VIEWMODEL_KEY = 0.55;
+const WHITE = new THREE.Color(0xffffff);
+
+export class ViewmodelLayer {
+  readonly scene = new THREE.Scene();
+  readonly camera = new THREE.PerspectiveCamera(FOV_DEG, 1, VIEWMODEL_NEAR, VIEWMODEL_FAR);
+  private readonly hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5);
+  private readonly sun = new THREE.DirectionalLight(0xffffff, 1);
+  private readonly fill = new THREE.DirectionalLight(0xffffff, 0.3);
+  // A soft key riding with the view from the upper left — the flank of the gun
+  // the player actually sees — so its shape reads whatever the map's sun does.
+  // Tinted by the theme's sky light; weak enough to stay a fill.
+  private readonly key = new THREE.DirectionalLight(0xffffff, VIEWMODEL_KEY);
+  private readonly tmpScale = new THREE.Vector3();
+
+  constructor(
+    private readonly world: THREE.Scene,
+    private readonly worldCamera: THREE.Camera,
+  ) {
+    this.scene.name = 'viewmodel-layer';
+    this.camera.name = 'viewmodel-camera';
+    this.scene.add(this.camera, this.hemi, this.sun, this.fill);
+    // Directional lights aim at their target's WORLD position; park both at
+    // the origin and steer by moving the light itself (see sync).
+    this.scene.add(this.sun.target, this.fill.target);
+    this.camera.add(this.key, this.key.target);
+    this.key.position.set(-0.8, 1.0, 0.5);
+    this.key.target.position.set(0.4, -0.4, -1.0);
+  }
+
+  // True when anything under the camera would draw (skip the pass otherwise).
+  get active(): boolean {
+    for (const c of this.camera.children) {
+      if (c.visible && c !== this.key && c !== this.key.target) return true;
+    }
+    return false;
+  }
+
+  sync() {
+    const src = this.worldCamera as THREE.PerspectiveCamera;
+    src.updateWorldMatrix(true, false);
+    src.matrixWorld.decompose(this.camera.position, this.camera.quaternion, this.tmpScale);
+    const cam = this.camera;
+    if (src.isPerspectiveCamera) {
+      if (cam.fov !== src.fov || cam.aspect !== src.aspect || cam.zoom !== src.zoom) {
+        cam.fov = src.fov;
+        cam.aspect = src.aspect;
+        cam.zoom = src.zoom;
+        cam.updateProjectionMatrix();
+      }
+    }
+    // Lights + IBL follow the world theme.
+    const w = this.world;
+    this.scene.environment = w.environment;
+    this.scene.environmentIntensity = Math.max(VIEWMODEL_ENV_MIN, w.environmentIntensity);
+    this.scene.environmentRotation.copy(w.environmentRotation);
+    const l = getArenaLighting(w);
+    if (l) {
+      this.hemi.color.copy(l.hemi.color);
+      this.hemi.groundColor.copy(l.hemi.groundColor);
+      this.hemi.intensity = l.hemi.intensity;
+      this.sun.color.copy(l.sun.color);
+      this.sun.intensity = l.sun.intensity;
+      this.sun.position.copy(l.sunDir).multiplyScalar(10);
+      this.fill.color.copy(l.fill.color);
+      this.fill.intensity = l.fill.intensity;
+      this.fill.position.copy(l.fill.position).normalize().multiplyScalar(10);
+      this.key.color.copy(WHITE).lerp(l.hemi.color, 0.5);
+    }
+  }
+
+  // Draw the gun over whatever is in the currently bound target.
+  render(renderer: THREE.WebGLRenderer) {
+    const auto = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(this.scene, this.camera);
+    renderer.autoClear = auto;
+  }
+
+  dispose() {
+    // The gun is the caller's (it disposes its own model); the IBL is the
+    // world scene's. Only detach here.
+    this.scene.environment = null;
+    this.camera.clear();
+  }
+}
+
+// Composer pass: the viewmodel over the world render, in the same HDR buffer
+// (no swap), before bloom.
+class ViewmodelPass extends Pass {
+  constructor(private readonly layer: ViewmodelLayer) {
+    super();
+    this.needsSwap = false;
+  }
+
+  render(renderer: THREE.WebGLRenderer, _write: THREE.WebGLRenderTarget, read: THREE.WebGLRenderTarget) {
+    if (!this.layer.active) return;
+    renderer.setRenderTarget(this.renderToScreen ? null : read);
+    this.layer.render(renderer);
+  }
+}
+
 // UnrealBloomPass with the high-pass keyed on the brightest channel instead of
 // luminance. Luminance under-weights saturated reds/blues (a red rail core at
 // linear 2.4 has luminance ~0.6 and would never glow while a cyan one does);
@@ -322,6 +449,9 @@ class ArenaBloomPass extends UnrealBloomPass {
 // castShadow (which re-keys the lights hash, so materials recompile on their
 // own — no needsUpdate sweep).
 export class PostFxPipeline {
+  // The first-person gun's own layer (see ViewmodelLayer): parent the gun to
+  // `viewmodel.camera`; it draws after the world with the depth cleared.
+  readonly viewmodel: ViewmodelLayer;
   private composer: EffectComposer | null = null;
   private bloomPass: ArenaBloomPass | null = null;
   private vignettePass: ShaderPass | null = null;
@@ -349,6 +479,7 @@ export class PostFxPipeline {
     private readonly camera: THREE.Camera,
   ) {
     this.lighting = getArenaLighting(scene) ?? null;
+    this.viewmodel = new ViewmodelLayer(scene, camera);
     renderer.shadowMap.enabled = true; // inert until a light casts
     renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoft is deprecated in r184 (it fell back to PCF anyway)
     this.syncSunBasis();
@@ -367,6 +498,7 @@ export class PostFxPipeline {
   private buildComposer() {
     const composer = new EffectComposer(this.renderer);
     composer.addPass(new RenderPass(this.scene, this.camera));
+    composer.addPass(new ViewmodelPass(this.viewmodel));
     const bloom = new ArenaBloomPass(
       new THREE.Vector2(this.width * this.pixelRatio, this.height * this.pixelRatio),
       BLOOM_TUNING.strength,
@@ -470,12 +602,19 @@ export class PostFxPipeline {
       u.uInvTonemap.value = composed ? 1 : 0;
       u.uExposure.value = this.renderer.toneMappingExposure;
     }
+    const vm = this.viewmodel;
+    const drawVm = vm.active;
+    if (drawVm) vm.sync();
     if (composed && this.composer) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
+    else {
+      this.renderer.render(this.scene, this.camera);
+      if (drawVm) vm.render(this.renderer);
+    }
   }
 
   dispose() {
     this.disposeComposer();
+    this.viewmodel.dispose();
     const sun = this.lighting?.sun;
     if (sun) {
       sun.shadow.map?.dispose();

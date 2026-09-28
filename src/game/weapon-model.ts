@@ -1,226 +1,99 @@
 import * as THREE from 'three';
-import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { RailgunFinish } from './cosmetics';
 import { flashTexture } from './fx-pool';
 import { localRail, nowMs } from './fx/rail-state';
+import { BARREL_Y, COIL_COUNT, MUZZLE_Z, railgunGeometry, type GunLod } from './gun/gun-geometry';
+import { GunMaterial, STOCK_FINISH, type GunUniforms } from './gun/gun-material';
 
 // ─────────────────────────────────────────────────────────────────────────
-// Procedural railgun (no external asset — the game's art pipeline is all
-// procedural). A Q3-inspired long gun: a machined receiver with an angled
-// rubber grip and a skeletal carbon stock, a rear power capacitor, and a long
-// slim accelerator — a barrel between twin conductor rails, wrapped by a row of
-// six energy coils, ending in a finned emitter shroud.
+// Procedural railgun (no external asset — the art pipeline is all procedural).
+// A chunky Q3-style rail: heavy receiver with heat-sink fins and a charge
+// window in each flank, rear capacitor, skeletal stock, and a long accelerator
+// — a glowing energy core between four conductor rails, ringed by four bold
+// coils, ending in a pronged emitter. Geometry: gun/gun-geometry.ts (built once
+// per LOD, shared). Surface + finish patterns: gun/gun-material.ts (one
+// material, one draw call for the whole gun).
 //
-// The coils ARE the ammo readout (first-person viewmodel): bright when ready;
-// on a shot they flash white-hot, drop dark, and refill one by one front
-// (muzzle) to back over the recharge, with a glint when the rail is ready. The
-// capacitor fills with the charge too. See CoilDriver below.
+// The coils ARE the ammo readout (first-person viewmodel): lit when ready; on
+// a shot they flash white-hot, drop dark, and refill one by one front (muzzle)
+// to back over the recharge, with a glint when the rail is ready. The core,
+// the capacitor and the flank charge windows follow the same charge. See
+// CoilDriver below.
 //
 // MODEL-SPACE CONVENTION (stable — third-person sockets depend on it):
 //   • origin   = the grip / trigger point (the right hand's palm sits just
 //                below and behind it, around (0, -0.12, 0.09));
 //   • forward  = -Z (the barrel points down -Z, the camera's forward);
 //   • up       = +Y; the gun is symmetric about X = 0;
-//   • scale    = 1 unit ≈ 1 m at scale 1: ~1.33 long (butt +0.44 → tip -0.9),
-//                muzzle marker at (0, 0.03, -0.9). Callers scale the group
-//                (first person 0.8; the combatant hand socket ~0.6, see character/gun.ts).
+//   • scale    = 1 unit ≈ 1 m at scale 1: ~1.36 long (butt +0.45 → prong tips
+//                -0.92), muzzle marker at (0, 0.03, -0.9). Callers scale the
+//                group (first person 0.8; the combatant hand socket ~0.6, see
+//                character/gun.ts).
 //
-// Parts are merged per material (≈ 12 draw calls first person, 7 third person)
-// and every geometry/material here belongs to the returned group — the caller
-// disposes it like any other mesh group. Only the flash texture is shared.
+// Resources: the geometry is shared (userData.shared) — never dispose it; the
+// material + flare material are per gun: free them with `model.dispose()`.
 // ─────────────────────────────────────────────────────────────────────────
-
-// Stock finish (the default railgun look). A `RailgunFinish` cosmetic overrides
-// these per-build; see RAILGUN_FINISHES in cosmetics.ts.
-const STOCK_BODY = 0x171b22; // near-black receiver
-const STOCK_METAL = 0x2c333f; // gunmetal
-const STOCK_METAL_LT = 0x515d6e; // lighter frame edges
-const STOCK_ACCENT = 0x37a6ff; // rail blue (matches the beam)
-const STOCK_ACCENT_HOT = 0x8af2ff; // bright cyan energy
-
-const COIL_COUNT = 6;
-const BARREL_Y = 0.03; // accelerator axis height
 
 // Coil emissive levels (linear). REST is a restrained meter glow, well under
 // the bloom threshold (1.5): a ready gun reads "charged", not as a lamp under
 // the crosshair. The fire flash blooms; the fill edge + ready glint just lift.
-const COIL_REST = 0.55;
+const COIL_REST = 0.62;
 const COIL_DARK = 0.03;
-const COIL_EDGE = 1.2; // leading-edge glint while a coil fills
+const COIL_EDGE = 1.25; // leading-edge glint while a coil fills
 const COIL_FLASH = 7;
 const COIL_READY = 1.1;
-const CAP_REST = 0.35;
+const CORE_REST = 0.95;
+const CORE_DARK = 0.05;
+const CORE_FLASH = 6;
+const WIN_REST = 0.8;
+const CAP_REST = 0.45;
+const FLASH_LIGHT = 2.2; // discharge light thrown on the barrel
 // An explicit drive (setCharge/notifyFire) lapses back to the shared local
 // state after this long without a call (e.g. a spectator starts playing).
 const EXTERNAL_LAPSE_MS = 600;
 
-export type RailgunLod = 'high' | 'low';
+export type RailgunLod = GunLod;
 
 export type RailgunModel = {
   group: THREE.Group;
   muzzle: THREE.Object3D; // barrel-tip marker (beam origin)
-  // Shared accent emissive (receiver status strips + emitter ring). The Game
-  // pops its intensity on fire / kill and eases it back to 0.8.
+  // The gun's material. Its emissive (accent-hot × emissiveIntensity) lights
+  // the status strips + emitter ring: the Game pops the intensity on fire /
+  // kill and eases it back to 0.8.
   glow: THREE.MeshStandardMaterial;
   // Additive discharge flare seated on the muzzle, hidden at rest. The first-
   // person viewmodel drives it (visible + opacity 1→0 + scale 1→1.9) per shot.
   muzzleFlash: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
   // Drive the coils explicitly: 0 = just fired … 1 = ready. Once called, the
   // gun ignores the shared local-rail state (fx/rail-state.ts). A first-person
-  // viewmodel parented to the camera follows that state automatically.
+  // viewmodel parented to a camera follows that state automatically.
   setCharge(charge: number): void;
   // Flash the coils for a shot (explicit drive only; pairs with setCharge).
   notifyFire(): void;
+  // Swap the finish in place (uniforms; a pattern change swaps the shader
+  // program) — no geometry rebuild. Same as recolorRailgun(model, finish).
+  setFinish(finish?: RailgunFinish): void;
+  // Low-spec tier: drop the per-pixel extras (pattern relief, bounce light).
+  setLowSpec(low: boolean): void;
+  // Free this gun's own resources (materials). The geometry is shared.
+  dispose(): void;
 };
 
 export type BuildRailgunOptions = {
-  // 'high' (default): first-person / locker detail with per-coil materials.
-  // 'low': third-person — fewer segments, no small detail, one coil material.
+  // 'high' (default): first-person / locker detail (relief, bounce light).
+  // 'low': third person — fewer segments, flat shading of the patterns.
   lod?: RailgunLod;
 };
 
-// ── Geometry helpers ─────────────────────────────────────────────────────────
-
-type V3 = [number, number, number];
-
-// A box with every edge chamfered by `c` (convex hull of the 24 cut corners):
-// flat-shaded bevels that catch a highlight on each edge.
-function chamferBox(w: number, h: number, d: number, c: number): THREE.BufferGeometry {
-  const x = w / 2, y = h / 2, z = d / 2;
-  const pts: THREE.Vector3[] = [];
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        pts.push(
-          new THREE.Vector3(sx * x, sy * (y - c), sz * (z - c)),
-          new THREE.Vector3(sx * (x - c), sy * y, sz * (z - c)),
-          new THREE.Vector3(sx * (x - c), sy * (y - c), sz * z),
-        );
-      }
-    }
-  }
-  return new ConvexGeometry(pts);
-}
-
-// Hull through chamfered rectangles ("stations") along Z: tapered receivers,
-// wedges and stocks. Each station is [z, width, height, yCentre]; the first and
-// last get a chamfered end face.
-function stationPrism(stations: Array<[number, number, number, number]>, c: number): THREE.BufferGeometry {
-  const pts: THREE.Vector3[] = [];
-  const ring = (z: number, w: number, h: number, yc: number) => {
-    const x = w / 2, y = h / 2;
-    for (const sx of [-1, 1]) {
-      for (const sy of [-1, 1]) {
-        pts.push(new THREE.Vector3(sx * x, yc + sy * (y - c), z), new THREE.Vector3(sx * (x - c), yc + sy * y, z));
-      }
-    }
-  };
-  stations.forEach(([z, w, h, yc], i) => {
-    const end = i === 0 ? 1 : i === stations.length - 1 ? -1 : 0;
-    if (end === 0) {
-      ring(z, w, h, yc);
-      return;
-    }
-    // Chamfered end: full section `c` inside, inset section on the face.
-    const dir = Math.sign(stations[i === 0 ? 1 : i - 1][0] - z) || 1;
-    ring(z + dir * c, w, h, yc);
-    ring(z, w - 2 * c, h - 2 * c, yc);
-  });
-  return new ConvexGeometry(pts);
-}
-
-// Surface of revolution about the Z axis from a [radius, z] profile, built one
-// band per profile segment so each band keeps its own normal: smooth around the
-// axis, crisp at every chamfer. Walk the profile outward-then-back (e.g. rear
-// cap → side → front cap) with z increasing for outward-facing sides.
-function latheZ(profile: Array<[number, number]>, seg: number): THREE.BufferGeometry {
-  const bands: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < profile.length - 1; i++) {
-    const a = profile[i];
-    const b = profile[i + 1];
-    if (a[0] === b[0] && a[1] === b[1]) continue;
-    const g = new THREE.LatheGeometry([new THREE.Vector2(a[0], a[1]), new THREE.Vector2(b[0], b[1])], seg);
-    g.rotateX(Math.PI / 2); // lathe +Y → +Z
-    bands.push(prep(g));
-  }
-  const merged = mergeGeometries(bands, false);
-  for (const g of bands) g.dispose();
-  return merged ?? new THREE.BufferGeometry();
-}
-
-// Normalise to non-indexed position/normal/uv so every part merges per material.
-function prep(g: THREE.BufferGeometry): THREE.BufferGeometry {
-  let out = g;
-  if (g.index) {
-    out = g.toNonIndexed();
-    g.dispose();
-  }
-  for (const name of Object.keys(out.attributes)) {
-    if (name !== 'position' && name !== 'normal' && name !== 'uv') out.deleteAttribute(name);
-  }
-  if (!out.attributes.normal) out.computeVertexNormals();
-  if (!out.attributes.uv) {
-    out.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(out.attributes.position.count * 2), 2));
-  }
-  return out;
-}
-
-// Box-projected UVs in gun space (metres × scale): the carbon weave tiles at a
-// constant size on every face regardless of the part's own UV layout.
-function boxUv(g: THREE.BufferGeometry, scale: number) {
-  const pos = g.attributes.position;
-  const nor = g.attributes.normal;
-  const uv = g.attributes.uv as THREE.BufferAttribute;
-  for (let i = 0; i < pos.count; i++) {
-    const nx = Math.abs(nor.getX(i)), ny = Math.abs(nor.getY(i)), nz = Math.abs(nor.getZ(i));
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    if (nx >= ny && nx >= nz) uv.setXY(i, z * scale, y * scale);
-    else if (ny >= nz) uv.setXY(i, x * scale, z * scale);
-    else uv.setXY(i, x * scale, y * scale);
-  }
-  uv.needsUpdate = true;
-}
-
-// ── Procedural textures (module-cached, shared by every gun) ────────────────
-
-let carbonTex: THREE.Texture | null = null;
-// 2×2 twill carbon weave: alternating light/dark tows with a soft sheen.
-function carbonTexture(): THREE.Texture | null {
-  if (carbonTex) return carbonTex;
-  if (typeof document === 'undefined') return null;
-  const S = 64;
-  const cv = document.createElement('canvas');
-  cv.width = cv.height = S;
-  const ctx = cv.getContext('2d')!;
-  const cell = S / 4;
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) {
-      const horiz = ((i + j) & 3) < 2;
-      const g = horiz
-        ? ctx.createLinearGradient(0, j * cell, 0, (j + 1) * cell)
-        : ctx.createLinearGradient(i * cell, 0, (i + 1) * cell, 0);
-      g.addColorStop(0, '#6d6d6d');
-      g.addColorStop(0.5, horiz ? '#f2f2f2' : '#c4c4c4');
-      g.addColorStop(1, '#6d6d6d');
-      ctx.fillStyle = g;
-      ctx.fillRect(i * cell, j * cell, cell, cell);
-    }
-  }
-  const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.anisotropy = 4;
-  carbonTex = t;
-  return t;
-}
-
 // ── Coil driver ─────────────────────────────────────────────────────────────
 
-const tmpHot = new THREE.Color();
+const tmpA = new THREE.Color();
+const tmpB = new THREE.Color();
 
-// Animates the coil + capacitor emissives from the rail charge. Time-based
-// (performance.now) so the flash/glint look identical at any frame rate.
+// Animates the coils, core, capacitor and charge windows from the rail charge.
+// Time-based (performance.now) so the flash/glint look identical at any frame
+// rate.
 class CoilDriver {
   external = false;
   externalMs = -1e9;
@@ -230,281 +103,101 @@ class CoilDriver {
   private readyMs = -1e9;
   private prevCharge = 1;
 
-  constructor(
-    private readonly coils: THREE.MeshStandardMaterial[], // front (muzzle) → back
-    private readonly cap: THREE.MeshStandardMaterial,
-    private readonly accent: THREE.Color,
-    private readonly hot: THREE.Color,
-  ) {}
+  constructor(private readonly u: GunUniforms) {}
 
   fire(now: number) {
     this.fireMs = now;
   }
 
-  update(now: number) {
+  // `live` = follow the local rail (first-person viewmodel); otherwise the
+  // explicit drive, or a full charge (locker / showcase).
+  update(now: number, live: boolean) {
     if (this.external && now - this.externalMs > EXTERNAL_LAPSE_MS) this.external = false;
     if (!this.external) {
-      this.charge = localRail.charge;
-      if (localRail.shots !== this.shots) {
-        if (this.shots >= 0) this.fireMs = now;
-        this.shots = localRail.shots;
+      if (live) {
+        this.charge = localRail.charge;
+        if (localRail.shots !== this.shots) {
+          if (this.shots >= 0) this.fireMs = now;
+          this.shots = localRail.shots;
+        }
+      } else {
+        this.charge = 1;
       }
     }
+    const u = this.u;
+    const accent = u.uAccent.value;
+    const hot = u.uAccentHot.value;
     const charge = Math.max(0, Math.min(1, this.charge));
     if (charge >= 1 && this.prevCharge < 1) this.readyMs = now;
     this.prevCharge = charge;
 
     const sinceFire = (now - this.fireMs) / 1000;
-    const flash = sinceFire < 0.4 ? Math.exp(-sinceFire * 26) : 0;
+    const flash = sinceFire >= 0 && sinceFire < 0.4 ? Math.exp(-sinceFire * 26) : 0;
     const sinceReady = (now - this.readyMs) / 1000;
-    const ready = sinceReady < 0.6 ? Math.exp(-sinceReady * 8) : 0;
+    const ready = sinceReady >= 0 && sinceReady < 0.6 ? Math.exp(-sinceReady * 8) : 0;
     // The first ~12 % of the recharge stays dark so the discharge reads, then
     // the coils refill one after another, front (muzzle) to back.
     const fill = Math.max(0, Math.min(1, (charge - 0.12) / 0.86));
-    const n = this.coils.length;
-    const t = now / 1000;
-    for (let i = 0; i < n; i++) {
-      const p = Math.max(0, Math.min(1, fill * n - i));
+    const t = (now / 1000) % 3600;
+    for (let i = 0; i < COIL_COUNT; i++) {
+      const p = Math.max(0, Math.min(1, fill * COIL_COUNT - i));
       const level = p * p * (3 - 2 * p);
       const edge = p > 0 && p < 1 ? 4 * p * (1 - p) : 0;
       // Charged coils carry a faint wave running back along the barrel, so a
       // ready gun reads as live energy rather than a static light.
-      const hum = 1 + 0.09 * level * Math.sin(t * 5.2 - i * 0.9);
-      const mat = this.coils[i];
-      mat.emissiveIntensity =
-        (COIL_DARK + (COIL_REST - COIL_DARK) * level) * hum + COIL_EDGE * edge + COIL_FLASH * flash + COIL_READY * ready;
+      const hum = 1 + 0.1 * level * Math.sin(t * 5.2 - i * 1.1);
+      const k = (COIL_DARK + (COIL_REST - COIL_DARK) * level) * hum + COIL_EDGE * edge + COIL_FLASH * flash + COIL_READY * ready;
       const h = Math.min(1, flash * 1.4 + edge * 0.7 + ready * 0.8);
-      mat.emissive.copy(this.accent).lerp(this.hot, h);
+      u.uCoil.value[i].copy(accent).lerp(hot, h).multiplyScalar(k);
     }
-    this.cap.emissiveIntensity = 0.08 + CAP_REST * fill + 5 * flash + 0.8 * ready;
-    tmpHot.copy(this.accent).lerp(this.hot, Math.min(1, flash + 0.35));
-    this.cap.emissive.copy(tmpHot);
+    // Core: powers down on the shot, refills with the charge.
+    const coreK = CORE_DARK + (CORE_REST - CORE_DARK) * fill + CORE_FLASH * flash + 0.7 * ready;
+    tmpA.copy(accent).lerp(hot, Math.min(1, 0.35 + flash * 1.5 + ready * 0.4));
+    u.uCore.value.copy(tmpA).multiplyScalar(coreK);
+    // Charge windows: a gauge (w = fill), brighter as it tops out.
+    const winK = WIN_REST * (0.7 + 0.3 * charge) + 3 * flash + 0.8 * ready;
+    tmpB.copy(accent).lerp(hot, Math.min(1, 0.3 + 0.6 * ready + flash)).multiplyScalar(winK);
+    u.uWin.value.set(tmpB.r, tmpB.g, tmpB.b, charge);
+    // Capacitor.
+    const capK = 0.08 + CAP_REST * fill + 5 * flash + 0.8 * ready;
+    u.uCap.value.copy(accent).lerp(hot, Math.min(1, flash + 0.35)).multiplyScalar(capK);
+    // Discharge light on the barrel.
+    u.uFlash.value.copy(hot).multiplyScalar(FLASH_LIGHT * flash);
+    u.uTime.value = t;
   }
 }
 
 // ── Builder ─────────────────────────────────────────────────────────────────
 
-type Bucket = 'body' | 'metal' | 'metalLt' | 'rubber' | 'carbon' | 'glow' | 'cap' | 'coil' | `coil${number}`;
+let flareGeo: THREE.BufferGeometry | null = null;
 
 // Canonical railgun (see the convention above). `finish` (a railgun-finish
-// cosmetic's colours) recolours it; omitted = stock.
+// cosmetic's colours + pattern) recolours it; omitted = stock.
 export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions = {}): RailgunModel {
   const lod: RailgunLod = opts.lod ?? 'high';
-  const hi = lod === 'high';
-  const SEG = hi ? 20 : 10; // radial segments for round parts
-
-  const COL_BODY = finish?.body ?? STOCK_BODY;
-  const COL_METAL = finish?.metal ?? STOCK_METAL;
-  const COL_METAL_LT = finish?.metalLt ?? STOCK_METAL_LT;
-  const COL_ACCENT = finish?.accent ?? STOCK_ACCENT;
-  const COL_ACCENT_HOT = finish?.accentHot ?? STOCK_ACCENT_HOT;
-
+  const f = finish ?? STOCK_FINISH;
   const group = new THREE.Group();
-  const parts = new Map<Bucket, THREE.BufferGeometry[]>();
-  const tmpM = new THREE.Matrix4();
-  const tmpQ = new THREE.Quaternion();
-  const tmpE = new THREE.Euler();
-  const tmpP = new THREE.Vector3();
-  const ONE = new THREE.Vector3(1, 1, 1);
-  const put = (bucket: Bucket, geo: THREE.BufferGeometry, pos: V3 = [0, 0, 0], rot?: V3) => {
-    const g = prep(geo);
-    tmpQ.setFromEuler(tmpE.set(rot?.[0] ?? 0, rot?.[1] ?? 0, rot?.[2] ?? 0));
-    g.applyMatrix4(tmpM.compose(tmpP.set(...pos), tmpQ, ONE));
-    let list = parts.get(bucket);
-    if (!list) parts.set(bucket, (list = []));
-    list.push(g);
-  };
+  group.name = 'railgun';
 
-  // ── Receiver: a tapered, chamfered body with a separate top cover ─────────
-  put('body', stationPrism([
-    [0.135, 0.1, 0.112, 0.018],
-    [-0.12, 0.1, 0.112, 0.018],
-    [-0.205, 0.088, 0.094, 0.026],
-  ], 0.014));
-  put('metal', stationPrism([
-    [0.12, 0.078, 0.03, 0.088],
-    [-0.19, 0.078, 0.03, 0.088],
-    [-0.215, 0.066, 0.022, 0.084],
-  ], 0.008));
-  // Low top rail (picatinny-style) — gives the top a machined read.
-  put('metalLt', chamferBox(0.03, 0.012, 0.26, 0.003), [0, 0.108, -0.045]);
-  // Side plates, each carrying a thin accent status strip (the pulsed `glow`).
-  for (const sx of [-1, 1]) {
-    put('metal', chamferBox(0.008, 0.066, 0.22, 0.003), [sx * 0.051, 0.022, -0.04]);
-    put('glow', new THREE.BoxGeometry(0.004, 0.005, 0.15), [sx * 0.0556, 0.004, -0.045]);
-  }
-  if (hi) {
-    // Top-rail cross slots + side vents (rubber = near-black recesses).
-    for (let i = 0; i < 7; i++) put('metal', new THREE.BoxGeometry(0.034, 0.006, 0.01), [0, 0.113, 0.06 - i * 0.034]);
-    for (const sx of [-1, 1]) {
-      for (let i = 0; i < 3; i++) {
-        put('rubber', chamferBox(0.004, 0.016, 0.032, 0.0015), [sx * 0.0555, 0.036, -0.0 - i * 0.046]);
-      }
-    }
-  }
-
-  // ── Power capacitor behind the receiver: a charge core in a strut cage ────
-  // Sits below the receiver's top line so the first-person view looks over it.
-  const capZ0 = 0.13;
-  const capZ1 = 0.27;
-  const capY = 0.012;
-  put('cap', latheZ([[0, capZ0], [0.028, capZ0], [0.028, capZ1], [0, capZ1]], SEG), [0, capY, 0]);
-  for (const [z0, z1] of [[capZ0 - 0.006, capZ0 + 0.022], [capZ1 - 0.022, capZ1 + 0.006]] as const) {
-    put('metal', latheZ([[0, z0], [0.04, z0], [0.047, z0 + 0.007], [0.047, z1 - 0.007], [0.04, z1], [0, z1]], SEG), [0, capY, 0]);
-  }
-  if (hi) put('metal', latheZ([[0.029, 0.193], [0.038, 0.193], [0.038, 0.207], [0.029, 0.207]], SEG), [0, capY, 0]);
-  const struts = hi ? 6 : 3;
-  for (let i = 0; i < struts; i++) {
-    const a = Math.PI / 2 + (i * Math.PI * 2) / struts;
-    put('metalLt', chamferBox(0.012, 0.01, capZ1 - capZ0 - 0.03, 0.003),
-      [Math.cos(a) * 0.034, capY + Math.sin(a) * 0.034, (capZ0 + capZ1) / 2], [0, 0, a - Math.PI / 2]);
-  }
-
-  // ── Accelerator: barrel between twin conductor rails, wrapped by coils ────
-  // Coil housing where the accelerator leaves the receiver.
-  put('metal', latheZ([[0.02, -0.262], [0.052, -0.262], [0.062, -0.25], [0.062, -0.205], [0.05, -0.198]], SEG), [0, BARREL_Y, 0]);
-  put('metalLt', latheZ([[0, -0.87], [0.019, -0.87], [0.019, -0.26], [0, -0.26]], hi ? 12 : 8), [0, BARREL_Y, 0]);
-  for (const sx of [-1, 1]) {
-    put('metal', chamferBox(0.012, 0.03, 0.52, 0.003), [sx * 0.031, BARREL_Y, -0.505]);
-  }
-  // Lower spine tying the coil housing to the emitter shroud.
-  put('metal', chamferBox(0.022, 0.016, 0.52, 0.004), [0, BARREL_Y - 0.064, -0.505]);
-
-  const COIL_PITCH = 0.084;
-  const coilZ = (i: number) => -0.3 - i * COIL_PITCH; // i = 0 nearest the receiver
-  for (let i = 0; i < COIL_COUNT; i++) {
-    const z = coilZ(i);
-    // Front-most coil is index 0 in the driver (fills first).
-    const bucket: Bucket = hi ? `coil${COIL_COUNT - 1 - i}` : 'coil';
-    // Third person gets a fatter ring so the coils still read as bands at range.
-    put(bucket, new THREE.TorusGeometry(0.046, hi ? 0.0095 : 0.0135, hi ? 8 : 5, hi ? 28 : 14), [0, BARREL_Y, z]);
-    // A dark machined collar midway to the next coil separates the rings, so
-    // the row reads as six discrete coils (not a spring) and frames the glow.
-    const c = z - COIL_PITCH / 2;
-    put('metal', latheZ([
-      [0.03, c - 0.009], [0.046, c - 0.009], [0.051, c - 0.005], [0.051, c + 0.005], [0.046, c + 0.009], [0.03, c + 0.009],
-    ], SEG), [0, BARREL_Y, 0]);
-  }
-
-  // ── Emitter shroud + fins at the tip ──────────────────────────────────────
-  put('metal', latheZ([
-    [0.024, -0.878], [0.04, -0.878], [0.05, -0.868], [0.05, -0.77], [0.043, -0.758], [0.024, -0.758],
-  ], SEG), [0, BARREL_Y, 0]);
-  put('rubber', latheZ([[0, -0.874], [0.026, -0.874]], SEG), [0, BARREL_Y, 0]); // dark aperture
-  put('glow', new THREE.TorusGeometry(0.031, 0.0055, 6, hi ? 24 : 12), [0, BARREL_Y, -0.879]);
-  const fins = hi ? 3 : 2;
-  for (let i = 0; i < fins; i++) {
-    const a = Math.PI / 2 + (i * Math.PI * 2) / 3;
-    put('metalLt', chamferBox(0.01, 0.018, 0.1, 0.003),
-      [Math.cos(a) * 0.052, BARREL_Y + Math.sin(a) * 0.052, -0.845], [0, 0, a - Math.PI / 2]);
-  }
-
-  // ── Foregrip block under the coil housing ─────────────────────────────────
-  put('carbon', stationPrism([
-    [-0.19, 0.07, 0.05, -0.045],
-    [-0.3, 0.064, 0.044, -0.042],
-  ], 0.01));
-
-  // ── Grip, guard, trigger ───────────────────────────────────────────────────
-  put('rubber', stationPrism([
-    [0.13, 0.064, 0.05, -0.06],
-    [0.04, 0.064, 0.05, -0.06],
-  ], 0.012));
-  put('rubber', chamferBox(0.06, 0.2, 0.082, 0.014), [0, -0.15, 0.1], [0.32, 0, 0]);
-  put('metal', chamferBox(0.066, 0.016, 0.09, 0.005), [0, -0.245, 0.132], [0.32, 0, 0]);
-  put('metal', chamferBox(0.014, 0.01, 0.11, 0.003), [0, -0.093, -0.002]);
-  put('metal', chamferBox(0.014, 0.056, 0.012, 0.003), [0, -0.066, -0.055]);
-  if (hi) put('metalLt', chamferBox(0.009, 0.034, 0.011, 0.002), [0, -0.058, 0.004], [0.3, 0, 0]);
-
-  // ── Skeletal stock: upper bar off the capacitor, lower strut, butt pad ────
-  put('carbon', chamferBox(0.03, 0.028, 0.16, 0.006), [0, 0.035, 0.355]);
-  put('carbon', stationPrism([
-    [0.16, 0.03, 0.036, -0.055],
-    [0.42, 0.03, 0.03, -0.085],
-  ], 0.006));
-  put('rubber', chamferBox(0.04, 0.16, 0.03, 0.009), [0, -0.025, 0.43]);
-
-  // ── Materials ──────────────────────────────────────────────────────────────
-  const accent = new THREE.Color(COL_ACCENT);
-  const accentHot = new THREE.Color(COL_ACCENT_HOT);
-  const glow = new THREE.MeshStandardMaterial({
-    color: COL_ACCENT_HOT,
-    emissive: accentHot.clone(),
-    emissiveIntensity: 0.8,
-    metalness: 0.2,
-    roughness: 0.25,
-  });
-  // Dark when spent: a near-black coated winding, so the refill reads.
-  const coilBase = new THREE.Color(COL_BODY).lerp(accent, 0.05);
-  const coilMat = () =>
-    new THREE.MeshStandardMaterial({
-      color: coilBase,
-      emissive: accent.clone(),
-      emissiveIntensity: COIL_REST,
-      metalness: 0.45,
-      roughness: 0.42,
-    });
-  const mats: Partial<Record<Bucket, THREE.Material>> = {
-    body: new THREE.MeshStandardMaterial({ color: COL_BODY, metalness: 0.55, roughness: 0.42 }),
-    metal: new THREE.MeshStandardMaterial({ color: COL_METAL, metalness: 0.9, roughness: 0.34 }),
-    metalLt: new THREE.MeshStandardMaterial({ color: COL_METAL_LT, metalness: 0.95, roughness: 0.24 }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x0f1114, metalness: 0.0, roughness: 0.88 }),
-    carbon: new THREE.MeshStandardMaterial({
-      color: new THREE.Color(COL_BODY).multiplyScalar(1.25),
-      map: carbonTexture(),
-      metalness: 0.35,
-      roughness: 0.36,
-    }),
-    glow,
-    cap: new THREE.MeshStandardMaterial({
-      color: new THREE.Color(COL_ACCENT).multiplyScalar(0.35),
-      emissive: accent.clone(),
-      emissiveIntensity: 0.08 + CAP_REST,
-      metalness: 0.1,
-      roughness: 0.2,
-    }),
-  };
-  const coilMats: THREE.MeshStandardMaterial[] = [];
-  if (hi) {
-    for (let i = 0; i < COIL_COUNT; i++) {
-      const m = coilMat();
-      coilMats.push(m);
-      mats[`coil${i}`] = m;
-    }
-  } else {
-    const m = coilMat();
-    m.emissiveIntensity = 1.35; // a touch hotter so the band reads at range
-    mats.coil = m;
-  }
-
-  // ── Merge per material ─────────────────────────────────────────────────────
-  let anchor: THREE.Mesh | null = null;
-  for (const [bucket, list] of parts) {
-    const merged = mergeGeometries(list, false);
-    for (const g of list) g.dispose();
-    if (!merged) continue;
-    if (bucket === 'carbon') boxUv(merged, 1 / 0.024);
-    merged.computeBoundingSphere();
-    const mesh = new THREE.Mesh(merged, mats[bucket]!);
-    mesh.name = `railgun-${bucket}`;
-    group.add(mesh);
-    if (bucket === 'body') anchor = mesh;
-  }
+  const material = new GunMaterial(f, { lod });
+  const mesh = new THREE.Mesh(railgunGeometry(lod), material);
+  mesh.name = 'railgun-body';
+  group.add(mesh);
 
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, BARREL_Y, -0.9);
+  muzzle.position.set(0, BARREL_Y, MUZZLE_Z);
   group.add(muzzle);
 
   // Discharge flare: a camera-facing-ish star (disc across the bore) plus two
   // crossed streak planes blown forward along the barrel. Additive, unlit, no
   // depth write — reads as a burst of energy, never as a solid ball.
-  const flareGeo = buildFlareGeometry();
+  flareGeo ??= buildFlareGeometry();
   const muzzleFlash = new THREE.Mesh(
     flareGeo,
     new THREE.MeshBasicMaterial({
       // Bright enough to bloom hard on the first frames; the Game fades the
       // opacity to 0 over ~100 ms.
-      color: new THREE.Color(COL_ACCENT_HOT).lerp(new THREE.Color(0xffffff), 0.3).multiplyScalar(2.4),
+      color: flareColor(f.accentHot),
       map: flashTexture(),
       transparent: true,
       opacity: 0,
@@ -517,60 +210,82 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
       toneMapped: false,
     }),
   );
+  muzzleFlash.name = 'railgun-flare';
   muzzleFlash.position.set(0, 0, -0.01);
   muzzleFlash.visible = false;
   muzzleFlash.renderOrder = 2;
   muzzle.add(muzzleFlash);
 
   // ── Coil drive ─────────────────────────────────────────────────────────────
-  // First person: animate every frame the viewmodel renders (onBeforeRender on
-  // the always-visible receiver), register the muzzle for the local beam, and
-  // follow the shared local-rail charge unless driven explicitly.
-  const driver = hi ? new CoilDriver(coilMats, mats.cap as THREE.MeshStandardMaterial, accent, accentHot) : null;
-  if (driver && anchor) {
-    anchor.frustumCulled = false; // the hook must run even if the body is off-frame
-    anchor.onBeforeRender = () => {
-      const parent = group.parent as (THREE.Object3D & { isCamera?: boolean }) | null;
-      const isViewmodel = !!parent?.isCamera;
-      if (!isViewmodel && !driver.external) return;
-      const now = nowMs();
-      if (isViewmodel) {
-        localRail.muzzle = muzzle;
-        localRail.muzzleSeenMs = now;
-      }
-      driver.update(now);
-    };
-  }
+  // Every frame the gun renders (onBeforeRender): a viewmodel (parented to a
+  // camera) registers its muzzle for the local beam and follows the shared
+  // local-rail charge unless driven explicitly; anything else shows a full
+  // charge (locker) or its explicit drive.
+  const driver = new CoilDriver(material.gun);
+  driver.update(nowMs(), false);
+  mesh.frustumCulled = lod === 'low'; // the hook must run even when off-frame
+  mesh.onBeforeRender = () => {
+    const parent = group.parent as (THREE.Object3D & { isCamera?: boolean }) | null;
+    const isViewmodel = !!parent?.isCamera;
+    const now = nowMs();
+    if (isViewmodel) {
+      localRail.muzzle = muzzle;
+      localRail.muzzleSeenMs = now;
+    }
+    driver.update(now, isViewmodel);
+  };
 
-  return {
+  const model: RailgunModel = {
     group,
     muzzle,
-    glow,
+    glow: material,
     muzzleFlash,
     setCharge(charge: number) {
-      if (!driver) return;
       driver.external = true;
       driver.externalMs = nowMs();
       driver.charge = Number.isFinite(charge) ? charge : 1;
     },
     notifyFire() {
-      if (!driver) return;
       driver.external = true;
       driver.externalMs = nowMs();
       driver.fire(nowMs());
     },
+    setFinish(next?: RailgunFinish) {
+      const nf = next ?? STOCK_FINISH;
+      material.setFinish(nf);
+      muzzleFlash.material.color.copy(flareColor(nf.accentHot));
+    },
+    setLowSpec(low: boolean) {
+      if (lod === 'high') material.setHighDetail(!low);
+    },
+    dispose() {
+      material.dispose();
+      muzzleFlash.material.dispose();
+    },
   };
+  return model;
+}
+
+// Recolour a built railgun in place (no geometry rebuild): the finish's
+// palette + pattern, the coil/core accent and the discharge flare.
+export function recolorRailgun(model: RailgunModel, finish?: RailgunFinish): void {
+  model.setFinish(finish);
 }
 
 // Third-person gun for a character's hand socket: the low-detail build in the
-// same model space (grip at the origin, barrel down -Z, metres — see the
-// convention at the top). Parent `.group` to the socket and scale it there.
+// same model space. character/gun.ts attachRailgun is the cached, shared-
+// material version combatants use.
 export function buildThirdPersonRailgun(finish?: RailgunFinish): RailgunModel {
   return buildRailgun(finish, { lod: 'low' });
 }
 
+function flareColor(accentHot: number): THREE.Color {
+  return new THREE.Color(accentHot).lerp(new THREE.Color(0xffffff), 0.3).multiplyScalar(2.4);
+}
+
 // Discharge flare mesh: one disc facing along the bore (the star) + two crossed
 // planes stretched forward (the streaks). All share the flash texture's UVs.
+// Shared by every gun (userData.shared).
 function buildFlareGeometry(): THREE.BufferGeometry {
   const disc = new THREE.PlaneGeometry(0.3, 0.3);
   const jetA = new THREE.PlaneGeometry(0.09, 0.42);
@@ -582,5 +297,6 @@ function buildFlareGeometry(): THREE.BufferGeometry {
   if (g !== disc) disc.dispose();
   jetA.dispose();
   jetB.dispose();
+  g.userData.shared = true;
   return g;
 }
