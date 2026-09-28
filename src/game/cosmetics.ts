@@ -461,7 +461,13 @@ export type EmoteKind =
   | 'salute'
   | 'beckon'
   | 'slowclap'
-  | 'flourish';
+  | 'flourish'
+  | 'airguitar'
+  | 'headbang'
+  | 'robot'
+  | 'kneel'
+  | 'railspin'
+  | 'laugh';
 
 export type EmoteCosmetic = {
   id: string;
@@ -483,6 +489,13 @@ export const EMOTES: readonly EmoteCosmetic[] = [
   { id: 'emote.beckon',   name: 'Come Get Some', blurb: 'Palm up, fingers curl. Bring it.',       rarity: 'rare',   source: { type: 'level', level: 39 },     kind: 'beckon' },
   { id: 'emote.slowclap', name: 'Slow Clap',     blurb: 'Deeply, deeply unimpressed.',            rarity: 'rare',   source: { type: 'credits', price: 700 },  kind: 'slowclap' },
   { id: 'emote.flourish', name: 'Present Arms',  blurb: 'A railgun twirl, snapped to attention.', rarity: 'epic',   source: { type: 'level', level: 53 },     kind: 'flourish' },
+  // v3 taunts (Taunt Case). Tiers in items/catalog.ts LEGACY_TIER.
+  { id: 'emote.laugh',     name: 'Belly Laugh',  blurb: 'Doubled over. Merciless.',              rarity: 'common',    source: { type: 'case' }, kind: 'laugh' },
+  { id: 'emote.headbang',  name: 'Headbang',     blurb: 'The rail was the riff.',                rarity: 'common',    source: { type: 'case' }, kind: 'headbang' },
+  { id: 'emote.kneel',     name: 'Take a Knee',  blurb: 'A moment of silence for the fragged.',  rarity: 'common',    source: { type: 'case' }, kind: 'kneel' },
+  { id: 'emote.robot',     name: 'Robot',        blurb: 'Beep. Boop. Gibbed.',                   rarity: 'rare',      source: { type: 'case' }, kind: 'robot' },
+  { id: 'emote.airguitar', name: 'Air Guitar',   blurb: 'Shred on the corpse.',                  rarity: 'epic',      source: { type: 'case' }, kind: 'airguitar' },
+  { id: 'emote.railspin',  name: 'Rail Spin',    blurb: 'A showboat gun twirl, caught clean.',   rarity: 'legendary', source: { type: 'case' }, kind: 'railspin' },
 ];
 
 export function emoteById(id: string): EmoteCosmetic {
