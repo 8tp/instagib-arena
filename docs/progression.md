@@ -21,17 +21,28 @@ Code map:
 
 - **Online matches are recorded by the game server.** `server/instagib-game.ts`
   already decides every hit; it now also keeps per-player match counters —
-  accepted shots, frag hits, headshots, current/best kill streak, match start —
-  on each `ClientRecord`. They reset with frags/deaths (join, map-vote reset)
-  and carry over on a reconnect-resume. At every match end the server calls
-  `recordMatch` for each member and pushes the result over that player's socket
-  as `{ type: 'progression', … }`. The client reports **nothing**.
-- **`POST /api/stats` is offline-only** (matches vs bots). Whatever the body
-  says, the server forces `offline: true`: inputs are client-reported, so they
-  are clamped, scaled ×0.3, capped per account at **1,500 XP per UTC day**, and
-  they never advance challenges or the first-win bonus. A body with
-  `training: true` is rejected (`400 { error: 'training' }`) — the training
-  range is not a match. The 30-writes/min rate limit still applies.
+  accepted shots, counting frags, headshots, current/best kill streak, frags per
+  victim, match start — on each `ClientRecord`. They reset with frags/deaths
+  (join, map-vote reset) and carry over on a reconnect-resume. At every match
+  end the server calls `recordMatch` for each member and pushes the result over
+  that player's socket as `{ type: 'progression', … }`. The client reports
+  **nothing**.
+- **Only frags on another account count.** A frag on a guest, or on another
+  tab of your own account, never feeds progression (kills, headshots, streak,
+  accuracy, career stats, leaderboards, challenges). **One account, one slot per
+  room**: a second live tab gets `join-failed` with reason `'duplicate'` (and
+  quick-match skips rooms the account is already in); a reconnect that lost its
+  resume token reclaims the account's own dropped slot instead of adding a
+  second record.
+- **`POST /api/stats` is offline-only** (matches vs bots). Only a body with
+  `offline: true` is accepted — anything else is `400 { error: 'offline_only' }`
+  (the game server already recorded online matches; an old client bundle must
+  not record them twice), and `training: true` is `400 { error: 'training' }`
+  (the training range is not a match). Offline matches are **XP-only**: they
+  never feed career totals, leaderboards or achievement titles; their XP is
+  scaled ×0.3 and capped per account at **1,500 XP per UTC day**; they never
+  advance challenges or the first-win bonus. The 30-writes/min rate limit still
+  applies.
 - **Guests** (no account) get the same computation as a *preview* — the reply
   says `saved: false` and nothing is written — so the results screen can show
   what signing up would have kept.
@@ -52,8 +63,11 @@ L1→2 = 245 XP, L10→11 = 650, L50→51 = 2,450, L99→100 = 4,655; L100 needs
 
 The stored `level` column is only a cache for the admin players table; it is
 re-derived on boot and on every write and is **never** an input to grants.
-Re-tuning the curve is a pure code change: players simply re-level (the switch
-from the old `100·n^1.5` curve moved everyone *up*).
+Re-tuning the curve is a pure code change: players simply re-level. The switch
+from the old `100·n^1.5` curve moved everyone with ≥ 535 XP up or kept them
+level; only two brand-new bands drop one level — 100–244 XP (L2 → L1) and
+382–534 XP (L3 → L2). Nothing is taken away: cosmetics already persisted stay
+owned, and road payouts are never clawed back.
 
 ### Pacing
 
@@ -78,8 +92,8 @@ Itemized in display order as `xpLines` (`{ key, label, xp, detail? }`):
 
 | key | XP | notes |
 |---|---|---|
-| `base` | 25 | "Match played". Full only for a match played to its frag limit; a partial (left early) or forfeit earns it pro rata by time present (full at 3 min), detail `"N% of a full match"`. |
-| `kills` | 10 × kills | detail `"12 × 10"` |
+| `base` | 25 | "Match played", always pro rata by time present (full at 3 min), detail `"N% of a full match"` when scaled. |
+| `kills` | 10 × kills | counting frags only (another account); detail `"12 × 10"` |
 | `headshots` | 6 × headshots | |
 | `streak` | 4 × best streak | |
 | `win` | 60 | see "won" below |
@@ -89,16 +103,27 @@ Itemized in display order as `xpLines` (`{ key, label, xp, detail? }`):
 | `cap` | negative | per-match cap 1,500; offline daily cap 1,500 |
 | `challenge` | + reward XP | one line per challenge this match completed, detail `"+25 credits"` |
 
-**Won** (online): FFA/duel — reached the frag limit; TDM — on the winning team
-*and* present ≥ 60 s; ranked — the ranked winner. A **forfeit** (opponent left a
-duel/ranked match) only counts as a win if the survivor had reached a third of
-the frag limit — otherwise it's a no-contest for XP (ranked Elo is unaffected).
+**Repeat-victim decay** (FFA/TDM): the first 5 counting frags on the same
+account in a match are full value; after that the kill / headshot / streak XP
+halves every further 5 (the lines' detail gains `· repeat victims ×0.86`).
+Duels are exempt — one opponent is the format and a duel is capped at its frag
+limit.
+
+**Won** (online) — only if **at least two distinct accounts** played the match
+(one account alone, or with guests, gets no win or first-win bonus). Then:
+FFA/duel — reached the frag limit; TDM — on the winning team *and* present
+≥ 60 s; ranked — the ranked winner. A **forfeit** (opponent left a duel/ranked
+match) only counts as a win if the survivor had reached a third of the frag
+limit — otherwise it's a no-contest for XP (ranked Elo is unaffected).
 
 **Credits per match** = floor(match XP × 0.1). Challenge and road credits come
 on top.
 
-**Leaving mid-match** records the partial match as a loss (`partial: true`).
-An empty bounce (no shots, frags or deaths) records nothing.
+**What counts as a match.** A player's match is recorded at all (XP,
+`total_games`, the "games" challenge) only if they were present ≥ 45 s or had
+at least one frag/death — on every path: match end, forfeit, and leaving
+mid-match (recorded as a loss, `partial: true`). Anything less is a bounce and
+records nothing.
 
 ## 4. Career Road
 
@@ -188,10 +213,12 @@ Adding a hat with `source: { type: 'case' }` grows the pool automatically.
 - Progress comes **only from online matches** recorded by the game server.
 - **Auto-payout**: the match that completes a challenge pays it (XP + credits),
   adds a `challenge` XP line and a `challenges` entry to the reply. Any
-  completed-but-unpaid row from *any* period (legacy rows from the manual-claim
-  era) is swept and paid by the next recorded match, so nothing completed is
-  lost to a rollover. `POST /api/challenges/claim` still works for a legacy
-  current-period row and returns the full reward payload.
+  completed-but-unpaid row from the **current or previous** daily/weekly period
+  (legacy rows from the manual-claim era; the pre-Monday weekly keys are
+  included for the switchover) is swept and paid by the next recorded match, so
+  a completion is never lost to a rollover — older backlog never pays, so it
+  can't land as one windfall. `POST /api/challenges/claim` still works for a
+  legacy current-period row and returns the full reward payload.
 - Periods: daily = UTC day (`YYYYMMDD`); weekly = **Monday 00:00 UTC**
   (`w` + YYYYMMDD of the Monday) — the same boundary as the weekly leaderboard.
   `GET /api/challenges` returns `resetsAt: { daily, weekly }` (ms epoch).
@@ -199,16 +226,21 @@ Adding a hat with `source: { type: 'case' }` grows the pool automatically.
 ## 8. Anti-abuse summary
 
 - Online XP only from server-known counters; the only client-reported path is
-  offline, which is ×0.3, 1,500 XP/day, rate-limited.
-- Partial matches and forfeits earn a time-scaled base; empty bounces nothing;
-  TDM wins need 60 s presence; early forfeits are no-contest for XP.
+  offline, which is XP-only (no career totals / titles / leaderboards), ×0.3,
+  1,500 XP/day, rate-limited.
+- Only frags on another account count; one slot per account per room; wins
+  need ≥ 2 accounts in the match; repeat-victim decay in FFA/TDM.
+- A match is only recorded with ≥ 45 s present or a frag/death; the base XP is
+  always time-scaled; TDM wins need 60 s presence; early forfeits are
+  no-contest for XP.
 - Accuracy bonus and the best-accuracy stat (Sharpshooter) need ≥ 20 shots.
 - The existing aimbot heuristic drops throttled frags before they count.
 - Per-match XP cap 1,500. Case, buy, claim and match writes run in single
-  SQLite transactions; claims are guarded by `claimed = 0`.
-- Known gap: two colluding accounts can still trade kills for kill XP (~10 XP
-  per frag, rate-bounded by the killcam respawn). Diminishing returns vs the same
-  victim would close it.
+  SQLite transactions; claims are guarded by `claimed = 0`. An unreadable
+  `unlocked` JSON is never written back (logged; buy/case refuse to charge).
+- Known gap: two *distinct* colluding accounts can still trade kills (~10 XP
+  per frag, rate-bounded by the killcam respawn; FFA/TDM decays after 5 frags
+  per victim, duels don't).
 
 ## 9. Data
 
@@ -263,9 +295,13 @@ resume.
   credits, unlocked, equipped, stats, ranked, caseKeys, roadLevel, catchUp } }`.
   `catchUp` lists road steps this request just paid (usually `[]`); `equipped`
   omits items the player no longer owns.
+- `POST /api/stats` (offline only) → the reward payload, or `400 { error:
+  'offline_only' | 'training' }`, or `429 { error: 'rate_limited' }`.
 - `POST /api/shop/open-case` → `{ ok: true, won: id | null, jackpot, consolation,
   usedKey, credits, caseKeys, unlocked }` or `{ ok: false, reason:
-  'insufficient' | 'complete', credits, caseKeys }`.
+  'insufficient' | 'complete' | 'error', credits, caseKeys }`.
+- WS `join` / `resume` (fallback join) can now fail with `{ type: 'join-failed',
+  reason: 'duplicate' }` — this account already holds a live slot in that room.
 - `GET /api/challenges` → `{ challenges: { daily, weekly }, resetsAt: { daily, weekly } }`.
 - `POST /api/challenges/claim { id }` → `{ ok: true, ...reward payload }` or
   `{ ok: false, reason }`.
