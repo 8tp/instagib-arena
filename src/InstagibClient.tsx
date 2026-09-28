@@ -821,7 +821,9 @@ function GameView({
             ? 'That lobby is full.'
             : ev.reason === 'afk'
               ? 'You were removed from the match for inactivity.'
-              : 'That lobby no longer exists.',
+              : ev.reason === 'duplicate'
+                ? "You're already in this match in another tab."
+                : 'That lobby no longer exists.',
         );
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);
