@@ -134,8 +134,9 @@ always available.
   plus a rolling **aimbot heuristic** (hit/headshot-rate throttle) — done. WS
   cosmetics are ownership-checked. Online XP is recorded by the game server;
   the only client-reported path (offline) is scaled, day-capped and
-  rate-limited, and only frags on another account count (one slot per account
-  per room, repeat-victim decay in FFA/TDM, wins need ≥ 2 accounts). Still
+  rate-limited, and frags on yourself (same account or same IP) don't count
+  (one slot per account per room, repeat-victim decay in FFA/TDM, a win needs
+  an opponent of another identity). Still
   open: impossible-angle/snap detection; kill-trading between two distinct alt
   accounts in duels.
 - **Telemetry:** lightweight, privacy-respecting match/event metrics to tune XP

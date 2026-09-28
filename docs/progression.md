@@ -27,13 +27,18 @@ Code map:
   end the server calls `recordMatch` for each member and pushes the result over
   that player's socket as `{ type: 'progression', … }`. The client reports
   **nothing**.
-- **Only frags on another account count.** A frag on a guest, or on another
-  tab of your own account, never feeds progression (kills, headshots, streak,
-  accuracy, career stats, leaderboards, challenges). **One account, one slot per
-  room**: a second live tab gets `join-failed` with reason `'duplicate'` (and
-  quick-match skips rooms the account is already in); a reconnect that lost its
-  resume token reclaims the account's own dropped slot instead of adding a
-  second record.
+- **You can't farm yourself.** A frag counts toward progression (kills,
+  headshots, streak, accuracy, career stats, leaderboards, challenges) unless
+  the victim is *you*: the same account, or anyone on the same network identity
+  — the WS upgrade's client IP (CF-Connecting-IP, else the first
+  X-Forwarded-For hop, else the socket address). That covers "account + own
+  guest tab" and "a second account on the same machine". Guests on other
+  networks count like anyone else. **Accepted trade-off:** players sharing an
+  IP (a household, an office) don't earn XP off each other.
+- **One account, one slot per room**: a second live tab gets `join-failed` with
+  reason `'duplicate'` (and quick-match skips rooms the account is already in);
+  a reconnect that lost its resume token reclaims the account's own dropped
+  slot instead of adding a second record.
 - **`POST /api/stats` is offline-only** (matches vs bots). Only a body with
   `offline: true` is accepted — anything else is `400 { error: 'offline_only' }`
   (the game server already recorded online matches; an old client bundle must
@@ -93,7 +98,7 @@ Itemized in display order as `xpLines` (`{ key, label, xp, detail? }`):
 | key | XP | notes |
 |---|---|---|
 | `base` | 25 | "Match played", always pro rata by time present (full at 3 min), detail `"N% of a full match"` when scaled. |
-| `kills` | 10 × kills | counting frags only (another account); detail `"12 × 10"` |
+| `kills` | 10 × kills | counting frags only (victim isn't you — see §1); detail `"12 × 10"` |
 | `headshots` | 6 × headshots | |
 | `streak` | 4 × best streak | |
 | `win` | 60 | see "won" below |
@@ -104,13 +109,14 @@ Itemized in display order as `xpLines` (`{ key, label, xp, detail? }`):
 | `challenge` | + reward XP | one line per challenge this match completed, detail `"+25 credits"` |
 
 **Repeat-victim decay** (FFA/TDM): the first 5 counting frags on the same
-account in a match are full value; after that the kill / headshot / streak XP
-halves every further 5 (the lines' detail gains `· repeat victims ×0.86`).
-Duels are exempt — one opponent is the format and a duel is capped at its frag
-limit.
+player in a match — keyed on the victim's identity: account, or IP for a
+guest — are full value; after that the kill / headshot / streak XP halves every
+further 5 (the lines' detail gains `· repeat victims ×0.86`). Duels are exempt —
+one opponent is the format and a duel is capped at its frag limit.
 
-**Won** (online) — only if **at least two distinct accounts** played the match
-(one account alone, or with guests, gets no win or first-win bonus). Then:
+**Won** (online) — only if at least one **opponent of a different identity**
+(not your account, not your IP) played the match; beating your own tabs never
+earns a win or the first-win bonus. Then:
 FFA/duel — reached the frag limit; TDM — on the winning team *and* present
 ≥ 60 s; ranked — the ranked winner. A **forfeit** (opponent left a duel/ranked
 match) only counts as a win if the survivor had reached a third of the frag
@@ -228,8 +234,11 @@ Adding a hat with `source: { type: 'case' }` grows the pool automatically.
 - Online XP only from server-known counters; the only client-reported path is
   offline, which is XP-only (no career totals / titles / leaderboards), ×0.3,
   1,500 XP/day, rate-limited.
-- Only frags on another account count; one slot per account per room; wins
-  need ≥ 2 accounts in the match; repeat-victim decay in FFA/TDM.
+- Frags on yourself (same account or same IP) don't count; one slot per
+  account per room; a win needs an opponent of a different identity;
+  repeat-victim decay in FFA/TDM keyed on the victim's identity. The IP guard is
+  only as trustworthy as the proxy headers — lock the Railway origin to
+  Cloudflare so X-Forwarded-For can't be forged by a direct connection.
 - A match is only recorded with ≥ 45 s present or a frag/death; the base XP is
   always time-scaled; TDM wins need 60 s presence; early forfeits are
   no-contest for XP.
