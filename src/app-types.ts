@@ -5,6 +5,7 @@ import type { AnnouncerPackId } from './game/audio';
 import type { BotDifficulty, KeybindAction } from './game/constants';
 import type { KillEffectStyle } from './game/cosmetics';
 import type { RewardExtras, RoadStep } from './game/progression';
+import type { ItemSlot, Loadout } from './game/items/types';
 
 export type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
@@ -19,6 +20,12 @@ export type CrosshairConfig = {
 };
 
 export type Settings = {
+  // Economy v3 (docs/economy.md): the equipped item instance per slot (server
+  // truth) and the resolved Looks (def + unusual/sheen/pattern attrs) the
+  // renderers use. The legacy per-slot id fields below are kept in sync from
+  // `looks` during the transition (runtime track).
+  looks?: Loadout;
+  equippedUids?: Partial<Record<ItemSlot, string>>;
   sensitivity: number; // Source/CS2-style sens number
   dpi: number; // mouse DPI (feeds cm/360 readout only)
   vertScale: number; // vertical (pitch) sensitivity multiplier
