@@ -554,6 +554,16 @@ export class GunMaterial extends THREE.MeshStandardMaterial {
     return this.pattern;
   }
 
+  // High detail = pattern relief (3-tap bump) + the energy bounce light. The
+  // low-spec tier drops both (a program swap, cached after the first use).
+  setHighDetail(on: boolean) {
+    const defs = (this.defines ??= {});
+    if ((defs.GUN_HI !== undefined) === on) return;
+    if (on) defs.GUN_HI = '';
+    else delete defs.GUN_HI;
+    this.needsUpdate = true;
+  }
+
   // Recolour in place. A pattern change swaps the program (cached after the
   // first use); a palette change is only uniforms.
   setFinish(finish: RailgunFinish | undefined) {

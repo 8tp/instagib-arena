@@ -74,6 +74,8 @@ export type RailgunModel = {
   // Swap the finish in place (uniforms; a pattern change swaps the shader
   // program) — no geometry rebuild. Same as recolorRailgun(model, finish).
   setFinish(finish?: RailgunFinish): void;
+  // Low-spec tier: drop the per-pixel extras (pattern relief, bounce light).
+  setLowSpec(low: boolean): void;
   // Free this gun's own resources (materials). The geometry is shared.
   dispose(): void;
 };
@@ -252,6 +254,9 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
       const nf = next ?? STOCK_FINISH;
       material.setFinish(nf);
       muzzleFlash.material.color.copy(flareColor(nf.accentHot));
+    },
+    setLowSpec(low: boolean) {
+      if (lod === 'high') material.setHighDetail(!low);
     },
     dispose() {
       material.dispose();
