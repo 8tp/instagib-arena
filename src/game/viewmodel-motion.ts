@@ -56,7 +56,7 @@ const INSPECT_KEYS: readonly InspectKey[] = [
   // raise + centre, tilt the muzzle up a touch
   { t: 0.5, x: -0.2, y: 0.12, z: 0.09, rx: 0.32, ry: 0.15, rz: 0.06 },
   // show the side: yaw the barrel across the view, coils facing the camera
-  { t: 1.15, x: -0.21, y: 0.11, z: 0.11, rx: 0.1, ry: 1.2, rz: 0.1 },
+  { t: 1.15, x: -0.17, y: 0.11, z: 0.11, rx: 0.1, ry: 1.38, rz: 0.1 },
   // show the top: roll the receiver up toward the camera
   { t: 1.85, x: -0.2, y: 0.12, z: 0.1, rx: 0.5, ry: 0.55, rz: -0.85 },
   // lower it back to the carry

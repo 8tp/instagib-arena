@@ -1914,7 +1914,7 @@ function InspectCard({ settings, kills }: { settings: Settings; kills: number | 
   return (
     <div
       aria-hidden='true'
-      className='pointer-events-none absolute bottom-28 right-8 max-w-[22rem] text-right font-mono'
+      className='pointer-events-none absolute bottom-44 right-8 max-w-[22rem] text-right font-mono'
       style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
     >
       <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
