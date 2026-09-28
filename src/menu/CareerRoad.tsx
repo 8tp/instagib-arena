@@ -1,31 +1,28 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import { DeckButton, ModalShell } from '../deck';
-import { prefersReducedMotion } from '../deck-core';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { MODAL_EXIT_MS, prefersReducedMotion, sfxProps, uiSfx, useModalStack } from '../deck-core';
 import { cosmeticById } from '../game/cosmetics';
-import { MAX_LEVEL } from '../game/progression';
-import { RewardTile } from './RewardTile';
-import { careerRoad, nextRoadStep, rewardText, xpFraction, type MenuProfile, type RoadNode } from './road-data';
+import { MAX_LEVEL, type RoadReward } from '../game/progression';
+import { Credits, LevelEmblem, XpBar } from './Progress';
+import { KeyGlyph, RewardTile } from './RewardTile';
+import { careerRoad, nextRoadStep, rewardKind, rewardText, xpFraction, type MenuProfile, type RoadNode } from './road-data';
 import './menu.css';
 
-// The Career Road: a battle-pass track of levels 1–100. Each node shows what
-// that level grants; reached levels are claimed (rewards are granted on
-// level-up), the next one is in progress, the rest are locked. Opens scrolled
-// to your level; drag, wheel, arrow keys or the scrollbar move along it.
+// The Career Road: a full-screen battle-pass place (same shell as the Locker).
+// Left: a big preview of the selected reward (the next one by default).
+// Right: the track of levels 1–100 — each node is the level emblem on the rail
+// with its rewards as full-size tiles underneath; reached levels are unlocked
+// (rewards are granted on level-up), the next one is in progress, the rest are
+// locked. Opens scrolled to your level; drag, wheel, arrows (buttons or keys).
 // Reward tiles only mount near the viewport (thumbnails are rendered stills).
 
-const NODE_W = 150;
-const PAD = 48;
-const TILE = 116;
-const TILE_2 = 84; // two rewards on one level stack smaller
-const MOUNT_MARGIN = 4; // nodes beyond the viewport that still mount tiles
+const TILE = 164;
+const GAP = 12;
+const NODE_PAD = 36;
+const PAD = 64; // track padding at both ends (room for the fade + arrows)
+const MOUNT_MARGIN = 700; // px beyond the viewport that still mount tiles
 
-function CheckGlyph() {
-  return (
-    <svg width={11} height={11} viewBox='0 0 16 16' aria-hidden='true'>
-      <path d='M2.5 8.5l3.5 3.5 7.5-8' fill='none' stroke='currentColor' strokeWidth='2.8' strokeLinecap='square' />
-    </svg>
-  );
-}
+type Sel = { level: number; index: number };
 
 function nodeState(n: RoadNode, level: number): 'claimed' | 'next' | 'locked' {
   if (n.level <= level) return 'claimed';
@@ -33,11 +30,24 @@ function nodeState(n: RoadNode, level: number): 'claimed' | 'next' | 'locked' {
   return 'locked';
 }
 
-function nodeLabel(n: RoadNode, state: string): string {
-  const what = n.rewards.length
-    ? n.rewards.map((r) => rewardText(r, (id) => cosmeticById(id)?.name)).join(', ')
-    : 'no rewards yet';
-  return `Level ${n.level}: ${what}. ${state === 'claimed' ? 'Unlocked' : state === 'next' ? 'Next level' : 'Locked'}.`;
+function nameOf(r: RoadReward): string {
+  return rewardText(r, (id) => cosmeticById(id)?.name);
+}
+
+function CheckGlyph() {
+  return (
+    <svg width={12} height={12} viewBox='0 0 16 16' aria-hidden='true'>
+      <path d='M2.5 8.5l3.5 3.5 7.5-8' fill='none' stroke='currentColor' strokeWidth='2.8' strokeLinecap='square' />
+    </svg>
+  );
+}
+
+function Arrow({ dir }: { dir: -1 | 1 }) {
+  return (
+    <svg width={18} height={18} viewBox='0 0 24 24' aria-hidden='true'>
+      <path d={dir < 0 ? 'M15 4l-8 8 8 8' : 'M9 4l8 8-8 8'} fill='none' stroke='currentColor' strokeWidth='2.6' strokeLinecap='square' />
+    </svg>
+  );
 }
 
 export function CareerRoad({
@@ -57,62 +67,142 @@ export function CareerRoad({
   const level = guest ? 1 : (profile?.level ?? 1);
   const maxed = level >= MAX_LEVEL;
   const frac = guest || maxed ? 0 : xpFraction(profile);
-  const hereX = PAD + (level - 1 + frac) * NODE_W + NODE_W / 2;
-  const trackW = PAD * 2 + road.length * NODE_W;
-  const noRoad = road.every((n) => n.rewards.length === 0);
-  const toNext = profile && !maxed ? Math.max(0, profile.xpForNext - profile.xpIntoLevel) : 0;
-  const upNext = nextRoadStep(level);
+  const toNext = profile && !guest && !maxed ? Math.max(0, profile.xpForNext - profile.xpIntoLevel) : 0;
+  const smooth = !reduced && !prefersReducedMotion();
 
+  // Node geometry: variable width (one tile per reward, side by side).
+  const geo = useMemo(() => {
+    const widths = road.map((n) => Math.max(1, n.rewards.length) * TILE + (Math.max(1, n.rewards.length) - 1) * GAP + NODE_PAD);
+    const lefts: number[] = [];
+    let x = PAD;
+    for (const w of widths) {
+      lefts.push(x);
+      x += w;
+    }
+    return { widths, lefts, total: x + PAD };
+  }, [road]);
+  const centerOf = useCallback((lv: number) => {
+    const i = Math.max(0, Math.min(road.length - 1, lv - 1));
+    return geo.lefts[i] + geo.widths[i] / 2;
+  }, [geo, road.length]);
+  const hereX = maxed ? centerOf(level) : centerOf(level) + frac * (centerOf(level + 1) - centerOf(level));
+
+  const initial = nextRoadStep(level) ?? road[Math.min(road.length - 1, level - 1)];
+  // Big-ticket levels still ahead (every 10th, and any legendary), for the
+  // "Coming up" row under the track.
+  const milestones = useMemo(
+    () =>
+      road
+        .filter((n) => n.level > level && n.rewards.length > 0)
+        .filter((n) => n.level % 10 === 0 || n.rewards.some((r) => r.type === 'cosmetic' && cosmeticById(r.id)?.rarity === 'legendary'))
+        .slice(0, 5),
+    [road, level],
+  );
+  const [sel, setSel] = useState<Sel>({ level: initial.level, index: 0 });
+  const selNode = road[sel.level - 1];
+  const selReward: RoadReward | undefined = selNode?.rewards[sel.index] ?? selNode?.rewards[0];
+  const selState = selNode ? nodeState(selNode, level) : 'locked';
+
+  const rootRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const [range, setRange] = useState<[number, number]>([0, 12]);
+  const [view, setView] = useState<[number, number]>([0, 1600]);
+  const [ends, setEnds] = useState<[boolean, boolean]>([true, false]);
   const [dragging, setDragging] = useState(false);
+  const [closing, setClosing] = useState(false);
   const drag = useRef<{ x: number; left: number; id: number; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
   const rafRef = useRef(0);
-  const smooth = !reduced && !prefersReducedMotion();
 
-  const syncRange = useCallback(() => {
+  // ── Shell: modal stack (pauses the menu backdrop), Esc, focus ────────────
+  const isTop = useModalStack();
+  const close = useCallback(() => {
+    if (closing) return;
+    uiSfx('uiBack');
+    if (!smooth) {
+      onClose();
+      return;
+    }
+    setClosing(true);
+    window.setTimeout(onClose, MODAL_EXIT_MS);
+  }, [closing, smooth, onClose]);
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!isTop()) return;
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        e.preventDefault();
+        close();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const root = rootRef.current;
+      if (!root) return;
+      const els = [...root.querySelectorAll<HTMLElement>('button:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter(
+        (el) => el.getClientRects().length > 0,
+      );
+      if (!els.length) return;
+      const first = els[0];
+      const last = els[els.length - 1];
+      const a = document.activeElement;
+      const inside = a instanceof Node && root.contains(a);
+      if (e.shiftKey ? !inside || a === first : !inside || a === last) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isTop, close]);
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    rootRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (opener?.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
+    };
+  }, []);
+
+  // ── Track scrolling ──────────────────────────────────────────────────────
+  const sync = useCallback(() => {
     rafRef.current = 0;
     const el = scrollerRef.current;
     if (!el) return;
-    const first = Math.floor((el.scrollLeft - PAD) / NODE_W) - MOUNT_MARGIN;
-    const last = Math.ceil((el.scrollLeft + el.clientWidth - PAD) / NODE_W) + MOUNT_MARGIN;
-    setRange((r) => (r[0] === first && r[1] === last ? r : [first, last]));
+    setView((v) => (Math.abs(v[0] - el.scrollLeft) < 60 && v[1] === el.clientWidth ? v : [el.scrollLeft, el.clientWidth]));
+    const max = el.scrollWidth - el.clientWidth;
+    setEnds((e) => {
+      const next: [boolean, boolean] = [el.scrollLeft <= 2, el.scrollLeft >= max - 2];
+      return e[0] === next[0] && e[1] === next[1] ? e : next;
+    });
   }, []);
   const onScroll = () => {
-    if (!rafRef.current) rafRef.current = requestAnimationFrame(syncRange);
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(sync);
   };
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
 
-  const scrollToLevel = useCallback(
-    (glide: boolean) => {
+  const scrollToX = useCallback(
+    (x: number, glide: boolean) => {
       const el = scrollerRef.current;
       if (!el) return;
-      const target = Math.max(0, Math.min(el.scrollWidth - el.clientWidth, hereX - el.clientWidth * 0.36));
+      const target = Math.max(0, Math.min(el.scrollWidth - el.clientWidth, x - el.clientWidth * 0.34));
       if (glide && smooth) el.scrollTo({ left: target, behavior: 'smooth' });
       else el.scrollLeft = target;
-      syncRange();
+      sync();
     },
-    [hereX, smooth, syncRange],
+    [smooth, sync],
   );
 
   // Open on your level: a short glide in from a little way back.
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    const target = Math.max(0, hereX - el.clientWidth * 0.36);
-    el.scrollLeft = smooth ? Math.max(0, target - el.clientWidth * 0.5) : target;
-    syncRange();
-    if (smooth) {
-      const id = window.setTimeout(() => scrollToLevel(true), 180);
-      return () => window.clearTimeout(id);
-    }
-    return undefined;
+    const target = Math.max(0, hereX - el.clientWidth * 0.34);
+    el.scrollLeft = smooth ? Math.max(0, target - el.clientWidth * 0.45) : target;
+    sync();
+    if (!smooth) return undefined;
+    const id = window.setTimeout(() => scrollToX(hereX, true), 200);
+    return () => window.clearTimeout(id);
     // Mount only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Vertical wheel → horizontal travel (non-passive so the page doesn't eat it).
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -122,8 +212,19 @@ export function CareerRoad({
       el.scrollLeft += e.deltaY * (e.deltaMode === 1 ? 32 : 1);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(sync) : null;
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      ro?.disconnect();
+    };
+  }, [sync]);
+
+  const page = (dir: -1 | 1) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * el.clientWidth * 0.7, behavior: smooth ? 'smooth' : 'auto' });
+  };
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'touch' || e.button !== 0) return; // touch scrolls natively
@@ -163,8 +264,8 @@ export function CareerRoad({
     const el = scrollerRef.current;
     if (!el) return;
     const by = (dx: number) => el.scrollBy({ left: dx, behavior: smooth ? 'smooth' : 'auto' });
-    if (e.key === 'ArrowRight') by(NODE_W * 2);
-    else if (e.key === 'ArrowLeft') by(-NODE_W * 2);
+    if (e.key === 'ArrowRight') by(TILE * 1.5);
+    else if (e.key === 'ArrowLeft') by(-TILE * 1.5);
     else if (e.key === 'PageDown') by(el.clientWidth * 0.85);
     else if (e.key === 'PageUp') by(-el.clientWidth * 0.85);
     else if (e.key === 'Home') el.scrollTo({ left: 0, behavior: smooth ? 'smooth' : 'auto' });
@@ -173,161 +274,230 @@ export function CareerRoad({
     e.preventDefault();
   };
 
-  const header = (
-    <div className='flex flex-wrap items-center gap-x-6 gap-y-3'>
-      <div className='flex items-baseline gap-2'>
-        <span className='font-mono text-[11px] text-white/45'>Level</span>
-        <span className='road-stat text-cyan-100'>{level}</span>
-        <span className='font-mono text-[11px] text-white/35'>/ {MAX_LEVEL}</span>
-      </div>
-      {guest ? (
-        <div className='flex min-w-0 flex-1 flex-wrap items-center gap-3'>
-          <p className='font-sans text-[13px] text-white/60'>Log in to start your road — every level you reach unlocks its rewards.</p>
-          <DeckButton onClick={onLogin} accent='cyan' solid size='sm'>
-            Log in
-          </DeckButton>
-        </div>
-      ) : (
-        <div className='flex min-w-[14rem] flex-1 flex-col gap-1.5'>
-          <div className='menu-xp'>
-            <span style={{ width: `${(maxed ? 1 : frac) * 100}%` }} />
-          </div>
-          <div className='flex justify-between gap-3 font-mono text-[11px] tabular-nums text-white/50'>
-            <span>
-              {maxed
-                ? `${(profile?.totalXp ?? 0).toLocaleString()} XP`
-                : `${(profile?.xpIntoLevel ?? 0).toLocaleString()} / ${(profile?.xpForNext ?? 0).toLocaleString()} XP`}
-            </span>
-            <span>{maxed ? 'Max level' : `${toNext.toLocaleString()} XP to level ${level + 1}`}</span>
-          </div>
-        </div>
-      )}
-      {!guest && (
-        <DeckButton onClick={() => scrollToLevel(true)} size='sm' className='shrink-0'>
-          Jump to my level
-        </DeckButton>
-      )}
-    </div>
-  );
+  const pick = (lv: number, index: number) => {
+    uiSfx('uiClick');
+    setSel({ level: lv, index });
+  };
+  const jumpTo = (lv: number) => {
+    pick(lv, 0);
+    scrollToX(centerOf(lv), true);
+  };
 
-  return (
-    <ModalShell
-      title='Career Road'
-      width='w-[min(1440px,96vw)]'
-      tone='cyan'
-      onClose={onClose}
-      header={header}
-      padded={false}
-      footer={
-        <p className='font-sans text-[12px] leading-snug text-white/45'>
-          {noRoad
-            ? 'Road rewards are on the way. Levels shown with an item already unlock it.'
-            : 'Reach a level and its rewards are yours — nothing to claim.'}
-          <span className='ml-2 text-white/30 max-sm:hidden'>Drag, scroll or use the arrow keys to travel.</span>
-        </p>
-      }
+  // ── Preview copy ─────────────────────────────────────────────────────────
+  const status = !selNode
+    ? ''
+    : guest
+      ? `Unlocks at level ${selNode.level}`
+      : selState === 'claimed'
+        ? `Unlocked at level ${selNode.level}`
+        : selState === 'next' && toNext > 0
+          ? `Level ${selNode.level} · ${toNext.toLocaleString()} XP to go`
+          : `Unlocks at level ${selNode.level}`;
+
+  const [vl, vw] = view;
+  const node = (
+    <div
+      ref={rootRef}
+      role='dialog'
+      aria-modal='true'
+      aria-label='Career Road'
+      tabIndex={-1}
+      className={`road-root ${closing ? 'road-exit' : 'road-enter'} ${smooth ? '' : 'road-reduced'}`}
     >
-      <div className='flex min-w-0'>
-      {upNext && (
-        <aside className='road-next max-md:hidden' aria-label='Next reward'>
-          <span className='font-mono text-[11px] text-white/45'>{guest ? 'First unlock' : 'Up next'}</span>
-          <RewardTile reward={upNext.rewards[0]} size={160} />
-          <span className='font-display text-[15px] font-bold uppercase leading-tight tracking-[0.06em] text-white/90'>
-            {rewardText(upNext.rewards[0], (id) => cosmeticById(id)?.name)}
-          </span>
-          <span className='font-mono text-[11px] tabular-nums text-cyan-200/80'>
-            Level {upNext.level}
-            {!guest && upNext.level === level + 1 && toNext > 0 ? ` · ${toNext.toLocaleString()} XP away` : ''}
-          </span>
-          {upNext.rewards.length > 1 && (
-            <span className='font-mono text-[10.5px] text-white/40'>+{upNext.rewards.length - 1} more at this level</span>
+      <header className='road-top'>
+        <h2 className='road-title'>Career Road</h2>
+        <div className='flex min-w-0 flex-1 items-center gap-4'>
+          <LevelEmblem level={level} size={56} tone={guest ? 'guest' : 'you'} />
+          {guest ? (
+            <div className='flex min-w-0 flex-wrap items-center gap-3'>
+              <span className='font-sans text-[14px] text-white/65'>Every level you reach unlocks its rewards.</span>
+              <button type='button' onClick={onLogin} {...sfxProps('uiConfirm')} className='menu-cta'>
+                Log in to start
+              </button>
+            </div>
+          ) : (
+            <div className='flex w-full max-w-[34rem] flex-col gap-1.5'>
+              <XpBar frac={maxed ? 1 : frac} height={12} />
+              <div className='flex justify-between gap-3 font-sans text-[13px] tabular-nums text-white/60'>
+                <span>
+                  {maxed
+                    ? `${(profile?.totalXp ?? 0).toLocaleString()} XP`
+                    : `${(profile?.xpIntoLevel ?? 0).toLocaleString()} / ${(profile?.xpForNext ?? 0).toLocaleString()} XP`}
+                </span>
+                <span>{maxed ? 'Max level' : `${toNext.toLocaleString()} XP to level ${level + 1}`}</span>
+              </div>
+            </div>
           )}
-        </aside>
-      )}
-      <div
-        ref={scrollerRef}
-        role='region'
-        aria-label='Career Road levels'
-        tabIndex={0}
-        data-dragging={dragging ? '1' : '0'}
-        onScroll={onScroll}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onClickCapture={(e) => {
-          if (suppressClick.current) {
-            suppressClick.current = false;
-            e.stopPropagation();
-            e.preventDefault();
-          }
-        }}
-        onKeyDown={onKeyDown}
-        className='road-scroller min-w-0 flex-1'
-      >
-        <div
-          className='road-track pb-5 pt-[1.9rem]'
-          style={{ width: trackW, ['--road-pad' as string]: `${PAD}px`, ['--rail-y' as string]: 'calc(1.9rem + 2.6rem + 1.1rem)' }}
-        >
-          <div aria-hidden='true' className='road-rail' />
-          <div aria-hidden='true' className='road-rail-fill' style={{ width: hereX }} />
-          <div aria-hidden='true' className='road-here' style={{ left: hereX, height: 'calc(1.9rem + 2.6rem + 0.6rem)' }}>
-            <span className='road-here-flag'>{guest ? 'Start' : 'You'}</span>
-            <span className='road-here-stem' />
+        </div>
+        {!guest && profile && (
+          <div className='flex items-center gap-4'>
+            <Credits amount={profile.credits} className='road-credits' />
+            {(profile.caseKeys ?? 0) > 0 && (
+              <span className='menu-door-keys' title='Hat case keys'>
+                <KeyGlyph size={15} /> {profile.caseKeys}
+              </span>
+            )}
           </div>
-          {road.map((n, i) => {
-            const state = nodeState(n, level);
-            const near = i >= range[0] && i <= range[1];
-            const shown = n.rewards.slice(0, 2);
-            const size = shown.length > 1 ? TILE_2 : TILE;
-            return (
-              <div
-                key={n.level}
-                role='group'
-                aria-label={nodeLabel(n, state)}
-                className='road-node'
-                data-state={state}
-                data-milestone={n.level % 10 === 0 ? '1' : '0'}
-                style={{ width: NODE_W }}
-              >
-                <div className='road-lv'>
-                  <small>LV</small>
-                  {n.level}
-                </div>
-                <div className='road-pip-row'>
-                  <span className='road-pip' />
-                </div>
-                <div className='road-rewards'>
-                  {shown.length === 0 ? (
-                    <div className='road-empty' style={{ width: TILE, height: TILE }}>
-                      {n.level === 1 ? 'Your start' : 'Rewards coming'}
-                    </div>
-                  ) : (
-                    shown.map((r, k) =>
-                      near ? (
-                        <div key={k} className='relative'>
-                          <RewardTile reward={r} size={size} locked={state === 'locked'} />
-                          {state === 'claimed' && (
-                            <span className='road-owned' title='Unlocked'>
-                              <CheckGlyph />
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <div key={k} className='bg-white/[0.03]' style={{ width: size, height: size }} />
-                      ),
-                    )
-                  )}
-                  {n.rewards.length > 2 && (
-                    <span className='font-mono text-[10px] text-white/45'>+{n.rewards.length - 2} more</span>
-                  )}
+        )}
+        <button type='button' className='road-close' onClick={close} {...sfxProps('none')}>
+          ✕ Esc
+        </button>
+      </header>
+
+      <div className='road-body'>
+        {/* ── Preview of the selected reward ─────────────────────────── */}
+        <section className='road-preview' aria-live='polite'>
+          {selReward ? (
+            <>
+              <div className='road-preview-tile'>
+                <RewardTile reward={selReward} size={340} label={false} locked={!guest && selState === 'locked'} />
+              </div>
+              <div className='mt-5 flex items-start gap-4'>
+                <LevelEmblem level={selNode.level} size={48} tone={selState === 'claimed' && !guest ? 'you' : 'locked'} />
+                <div className='min-w-0'>
+                  <h3 className='road-preview-name'>{nameOf(selReward)}</h3>
+                  <p className='mt-1 font-sans text-[14px] text-white/60'>{rewardKind(selReward)}</p>
                 </div>
               </div>
-            );
-          })}
-        </div>
+              <p className={`mt-4 font-sans text-[15px] ${selState === 'claimed' && !guest ? 'text-cyan-200' : 'text-white/75'}`}>
+                {selState === 'claimed' && !guest && (
+                  <span className='mr-1.5 inline-block align-[-1px] text-cyan-300'>
+                    <CheckGlyph />
+                  </span>
+                )}
+                {status}
+              </p>
+              {selNode.rewards.length > 1 && (
+                <p className='mt-1 font-sans text-[13px] text-white/45'>
+                  Also at this level: {selNode.rewards.filter((_, i) => i !== sel.index).map(nameOf).join(', ')}
+                </p>
+              )}
+              {!guest && (
+                <div className='mt-6'>
+                  <button type='button' onClick={() => scrollToX(hereX, true)} {...sfxProps('uiClick')} className='menu-acct-btn'>
+                    Jump to my level
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className='font-sans text-[15px] text-white/55'>Rewards for this level are on the way.</p>
+          )}
+        </section>
+
+        {/* ── The track ───────────────────────────────────────────────── */}
+        <section className='road-trackwrap' aria-label='Levels'>
+          <div className='relative'>
+          <button type='button' className='road-arrow road-arrow-l' onClick={() => page(-1)} disabled={ends[0]} aria-label='Earlier levels' {...sfxProps('uiClick')}>
+            <Arrow dir={-1} />
+          </button>
+          <button type='button' className='road-arrow road-arrow-r' onClick={() => page(1)} disabled={ends[1]} aria-label='Later levels' {...sfxProps('uiClick')}>
+            <Arrow dir={1} />
+          </button>
+          <div
+            ref={scrollerRef}
+            role='region'
+            aria-label='Career Road levels'
+            tabIndex={0}
+            data-dragging={dragging ? '1' : '0'}
+            onScroll={onScroll}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onClickCapture={(e) => {
+              if (suppressClick.current) {
+                suppressClick.current = false;
+                e.stopPropagation();
+                e.preventDefault();
+              }
+            }}
+            onKeyDown={onKeyDown}
+            className='road-scroller'
+          >
+            <div className='road-track' style={{ width: geo.total }}>
+              <div aria-hidden='true' className='road-rail' />
+              <div aria-hidden='true' className='road-rail-fill' style={{ width: hereX }} />
+              <div aria-hidden='true' className='road-here' style={{ left: hereX }}>
+                <span className='road-here-flag'>{guest ? 'Start' : 'You'}</span>
+                <span className='road-here-stem' />
+              </div>
+              {road.map((n, i) => {
+                const state = nodeState(n, level);
+                const left = geo.lefts[i];
+                const near = left + geo.widths[i] > vl - MOUNT_MARGIN && left < vl + vw + MOUNT_MARGIN;
+                return (
+                  <div
+                    key={n.level}
+                    role='group'
+                    aria-label={`Level ${n.level}: ${n.rewards.length ? n.rewards.map(nameOf).join(', ') : 'no rewards yet'}. ${
+                      state === 'claimed' ? 'Unlocked' : state === 'next' ? 'Next level' : 'Locked'
+                    }.`}
+                    className='road-node'
+                    data-state={state}
+                    data-milestone={n.level % 10 === 0 ? '1' : '0'}
+                    style={{ width: geo.widths[i] }}
+                  >
+                    <div className='road-pip-row'>
+                      <LevelEmblem level={n.level} size={n.level % 10 === 0 ? 46 : 38} label={false} tone={state === 'locked' || guest ? 'locked' : 'you'} />
+                    </div>
+                    <div className='road-rewards'>
+                      {n.rewards.length === 0 ? (
+                        <div className='road-empty' style={{ width: TILE, height: TILE }}>
+                          {n.level === 1 ? 'Your start' : 'Rewards coming'}
+                        </div>
+                      ) : (
+                        n.rewards.map((r, k) =>
+                          near ? (
+                            <div key={k} className='relative'>
+                              <RewardTile
+                                reward={r}
+                                size={TILE}
+                                locked={guest || state === 'locked'}
+                                selected={sel.level === n.level && sel.index === k}
+                                onClick={() => pick(n.level, k)}
+                              />
+                              {state === 'claimed' && !guest && (
+                                <span className='road-owned' title='Unlocked'>
+                                  <CheckGlyph />
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <div key={k} className='bg-white/[0.03]' style={{ width: TILE, height: TILE }} />
+                          ),
+                        )
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          </div>
+          <p className='road-hint'>Reach a level and its rewards are yours. Drag, scroll or use the arrow keys to travel.</p>
+          {milestones.length > 0 && (
+            <div className='road-coming'>
+              <h3 className='road-coming-title'>Coming up</h3>
+              <div className='flex flex-wrap gap-4'>
+                {milestones.map((m) => (
+                  <div key={m.level} className='flex flex-col items-start gap-1.5'>
+                    <RewardTile
+                      reward={m.rewards.find((r) => r.type === 'cosmetic') ?? m.rewards[0]}
+                      size={104}
+                      label={false}
+                      selected={sel.level === m.level}
+                      onClick={() => jumpTo(m.level)}
+                    />
+                    <span className='font-sans text-[13px] text-white/60'>Level {m.level}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
       </div>
-      </div>
-    </ModalShell>
+    </div>
   );
+  return typeof document !== 'undefined' ? createPortal(node, document.body) : node;
 }

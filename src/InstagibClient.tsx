@@ -30,6 +30,8 @@ import { prefersReducedMotion, sfxProps, toast, useAnyModalOpen, useModalStack }
 import { MenuBackdropView } from './menu/MenuBackdropView';
 import type { HeroLoadout } from './menu/menu-hero';
 import { ProfileBlock } from './menu/ProfileBlock';
+import { FrontDoors } from './menu/FrontDoors';
+import { AccountMenu } from './menu/AccountMenu';
 import { HeroSlot } from './menu/HeroSlot';
 import { ChallengesModal, ChallengesStrip } from './menu/Challenges';
 import { CareerRoad } from './menu/CareerRoad';
@@ -4197,7 +4199,7 @@ function Lobby({
       <MenuToasts />
       <div className='relative flex h-full w-full flex-col px-5 pb-4 pt-4 sm:px-10 sm:pt-5 lg:px-14'>
         {/* ── Top bar: who you are (left) · account + server (right) ─── */}
-        <header className='flex shrink-0 flex-wrap items-start justify-between gap-3'>
+        <header className='relative z-20 flex shrink-0 flex-wrap items-start justify-between gap-3'>
           <div className='menu-in-top w-full sm:w-auto sm:min-w-[19rem] sm:max-w-[29rem] sm:flex-1' style={{ ['--d' as string]: 0 }}>
             <ProfileBlock
               account={account}
@@ -4211,26 +4213,13 @@ function Lobby({
           </div>
           <div className='menu-in-top ml-auto flex items-center gap-3 sm:pt-1' style={{ ['--d' as string]: 1 }}>
             {account && (
-              <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
-                {account.isAdmin && (
-                  <button
-                    type='button'
-                    onClick={() => setAdminOpen(true)}
-                    {...sfxProps('uiClick')}
-                    className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-                  >
-                    Admin
-                  </button>
-                )}
-                <button
-                  type='button'
-                  onClick={onLogout}
-                  {...sfxProps('uiBack')}
-                  className='text-white/40 transition hover:text-white/80'
-                >
-                  Log&nbsp;out
-                </button>
-              </span>
+              <AccountMenu
+                isAdmin={account.isAdmin}
+                onStats={() => setStatsOpen(true)}
+                onSettings={() => openSettingsAt('controls')}
+                onAdmin={() => setAdminOpen(true)}
+                onLogout={onLogout}
+              />
             )}
             <ServerStatusChip status={lobbyStatus} />
             {!dockOpen && (
@@ -4239,7 +4228,7 @@ function Lobby({
                 onClick={toggleDock}
                 aria-expanded={false}
                 {...sfxProps('uiToggle')}
-                className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/70 transition hover:border-cyan-300/60 hover:text-cyan-100'
+                className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-display text-[13px] font-semibold uppercase tracking-[0.06em] text-white/75 transition hover:border-cyan-300/60 hover:text-cyan-100'
               >
                 Lobbies &amp; chat
                 {online && rooms.length > 0 && <span className='tabular-nums text-cyan-300'>{rooms.length}</span>}
@@ -4248,7 +4237,7 @@ function Lobby({
           </div>
         </header>
 
-        <main id='lobby-main' tabIndex={-1} className='flex min-h-0 flex-1 gap-6 outline-none'>
+        <main id='lobby-main' tabIndex={-1} className='relative flex min-h-0 flex-1 gap-6 outline-none'>
           {/* ── Left: identity + ways to play ─────────────────────────── */}
           <section className='deck-scroll flex min-h-0 w-full max-w-[31rem] shrink-0 flex-col overflow-y-auto'>
             <div className='my-auto flex flex-col py-4'>
@@ -4329,7 +4318,6 @@ function Lobby({
                   Challenges
                 </MenuLink>
                 <MenuLink onClick={() => setLeaderboardOpen(true)}>Leaderboard</MenuLink>
-                <MenuLink onClick={() => setLockerOpen(true)}>Locker</MenuLink>
                 <MenuLink onClick={() => openSettingsAt('controls')}>Settings</MenuLink>
               </div>
 
@@ -4339,12 +4327,21 @@ function Lobby({
                 </div>
               )}
 
-              {/* Narrow layouts: the challenges ride under the menu. */}
-              <div className='menu-in mt-5 lg:hidden' style={{ ['--d' as string]: 10 }}>
+              {/* Narrow layouts: the doors + challenges ride under the menu. */}
+              <div className='menu-in mt-5 flex flex-col gap-3 lg:hidden' style={{ ['--d' as string]: 10 }}>
+                <FrontDoors
+                  profile={lobbyProfile}
+                  guest={!account}
+                  hat={settings.hat}
+                  railgunFinish={settings.railgunFinish}
+                  onRoad={() => setRoadOpen(true)}
+                  onLocker={() => setLockerOpen(true)}
+                />
                 <ChallengesStrip
                   lists={challenges}
                   guest={!account}
                   onOpen={() => setChallengesOpen(true)}
+                  onLogin={onOpenLogin}
                   onClaimed={refreshMeta}
                 />
               </div>
@@ -4357,16 +4354,25 @@ function Lobby({
             onCustomize={() => setLockerOpen(true)}
             onHover={setHeroHover}
             hover={heroHover}
-            className='max-lg:hidden'
+            className='max-lg:hidden lg:!absolute lg:inset-y-0 lg:left-[32.5rem] lg:right-[20.5rem] 2xl:right-28'
           />
 
           {/* ── Right: challenges over the social dock ─────────────────── */}
-          <div className='menu-in-right flex min-h-0 flex-col gap-3 pb-2 lg:w-[19.5rem] lg:shrink-0 xl:w-[21rem] max-lg:pointer-events-none max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10'>
-            <div className='max-lg:hidden'>
+          <div className='menu-in-right flex min-h-0 flex-col gap-3 pb-2 lg:relative lg:z-10 lg:ml-auto lg:w-[19.5rem] lg:shrink-0 xl:w-[21rem] max-lg:pointer-events-none max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10'>
+            <div className='flex flex-col gap-3 max-lg:hidden'>
+              <FrontDoors
+                profile={lobbyProfile}
+                guest={!account}
+                hat={settings.hat}
+                railgunFinish={settings.railgunFinish}
+                onRoad={() => setRoadOpen(true)}
+                onLocker={() => setLockerOpen(true)}
+              />
               <ChallengesStrip
                 lists={challenges}
                 guest={!account}
                 onOpen={() => setChallengesOpen(true)}
+                onLogin={onOpenLogin}
                 onClaimed={refreshMeta}
               />
             </div>
@@ -4379,16 +4385,20 @@ function Lobby({
                   {...sfxProps('uiToggle')}
                   className='menu-dock-chip clip-deck-sm'
                 >
-                  <span aria-hidden='true' className={`h-1.5 w-1.5 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
+                  <span aria-hidden='true' className={`h-2 w-2 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
                   {online ? (
-                    <span>
-                      {lobbyCount} {lobbyCount === 1 ? 'lobby' : 'lobbies'} · {onlineCount} online · <span className='text-white'>Chat</span>
-                    </span>
+                    <>
+                      <span className='menu-dock-stat'>
+                        <b>{onlineCount}</b> online
+                      </span>
+                      <span className='menu-dock-stat'>
+                        <b>{lobbyCount}</b> {lobbyCount === 1 ? 'lobby' : 'lobbies'}
+                      </span>
+                    </>
                   ) : (
-                    <span>
-                      Linking to server · <span className='text-white'>Chat</span>
-                    </span>
+                    <span>Linking to server</span>
                   )}
+                  <span className='menu-dock-open'>Chat</span>
                 </button>
               )}
               <SocialDock
@@ -4424,11 +4434,11 @@ function Lobby({
         </main>
 
         {/* ── Footer: what you're looking at, whisper-quiet ─────────────── */}
-        <footer className='flex shrink-0 items-center justify-between gap-4 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
+        <footer className='flex shrink-0 items-center justify-between gap-4 pt-3 font-sans text-[12px] text-white/45'>
           <span className='truncate'>
             {arenaName && (
               <>
-                Arena <span className='text-white/65'>{arenaName}</span>
+                Arena · <span className='text-white/75'>{arenaName}</span>
               </>
             )}
           </span>
@@ -4473,6 +4483,10 @@ function Lobby({
       {challengesOpen && (
         <ChallengesModal
           guest={!account}
+          onLogin={() => {
+            setChallengesOpen(false);
+            onOpenLogin();
+          }}
           onClose={() => {
             setChallengesOpen(false);
             setRefreshTick((t) => t + 1); // claiming changed credits + claim count
@@ -4580,7 +4594,7 @@ function ServerStatusChip({ status }: { status: LobbyStatus }) {
   return (
     <span
       title={s.title}
-      className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[0.18em] ${s.ring}`}
+      className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-display text-[12px] font-bold uppercase tracking-[0.1em] ${s.ring}`}
     >
       <span className={`deck-pulse h-1.5 w-1.5 rounded-full ${s.dot}`} />
       {s.t}
