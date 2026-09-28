@@ -14,6 +14,7 @@
 // per UTC day (OFFLINE_DAILY_XP_CAP). The XP number itself is never client-sent.
 
 import { ALL_COSMETICS } from './cosmetics';
+import { itemDef } from './items/catalog';
 
 export const MAX_LEVEL = 100;
 
@@ -222,7 +223,9 @@ export function baseMatchXp(d: MatchXpInput): number {
 export type RoadReward =
   | { type: 'cosmetic'; id: string }
   | { type: 'credits'; amount: number }
-  | { type: 'case' }; // one free hat-case opening (a "case key")
+  // Free roll(s): open any standard case without paying (economy v3 — the old
+  // "case key"). `count` defaults to 1. Stored in stats.free_rolls.
+  | { type: 'case'; count?: number };
 
 export type RoadStep = { level: number; rewards: RoadReward[] };
 
@@ -264,6 +267,22 @@ export function roadMilestoneCredits(level: number): number {
   return level % ROAD_BONUS_EVERY === 0 ? (level / ROAD_BONUS_EVERY) * 500 : 0;
 }
 
+// Economy v3: how a level-sourced cosmetic is delivered.
+//  - 'item'        → minted as a BOUND item instance (untradable, origin 'road')
+//  - 'entitlement' → cards / titles / announcer packs stay level-gated
+//                    entitlements (owned live from the level; nothing minted)
+//  - 'replaced'    → no item def any more (the old per-slot `unusual.*` items —
+//                    an unusual is now an attribute of a hat / emote): the road
+//                    pays ROAD_REPLACED_ROLLS free rolls + filler credits so the
+//                    level still rewards.
+export const ROAD_REPLACED_ROLLS = 2;
+export function roadRewardKind(cosmeticId: string): 'item' | 'entitlement' | 'replaced' {
+  if (cosmeticId.startsWith('announcer.')) return 'entitlement';
+  const d = itemDef(cosmeticId);
+  if (!d || d.default) return 'replaced';
+  return d.slot === 'card' || d.slot === 'title' ? 'entitlement' : 'item';
+}
+
 function buildRoad(): RoadStep[] {
   const byLevel = new Map<number, string[]>();
   for (const c of ALL_COSMETICS) {
@@ -279,10 +298,17 @@ function buildRoad(): RoadStep[] {
   const road: RoadStep[] = [];
   for (let level = 2; level <= MAX_LEVEL; level++) {
     const rewards: RoadReward[] = [];
-    const cosmetics = byLevel.get(level) ?? [];
-    for (const id of cosmetics) rewards.push({ type: 'cosmetic', id });
-    if (level % CASE_KEY_EVERY === 0) rewards.push({ type: 'case' });
-    const credits = (cosmetics.length === 0 ? roadFillerCredits(level) : 0) + roadMilestoneCredits(level);
+    let rolls = level % CASE_KEY_EVERY === 0 ? 1 : 0;
+    let hasCosmetic = false;
+    for (const id of byLevel.get(level) ?? []) {
+      if (roadRewardKind(id) === 'replaced') rolls += ROAD_REPLACED_ROLLS;
+      else {
+        rewards.push({ type: 'cosmetic', id });
+        hasCosmetic = true;
+      }
+    }
+    if (rolls > 0) rewards.push(rolls === 1 ? { type: 'case' } : { type: 'case', count: rolls });
+    const credits = (hasCosmetic ? 0 : roadFillerCredits(level)) + roadMilestoneCredits(level);
     if (credits > 0) rewards.push({ type: 'credits', amount: credits });
     if (rewards.length === 0) throw new Error(`[progression] Career Road level ${level} has no reward`);
     road.push({ level, rewards });
