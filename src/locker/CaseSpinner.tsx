@@ -145,7 +145,7 @@ export function CaseSpinner({
       label='Hat case'
       tone='amber'
       fixed
-      z='z-50'
+      z='z-[70]'
       size='xl'
       backdrop='heavy'
       onClose={revealed ? onClose : undefined}

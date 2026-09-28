@@ -5,9 +5,10 @@
    its own loop); everything decorative is off under reduced effects/motion. */
 
 .lk-root {
+  /* Above the lobby's fixed .menu-root (z-50); the case reel sits above us. */
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 60;
   display: flex;
   flex-direction: column;
   color: #fff;
@@ -204,12 +205,12 @@
   white-space: nowrap;
 }
 .lk-plate-name {
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 700;
   line-height: 1.05;
 }
 .lk-plate-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -229,7 +230,7 @@
   position: absolute;
   left: 28px;
   bottom: 26px;
-  width: min(400px, calc(100% - 56px));
+  width: min(360px, 52%);
   display: flex;
   flex-direction: column;
   gap: 10px;

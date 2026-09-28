@@ -79,14 +79,14 @@ const CHEST = new THREE.Vector3(0, 0.95, 0); // kill-burst centre (body centre, 
 type Framing = { tx: number; ty: number; tz: number; dist: number; elev: number; fov: number };
 
 const FRAMES: Record<PreviewView, Framing> = {
-  full: { tx: 0, ty: 1.0, tz: 0, dist: 5.9, elev: 0.3, fov: 30 },
-  head: { tx: 0, ty: 1.76, tz: 0, dist: 2.2, elev: 0.1, fov: 30 },
+  full: { tx: 0, ty: 1.0, tz: 0, dist: 4.7, elev: 0.3, fov: 30 },
+  head: { tx: 0, ty: 1.6, tz: 0, dist: 2.75, elev: 0.12, fov: 30 },
   character: { tx: 0, ty: 1.66, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
-  identity: { tx: 0, ty: 1.42, tz: 0, dist: 4.3, elev: 0.1, fov: 30 },
-  emote: { tx: 0, ty: 1.08, tz: 0, dist: 6.2, elev: 0.25, fov: 30 },
-  finisher: { tx: 0, ty: 1.1, tz: 0, dist: 7.0, elev: 0.45, fov: 30 },
-  spawn: { tx: 0, ty: 1.22, tz: 0, dist: 6.8, elev: 0.35, fov: 30 },
-  weapon: { tx: 0, ty: 1.02, tz: 0, dist: 2.35, elev: 0.18, fov: 32 },
+  identity: { tx: 0, ty: 1.3, tz: 0, dist: 4.4, elev: 0.1, fov: 30 },
+  emote: { tx: 0, ty: 1.08, tz: 0, dist: 5.3, elev: 0.25, fov: 30 },
+  finisher: { tx: 0, ty: 1.1, tz: 0, dist: 8.6, elev: 0.55, fov: 24 },
+  spawn: { tx: 0, ty: 1.2, tz: 0, dist: 7.0, elev: 0.45, fov: 28 },
+  weapon: { tx: 0, ty: 1.02, tz: 0, dist: 3.35, elev: 0.28, fov: 30 },
 };
 
 function savedName(): string {
@@ -340,7 +340,7 @@ export class CharacterPreview {
     if (weapon) {
       this.ensureGun();
       this.gunPivot.visible = true;
-      this.fireTimer = 0.6;
+      this.fireTimer = 0.45;
     } else {
       this.gunPivot.visible = false;
     }
@@ -384,7 +384,10 @@ export class CharacterPreview {
     }
     if (cos.railgunFinish !== prev.railgunFinish) {
       // The bug this fixes: a finish change used to leave the old gun on show.
-      if (this.view === 'weapon') this.ensureGun();
+      if (this.view === 'weapon') {
+        this.ensureGun();
+        this.fireTimer = Math.min(this.fireTimer, 0.35); // show it off right away
+      }
       else if (this.gun) this.disposeGun();
       if (this.view === 'emote') this.syncEmoteGun(emoteById(cos.emoteId).kind);
     }
@@ -569,7 +572,7 @@ export class CharacterPreview {
     const sway = this.cos.reducedEffects ? 0 : Math.sin(this.t * 0.5) * amp * this.swayW;
     this.subject.rotation.y = FACE_CAMERA + this.yaw + sway;
     // The gun points its barrel to screen-right and a little into depth.
-    this.gunPivot.rotation.set(0.05, -1.18 + this.yaw + sway, 0.04);
+    this.gunPivot.rotation.set(0.06, -0.58 + this.yaw + sway, 0.03);
   }
 
   start() {
@@ -607,7 +610,7 @@ export class CharacterPreview {
     if (this.finisherPhase === 'idle' && this.loopT >= FINISHER_IDLE * slow) {
       // The killing rail: from off-screen left into the dummy's chest.
       const rc = railColorById(this.cos.railColor).data;
-      const start = _v.set(-9, 1.45, 2.2);
+      const start = _v.set(-9, 1.3, 0.6);
       const hit = _v2.set(0, 1.22, 0);
       getFxContext(this.scene).beams.spawn(start, hit, rc.core, rc.helix, false);
       this.dummyAnim.die({ y: 0 }, this.cos.killEffect);
@@ -676,7 +679,7 @@ export class CharacterPreview {
     const ch = this.character;
     if (!el || !this.anchorVisible || !ch || !this.anchorAllowed()) return;
     ch.sockets.headTop.getWorldPosition(_v);
-    _v.y += 0.5;
+    _v.y += 0.36;
     _v.project(this.camera);
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;

@@ -38,7 +38,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v3:';
+const STORE_PREFIX = 'ig-thumb:v5:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 const FACE_CAMERA = Math.PI;
@@ -161,6 +161,9 @@ type Studio = {
   env: THREE.Texture;
   effects: EffectsManager;
   webp: boolean;
+  out: HTMLCanvasElement; // 2D canvas the fixed-up pixels are encoded from
+  px: Uint8Array;
+  mask: Uint8Array;
 };
 let studio: Studio | null = null;
 let studioFailed = false;
@@ -212,7 +215,10 @@ function getStudio(): Studio | null {
     } catch {
       webp = false;
     }
-    studio = { renderer, scene, camera, env, effects, webp };
+    const out = document.createElement('canvas');
+    out.width = out.height = SIZE;
+    const n = SIZE * SIZE * 4;
+    studio = { renderer, scene, camera, env, effects, webp, out, px: new Uint8Array(n), mask: new Uint8Array(n) };
     return studio;
   } catch {
     studioFailed = true;
@@ -228,6 +234,8 @@ function release() {
   studio = null;
   if (peekFxContext(s.scene)) disposeFxContext(s.scene);
   s.env.dispose();
+  backdropTex?.dispose();
+  backdropTex = null;
   s.renderer.dispose();
   s.renderer.forceContextLoss();
 }
@@ -249,17 +257,42 @@ type Subject = {
   dispose: () => void;
 };
 
-// A neutral combatant, facing the camera (optionally turned `turn` radians).
-function combatant(turn = 0) {
+// A neutral combatant, facing the camera (optionally turned `turn` radians),
+// posed at `t` seconds into `clip` (the breathing idle by default).
+function combatant(turn = 0, clip: EmoteKind = 'idle', t = 0.6) {
   const holder = new THREE.Group();
   const ch = new Character({ colorHex: THUMB_SKIN, castShadow: false });
   holder.add(ch.root);
   holder.rotation.y = FACE_CAMERA + turn;
   const anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
-  anim.playEmote('idle');
-  anim.setEmoteTime(0.6, 1);
+  anim.playEmote(clip); // fresh animator → the clip starts at once (no blend)
+  anim.setEmoteTime(t, 1);
   anim.updateStatic(0);
   return { holder, ch, anim };
+}
+
+// Camera-facing dark radial disc (thumbnail backdrop for glow effects). The
+// texture is cached for the studio's life.
+let backdropTex: THREE.CanvasTexture | null = null;
+function darkBackdrop(): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> {
+  if (!backdropTex) {
+    const S = 128;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = S;
+    const ctx = cv.getContext('2d')!;
+    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    g.addColorStop(0, 'rgba(6,8,14,0.92)');
+    g.addColorStop(0.55, 'rgba(6,8,14,0.7)');
+    g.addColorStop(1, 'rgba(6,8,14,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, S, S);
+    backdropTex = new THREE.CanvasTexture(cv);
+    backdropTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  return new THREE.Mesh(
+    new THREE.PlaneGeometry(1.25, 1.25),
+    new THREE.MeshBasicMaterial({ map: backdropTex, transparent: true, depthWrite: false, toneMapped: false }),
+  );
 }
 
 function disposeCombatant(c: { ch: Character; anim: CharacterAnimator }) {
@@ -295,8 +328,8 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       await hat.setHat(entry.id);
       return {
         root: c.holder,
-        target: new THREE.Vector3(0, 1.74, 0),
-        dist: 1.62,
+        target: new THREE.Vector3(0, 1.76, 0),
+        dist: 1.45,
         elev: 0.16,
         dispose: () => {
           hat.dispose();
@@ -308,17 +341,25 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       const c = combatant(-0.25);
       const hat = new WornHat(c.ch.sockets.headTop);
       hat.setUnusual(entry.id);
+      // Every unusual is legendary (gold tile) and many are warm-coloured: a
+      // dark halo behind the effect keeps the particles readable.
+      const backdrop = darkBackdrop();
+      backdrop.position.set(0, 1.95, -0.45);
+      const root = new THREE.Group();
+      root.add(c.holder, backdrop);
       return {
-        root: c.holder,
-        target: new THREE.Vector3(0, 1.84, 0),
-        dist: 1.78,
-        elev: 0.1,
+        root,
+        target: new THREE.Vector3(0, 1.9, 0),
+        dist: 1.3,
+        elev: 0.12,
         settle: () => {
           for (let i = 0; i < 36; i++) hat.update(1 / 60); // ~0.6 s in
         },
         dispose: () => {
           hat.dispose();
           disposeCombatant(c);
+          backdrop.geometry.dispose();
+          backdrop.material.dispose();
         },
       };
     }
@@ -334,7 +375,7 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       return {
         root: pivot,
         target: new THREE.Vector3(0.02, 0.02, 0),
-        dist: 2.55,
+        dist: 2.25,
         elev: 0.12,
         dispose: () => {
           const mats = new Set<THREE.Material>();
@@ -401,17 +442,12 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
     }
     case 'emote': {
       const kind = emoteById(entry.id).kind;
-      const c = combatant(0.28);
-      let gun: THREE.Group | null = null;
-      if (kind === 'flourish') gun = attachRailgun(c.ch);
-      c.anim.playEmote(kind, true);
-      const dur = emoteClip(kind).duration;
-      c.anim.setEmoteTime((EMOTE_FRAME[kind] ?? 0.4) * dur, 1);
-      c.anim.updateStatic(0);
+      const c = combatant(0.28, kind, (EMOTE_FRAME[kind] ?? 0.4) * emoteClip(kind).duration);
+      const gun = kind === 'flourish' ? attachRailgun(c.ch) : null;
       return {
         root: c.holder,
-        target: new THREE.Vector3(0, 1.08, 0),
-        dist: 5.0,
+        target: new THREE.Vector3(0, 1.12, 0),
+        dist: 4.25,
         elev: 0.08,
         dispose: () => {
           disposeRailgun(gun);
@@ -422,6 +458,59 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
     default:
       return null;
   }
+}
+
+// Render + encode with an alpha fix-up. Additive FX (bursts, beams, unusual
+// particles) write colour but little alpha into a transparent buffer, so they
+// would wash out over the tile's rarity backdrop. Two passes: the full scene,
+// then only the non-additive geometry (its coverage). Final alpha = max(that
+// coverage, the pixel's brightest channel); colour is un-premultiplied by it.
+function encode(s: Studio, cam: THREE.Camera): string | null {
+  const gl = s.renderer.getContext();
+  s.renderer.render(s.scene, cam);
+  gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, s.px);
+  const hidden: THREE.Object3D[] = [];
+  s.scene.traverse((o) => {
+    const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!o.visible || !m) return;
+    const additive = Array.isArray(m) ? m.some((x) => x.blending === THREE.AdditiveBlending) : m.blending === THREE.AdditiveBlending;
+    if (additive) {
+      o.visible = false;
+      hidden.push(o);
+    }
+  });
+  s.renderer.render(s.scene, cam);
+  gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, s.mask);
+  for (const o of hidden) o.visible = true;
+  const ctx = s.out.getContext('2d');
+  if (!ctx) return null;
+  const img = ctx.createImageData(SIZE, SIZE);
+  const d = img.data;
+  const px = s.px;
+  const mask = s.mask;
+  for (let y = 0; y < SIZE; y++) {
+    const src = (SIZE - 1 - y) * SIZE * 4; // GL rows run bottom-up
+    const dst = y * SIZE * 4;
+    for (let x = 0; x < SIZE * 4; x += 4) {
+      const i = src + x;
+      const r = px[i];
+      const g = px[i + 1];
+      const b = px[i + 2];
+      const a = Math.max(mask[i + 3], r, g, b);
+      const o = dst + x;
+      if (a === 0) {
+        d[o + 3] = 0;
+        continue;
+      }
+      const k = 255 / a;
+      d[o] = r * k;
+      d[o + 1] = g * k;
+      d[o + 2] = b * k;
+      d[o + 3] = a;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return s.webp ? s.out.toDataURL('image/webp', 0.9) : s.out.toDataURL('image/png');
 }
 
 async function renderThumb(id: string): Promise<string | null> {
@@ -460,11 +549,7 @@ async function renderThumb(id: string): Promise<string | null> {
     }
     await nextFrame();
     if (studio !== s) return null;
-    s.renderer.render(s.scene, cam);
-    const url = s.webp
-      ? s.renderer.domElement.toDataURL('image/webp', 0.9)
-      : s.renderer.domElement.toDataURL('image/png');
-    return url;
+    return encode(s, cam);
   } finally {
     s.scene.remove(subj.root);
     subj.dispose();

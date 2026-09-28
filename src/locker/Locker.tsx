@@ -64,6 +64,16 @@ type CaseResp = {
   caseKeys?: number;
 };
 
+const VIEW_OFFSET: Partial<Record<PreviewCosmetics['view'], number>> = {
+  head: 0.14,
+  identity: 0.17,
+  weapon: 0.07,
+  full: 0.2,
+  emote: 0.2,
+  finisher: 0.17,
+  spawn: 0.19,
+};
+
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -294,7 +304,10 @@ export function Locker({
 
   const shownItem = cosmeticById(tryOn);
   const tint = RARITY_COLOR[shownItem?.rarity ?? 'common'].edge;
-  const offsetX = narrow ? 0 : slot === 'card' ? 0.22 : def.view === 'weapon' ? 0.06 : 0.13;
+  // Desktop: the details panel sits bottom-left over the stage, so the subject
+  // shifts right (and the gun up) to clear it.
+  const offsetX = narrow ? 0 : slot === 'card' ? 0.24 : (VIEW_OFFSET[def.view] ?? 0.18);
+  const offsetY = def.view === 'weapon' ? (narrow ? -0.04 : -0.1) : 0;
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const itemName = (id: string) => cosmeticById(id)?.name ?? id;
@@ -570,6 +583,7 @@ export function Locker({
           cos={cos}
           lowSpec={settings.lowSpec}
           offsetX={offsetX}
+          offsetY={offsetY}
           tint={tint}
           nameplate={nameplate}
           pulseKey={pulseKey}

@@ -11,6 +11,7 @@ export function LockerStage({
   cos,
   lowSpec,
   offsetX,
+  offsetY,
   tint,
   nameplate,
   pulseKey,
@@ -20,6 +21,7 @@ export function LockerStage({
   cos: PreviewCosmetics;
   lowSpec: boolean;
   offsetX: number;
+  offsetY: number;
   tint: string;
   nameplate: StageNameplate | null;
   pulseKey: number; // bump → celebrate() (spawn ring at the feet)
@@ -64,8 +66,8 @@ export function LockerStage({
     previewRef.current?.setCosmetics(cos);
   }, [cos]);
   useEffect(() => {
-    previewRef.current?.setScreenOffset(offsetX);
-  }, [offsetX]);
+    previewRef.current?.setScreenOffset(offsetX, offsetY);
+  }, [offsetX, offsetY]);
   useEffect(() => {
     previewRef.current?.setAnchorVisible(!!nameplate);
   }, [nameplate]);
