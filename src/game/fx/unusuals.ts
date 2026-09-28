@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import type { UnusualKind } from '../cosmetics';
+import { UNUSUAL_EFFECTS } from '../items/types';
 import { fxFlags } from './fx-settings';
 import { lightningPath, RibbonBatch } from './ribbon';
 import { CELL, unusualAtlas } from './unusual-atlas';
+import { Field, GOLDEN, TAU, hash, hsv, mix, now, rnd, smooth, tmpVp, type SharedUniforms } from './unusual-core';
 
 // ── Unusual effects (TF2-style particle crowns) ──────────────────────────────
 //
@@ -28,202 +30,6 @@ import { CELL, unusualAtlas } from './unusual-atlas';
 //  • reducedEffects → calmer motion, fewer particles, no flashes/strobing;
 //    lowSpec → fewer particles.
 
-const TAU = Math.PI * 2;
-const rnd = Math.random;
-const GOLDEN = 0.6180339887;
-
-const smooth = (a: number, b: number, x: number) => {
-  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
-const mix = (a: number, b: number, t: number) => a + (b - a) * t;
-const hash = (n: number) => {
-  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
-  return s - Math.floor(s);
-};
-
-const hsvOut = [0, 0, 0];
-function hsv(h: number, s: number, v: number): number[] {
-  const i = Math.floor(h * 6);
-  const f = h * 6 - i;
-  const p = v * (1 - s);
-  const q = v * (1 - f * s);
-  const t = v * (1 - (1 - f) * s);
-  switch (((i % 6) + 6) % 6) {
-    case 0: hsvOut[0] = v; hsvOut[1] = t; hsvOut[2] = p; break;
-    case 1: hsvOut[0] = q; hsvOut[1] = v; hsvOut[2] = p; break;
-    case 2: hsvOut[0] = p; hsvOut[1] = v; hsvOut[2] = t; break;
-    case 3: hsvOut[0] = p; hsvOut[1] = q; hsvOut[2] = v; break;
-    case 4: hsvOut[0] = t; hsvOut[1] = p; hsvOut[2] = v; break;
-    default: hsvOut[0] = v; hsvOut[1] = p; hsvOut[2] = q;
-  }
-  return hsvOut;
-}
-
-// ── Point material ──────────────────────────────────────────────────────────
-
-const POINT_VERT = /* glsl */ `
-attribute vec4 aColor;   // linear rgb (may exceed 1) + alpha
-attribute float aSize;   // diameter, metres
-attribute vec2 aSprite;  // atlas cell, rotation (rad)
-uniform float uViewH;    // current viewport height, physical px
-uniform float uMinPx;
-uniform float uGain;
-uniform float uHdrCap;
-uniform float uMinLum; // far away, dim particles are lifted to this peak so the effect still reads
-varying vec4 vColor;
-varying vec2 vCell;
-varying vec2 vRot;
-#include <fog_pars_vertex>
-void main() {
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  gl_Position = projectionMatrix * mvPosition;
-  // FOV-correct: three's stock attenuation omits projectionMatrix[1][1].
-  float px = aSize * projectionMatrix[1][1] * 0.5 * uViewH / max(-mvPosition.z, 0.01);
-  float k = 1.0;
-  if (px < uMinPx) { k = px / uMinPx; px = uMinPx; }
-  gl_PointSize = min(px, 360.0);
-  vec3 c = aColor.rgb * uGain;
-  float peak = max(c.r, max(c.g, c.b));
-  if (peak > uHdrCap) c *= uHdrCap / peak;
-  else if (peak < uMinLum && peak > 0.015) c *= uMinLum / peak;
-  vColor = vec4(c, aColor.a * k);
-  vCell = vec2(mod(aSprite.x, 4.0), floor(aSprite.x / 4.0 + 0.001));
-  vRot = vec2(cos(aSprite.y), sin(aSprite.y));
-  if (aColor.a <= 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // parked
-  #include <fog_vertex>
-}
-`;
-
-const POINT_FRAG = /* glsl */ `
-uniform sampler2D uAtlas;
-uniform float uOcclude;
-varying vec4 vColor;
-varying vec2 vCell;
-varying vec2 vRot;
-#include <fog_pars_fragment>
-void main() {
-  vec2 p = gl_PointCoord - 0.5;
-  p = vec2(vRot.x * p.x - vRot.y * p.y, vRot.y * p.x + vRot.x * p.y) + 0.5;
-  p = clamp(p, 0.02, 0.98);
-  vec2 uv = vec2((vCell.x + p.x) * 0.25, 1.0 - (vCell.y + p.y) * 0.25);
-  vec4 t = texture2D(uAtlas, uv);
-  float a = t.a * vColor.a;
-  #ifdef USE_FOG
-    #ifdef FOG_EXP2
-      a *= exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
-    #else
-      a *= 1.0 - smoothstep(fogNear, fogFar, vFogDepth);
-    #endif
-  #endif
-  if (a < 0.004) discard;
-  // Premultiplied: rgb adds light, alpha (× uOcclude) dims what's behind — so
-  // a flame stays saturated against a bright sky yet reads as pure glow on
-  // dark walls. The storm cloud (uOcclude 1) is plain alpha blending.
-  gl_FragColor = vec4(vColor.rgb * t.rgb * a, a * uOcclude);
-  #include <colorspace_fragment>
-}
-`;
-
-type SharedUniforms = {
-  uAtlas: { value: THREE.Texture };
-  uViewH: { value: number };
-  uMinPx: { value: number };
-  uGain: { value: number };
-  uHdrCap: { value: number };
-  uMinLum: { value: number };
-  uOcclude: { value: number };
-};
-
-function pointMaterial(u: SharedUniforms & Record<string, THREE.IUniform>): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: u,
-    vertexShader: POINT_VERT,
-    fragmentShader: POINT_FRAG,
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.CustomBlending,
-    blendEquation: THREE.AddEquation,
-    blendSrc: THREE.OneFactor,
-    blendDst: THREE.OneMinusSrcAlphaFactor,
-    blendSrcAlpha: THREE.OneFactor,
-    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
-    fog: true,
-    toneMapped: false,
-  });
-}
-
-// A fixed-capacity point cloud in world space (its matrixWorld is pinned to
-// identity; the parent chain only decides visibility).
-class Field {
-  readonly points: THREE.Points;
-  readonly n: number;
-  private readonly geom = new THREE.BufferGeometry();
-  readonly mat: THREE.ShaderMaterial;
-  private readonly pos: Float32Array;
-  private readonly col: Float32Array;
-  private readonly siz: Float32Array;
-  private readonly spr: Float32Array;
-
-  constructor(n: number, u: SharedUniforms & Record<string, THREE.IUniform>, additive: boolean) {
-    this.n = n;
-    this.pos = new Float32Array(n * 3);
-    this.col = new Float32Array(n * 4);
-    this.siz = new Float32Array(n);
-    this.spr = new Float32Array(n * 2);
-    const dyn = (arr: Float32Array, size: number) => {
-      const a = new THREE.BufferAttribute(arr, size);
-      a.setUsage(THREE.DynamicDrawUsage);
-      return a;
-    };
-    this.geom.setAttribute('position', dyn(this.pos, 3));
-    this.geom.setAttribute('aColor', dyn(this.col, 4));
-    this.geom.setAttribute('aSize', dyn(this.siz, 1));
-    this.geom.setAttribute('aSprite', dyn(this.spr, 2));
-    this.geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1);
-    this.mat = pointMaterial(u);
-    this.points = new THREE.Points(this.geom, this.mat);
-    this.points.matrixAutoUpdate = false;
-    this.points.matrixWorldAutoUpdate = false;
-    this.points.renderOrder = additive ? 3 : 2;
-  }
-
-  put(i: number, x: number, y: number, z: number, r: number, g: number, b: number, a: number, size: number, cell: number, rot: number) {
-    this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
-    this.col[i * 4] = r; this.col[i * 4 + 1] = g; this.col[i * 4 + 2] = b; this.col[i * 4 + 3] = a;
-    this.siz[i] = size;
-    this.spr[i * 2] = cell; this.spr[i * 2 + 1] = rot;
-  }
-
-  hide(i: number) {
-    this.col[i * 4 + 3] = 0;
-  }
-
-  hideAll() {
-    for (let i = 0; i < this.n; i++) this.col[i * 4 + 3] = 0;
-  }
-
-  setBounds(x: number, y: number, z: number, r: number) {
-    const s = this.geom.boundingSphere!;
-    s.center.set(x, y, z);
-    s.radius = r;
-  }
-
-  commit() {
-    const a = this.geom.attributes;
-    a.position.needsUpdate = true;
-    a.aColor.needsUpdate = true;
-    a.aSize.needsUpdate = true;
-    a.aSprite.needsUpdate = true;
-  }
-
-  dispose() {
-    this.points.removeFromParent();
-    this.geom.dispose();
-    this.mat.dispose();
-  }
-}
-
 // ── Recipes ─────────────────────────────────────────────────────────────────
 
 type P = {
@@ -237,21 +43,35 @@ type P = {
   a: number; b: number; // recipe scratch
 };
 
+// Every kind the engine renders: the v2 kinds (cosmetics.ts UnusualKind) plus
+// the v3 additions (items/types.ts UNUSUAL_EFFECTS).
+export type EffectKind =
+  | Exclude<UnusualKind, 'none'>
+  | 'sunbeams' | 'bubbles' | 'frostbite' | 'voidrift' | 'fireflies' | 'cosmic' | 'lightning' | 'sakura';
+
 type Layout = { count: number; roles: [role: number, n: number][]; cloud?: number; ribbons?: [strips: number, points: number] };
 
 // Particle budgets per kind (role → count). Roles index the recipe's parts.
-const LAYOUTS: Record<Exclude<UnusualKind, 'none'>, Layout> = {
+const LAYOUTS: Record<EffectKind, Layout> = {
   embers: { count: 0, roles: [[0, 2], [1, 24], [2, 6], [3, 22]] }, // heat glow, fire blobs, tongues, sparks
   aura: { count: 0, roles: [[0, 10], [1, 8], [2, 5]], ribbons: [2, 61] }, // band glow, rising motes, tip stars; band + crown ribbons
-  orbit: { count: 0, roles: [[0, 36], [1, 32]] }, // comets (2 rings × 3 × 6), dim ring motes
+  orbit: { count: 0, roles: [[0, 6], [1, 24], [2, 3], [3, 6]], ribbons: [8, 33] }, // comet heads, ring motes, core, head glows; comet tails + 2 guide rings
   halo: { count: 0, roles: [[0, 24], [1, 4], [2, 12]], ribbons: [1, 49] }, // band glow, glints, dust
   storm: { count: 0, roles: [[0, 18], [1, 3]], cloud: 13, ribbons: [2, 9] }, // rain, inner glow
-  plasma: { count: 0, roles: [[0, 2], [1, 3], [2, 24]], ribbons: [3, 10] }, // core, arc ends, sparks
+  plasma: { count: 0, roles: [[0, 3], [1, 4], [2, 24]], ribbons: [10, 49] }, // core, arc ends, sparks; 4 arcs + 4 forks + 2 shells
   prism: { count: 0, roles: [[0, 16], [1, 8], [2, 2]], ribbons: [2, 28] }, // beads, glints, apex; helix ribbons
   galaxy: { count: 0, roles: [[0, 3], [1, 48], [2, 10]] }, // core, arm stars, dust
   ghostfire: { count: 0, roles: [[0, 2], [1, 10]], ribbons: [5, 16] }, // cold core, soul lights; curling tendrils
   hearts: { count: 0, roles: [[0, 8], [1, 28], [2, 6]] }, // hearts, pop sparkles, motes
-  binary: { count: 0, roles: [[0, 42], [1, 6]] }, // glyphs (6 columns × 7), crown motes
+  binary: { count: 0, roles: [[0, 42], [1, 6], [2, 20]], ribbons: [2, 33] }, // outer glyphs (6 × 7), crown motes, inner glyphs (4 × 5); scan line + rim ring
+  sunbeams: { count: 0, roles: [[0, 3], [1, 14], [2, 4]], ribbons: [10, 6] }, // sun core, dust, ray-tip glints; rays
+  bubbles: { count: 0, roles: [[0, 12], [1, 24], [2, 3]] }, // bubbles, pop droplets, foam glow
+  frostbite: { count: 0, roles: [[0, 6], [1, 20], [2, 5], [3, 4]], ribbons: [2, 49] }, // shards, snow, mist, glints; crystal crown + band
+  voidrift: { count: 0, roles: [[0, 26], [1, 8]], cloud: 4, ribbons: [4, 33] }, // inflow motes, rim glows; dark core; ring, halo, 2 tendrils
+  fireflies: { count: 0, roles: [[0, 9], [1, 9], [2, 8]] }, // flies, glows, pollen
+  cosmic: { count: 0, roles: [[0, 8], [1, 6], [2, 12], [3, 1]], ribbons: [2, 12] }, // stars, apex + nebula, dust, shooting star; constellation + trail
+  lightning: { count: 0, roles: [[0, 3], [1, 4], [2, 14]], ribbons: [8, 9] }, // core, bolt tips, sparks; 4 bolts + 4 forks
+  sakura: { count: 0, roles: [[0, 22], [1, 3], [2, 3]] }, // petals, haze, glints
 };
 for (const l of Object.values(LAYOUTS)) l.count = l.roles.reduce((s, [, n]) => s + n, 0);
 
@@ -260,9 +80,10 @@ type FirePalette = { c: readonly number[]; scale: number; tongue: number; waveK:
 const FIRE_EMBERS: FirePalette = { c: [2.1, 1.55, 0.6, 1.7, 0.55, 0.07, 0.5, 0.06, 0.0], scale: 1, tongue: 1, waveK: 6 };
 
 // How much each kind's particles dim what's behind them (0 = pure additive).
-const OCCLUDE: Record<Exclude<UnusualKind, 'none'>, number> = {
+const OCCLUDE: Record<EffectKind, number> = {
   embers: 0.5, aura: 0.3, orbit: 0.4, halo: 0.2, storm: 0.25, plasma: 0.2,
   prism: 0.2, galaxy: 0.45, ghostfire: 0.5, hearts: 0.7, binary: 0.45,
+  sunbeams: 0.15, bubbles: 0.3, frostbite: 0.35, voidrift: 0.4, fireflies: 0.35, cosmic: 0.3, lightning: 0.2, sakura: 0.6,
 };
 
 const HEART_COLS: readonly (readonly [number, number, number])[] = [
@@ -278,16 +99,15 @@ function frame(nx: number, ny: number, nz: number) {
   const v = new THREE.Vector3().crossVectors(n, u).normalize();
   return { n, u, v };
 }
-const ORBIT_FRAMES = [frame(0.4, 1, 0.2), frame(-0.36, 1, -0.28)];
-const ORBIT_W = [2.5, -2.1]; // ring angular speeds (rad/s)
-const ORBIT_R = [0.2, 0.16]; // ring radii (m)
+const ORBIT_FRAMES = [frame(0.4, 1, 0.2), frame(-0.36, 1, -0.28), frame(0.15, 1, -0.75)];
+const ORBIT_W = [2.5, -2.1, 1.7]; // ring angular speeds (rad/s)
+const ORBIT_R = [0.2, 0.16, 0.235]; // ring radii (m)
 
-const tmpVp = new THREE.Vector4();
 const IDENT = new THREE.Matrix4().elements;
 
 export class UnusualEffect {
   readonly group = new THREE.Group();
-  private readonly kind: Exclude<UnusualKind, 'none'>;
+  private readonly kind: EffectKind;
   private readonly f: Field;
   private readonly cloud: Field | null = null;
   private readonly rib: RibbonBatch | null = null;
@@ -325,13 +145,24 @@ export class UnusualEffect {
   private readonly boltA = new Float32Array(9 * 3);
   private readonly boltB = new Float32Array(6 * 3);
   // Plasma: per arc target (local), time to retarget, jag timer, flicker.
-  private readonly arcT = new Float32Array(3 * 3);
-  private readonly arcTtl = new Float32Array(3);
-  private readonly arcJag = new Float32Array(3);
-  private readonly arcFlick = new Float32Array(3);
-  private readonly arcPath = new Float32Array(3 * 10 * 3);
+  private readonly arcT = new Float32Array(4 * 3);
+  private readonly arcTtl = new Float32Array(4);
+  private readonly arcJag = new Float32Array(4);
+  private readonly arcFlick = new Float32Array(4);
+  private readonly arcPath = new Float32Array(4 * 10 * 3);
+  private readonly arcBr = new Float32Array(4 * 6 * 3);
+  private readonly arcS = new Float32Array(4 * 3);
+  // Disc-facing recipes (sunbeams, voidrift): horizontal unit vector to the viewer.
+  private fvx = 0;
+  private fvz = 1;
+  // Generic per-bolt scratch for lightning / voidrift / cosmic: paths, forks, timers.
+  private readonly xs = new Float32Array(4 * 27);
+  private readonly xf = new Float32Array(4 * 18);
+  private readonly xt = new Float32Array(4);
+  private readonly xl = new Float32Array(4);
+  private readonly xa = new Float32Array(16);
 
-  constructor(kind: Exclude<UnusualKind, 'none'>) {
+  constructor(kind: EffectKind) {
     this.kind = kind;
     this.group.name = 'unusual';
     // Origin a touch above the anchor (which WornHat seats over the hat crown).
@@ -412,9 +243,15 @@ export class UnusualEffect {
   private assignRanks() {
     const ps = this.ps;
     if (this.kind === 'orbit') {
-      for (const p of ps) if (p.k === 0) p.rank = ((Math.floor(p.a / 6) + 0.5) * GOLDEN) % 1;
+      for (const p of ps) {
+        if (p.k === 0 || p.k === 3) p.rank = ((Math.floor(p.a / 2) + 0.5) * GOLDEN) % 1;
+        else if (p.k === 2) p.rank = 0;
+      }
     } else if (this.kind === 'binary') {
-      for (const p of ps) if (p.k === 0) p.rank = ((Math.floor(p.a / 7) + 0.3) * GOLDEN) % 1;
+      for (const p of ps) {
+        if (p.k === 0) p.rank = ((Math.floor(p.a / 7) + 0.3) * GOLDEN) % 1;
+        else if (p.k === 2) p.rank = ((Math.floor(p.a / 5) + 0.6) * GOLDEN) % 1;
+      }
     } else if (this.kind === 'prism') {
       for (const p of ps) if (p.k === 0) p.rank = ((p.a % 22) * GOLDEN + 0.1) % 1;
     }
@@ -423,7 +260,17 @@ export class UnusualEffect {
     }
     // Cores / apexes are always on.
     for (const p of ps) {
-      if ((this.kind === 'galaxy' && p.k === 0) || (this.kind === 'plasma' && p.k <= 1) || (this.kind === 'prism' && p.k === 2)) p.rank = 0;
+      if (
+        (this.kind === 'galaxy' && p.k === 0) ||
+        (this.kind === 'plasma' && p.k <= 1) ||
+        (this.kind === 'prism' && p.k === 2) ||
+        (this.kind === 'sunbeams' && p.k === 0) ||
+        (this.kind === 'voidrift' && p.k === 1) ||
+        (this.kind === 'lightning' && (p.k === 0 || p.k === 1)) ||
+        (this.kind === 'cosmic' && (p.k === 0 || p.k === 1 || p.k === 3)) ||
+        (this.kind === 'frostbite' && p.k === 0) ||
+        (this.kind === 'fireflies' && p.k <= 1)
+      ) p.rank = 0;
     }
   }
 
@@ -487,7 +334,7 @@ export class UnusualEffect {
     switch (this.kind) {
       case 'embers': this.embers(dt, frac); break;
       case 'aura': this.aura(dt, frac); break;
-      case 'orbit': this.orbit(frac); break;
+      case 'orbit': this.orbit(frac, calm); break;
       case 'halo': this.halo(dt, frac); break;
       case 'storm': this.storm(dt, frac, calm); break;
       case 'plasma': this.plasma(dt, frac, calm); break;
@@ -495,7 +342,15 @@ export class UnusualEffect {
       case 'galaxy': this.galaxy(frac); break;
       case 'ghostfire': this.ghostfire(dt, frac); break;
       case 'hearts': this.hearts(dt, frac, calm); break;
-      case 'binary': this.binary(frac); break;
+      case 'binary': this.binary(frac, calm); break;
+      case 'sunbeams': this.sunbeams(dt, frac); break;
+      case 'bubbles': this.bubbles(dt, frac, calm); break;
+      case 'frostbite': this.frostbite(dt, frac); break;
+      case 'voidrift': this.voidrift(dt, frac, calm); break;
+      case 'fireflies': this.fireflies(dt, frac); break;
+      case 'cosmic': this.cosmic(dt, frac, calm); break;
+      case 'lightning': this.lightning(dt, frac, calm); break;
+      case 'sakura': this.sakura(dt, frac); break;
     }
     this.f.commit();
     this.cloud?.commit();
@@ -687,37 +542,71 @@ export class UnusualEffect {
     if (stagger) { p.x += p.vx * p.age; p.y += p.vy * p.age; p.z += p.vz * p.age; }
   }
 
-  // ── Orbiting Energy: two tilted, counter-rotating rings of comets with
-  // fading tails, over a faint ring of motes. ──
-  private orbit(frac: number) {
+  // ── Orbiting Energy: three tilted, counter-rotating rings, each carrying two
+  // comets with smooth ribbon tails, faint guide rings, a mote belt and a
+  // humming energy core at the centre that beats every couple of seconds. ──
+  private orbit(frac: number, calm: boolean) {
     const t = this.t;
     const f = this.f;
+    const rib = this.rib!;
+    const w = ORBIT_W;
+    const R = ORBIT_R;
+    const beat = calm ? 0 : Math.exp(-(t % 2.4) * 6);
+    // Guide rings (the first two).
+    for (let s = 0; s < 2; s++) {
+      const fr = ORBIT_FRAMES[s];
+      for (let j = 0; j < rib.points; j++) {
+        const a = (j / (rib.points - 1)) * TAU;
+        const ca = Math.cos(a) * R[s], sa = Math.sin(a) * R[s];
+        this.lw(fr.u.x * ca + fr.v.x * sa, 0.02 + fr.u.y * ca + fr.v.y * sa, fr.u.z * ca + fr.v.z * sa);
+        const g = 0.25 + 0.2 * Math.pow(0.5 + 0.5 * Math.sin(a * 2 - t * w[s]), 2);
+        rib.push(6 + s, this.wx, this.wy, this.wz, 0.08 * g * 3, 0.4 * g * 3, 1.2 * g * 3, 0.004);
+      }
+    }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
-      let ring: number, ang: number;
-      const w = ORBIT_W;
-      const R = ORBIT_R;
-      if (p.k === 0) {
-        ring = p.a < 18 ? 0 : 1;
-        const local = p.a % 18;
-        const comet = Math.floor(local / 6);
-        const tail = local % 6;
-        ang = (comet / 3) * TAU + t * w[ring] - Math.sign(w[ring]) * tail * 0.085;
+      if (p.k === 0 || p.k === 3) {
+        const ring = Math.floor(p.a / 2);
+        const fr = ORBIT_FRAMES[ring];
+        const head = t * w[ring] + (p.a % 2) * Math.PI + ring * 1.3;
+        if (p.k === 0) {
+          const ca = Math.cos(head) * R[ring], sa = Math.sin(head) * R[ring];
+          this.lw(fr.u.x * ca + fr.v.x * sa, 0.02 + fr.u.y * ca + fr.v.y * sa, fr.u.z * ca + fr.v.z * sa);
+          const k = 1 + 0.7 * beat;
+          f.put(i, this.wx, this.wy, this.wz, 1.7 * k, 2.2 * k, 2.4 * k, 1, 0.058, CELL.dot, 0);
+          // Tail: a smooth ribbon trailing back along the ring.
+          for (let j = 0; j < 14; j++) {
+            const u = j / 13;
+            const ang = head - Math.sign(w[ring]) * u * 1.0;
+            const c2 = Math.cos(ang) * R[ring], s2 = Math.sin(ang) * R[ring];
+            this.lw(fr.u.x * c2 + fr.v.x * s2, 0.02 + fr.u.y * c2 + fr.v.y * s2, fr.u.z * c2 + fr.v.z * s2);
+            const g = Math.pow(1 - u, 1.4) * 1.5 * k;
+            rib.push(p.a, this.wx, this.wy, this.wz, 0.3 * g, 1.1 * g, 1.9 * g, 0.015 * (1 - u) + 0.002);
+          }
+        } else {
+          const h = p.a;
+          const ring2 = Math.floor(h / 2);
+          const fr2 = ORBIT_FRAMES[ring2];
+          const hd = t * w[ring2] + (h % 2) * Math.PI + ring2 * 1.3;
+          const ca = Math.cos(hd) * R[ring2], sa = Math.sin(hd) * R[ring2];
+          this.lw(fr2.u.x * ca + fr2.v.x * sa, 0.02 + fr2.u.y * ca + fr2.v.y * sa, fr2.u.z * ca + fr2.v.z * sa);
+          f.put(i, this.wx, this.wy, this.wz, 0.15, 0.6, 1.5, 0.9, 0.12, CELL.glow, 0);
+        }
+      } else if (p.k === 1) {
+        const ring = Math.floor(p.a / 8);
+        const ang = ((p.a % 8) / 8) * TAU - t * w[ring] * 0.2 + ring;
         const fr = ORBIT_FRAMES[ring];
         const ca = Math.cos(ang) * R[ring], sa = Math.sin(ang) * R[ring];
         this.lw(fr.u.x * ca + fr.v.x * sa, 0.02 + fr.u.y * ca + fr.v.y * sa, fr.u.z * ca + fr.v.z * sa);
-        const k = 1 - tail / 6;
-        const br = Math.pow(k, 1.6);
-        if (tail === 0) f.put(i, this.wx, this.wy, this.wz, 1.7, 2.2, 2.4, 1, 0.052, CELL.dot, 0);
-        else f.put(i, this.wx, this.wy, this.wz, 0.35 * br * 1.8, 1.25 * br * 1.8, 1.9 * br * 1.8, 1, 0.05 * (1 - tail * 0.1), CELL.glow, 0);
+        const tw = 0.6 + 0.4 * Math.sin(t * 5 + p.a * 2);
+        f.put(i, this.wx, this.wy, this.wz, 0.18, 0.6, 1.3, 0.9 * tw, 0.028, CELL.glow, 0);
       } else {
-        ring = p.a < 16 ? 0 : 1;
-        ang = ((p.a % 16) / 16) * TAU - t * w[ring] * 0.15;
-        const fr = ORBIT_FRAMES[ring];
-        const ca = Math.cos(ang) * R[ring], sa = Math.sin(ang) * R[ring];
-        this.lw(fr.u.x * ca + fr.v.x * sa, 0.02 + fr.u.y * ca + fr.v.y * sa, fr.u.z * ca + fr.v.z * sa);
-        f.put(i, this.wx, this.wy, this.wz, 0.18, 0.55, 1.25, 0.9, 0.028, CELL.glow, 0);
+        this.lw(0, 0.02, 0);
+        const pulse = 0.8 + 0.2 * Math.sin(t * 9) + beat * 0.5;
+        if (p.a === 0) f.put(i, this.wx, this.wy, this.wz, 0.06 * pulse, 0.28 * pulse, 0.75 * pulse, 1, 0.17, CELL.glow, 0);
+        else if (p.a === 1) f.put(i, this.wx, this.wy, this.wz, 1.2 * pulse, 1.9 * pulse, 2.4 * pulse, 1, 0.07, CELL.star, t * 1.1);
+        else f.put(i, this.wx, this.wy, this.wz, 0.4, 1.0, 2.0, 0.7, 0.12 + 0.03 * beat, CELL.ring, -t * 0.8);
       }
     }
   }
@@ -873,27 +762,34 @@ export class UnusualEffect {
     lightningPath(this.boltB, 6, fx, fy, fz, fx + (rnd() - 0.5) * 0.22, fy - 0.07, fz + (rnd() - 0.5) * 0.16, 0.02);
   }
 
-  // ── Plasma Arcs: jagged violet arcs leaping from a crackling core to
-  // random points around the head, with sparks where they land. ──
+  // ── Plasma Arcs: a plasma globe over the crown — a pulsing violet-white
+  // core inside two spinning, jittering electric shells, four forking arcs
+  // leaping from the globe to random points around the head, and sparks where
+  // they land. ──
   private plasma(dt: number, frac: number, calm: boolean) {
     const t = this.t;
     const f = this.f;
     const rib = this.rib!;
-    const cy = 0.035;
-    const arcs = Math.max(1, Math.round(3 * Math.min(1, frac + 0.2)));
+    const cy = 0.05;
+    const RS = 0.075;
+    const arcs = Math.max(2, Math.round(4 * Math.min(1, frac + 0.2)));
     let sparkIdx = 0;
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < 4; k++) {
       this.arcTtl[k] -= dt;
       this.arcJag[k] -= dt;
       if (this.arcTtl[k] <= 0) {
         // New target on a shell around the core, mostly level / a bit below.
         const th = rnd() * TAU;
-        const y = -0.55 + rnd() * 1.05;
+        const y = -0.5 + rnd() * 1.05;
         const rr = Math.sqrt(Math.max(0, 1 - y * y));
-        const rad = 0.17 + rnd() * 0.07;
-        this.arcT[k * 3] = Math.cos(th) * rr * rad;
-        this.arcT[k * 3 + 1] = cy + y * rad;
-        this.arcT[k * 3 + 2] = Math.sin(th) * rr * rad;
+        const rad = 0.19 + rnd() * 0.08;
+        const dx = Math.cos(th) * rr, dy = y, dz = Math.sin(th) * rr;
+        this.arcT[k * 3] = dx * rad;
+        this.arcT[k * 3 + 1] = cy + dy * rad;
+        this.arcT[k * 3 + 2] = dz * rad;
+        this.arcS[k * 3] = dx * RS;
+        this.arcS[k * 3 + 1] = cy + dy * RS;
+        this.arcS[k * 3 + 2] = dz * RS;
         this.arcTtl[k] = calm ? 0.45 + rnd() * 0.4 : 0.1 + rnd() * 0.2;
         this.arcJag[k] = 0;
         // Sparks where it lands.
@@ -917,7 +813,12 @@ export class UnusualEffect {
       if (this.arcJag[k] <= 0) {
         this.arcJag[k] = calm ? 0.12 : 1 / 28;
         this.arcFlick[k] = calm ? 0.8 : 0.7 + rnd() * 0.3;
-        lightningPath(this.arcPath.subarray(k * 30, k * 30 + 30), 10, 0, cy, 0, this.arcT[k * 3], this.arcT[k * 3 + 1], this.arcT[k * 3 + 2], 0.032);
+        const path = this.arcPath.subarray(k * 30, k * 30 + 30);
+        lightningPath(path, 10, this.arcS[k * 3], this.arcS[k * 3 + 1], this.arcS[k * 3 + 2], this.arcT[k * 3], this.arcT[k * 3 + 1], this.arcT[k * 3 + 2], 0.034);
+        // A short fork off the middle of the arc.
+        const m = 4 + Math.floor(rnd() * 3);
+        const mx = path[m * 3], my = path[m * 3 + 1], mz = path[m * 3 + 2];
+        lightningPath(this.arcBr.subarray(k * 18, k * 18 + 18), 6, mx, my, mz, mx + (rnd() - 0.5) * 0.15, my + (rnd() - 0.5) * 0.15, mz + (rnd() - 0.5) * 0.15, 0.02);
       }
       if (k >= arcs) continue;
       const fl = this.arcFlick[k];
@@ -925,7 +826,30 @@ export class UnusualEffect {
         const o = k * 30 + j * 3;
         this.lw(this.arcPath[o], this.arcPath[o + 1], this.arcPath[o + 2]);
         const u = j / 9;
-        rib.push(k, this.wx, this.wy, this.wz, 0.5 * 2.4 * fl, 0.24 * 2.4 * fl, 1.0 * 2.4 * fl, mix(0.016, 0.007, u));
+        rib.push(k, this.wx, this.wy, this.wz, 0.6 * 2.4 * fl, 0.3 * 2.4 * fl, 1.0 * 2.4 * fl, mix(0.017, 0.007, u));
+      }
+      for (let j = 0; j < 6; j++) {
+        const o = k * 18 + j * 3;
+        this.lw(this.arcBr[o], this.arcBr[o + 1], this.arcBr[o + 2]);
+        const u = j / 5;
+        rib.push(4 + k, this.wx, this.wy, this.wz, 0.5 * 1.8 * fl * (1 - u * 0.5), 0.25 * 1.8 * fl * (1 - u * 0.5), 1.0 * 1.8 * fl * (1 - u * 0.5), mix(0.009, 0.004, u));
+      }
+    }
+    // Two great-circle shells, spinning on different axes, jittering.
+    for (let s = 0; s < 2; s++) {
+      const thn = 0.9 + 0.5 * s, phn = t * (s === 0 ? 2.3 : -1.7);
+      const nx = Math.sin(thn) * Math.cos(phn), ny = Math.cos(thn), nz = Math.sin(thn) * Math.sin(phn);
+      let ux = -nz, uz = nx;
+      const ul = Math.hypot(ux, uz) || 1;
+      ux /= ul; uz /= ul;
+      const vx = ny * uz, vy = nz * ux - nx * uz, vz = -ny * ux;
+      const fl = calm ? 0.7 : 0.6 + 0.4 * Math.sin(t * 31 + s * 2);
+      for (let j = 0; j < rib.points; j++) {
+        const a = (j / (rib.points - 1)) * TAU;
+        const r = RS * (1 + (calm ? 0.05 : 0.14) * Math.sin(a * 6 + t * 11 + s));
+        const ca = Math.cos(a) * r, sa = Math.sin(a) * r;
+        this.lw(ux * ca + vx * sa, cy + vy * sa, uz * ca + vz * sa);
+        rib.push(8 + s, this.wx, this.wy, this.wz, 0.55 * 1.8 * fl, 0.3 * 1.8 * fl, 1.0 * 1.8 * fl, 0.006);
       }
     }
     const pulse = 0.8 + 0.2 * Math.sin(t * 23) * (calm ? 0.2 : 1);
@@ -934,13 +858,14 @@ export class UnusualEffect {
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
         this.lw(0, cy, 0);
-        if (p.a === 0) f.put(i, this.wx, this.wy, this.wz, 0.55 * pulse, 0.32 * pulse, 1.0 * pulse, 1, 0.13, CELL.glow, 0);
-        else f.put(i, this.wx, this.wy, this.wz, 2.0, 1.8, 2.4, pulse, 0.05, CELL.dot, 0);
+        if (p.a === 0) f.put(i, this.wx, this.wy, this.wz, 0.55 * pulse, 0.3 * pulse, 1.0 * pulse, 1, 0.19, CELL.glow, 0);
+        else if (p.a === 1) f.put(i, this.wx, this.wy, this.wz, 2.0, 1.8, 2.4, pulse, 0.06, CELL.dot, 0);
+        else f.put(i, this.wx, this.wy, this.wz, 1.3, 0.8, 2.2, 0.8 * pulse, 0.12, CELL.star, t * 1.3);
       } else if (p.k === 1) {
         const k = p.a;
         if (k >= arcs) { f.hide(i); continue; }
         this.lw(this.arcT[k * 3], this.arcT[k * 3 + 1], this.arcT[k * 3 + 2]);
-        f.put(i, this.wx, this.wy, this.wz, 1.2, 0.9, 1.9, this.arcFlick[k], 0.055, CELL.glow, 0);
+        f.put(i, this.wx, this.wy, this.wz, 1.2, 0.9, 1.9, this.arcFlick[k], 0.06, CELL.glow, 0);
       } else {
         if (p.age < 0) { p.age = 1; p.life = 0; }
         p.age += dt;
@@ -1189,33 +1114,51 @@ export class UnusualEffect {
     }
   }
 
-  // ── Overclocked: columns of glowing 0/1 glyphs raining down around the
-  // crown (a white-hot lead glyph, a fading green trail), kept above the
-  // brow so they never curtain the face. ──
-  private binary(frac: number) {
+  // ── Overclocked: two counter-turning cylinders of glowing 0/1 glyphs raining
+  // down around the crown (white-hot lead glyph, fading green trail), a scan
+  // line sweeping down through them that lights the digits it crosses, and a
+  // faint rim ring at the top. Kept above the brow so it never curtains the
+  // face. ──
+  private binary(frac: number, calm: boolean) {
     const t = this.t;
     const f = this.f;
+    const rib = this.rib!;
     const far = this.ppm < 70;
+    const sy = 0.28 - ((t * 0.55) % 1) * 0.42;
+    const sfade = smooth(-0.14, -0.08, sy) * (1 - smooth(0.24, 0.28, sy));
+    for (let j = 0; j < rib.points; j++) {
+      const a = (j / (rib.points - 1)) * TAU;
+      this.lw(Math.cos(a) * 0.2, sy, Math.sin(a) * 0.2);
+      rib.push(0, this.wx, this.wy, this.wz, 0.12 * sfade, 0.9 * sfade, 0.3 * sfade, 0.004);
+      this.lw(Math.cos(a) * 0.19, 0.285, Math.sin(a) * 0.19);
+      const seg = 0.5 + 0.5 * Math.sin(a * 12 - t * 2);
+      rib.push(1, this.wx, this.wy, this.wz, 0.03 * (0.5 + seg), 0.3 * (0.5 + seg), 0.1 * (0.5 + seg), 0.004);
+    }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
-      if (p.k === 0) {
-        const c = Math.floor(p.a / 7);
-        const k = p.a % 7;
-        const th = (c / 6) * TAU + (c % 2) * 0.3 + t * 0.22;
-        const speed = 0.42 + 0.14 * hash(c + 1.7);
-        const yh = 0.28 - ((t * speed) / 0.8 + hash(c + 7.3)) % 1 * 0.8;
+      if (p.k === 0 || p.k === 2) {
+        const inner = p.k === 2;
+        const per = inner ? 5 : 7;
+        const cols = inner ? 4 : 6;
+        const c = Math.floor(p.a / per);
+        const k = p.a % per;
+        const th = inner ? (c / cols) * TAU + 0.6 - t * 0.3 : (c / cols) * TAU + (c % 2) * 0.3 + t * 0.22;
+        const speed = (inner ? 0.32 : 0.42) + 0.14 * hash(c + (inner ? 11.7 : 1.7));
+        const yh = 0.28 - ((((t * speed) / 0.8 + hash(c + (inner ? 17.3 : 7.3))) % 1) * 0.8);
         const y = yh + k * 0.052;
         const vis = smooth(-0.13, -0.05, y) * (1 - smooth(0.22, 0.29, y));
         if (vis <= 0.01) { f.hide(i); continue; }
-        const r = 0.19;
+        const r = inner ? 0.125 : 0.19;
         this.lw(Math.cos(th) * r, y, Math.sin(th) * r);
         const bit = hash(Math.floor(t * 3 + p.seed * 10) + p.a * 7.1) > 0.5;
         const cell = far ? CELL.dot : bit ? CELL.one : CELL.zero;
-        const sz = far ? 0.05 : 0.05;
-        if (k === 0) f.put(i, this.wx, this.wy, this.wz, 1.6, 2.2, 1.75, vis, sz + 0.002, cell, 0);
+        const zz = y - sy;
+        const boost = 1 + (calm ? 0.4 : 1.2) * Math.exp(-(zz * zz) / 0.0009);
+        const sz = inner ? 0.04 : 0.05;
+        if (k === 0) f.put(i, this.wx, this.wy, this.wz, 1.6 * boost, 2.2 * boost, 1.75 * boost, vis, sz + 0.002, cell, 0);
         else {
-          const br = (far ? 3.0 : 2.1) * (1 - k / 8.5);
+          const br = (far ? 3.0 : 2.1) * (1 - k / (per + 1.5)) * (inner ? 0.65 : 1) * boost;
           f.put(i, this.wx, this.wy, this.wz, 0.14 * br, 1.0 * br, 0.38 * br, vis, sz, cell, 0);
         }
       } else {
@@ -1223,6 +1166,518 @@ export class UnusualEffect {
         this.lw(Math.cos(a) * 0.12, -0.04, Math.sin(a) * 0.12);
         const pulse = 0.6 + 0.4 * Math.sin(t * 4 + p.a);
         f.put(i, this.wx, this.wy, this.wz, 0.08 * pulse, 0.8 * pulse, 0.3 * pulse, 0.9, 0.06, CELL.glow, 0);
+      }
+    }
+  }
+
+  // Horizontal unit vector from (x, z) toward the viewer, into fvx / fvz.
+  private faceCam(x: number, z: number) {
+    const hx = this.camX - x, hz = this.camZ - z;
+    const l = Math.hypot(hx, hz) || 1;
+    this.fvx = hx / l;
+    this.fvz = hz / l;
+  }
+
+  // ── Sunbeams: a small sun over the crown — a white-hot core in a corona
+  // ring, ten tapering rays (long / short alternating, breathing) fanned in a
+  // vertical disc that always faces the viewer, gold dust drifting up through
+  // the light and glints riding the long ray tips. ──
+  private sunbeams(dt: number, frac: number) {
+    const t = this.t;
+    const f = this.f;
+    const rib = this.rib!;
+    const P = rib.points;
+    const N = rib.strips;
+    this.lw(0, 0.16, 0);
+    const cx = this.wx, cy = this.wy, cz = this.wz;
+    this.faceCam(cx, cz);
+    const rx = this.fvz, rz = -this.fvx;
+    const breath = 0.88 + 0.12 * Math.sin(t * 1.7);
+    for (let k = 0; k < N; k++) {
+      const long = k % 2 === 0;
+      if (!long && frac < 0.5) continue;
+      const th = (k / N) * TAU + t * 0.22;
+      const L = (long ? 0.27 : 0.16) * (0.85 + 0.15 * Math.sin(t * 2.1 + k * 2.3)) * breath;
+      const dx = Math.cos(th), dy = Math.sin(th);
+      const dim = 0.3 + 0.7 * smooth(-0.95, 0.15, dy); // rays pointing into the hat fade
+      for (let j = 0; j < P; j++) {
+        const u = j / (P - 1);
+        const r = 0.05 + u * (L - 0.05);
+        const fade = Math.pow(1 - u, 1.25) * dim * (long ? 1.5 : 1.05);
+        rib.push(k, cx + rx * dx * r, cy + dy * r, cz + rz * dx * r,
+          mix(2.0, 1.6, u) * fade, mix(1.6, 0.75, u) * fade, mix(0.9, 0.14, u) * fade, 0.018 * (1 - 0.78 * u));
+      }
+    }
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        const pulse = 0.85 + 0.15 * Math.sin(t * 2.6);
+        if (p.a === 0) f.put(i, cx, cy, cz, 0.55 * pulse, 0.34 * pulse, 0.08 * pulse, 1, 0.3, CELL.glow, 0);
+        else if (p.a === 1) f.put(i, cx, cy, cz, 1.9, 1.2, 0.35, 0.85, 0.16 + 0.012 * Math.sin(t * 3), CELL.ring, t * 0.4);
+        else f.put(i, cx, cy, cz, 2.4, 2.1, 1.5, 1, 0.1 * pulse, CELL.star, t * 0.5);
+      } else if (p.k === 1) {
+        if (p.age < 0) this.emit(p, 0.15, 0.03, 0.06, 0.08, 1.2, 0.7, 0.8, true);
+        p.age += dt;
+        if (p.age >= p.life) this.emit(p, 0.15, 0.03, 0.06, 0.08, 1.2, 0.7, 0.8, false);
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        const fr = p.age / p.life;
+        const tw = 0.6 + 0.4 * Math.sin(t * 9 + p.seed * 40);
+        f.put(i, p.x, p.y, p.z, 1.9, 1.45, 0.55, Math.min(1, fr * 6) * (1 - fr) * tw, 0.02, CELL.dot, 0);
+      } else {
+        // Glints riding the long ray tips.
+        const k = (p.a * 2 + 2) % N;
+        const th = (k / N) * TAU + t * 0.22;
+        const r = 0.27 * (0.85 + 0.15 * Math.sin(t * 2.1 + k * 2.3)) * breath;
+        const dx = Math.cos(th), dy = Math.sin(th);
+        const sn = Math.pow(Math.max(0, Math.sin(t * 2.2 + p.seed * 20)), 6);
+        f.put(i, cx + rx * dx * r, cy + dy * r, cz + rz * dx * r, 2.4, 2.0, 1.2, sn, 0.09 * (0.3 + 0.7 * sn), CELL.star, t + p.seed * 5);
+      }
+    }
+  }
+
+  // ── Bubbling: iridescent soap bubbles lift off the crown, wobble, breathe
+  // and pop into a spray of droplets (calm mode: they just fade). ──
+  private bubbles(dt: number, frac: number, calm: boolean) {
+    const t = this.t;
+    const f = this.f;
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        if (p.age < 0) this.emit(p, 0.11, 0.0, 0.14, 0.08, 1.5, 0.9, 0.9, true);
+        p.age += dt;
+        if (p.age >= p.life) {
+          if (!calm) this.popBubble(p.x, p.y, p.z, p.seed);
+          this.emit(p, 0.11, 0.0, 0.14, 0.08, 1.5, 0.9, 0.9, false);
+        }
+        const d = Math.exp(-0.6 * dt);
+        p.vx *= d; p.vz *= d;
+        p.x += (p.vx + Math.sin(p.age * 2.6 + p.seed * 30) * 0.05) * dt;
+        p.z += (p.vz + Math.cos(p.age * 2.2 + p.seed * 25) * 0.05) * dt;
+        p.y += p.vy * dt;
+        const fr = p.age / p.life;
+        const popK = calm ? 0 : smooth(0.9, 1, fr);
+        const size = (0.05 + 0.045 * p.seed) * smooth(0, 0.25, p.age) * (1 + 0.06 * Math.sin(p.age * 9 + p.seed * 20)) * (1 + popK * 0.4);
+        const al = calm ? 1 - smooth(0.75, 1, fr) : 1 - popK;
+        const c = hsv((p.seed + p.age * 0.3) % 1, 0.42, 1.3);
+        f.put(i, p.x, p.y, p.z, c[0], c[1], c[2], al * 0.95, size, CELL.bubble, 0);
+      } else if (p.k === 1) {
+        if (p.age < 0) { p.age = 1; p.life = 0; }
+        p.age += dt;
+        if (p.age >= p.life) { f.hide(i); continue; }
+        const d = Math.exp(-3 * dt);
+        p.vx *= d; p.vy *= d; p.vz *= d;
+        p.vy -= 1.2 * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        const fr = p.age / p.life;
+        const c = hsv(p.b, 0.35, 2.0);
+        f.put(i, p.x, p.y, p.z, c[0], c[1], c[2], 1 - fr, 0.022 * (1 - 0.5 * fr), CELL.dot, 0);
+      } else {
+        const a = (p.a / 3) * TAU + t * 0.5;
+        this.lw(Math.cos(a) * 0.08, 0.02, Math.sin(a) * 0.08);
+        const pulse = 0.7 + 0.3 * Math.sin(t * 2.3 + p.a * 2);
+        f.put(i, this.wx, this.wy, this.wz, 0.08 * pulse, 0.34 * pulse, 0.5 * pulse, 0.9, 0.13, CELL.glow, 0);
+      }
+    }
+  }
+
+  private popBubble(x: number, y: number, z: number, hue: number) {
+    let n = 0;
+    for (const p of this.ps) {
+      if (n >= 5) break;
+      if (p.k !== 1 || !p.on || p.age < p.life) continue;
+      const a = (n / 5) * TAU + rnd() * 0.6;
+      const sp = 0.3 + rnd() * 0.3;
+      p.x = x; p.y = y; p.z = z;
+      p.vx = Math.cos(a) * sp + this.evx * 0.5;
+      p.vy = 0.1 + rnd() * 0.25;
+      p.vz = Math.sin(a) * sp + this.evz * 0.5;
+      p.age = 0;
+      p.life = 0.3 + rnd() * 0.15;
+      p.b = hue;
+      n++;
+    }
+  }
+
+  // ── Frostbite: a crown of irregular ice spikes on a frost band, shards of
+  // ice orbiting on a tilted ring, cold mist at the root, snowflakes turning as
+  // they drift down and glints along the spikes. ──
+  private frostbite(dt: number, frac: number) {
+    const t = this.t;
+    const f = this.f;
+    const rib = this.rib!;
+    const P = rib.points;
+    const R = 0.17;
+    const spin = t * 0.15;
+    const SP = 7;
+    for (let j = 0; j < P; j++) {
+      const u = j / (P - 1);
+      const a = u * TAU + spin;
+      const si = Math.min(SP - 1, Math.floor(u * SP));
+      const ph = (u * SP) % 1;
+      const tri = 1 - Math.abs(ph * 2 - 1);
+      const h = -0.03 + Math.pow(tri, 1.1) * (0.06 + 0.12 * hash(si + 3.3));
+      const r = R * (1 - 0.12 * tri);
+      this.lw(Math.cos(a) * r, h, Math.sin(a) * r);
+      const k = 0.9 + 1.0 * tri;
+      rib.push(0, this.wx, this.wy, this.wz, 0.5 * k, 1.15 * k, 1.9 * k, 0.012 - 0.005 * tri);
+      this.lw(Math.cos(a) * R, -0.035, Math.sin(a) * R);
+      rib.push(1, this.wx, this.wy, this.wz, 0.35, 0.8, 1.3, 0.011);
+    }
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        const a = (p.a / 6) * TAU + t * 0.9;
+        this.lw(Math.cos(a) * 0.22, 0.1 + 0.05 * Math.sin(a * 2 + t), Math.sin(a) * 0.22);
+        const sp = 0.6 + 0.4 * Math.sin(a + t * 2);
+        f.put(i, this.wx, this.wy, this.wz, 0.9 * sp + 0.5, 1.5 * sp + 0.5, 2.1 * sp + 0.4, 1, 0.075, CELL.diamond, a * 0.5 + Math.sin(t + p.a));
+      } else if (p.k === 1) {
+        if (p.age < 0) this.emit(p, 0.15, 0.3, -0.1, -0.05, 2.0, 0.8, 0.7, true);
+        p.age += dt;
+        if (p.age >= p.life) this.emit(p, 0.15, 0.3, -0.1, -0.05, 2.0, 0.8, 0.7, false);
+        p.x += (p.vx + Math.sin(p.age * 1.8 + p.seed * 30) * 0.04) * dt;
+        p.z += (p.vz + Math.cos(p.age * 1.5 + p.seed * 20) * 0.04) * dt;
+        p.y += p.vy * dt;
+        const fr = p.age / p.life;
+        f.put(i, p.x, p.y, p.z, 1.2, 1.55, 2.0, Math.min(1, fr * 5) * (1 - smooth(0.7, 1, fr)), 0.035, CELL.snow, p.age * 1.3 + p.seed * 6);
+      } else if (p.k === 2) {
+        const a = (p.a / 5) * TAU - t * 0.25;
+        this.lw(Math.cos(a) * 0.1, 0.0, Math.sin(a) * 0.1);
+        f.put(i, this.wx, this.wy, this.wz, 0.14, 0.32, 0.55, 0.9, 0.16, CELL.glow, 0);
+      } else {
+        const sn = Math.sin(t * 1.9 + p.seed * 20);
+        if (sn <= 0) { p.b = -1; f.hide(i); continue; }
+        if (p.b < 0) p.b = rnd();
+        const fl = Math.pow(sn, 12);
+        const a = p.b * TAU + spin;
+        this.lw(Math.cos(a) * R * 0.95, 0.05 + 0.08 * hash(p.a + 4), Math.sin(a) * R * 0.95);
+        f.put(i, this.wx, this.wy, this.wz, 1.6, 2.2, 2.6, fl, 0.1 * (0.3 + 0.7 * fl), CELL.star, t + p.seed * 5);
+      }
+    }
+  }
+
+  // ── Void Rift: a dark tear in the air over the crown ringed by a fiery
+  // accretion loop (facing the viewer), a wide violet halo, violet tendrils
+  // cracking off the rim and motes spiralling in to be swallowed. ──
+  private voidrift(dt: number, frac: number, calm: boolean) {
+    const t = this.t;
+    const f = this.f;
+    const rib = this.rib!;
+    const cloud = this.cloud!;
+    const P = rib.points;
+    this.lw(0, 0.16, 0);
+    const cx = this.wx, cy = this.wy, cz = this.wz;
+    this.faceCam(cx, cz);
+    const rx = this.fvz, rz = -this.fvx;
+    const nx = this.fvx, nz = this.fvz;
+    const R = 0.1 * (1 + 0.04 * Math.sin(t * 3.1));
+    // The dark core: a few near-black puffs (normal blending: reads as a hole).
+    for (let j = 0; j < this.cps.length; j++) {
+      const a = j * 2.1 + t * 0.6;
+      const o = j === 0 ? 0 : 0.025;
+      cloud.put(j, cx + rx * Math.cos(a) * o, cy + Math.sin(a) * o, cz + rz * Math.cos(a) * o, 0.004, 0.002, 0.012, 0.97, 0.19 - j * 0.012, CELL.puff, a);
+    }
+    for (let j = 0; j < P; j++) {
+      const a = (j / (P - 1)) * TAU;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const hot = Math.pow(Math.max(0, Math.cos(a - t * 1.6)), 3);
+      const w = 0.5 + 0.5 * Math.sin(a * 2 + t);
+      const depth = 0.012 * Math.sin(a * 3 + t * 2);
+      const k = 1 + 1.2 * hot;
+      rib.push(0, cx + rx * ca * R + nx * depth, cy + sa * R, cz + rz * ca * R + nz * depth,
+        mix(1.7, 0.75, w) * k, mix(0.55, 0.2, w) * k, mix(0.1, 1.7, w) * k, 0.014 * (0.8 + 0.5 * hot));
+      const R2 = R * (1.5 + 0.06 * Math.sin(a * 4 - t * 1.5));
+      const g = 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.sin(a * 3 - t * 2), 2);
+      rib.push(1, cx + rx * ca * R2, cy + sa * R2, cz + rz * ca * R2, 0.4 * g, 0.12 * g, 0.9 * g, 0.006);
+    }
+    // Tendrils cracking off the rim (disc-frame path, re-jagged on a timer).
+    for (let k = 0; k < 2; k++) {
+      this.xt[k] -= dt;
+      if (this.xt[k] <= 0) {
+        this.xt[k] = calm ? 0.35 : 0.06 + rnd() * 0.06;
+        if (this.xl[k] <= 0) {
+          this.xl[k] = 0.5 + rnd() * 0.5;
+          this.xa[k] = rnd() * TAU;
+        }
+        const a = this.xa[k];
+        const ex = Math.cos(a) * R * (2.0 + rnd() * 0.5), ey = Math.sin(a) * R * (2.0 + rnd() * 0.5);
+        lightningPath(this.xs.subarray(k * 27, k * 27 + 27), 9, Math.cos(a) * R, Math.sin(a) * R, 0, ex, ey, (rnd() - 0.5) * 0.05, 0.03);
+      }
+      this.xl[k] -= dt;
+      if (this.xl[k] < 0.12) continue; // gap between cracks
+      const fl = calm ? 0.7 : 0.6 + rnd() * 0.5;
+      for (let j = 0; j < 9; j++) {
+        const o = k * 27 + j * 3;
+        const u = j / 8;
+        rib.push(2 + k, cx + rx * this.xs[o] + nx * this.xs[o + 2], cy + this.xs[o + 1], cz + rz * this.xs[o] + nz * this.xs[o + 2],
+          1.1 * fl * (1 - u * 0.5), 0.3 * fl * (1 - u * 0.5), 2.0 * fl * (1 - u * 0.5), mix(0.012, 0.004, u));
+      }
+    }
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        // Motes spiralling in.
+        const fr = (t * 0.32 + hash(p.a * 1.7)) % 1;
+        const r = mix(0.22, 0.015, Math.pow(fr, 1.4));
+        const th = hash(p.a * 3.1) * TAU + fr * fr * 6 - t * 0.4;
+        const dp = (hash(p.a * 5.3) - 0.5) * 0.05 * (1 - fr);
+        const al = smooth(0, 0.12, fr) * (1 - smooth(0.85, 1, fr));
+        const k = 1 - fr;
+        f.put(i, cx + rx * Math.cos(th) * r + nx * dp, cy + Math.sin(th) * r, cz + rz * Math.cos(th) * r + nz * dp,
+          mix(1.5, 1.0, fr) * (0.6 + k), mix(0.6, 0.6, fr) * (0.5 + k * 0.6), mix(0.2, 1.9, fr), al, 0.022 - 0.008 * fr, CELL.dot, 0);
+      } else {
+        const a = (p.a / 8) * TAU + t * 0.9;
+        const hot = Math.pow(Math.max(0, Math.cos(a - t * 1.6)), 3);
+        f.put(i, cx + rx * Math.cos(a) * R, cy + Math.sin(a) * R, cz + rz * Math.cos(a) * R,
+          0.5 + 0.9 * hot, 0.15 + 0.4 * hot, 0.55 + 0.4 * hot, 0.9, 0.07, CELL.glow, 0);
+      }
+    }
+  }
+
+  // ── Fireflies: warm green-gold lights drifting in lazy loops around the
+  // head, each blinking in its own rhythm with a soft glow and a lagging
+  // afterglow, a little pollen in between. ──
+  private fireflies(dt: number, frac: number) {
+    const t = this.t;
+    const f = this.f;
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 2) {
+        const a = (p.a / 8) * TAU + t * 0.15 * (1 + hash(p.a));
+        this.lw(Math.cos(a) * (0.1 + 0.1 * hash(p.a + 2)), 0.0 + 0.2 * hash(p.a + 5) + 0.02 * Math.sin(t + p.a), Math.sin(a) * (0.1 + 0.1 * hash(p.a + 2)));
+        const tw = 0.5 + 0.5 * Math.sin(t * 2 + p.a * 3);
+        f.put(i, this.wx, this.wy, this.wz, 0.9, 1.1, 0.25, 0.5 * tw, 0.016, CELL.dot, 0);
+        continue;
+      }
+      const j = p.a;
+      const w = 0.35 + 0.25 * hash(j + 1.1);
+      const ph = hash(j + 9.7) * TAU;
+      const a = t * w + ph;
+      const R = 0.12 + 0.11 * hash(j + 3.3);
+      const lx = Math.cos(a) * R + 0.04 * Math.sin(t * 1.3 + ph * 2);
+      const lz = Math.sin(a * 0.83 + ph) * R;
+      const ly = 0.05 + 0.13 * (0.5 + 0.5 * Math.sin(t * 0.55 * (1 + hash(j)) + ph)) + 0.03 * Math.sin(t * 2.1 + j);
+      // Blink: on for ~55 % of a per-fly cycle, with a smooth swell.
+      const cyc = (t * (0.42 + 0.2 * hash(j + 6.6)) + hash(j + 2.2)) % 1;
+      const on = cyc < 0.7 ? Math.pow(Math.sin((cyc / 0.7) * Math.PI), 1.1) : 0;
+      if (p.k === 0) {
+        this.lw(lx, ly, lz);
+        f.put(i, this.wx, this.wy, this.wz, 1.6 * (0.2 + on), 2.2 * (0.2 + on), 0.4 * (0.2 + on), 0.4 + 0.6 * on, 0.026 + 0.012 * on, CELL.dot, 0);
+      } else {
+        // Glow, lagging a little behind on the path.
+        const a2 = a - 0.25 * w;
+        this.lw(Math.cos(a2) * R + 0.04 * Math.sin(t * 1.3 + ph * 2), ly, Math.sin(a2 * 0.83 + ph) * R);
+        f.put(i, this.wx, this.wy, this.wz, 0.5 * on + 0.03, 0.8 * on + 0.05, 0.1 * on, 1, 0.075 * (0.4 + 0.6 * on), CELL.glow, 0);
+      }
+    }
+  }
+
+  // ── Cosmic Crown: a tiara of constellations — a zig-zag loop of bright
+  // stars joined by thin lines, a big apex star, nebula haze behind it,
+  // twinkling star dust and the odd shooting star. ──
+  private cosmic(dt: number, frac: number, calm: boolean) {
+    const t = this.t;
+    const f = this.f;
+    const rib = this.rib!;
+    const NS = 8;
+    const spin = t * 0.14;
+    // Constellation loop.
+    for (let j = 0; j <= NS; j++) {
+      const k = j % NS;
+      const a = (k / NS) * TAU + spin;
+      const r = 0.17 + 0.03 * hash(k + 1.7);
+      const h = (k % 2 === 0 ? 0.13 : 0.03) + 0.05 * hash(k + 8.1);
+      this.lw(Math.cos(a) * r, h, Math.sin(a) * r);
+      rib.push(0, this.wx, this.wy, this.wz, 0.35, 0.7, 1.5, 0.005);
+    }
+    // Shooting star.
+    let shot = 0;
+    if (!calm) {
+      this.boltAge += dt;
+      if (this.boltAge > this.nextBolt) { this.boltAge = 0; this.nextBolt = 2 + rnd() * 2; this.boltFork = true; this.boltJag = rnd() * TAU; }
+      if (this.boltFork) {
+        shot = this.boltAge / 0.55;
+        if (shot >= 1) { this.boltFork = false; shot = 0; }
+      }
+    }
+    const sa = this.boltJag;
+    if (shot > 0) {
+      for (let j = 0; j < 8; j++) {
+        this.shootAt(sa, Math.max(0, shot - j * 0.035));
+        const k = 1 - j / 8;
+        rib.push(1, this.wx, this.wy, this.wz, 1.6 * k, 1.8 * k, 2.4 * k, 0.012 * k);
+      }
+    }
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        const a = (p.a / NS) * TAU + spin;
+        const r = 0.17 + 0.03 * hash(p.a + 1.7);
+        const hi = p.a % 2 === 0;
+        const h = (hi ? 0.13 : 0.03) + 0.05 * hash(p.a + 8.1);
+        this.lw(Math.cos(a) * r, h, Math.sin(a) * r);
+        const tw = 0.7 + 0.3 * Math.sin(t * 3 + p.a * 2.1);
+        f.put(i, this.wx, this.wy, this.wz, 1.8 * tw, 2.0 * tw, 2.6 * tw, 1, hi ? 0.085 : 0.055, CELL.star, t * 0.3 + p.a);
+      } else if (p.k === 1) {
+        if (p.a === 0) {
+          this.lw(0, 0.26, 0);
+          const tw = 0.75 + 0.25 * Math.sin(t * 2.4);
+          f.put(i, this.wx, this.wy, this.wz, 2.4 * tw, 2.3 * tw, 2.6 * tw, 1, 0.13, CELL.star, t * 0.2);
+        } else {
+          const a = ((p.a - 1) / 5) * TAU + spin * 0.6 + hash(p.a) * 2;
+          this.lw(Math.cos(a) * 0.1, 0.06 + 0.06 * Math.sin(t * 0.5 + p.a), Math.sin(a) * 0.1);
+          const hue = 0.5 + 0.28 * Math.sin(t * 0.4 + p.a * 1.3);
+          const c = hsv(hue % 1, 0.6, 0.3);
+          f.put(i, this.wx, this.wy, this.wz, c[0], c[1], c[2], 1, 0.15, CELL.glow, 0);
+        }
+      } else if (p.k === 2) {
+        const a = hash(p.a * 2.3) * TAU + t * 0.1;
+        const yy = hash(p.a * 4.1) * 0.3 - 0.02;
+        this.lw(Math.cos(a) * 0.2, yy, Math.sin(a) * 0.2);
+        const tw = Math.pow(0.5 + 0.5 * Math.sin(t * 4 + p.a * 5), 3);
+        f.put(i, this.wx, this.wy, this.wz, 1.3, 1.5, 2.0, 0.25 + 0.75 * tw, 0.02, CELL.dot, 0);
+      } else {
+        if (shot <= 0) { f.hide(i); continue; }
+        this.shootAt(sa, shot);
+        f.put(i, this.wx, this.wy, this.wz, 2.4, 2.5, 2.8, 1 - shot * 0.5, 0.05, CELL.star, shot * 8);
+      }
+    }
+  }
+
+  // Cosmic's shooting star path: from high on one side down across the crown.
+  private shootAt(sa: number, u: number) {
+    this.lw(Math.cos(sa) * (0.32 - 0.64 * u), 0.34 - 0.3 * u, Math.sin(sa) * (0.32 - 0.64 * u));
+  }
+
+  // ── Thunderhead: a crackling electric crown — four forking yellow-white
+  // bolts leap up and out from the crown in bursts, hot tips and sparks, and
+  // every couple of seconds a big flash lights the whole crown (calm: no
+  // flash, slower crackle). ──
+  private lightning(dt: number, frac: number, calm: boolean) {
+    const t = this.t;
+    const f = this.f;
+    const rib = this.rib!;
+    let flash = 0;
+    if (!calm) {
+      this.boltAge += dt;
+      this.nextBolt -= dt;
+      if (this.nextBolt <= 0) { this.nextBolt = 1.6 + rnd() * 2; this.boltAge = 0; }
+      const ba = this.boltAge;
+      if (ba < 0.16) flash = ba < 0.04 ? 1 : ba < 0.07 ? 0.25 : 0.85 * (1 - (ba - 0.07) / 0.09);
+    }
+    const bolts = Math.max(2, Math.round(4 * Math.min(1, frac + 0.3)));
+    for (let k = 0; k < 4; k++) {
+      this.xt[k] -= dt;
+      this.xl[k] -= dt;
+      if (this.xl[k] <= 0) {
+        // New bolt: a direction, a duty (on for a while, then a short gap).
+        this.xl[k] = calm ? 0.6 + rnd() * 0.4 : 0.25 + rnd() * 0.45;
+        this.xa[k] = (k / 4) * TAU + rnd() * 1.2 - 0.6 + t * 0.2;
+        this.xa[4 + k] = 0.35 + rnd() * 0.9;
+        this.xa[8 + k] = rnd() < 0.12 ? 1 : 0; // 1 = gap
+      }
+      if (this.xt[k] <= 0) {
+        this.xt[k] = calm ? 0.14 : 0.035 + rnd() * 0.04;
+        const az = this.xa[k], el = this.xa[4 + k];
+        const L = 0.3 + rnd() * 0.1 + flash * 0.1;
+        const ex = Math.cos(az) * Math.cos(el) * L, ey = 0.02 + Math.sin(el) * L, ez = Math.sin(az) * Math.cos(el) * L;
+        lightningPath(this.xs.subarray(k * 27, k * 27 + 27), 9, 0, 0.02, 0, ex, ey, ez, 0.035);
+        const m = 3 + Math.floor(rnd() * 3);
+        const mx = this.xs[k * 27 + m * 3], my = this.xs[k * 27 + m * 3 + 1], mz = this.xs[k * 27 + m * 3 + 2];
+        lightningPath(this.xf.subarray(k * 18, k * 18 + 18), 6, mx, my, mz, mx + (rnd() - 0.5) * 0.26, my + 0.04 + rnd() * 0.08, mz + (rnd() - 0.5) * 0.26, 0.025);
+        this.xa[12 + k] = calm ? 0.8 : 0.7 + rnd() * 0.3;
+      }
+      if (k >= bolts || this.xa[8 + k] > 0) continue;
+      const fl = this.xa[12 + k] * (1 + flash * 0.6);
+      for (let j = 0; j < 9; j++) {
+        const o = k * 27 + j * 3;
+        this.lw(this.xs[o], this.xs[o + 1], this.xs[o + 2]);
+        const u = j / 8;
+        rib.push(k, this.wx, this.wy, this.wz, 2.4 * fl, 2.1 * fl, 1.1 * fl * (1 - 0.3 * u) + 0.4 * u, mix(0.024, 0.008, u));
+      }
+      for (let j = 0; j < 6; j++) {
+        const o = k * 18 + j * 3;
+        this.lw(this.xf[o], this.xf[o + 1], this.xf[o + 2]);
+        const u = j / 5;
+        rib.push(4 + k, this.wx, this.wy, this.wz, 1.7 * fl * (1 - u * 0.4), 1.6 * fl * (1 - u * 0.4), 1.1 * fl, mix(0.009, 0.004, u));
+      }
+    }
+    const pulse = 0.85 + 0.15 * Math.sin(t * 24) * (calm ? 0.2 : 1);
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        this.lw(0, 0.02, 0);
+        if (p.a === 0) f.put(i, this.wx, this.wy, this.wz, 0.55 * pulse, 0.45 * pulse, 0.12 * pulse, 1, 0.15 + 0.06 * flash, CELL.glow, 0);
+        else if (p.a === 1) f.put(i, this.wx, this.wy, this.wz, 2.4, 2.2, 1.5, pulse, 0.05, CELL.dot, 0);
+        else f.put(i, this.wx, this.wy, this.wz, 0.4 * flash * 2, 0.55 * flash * 2, 1.1 * flash * 2, flash > 0.01 ? 1 : 0, 0.34, CELL.glow, 0);
+      } else if (p.k === 1) {
+        const k = p.a;
+        if (k >= bolts || this.xa[8 + k] > 0) { f.hide(i); continue; }
+        const o = k * 27 + 8 * 3;
+        this.lw(this.xs[o], this.xs[o + 1], this.xs[o + 2]);
+        f.put(i, this.wx, this.wy, this.wz, 1.2, 1.1, 0.6, this.xa[12 + k] * 0.8, 0.035, CELL.glow, 0);
+      } else {
+        if (p.age < 0) { p.age = 1; p.life = 0; }
+        p.age += dt;
+        if (p.age >= p.life) {
+          if (calm || rnd() > dt * 9) { f.hide(i); continue; }
+          const k = Math.floor(rnd() * Math.min(bolts, 4));
+          const o = k * 27 + 8 * 3;
+          this.lw(this.xs[o], this.xs[o + 1], this.xs[o + 2]);
+          const u = rnd() * 2 - 1, ph = rnd() * TAU, s = Math.sqrt(1 - u * u), sp = 0.4 + rnd() * 0.5;
+          p.x = this.wx; p.y = this.wy; p.z = this.wz;
+          p.vx = Math.cos(ph) * s * sp + this.evx; p.vy = u * sp + 0.2 + this.evy; p.vz = Math.sin(ph) * s * sp + this.evz;
+          p.age = 0;
+          p.life = 0.15 + rnd() * 0.15;
+        }
+        p.vy -= 2.0 * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        const fr = p.age / p.life;
+        f.put(i, p.x, p.y, p.z, 2.2, 1.9, 1.0, 1 - fr, 0.018, CELL.dot, 0);
+      }
+    }
+  }
+
+  // ── Sakura Drift: cherry-blossom petals shed from over the crown, fluttering
+  // (tilt squashes them) and turning as they sway down, a soft pink haze and
+  // a few sparkles. They fade before they reach the face. ──
+  private sakura(dt: number, frac: number) {
+    const t = this.t;
+    const f = this.f;
+    for (let i = 0; i < this.ps.length; i++) {
+      const p = this.ps[i];
+      if (!this.gate(p, i, frac)) continue;
+      if (p.k === 0) {
+        if (p.age < 0) this.emit(p, 0.15, 0.3, -0.13, -0.05, 1.6, 0.6, 0.7, true);
+        p.age += dt;
+        if (p.age >= p.life) this.emit(p, 0.15, 0.3, -0.13, -0.05, 1.6, 0.6, 0.7, false);
+        const sway = Math.sin(p.age * 2.4 + p.seed * 30);
+        p.x += (p.vx * 1.6 + sway * 0.07) * dt;
+        p.z += (p.vz * 1.6 + Math.cos(p.age * 2.0 + p.seed * 20) * 0.07) * dt;
+        p.y += (p.vy + 0.03 * sway) * dt;
+        const fr = p.age / p.life;
+        const flutter = 0.55 + 0.45 * Math.abs(Math.cos(p.age * 3.3 + p.seed * 9));
+        const pk = hash(p.a * 1.9);
+        f.put(i, p.x, p.y, p.z, mix(1.35, 1.6, pk), mix(0.5, 0.85, pk), mix(0.7, 0.95, pk),
+          Math.min(1, fr * 6) * (1 - smooth(0.6, 1, fr)), 0.072 * flutter, CELL.petal, p.age * 2.2 + p.seed * 6);
+      } else if (p.k === 1) {
+        const a = (p.a / 3) * TAU + t * 0.3;
+        this.lw(Math.cos(a) * 0.07, 0.17, Math.sin(a) * 0.07);
+        const pulse = 0.75 + 0.25 * Math.sin(t * 1.4 + p.a * 2);
+        f.put(i, this.wx, this.wy, this.wz, 0.3 * pulse, 0.09 * pulse, 0.16 * pulse, 1, 0.15, CELL.glow, 0);
+      } else {
+        const sn = Math.sin(t * 1.8 + p.seed * 20);
+        if (sn <= 0) { p.b = -1; f.hide(i); continue; }
+        if (p.b < 0) p.b = rnd() * TAU;
+        const fl = Math.pow(sn, 10);
+        this.lw(Math.cos(p.b) * 0.13, 0.08 + 0.15 * hash(p.a + 2), Math.sin(p.b) * 0.13);
+        f.put(i, this.wx, this.wy, this.wz, 2.2, 1.5, 1.8, fl, 0.08 * (0.3 + 0.7 * fl), CELL.star, t + p.seed * 5);
       }
     }
   }
@@ -1238,4 +1693,19 @@ export class UnusualEffect {
 // A monotonically increasing update tick (one per UnusualEffect.update call —
 // used only to group per-frame render callbacks) and a wall clock.
 let frameTick = 0;
-const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+
+// Map an economy effect id (items/types.ts UNUSUAL_EFFECTS, e.g. 'fx.storm') to
+// the renderer kind for `new UnusualEffect(kind)`; null when the id is unknown
+// or has no renderer.
+export function unusualKindForEffect(effectId: string | null | undefined): EffectKind | null {
+  if (!effectId) return null;
+  const e = UNUSUAL_EFFECTS.find((u) => u.id === effectId);
+  if (!e) return null;
+  return e.kind in LAYOUTS ? (e.kind as EffectKind) : null;
+}
+
+// Whether the effect id may be worn on an emote (UnusualEffect taunt variant).
+export function isTauntEffect(effectId: string | null | undefined): boolean {
+  return !!UNUSUAL_EFFECTS.find((u) => u.id === effectId)?.taunt;
+}

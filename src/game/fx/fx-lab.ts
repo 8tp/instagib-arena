@@ -3,7 +3,12 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { KILL_EFFECTS, UNUSUALS, type KillEffectStyle } from '../cosmetics';
+import { KILL_EFFECTS, type KillEffectStyle } from '../cosmetics';
+import { UNUSUAL_EFFECTS } from '../items/types';
+import { UnusualEffect, unusualKindForEffect } from './unusuals';
+import { TauntAura } from './taunt-aura';
+import { KillstreakEyes } from './killstreak-eyes';
+import { KS_EFFECTS } from '../items/types';
 import { BLOOM_TUNING, createRenderer, createScene, getArenaLighting } from '../renderer';
 import { CharacterAnimator } from '../character-anim';
 import { Character, SKIN_PALETTE } from '../character/character';
@@ -40,6 +45,7 @@ type Actor = {
   ch: Character;
   anim: CharacterAnimator;
   hat: WornHat | null;
+  fx: UnusualEffect | null; // v3 unusual (any kind), parked on the hat anchor
   style: KillEffectStyle;
   // unusuals + move: strafe path
   base: THREE.Vector3;
@@ -107,7 +113,9 @@ export class FxLab {
   private readonly scene: THREE.Scene;
   private readonly composer: EffectComposer;
   private readonly effects = new EffectsManager();
-  private readonly mode: 'finishers' | 'unusuals';
+  private readonly mode: 'finishers' | 'unusuals' | 'taunts' | 'eyes';
+  private readonly auras: TauntAura[] = [];
+  private readonly eyes: KillstreakEyes[] = [];
   private readonly actors: Actor[] = [];
   private tiles: Tile[] = [];
   private raf: number | null = null;
@@ -150,7 +158,8 @@ export class FxLab {
     // ash) into a context something steps.
     this.effects.step(0, this.scene);
     this.hs = params.get('hs') === '1';
-    this.mode = params.get('mode') === 'unusuals' ? 'unusuals' : 'finishers';
+    const m = params.get('mode');
+    this.mode = m === 'unusuals' ? 'unusuals' : m === 'taunts' ? 'taunts' : m === 'eyes' ? 'eyes' : 'finishers';
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new TiledRenderPass(this.scene, () => this.tiles, () => this.cssSize().h));
@@ -158,6 +167,8 @@ export class FxLab {
     this.composer.addPass(new OutputPass());
 
     if (this.mode === 'finishers') this.buildFinishers();
+    else if (this.mode === 'taunts') this.buildTaunts();
+    else if (this.mode === 'eyes') this.buildEyes();
     else this.buildUnusuals();
     this.resize();
     // Smoke-test the shader prewarm the game calls at match load.
@@ -183,12 +194,17 @@ export class FxLab {
     const anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     anim.updateStatic(0);
     let hat: WornHat | null = null;
+    let fx: UnusualEffect | null = null;
     if (hatId || unusualId) {
       hat = new WornHat(ch.sockets.headTop);
       if (hatId) void hat.setHat(hatId);
-      if (unusualId) hat.setUnusual(unusualId);
+      const kind = unusualKindForEffect(unusualId);
+      if (kind) {
+        fx = new UnusualEffect(kind);
+        (hat as unknown as { unusualAnchor: THREE.Group }).unusualAnchor.add(fx.group);
+      }
     }
-    const a: Actor = { slot, ch, anim, hat, style, base: slot.position.clone(), moving: false };
+    const a: Actor = { slot, ch, anim, hat, fx, style, base: slot.position.clone(), moving: false };
     this.actors.push(a);
     return a;
   }
@@ -261,12 +277,13 @@ export class FxLab {
   private kinds: string[] = [];
 
   private buildUnusuals() {
-    const all = UNUSUALS.filter((u) => u.kind !== 'none').map((u) => u.id);
+    const all = UNUSUAL_EFFECTS.map((u) => u.id);
     const pick = this.params.get('kinds');
-    let kinds = pick ? pick.split(',').map((k) => (k.startsWith('unusual.') ? k : `unusual.${k}`)) : all;
+    // `kinds=` takes effect ids (fx.storm) or bare kinds (storm).
+    let kinds = pick ? pick.split(',').map((k) => (k.startsWith('fx.') ? k : `fx.${k}`)) : all;
     if (!pick) {
       const page = Number(this.params.get('page') ?? 0);
-      kinds = page === 0 ? all.slice(0, 6) : all.slice(6);
+      kinds = all.slice(page * 5, page * 5 + 5);
     }
     this.kinds = kinds;
     const hat = this.params.get('hat') ?? 'hat.cap';
@@ -305,10 +322,84 @@ export class FxLab {
         const cx = (crown.x * 0.5 + 0.5) * fullW;
         const cy = (1 - (crown.y * 0.5 + 0.5)) * fullH;
         cam.setViewOffset(fullW, fullH, cx - tw / 2, cy - th / 2, tw, th);
-        const name = UNUSUALS.find((u) => u.id === this.kinds[c])?.name ?? this.kinds[c];
+        const name = UNUSUAL_EFFECTS.find((u) => u.id === this.kinds[c])?.name ?? this.kinds[c];
         this.tiles.push({ x: c * tw, y: v * th, w: tw, h: th, cam, label: `${name} · ${view.label}`, camX: cam.position.x });
       }
     }
+  }
+
+  // ── Taunt auras: full body, camera 5 m back (FOV 50); `dist=` overrides. ──
+
+  private buildTaunts() {
+    const all = UNUSUAL_EFFECTS.map((u) => u.id);
+    const pick = this.params.get('kinds');
+    let kinds = pick ? pick.split(',').map((k) => (k.startsWith('fx.') ? k : `fx.${k}`)) : all;
+    if (!pick) {
+      const page = Number(this.params.get('page') ?? 0);
+      kinds = all.slice(page * 5, page * 5 + 5);
+    }
+    this.kinds = kinds;
+    kinds.forEach((k, i) => {
+      const a = this.addActor(i, 'pulse', null, null);
+      a.slot.rotation.y = 0.3;
+      const kind = unusualKindForEffect(k);
+      if (kind) {
+        const aura = new TauntAura(kind);
+        a.ch.root.add(aura.group);
+        this.auras.push(aura);
+      }
+    });
+  }
+
+  // ── Professional killstreak eyes: 7 effects, head close-up over a 4 m view. ──
+
+  private buildEyes() {
+    this.kinds = KS_EFFECTS.map((k) => k.id);
+    const streak = Number(this.params.get('streak') ?? 10);
+    const fp = this.params.get('fp') === '1';
+    this.kinds.forEach((id, i) => {
+      const a = this.addActor(i, 'pulse', null, null);
+      a.slot.rotation.y = 0.35;
+      const e = new KillstreakEyes();
+      a.ch.sockets.headTop.add(e.group);
+      e.setEffect(id);
+      e.setStreak(streak);
+      e.setFirstPerson(fp);
+      this.eyes.push(e);
+    });
+  }
+
+  private layoutEyes() {
+    const { w: W, h: H } = this.cssSize();
+    const n = this.actors.length;
+    const tw = Math.floor(W / n);
+    const th = Math.floor(H / 2);
+    this.tiles = [];
+    for (let row = 0; row < 2; row++) {
+      this.actors.forEach((a, i) => {
+        const cam = new THREE.PerspectiveCamera(row === 0 ? 30 : 50, tw / th, 0.05, 200);
+        const c = a.slot.position;
+        if (row === 0) { cam.position.set(c.x + 0.5, 1.68, 1.05); cam.lookAt(c.x, 1.64, 0); }
+        else { cam.position.set(c.x, 1.5, 4.5); cam.lookAt(c.x, 1.5, 0); }
+        const name = KS_EFFECTS.find((k) => k.id === this.kinds[i])?.name ?? this.kinds[i];
+        this.tiles.push({ x: i * tw, y: row * th, w: tw, h: th, cam, label: `${name} · ${row === 0 ? 'close' : '4.5 m'}` });
+      });
+    }
+  }
+
+  private layoutTaunts() {
+    const { w: W, h: H } = this.cssSize();
+    const n = this.actors.length;
+    const tw = Math.floor(W / n);
+    const dist = Number(this.params.get('dist') ?? 5);
+    this.tiles = this.actors.map((a, i) => {
+      const cam = new THREE.PerspectiveCamera(50, tw / H, 0.05, 200);
+      const c = a.slot.position;
+      cam.position.set(c.x, 1.3, dist);
+      cam.lookAt(c.x, 1.05, 0);
+      const name = UNUSUAL_EFFECTS.find((u) => u.id === this.kinds[i])?.name ?? this.kinds[i];
+      return { x: i * tw, y: 0, w: tw, h: H, cam, label: `${name} · taunt aura` };
+    });
   }
 
   resize() {
@@ -317,6 +408,8 @@ export class FxLab {
     this.composer.setPixelRatio(1);
     this.composer.setSize(w, h);
     if (this.mode === 'finishers') this.layoutFinishers();
+    else if (this.mode === 'taunts') this.layoutTaunts();
+    else if (this.mode === 'eyes') this.layoutEyes();
     else this.layoutUnusuals();
     this.onLabels?.(this.tiles.map(({ x, y, w: tw, h: th, label }) => ({ x, y, w: tw, h: th, label })));
   }
@@ -348,6 +441,17 @@ export class FxLab {
         }
         a.anim.updateStatic(dt);
       }
+    } else if (this.mode === 'eyes') {
+      for (const a of this.actors) a.anim.updateStatic(dt);
+      for (const e of this.eyes) e.update(dt);
+    } else if (this.mode === 'taunts') {
+      // Replay each aura every 3.6 s (start(3): fades in, runs, fades out).
+      const p0 = prev % 3.6, p1 = this.clock % 3.6;
+      for (const au of this.auras) {
+        if (p1 < p0 || prev === 0) au.start(3);
+        au.update(dt);
+      }
+      for (const a of this.actors) a.anim.updateStatic(dt);
     } else {
       for (const a of this.actors) {
         if (a.moving) {
@@ -362,6 +466,7 @@ export class FxLab {
         }
         a.anim.updateStatic(dt);
         a.hat?.update(dt);
+        a.fx?.update(dt);
       }
     }
     this.effects.step(dt, this.scene);
@@ -370,7 +475,10 @@ export class FxLab {
   dispose() {
     this.disposed = true;
     if (this.raf !== null) cancelAnimationFrame(this.raf);
+    for (const au of this.auras) au.dispose();
+    for (const e of this.eyes) e.dispose();
     for (const a of this.actors) {
+      a.fx?.dispose();
       a.hat?.dispose();
       a.anim.dispose();
       a.ch.dispose();
