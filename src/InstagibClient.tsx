@@ -28,6 +28,14 @@ import {
 } from './deck';
 import { prefersReducedMotion, sfxProps, toast, useAnyModalOpen, useModalStack } from './deck-core';
 import { MenuBackdropView } from './menu/MenuBackdropView';
+import type { HeroLoadout } from './menu/menu-hero';
+import { ProfileBlock } from './menu/ProfileBlock';
+import { HeroSlot } from './menu/HeroSlot';
+import { ChallengesModal, ChallengesStrip } from './menu/Challenges';
+import { CareerRoad } from './menu/CareerRoad';
+import { LastMatchBanner } from './menu/LastMatch';
+import { fetchChallenges } from './menu/menu-hooks';
+import { freshCatchUp, noteProfile, type ChallengeLists, type MatchGain, type MenuProfile } from './menu/road-data';
 import { MenuItem, MenuLink, MenuPlayButton, MenuWordmark, SocialDock, type DockTabId } from './ui/menu-parts';
 import { LoadingScreen, type LoadStep } from './ui/LoadingScreen';
 import { useLevelshot } from './ui/levelshot';
@@ -130,7 +138,7 @@ import {
 } from './game/cosmetics';
 import type { CrosshairConfig, InstagibProfile, ProgressionResp, Settings } from './app-types';
 import { Locker } from './locker/Locker';
-import { MatchOverOverlay, MiniStat, OnlineMatchResults } from './ui/results';
+import { MatchOverOverlay, OnlineMatchResults } from './ui/results';
 import { PlayerCard } from './ui/player-card';
 import { buildCardPayload } from './ui/player-card-data';
 
@@ -3887,6 +3895,7 @@ function Lobby({
   account,
   onOpenLogin,
   onLogout,
+  lastProgression = null,
 }: {
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
@@ -3895,6 +3904,9 @@ function Lobby({
   account: Account;
   onOpenLogin: () => void;
   onLogout: () => void;
+  // The finished match's server reward (when the shell passes it through);
+  // otherwise the banner diffs the profile before/after the match.
+  lastProgression?: ProgressionResp | null;
 }) {
   const [soloOpen, setSoloOpen] = useState(false);
   const [createOnlineOpen, setCreateOnlineOpen] = useState(false);
@@ -3905,7 +3917,14 @@ function Lobby({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('controls');
   const [lockerOpen, setLockerOpen] = useState(false);
-  const [lobbyProfile, setLobbyProfile] = useState<InstagibProfile | null>(null);
+  const [lobbyProfile, setLobbyProfile] = useState<MenuProfile | null>(null);
+  const [challenges, setChallenges] = useState<ChallengeLists | null>(null);
+  const [roadOpen, setRoadOpen] = useState(false);
+  const [heroHover, setHeroHover] = useState(false);
+  const heroSlotRef = useRef<HTMLDivElement>(null);
+  // XP the last match earned (profile diff), for the Last match banner.
+  const [matchGain, setMatchGain] = useState<MatchGain | null>(null);
+  const afterMatchRef = useRef(lastResult !== null);
   const [claimable, setClaimable] = useState(0); // completed-but-unclaimed challenges
   const [refreshTick, setRefreshTick] = useState(0); // bump to re-pull profile/challenges
   const [rooms, setRooms] = useState<LobbyRoom[]>([]);
@@ -4020,28 +4039,64 @@ function Lobby({
     lobbyRef.current?.setName(settings.playerName || 'Player');
   }, [settings.playerName]);
 
-  // Pull credits/level + the claimable-challenge count for the lobby chrome.
-  // Re-pulls whenever a modal that can change them closes (refreshTick).
+  // Pull the profile (level/XP/credits) + challenges for the lobby chrome.
+  // Re-pulls whenever a modal that can change them closes (refreshTick) and
+  // when you log in or out.
+  const accountName = account?.username ?? '';
   useEffect(() => {
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
-      .then((d: { profile?: InstagibProfile }) => {
-        if (active && d.profile) setLobbyProfile(d.profile);
+      .then((d: { profile?: MenuProfile }) => {
+        if (!active || !d.profile) return;
+        setLobbyProfile(d.profile);
+        const granted = freshCatchUp(d.profile);
+        if (granted.length > 0) {
+          const top = granted[granted.length - 1].level;
+          toast(
+            granted.length === 1
+              ? `Career Road reward granted · level ${top}`
+              : `Career Road rewards granted · ${granted.length} levels, up to ${top}`,
+            { tone: 'ok' },
+          );
+        }
+        const gain = noteProfile(d.profile, afterMatchRef.current);
+        afterMatchRef.current = false;
+        if (gain) setMatchGain(gain);
       })
       .catch(() => {});
-    fetch('/api/challenges', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ch'))))
-      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
-        if (!active || !d.challenges) return;
-        const all = [...d.challenges.daily, ...d.challenges.weekly];
-        setClaimable(all.filter((c) => c.complete && !c.claimed).length);
-      })
-      .catch(() => {});
+    void fetchChallenges().then((d) => {
+      if (!active || !d) return;
+      setChallenges(d);
+      setClaimable([...d.daily, ...d.weekly].filter((c) => c.complete && !c.claimed).length);
+    });
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, accountName]);
+  const refreshMeta = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  // What your combatant wears in the menu (reacts as the Locker changes it).
+  const heroLoadout = useMemo<HeroLoadout>(
+    () => ({
+      seed: settings.playerName || 'you',
+      hat: settings.hat,
+      unusual: settings.unusual,
+      railgunFinish: settings.railgunFinish,
+      emote: settings.emote,
+    }),
+    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote],
+  );
+  const lastGain: MatchGain | null = lastProgression
+    ? lastProgression.xpGained > 0
+      ? {
+          xp: lastProgression.xpGained,
+          credits: lastProgression.creditsGained,
+          levelBefore: lastProgression.levelBefore ?? (lastProgression.leveledUp ? lastProgression.progression.level - 1 : lastProgression.progression.level),
+          levelAfter: lastProgression.progression.level,
+        }
+      : null
+    : matchGain;
 
   const openSettingsAt = (t: SettingsTab) => {
     setSettingsTab(t);
@@ -4119,90 +4174,84 @@ function Lobby({
         : 'Quick match · any mode';
 
   return (
-    <div className='menu-root fixed inset-0 z-50 overflow-hidden text-white'>
+    <div className={`menu-root fixed inset-0 z-50 overflow-hidden text-white ${settings.reducedEffects ? 'menu-reduced' : ''}`}>
       <MenuBackdropView
         active={!modalOpen}
         still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
         onMap={onBackdropMap}
+        hero={heroLoadout}
+        heroSlot={heroSlotRef}
+        heroHover={heroHover && !modalOpen}
       />
       <div aria-hidden='true' className='menu-scrim pointer-events-none absolute inset-0' />
       <a href='#lobby-main' className='deck-skip-link'>
         Skip to content
       </a>
       <MenuToasts />
-      <div className='relative flex h-full w-full flex-col px-5 pb-4 pt-4 sm:px-10 sm:pt-6 lg:px-14'>
-        {/* ── Top bar: account + wallet + server, quiet ─────────────── */}
-        <header className='flex shrink-0 items-center justify-end gap-3'>
-          {account ? (
-            <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
-              <span className='inline-flex items-center gap-1 text-white/85'>
-                {account.username}
-                <NameBadges admin={account.isAdmin} verified={account.isVerified} size={12} />
-              </span>
-              {account.isAdmin && (
+      <div className='relative flex h-full w-full flex-col px-5 pb-4 pt-4 sm:px-10 sm:pt-5 lg:px-14'>
+        {/* ── Top bar: who you are (left) · account + server (right) ─── */}
+        <header className='flex shrink-0 flex-wrap items-start justify-between gap-3'>
+          <div className='menu-in-top w-full sm:w-auto sm:min-w-[19rem] sm:max-w-[29rem] sm:flex-1' style={{ ['--d' as string]: 0 }}>
+            <ProfileBlock
+              account={account}
+              profile={lobbyProfile}
+              name={account?.username ?? settings.playerName}
+              nameColor={settings.nameColor}
+              title={settings.title}
+              onOpenRoad={() => setRoadOpen(true)}
+              onLogin={onOpenLogin}
+            />
+          </div>
+          <div className='menu-in-top ml-auto flex items-center gap-3 sm:pt-1' style={{ ['--d' as string]: 1 }}>
+            {account && (
+              <span className='hidden items-center gap-2.5 font-mono text-[10px] uppercase tracking-[0.18em] sm:inline-flex'>
+                {account.isAdmin && (
+                  <button
+                    type='button'
+                    onClick={() => setAdminOpen(true)}
+                    {...sfxProps('uiClick')}
+                    className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
+                  >
+                    Admin
+                  </button>
+                )}
                 <button
                   type='button'
-                  onClick={() => setAdminOpen(true)}
-                  {...sfxProps('uiClick')}
-                  className='border border-amber-400/40 px-1.5 py-0.5 font-bold text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
+                  onClick={onLogout}
+                  {...sfxProps('uiBack')}
+                  className='text-white/40 transition hover:text-white/80'
                 >
-                  Admin
+                  Log&nbsp;out
                 </button>
-              )}
+              </span>
+            )}
+            <ServerStatusChip status={lobbyStatus} />
+            {!dockOpen && (
               <button
                 type='button'
-                onClick={onLogout}
-                {...sfxProps('uiBack')}
-                className='text-white/40 transition hover:text-white/80'
+                onClick={toggleDock}
+                aria-expanded={false}
+                {...sfxProps('uiToggle')}
+                className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/70 transition hover:border-cyan-300/60 hover:text-cyan-100'
               >
-                Log&nbsp;out
+                Lobbies &amp; chat
+                {online && rooms.length > 0 && <span className='tabular-nums text-cyan-300'>{rooms.length}</span>}
               </button>
-            </span>
-          ) : (
-            <button
-              type='button'
-              onClick={onOpenLogin}
-              title='Save your progress across devices'
-              {...sfxProps('uiClick')}
-              className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/80 transition hover:border-cyan-300/60 hover:text-cyan-100'
-            >
-              <span className='text-white/40'>Guest ·</span> Log in
-            </button>
-          )}
-          {lobbyProfile && account && (
-            <button
-              type='button'
-              onClick={() => setLockerOpen(true)}
-              title='Open the Locker — spend credits on cosmetics'
-              {...sfxProps('uiClick')}
-              className='clip-deck-sm inline-flex items-center gap-1.5 border border-amber-400/40 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:border-amber-300/70 hover:text-amber-100'
-            >
-              <span className='text-white/45'>Lv {lobbyProfile.level}</span>
-              <span>{lobbyProfile.credits.toLocaleString()} CR</span>
-            </button>
-          )}
-          <ServerStatusChip status={lobbyStatus} />
-          {!dockOpen && (
-            <button
-              type='button'
-              onClick={toggleDock}
-              aria-expanded={false}
-              {...sfxProps('uiToggle')}
-              className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-black/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/70 transition hover:border-cyan-300/60 hover:text-cyan-100'
-            >
-              Lobbies &amp; chat
-              {online && rooms.length > 0 && <span className='tabular-nums text-cyan-300'>{rooms.length}</span>}
-            </button>
-          )}
+            )}
+          </div>
         </header>
 
-        <main id='lobby-main' tabIndex={-1} className='flex min-h-0 flex-1 gap-8 outline-none'>
+        <main id='lobby-main' tabIndex={-1} className='flex min-h-0 flex-1 gap-6 outline-none'>
           {/* ── Left: identity + ways to play ─────────────────────────── */}
-          <section className='menu-enter deck-scroll flex min-h-0 w-full max-w-[31rem] shrink-0 flex-col overflow-y-auto'>
+          <section className='deck-scroll flex min-h-0 w-full max-w-[31rem] shrink-0 flex-col overflow-y-auto'>
             <div className='my-auto flex flex-col py-4'>
-              <MenuWordmark />
-              <p className='menu-tagline'>One railgun. One shot. One kill.</p>
+              <div className='menu-in' style={{ ['--d' as string]: 0 }}>
+                <MenuWordmark />
+              </div>
+              <p className='menu-tagline menu-in' style={{ ['--d' as string]: 1 }}>
+                One railgun. One shot. One kill.
+              </p>
 
               {touchOnly && (
                 <div className='clip-deck-sm mt-6 border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-[12px] text-amber-100'>
@@ -4211,7 +4260,7 @@ function Lobby({
                 </div>
               )}
 
-              <div className='mt-8'>
+              <div className='menu-in mt-8' style={{ ['--d' as string]: 2 }}>
                 <MenuPlayButton
                   onClick={playNow}
                   disabled={playDisabled || searching || (!online && !offline)}
@@ -4226,6 +4275,7 @@ function Lobby({
                   disabled={!online || playDisabled}
                   accent='cyan'
                   sub='Host FFA, duel or TDM'
+                  delay={3}
                 >
                   Create match
                 </MenuItem>
@@ -4234,10 +4284,11 @@ function Lobby({
                   disabled={!online || playDisabled}
                   accent='fuchsia'
                   sub='1v1 on the Elo ladder'
+                  delay={4}
                 >
                   Ranked duel
                 </MenuItem>
-                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline, your rules'>
+                <MenuItem onClick={() => setSoloOpen(true)} disabled={playDisabled} accent='emerald' sub='Offline, your rules' delay={5}>
                   Solo vs bots
                 </MenuItem>
                 <MenuItem
@@ -4253,16 +4304,20 @@ function Lobby({
                   disabled={playDisabled}
                   accent='amber'
                   sub='Aim drills, no pressure'
+                  delay={6}
                 >
                   Training range
                 </MenuItem>
-                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8-player speedrun'>
+                <MenuItem onClick={() => setWeeklyOpen(true)} disabled={playDisabled} accent='amber' sub='8-player speedrun' delay={7}>
                   Weekly challenge
                 </MenuItem>
               </nav>
 
               {/* Meta surfaces: quiet links, visually subordinate to playing. */}
-              <div className='mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4'>
+              <div
+                className='menu-in mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/10 pt-4'
+                style={{ ['--d' as string]: 8 }}
+              >
                 <MenuLink onClick={() => setStatsOpen(true)}>Stats</MenuLink>
                 <MenuLink onClick={() => setChallengesOpen(true)} badge={claimable}>
                   Challenges
@@ -4272,64 +4327,97 @@ function Lobby({
                 <MenuLink onClick={() => openSettingsAt('controls')}>Settings</MenuLink>
               </div>
 
-              {lastResult && <LastMatchBanner result={lastResult} />}
+              {lastResult && (
+                <div className='menu-in' style={{ ['--d' as string]: 9 }}>
+                  <LastMatchBanner result={lastResult} gain={lastGain} />
+                </div>
+              )}
+
+              {/* Narrow layouts: the challenges ride under the menu. */}
+              <div className='menu-in mt-5 lg:hidden' style={{ ['--d' as string]: 10 }}>
+                <ChallengesStrip
+                  lists={challenges}
+                  guest={!account}
+                  onOpen={() => setChallengesOpen(true)}
+                  onClaimed={refreshMeta}
+                />
+              </div>
             </div>
           </section>
 
-          {/* ── Right: lobbies / chat / online, demoted to a dock ─────── */}
-          <div className='menu-enter-late ml-auto flex min-h-0 items-end pb-2 max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10 max-lg:ml-0 max-lg:justify-end max-lg:pointer-events-none max-lg:[&>*]:pointer-events-auto'>
-            {dockCompact && (
-              <button
-                type='button'
-                onClick={() => setDockExpanded(true)}
-                aria-expanded={false}
-                {...sfxProps('uiToggle')}
-                className='menu-dock-chip clip-deck-sm'
-              >
-                <span aria-hidden='true' className={`h-1.5 w-1.5 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
-                {online ? (
-                  <span>
-                    {lobbyCount} {lobbyCount === 1 ? 'lobby' : 'lobbies'} · {onlineCount} online · <span className='text-white'>Chat</span>
-                  </span>
-                ) : (
-                  <span>
-                    Linking to server · <span className='text-white'>Chat</span>
-                  </span>
-                )}
-              </button>
-            )}
-            <SocialDock
-              open={dockOpen && !dockCompact}
-              onToggle={toggleDock}
-              tab={dockTab}
-              onTab={setDockTab}
-              lobbies={online ? rooms.length : 0}
-              online={presence?.online ?? null}
-            >
-              {dockTab === 'lobbies' ? (
-                <OpenLobbies
-                  rooms={rooms}
-                  online={online}
-                  onJoin={(r) => startOnline(r.id, r.mapId)}
-                  onSpectate={(r) => startSpectate(r.id, r.mapId)}
-                  onRefresh={() => lobbyRef.current?.refresh()}
-                />
-              ) : dockTab === 'chat' ? (
-                <GlobalChatPanel
-                  messages={chatLog}
-                  online={online}
-                  canChat={!!account}
-                  youName={account?.username ?? null}
-                  onSend={(text) => lobbyRef.current?.sendChat(text)}
-                />
-              ) : (
-                <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
+          {/* ── Centre: your combatant (3D, drawn by the backdrop) ─────── */}
+          <HeroSlot
+            slotRef={heroSlotRef}
+            onCustomize={() => setLockerOpen(true)}
+            onHover={setHeroHover}
+            hover={heroHover}
+            className='max-lg:hidden'
+          />
+
+          {/* ── Right: challenges over the social dock ─────────────────── */}
+          <div className='menu-in-right flex min-h-0 flex-col gap-3 pb-2 lg:w-[19.5rem] lg:shrink-0 xl:w-[21rem] max-lg:pointer-events-none max-lg:absolute max-lg:inset-x-5 max-lg:bottom-12 max-lg:top-14 max-lg:z-10'>
+            <div className='max-lg:hidden'>
+              <ChallengesStrip
+                lists={challenges}
+                guest={!account}
+                onOpen={() => setChallengesOpen(true)}
+                onClaimed={refreshMeta}
+              />
+            </div>
+            <div className='menu-dock-col pointer-events-none flex min-h-0 flex-1 flex-col items-end justify-end [&>*]:pointer-events-auto'>
+              {dockCompact && (
+                <button
+                  type='button'
+                  onClick={() => setDockExpanded(true)}
+                  aria-expanded={false}
+                  {...sfxProps('uiToggle')}
+                  className='menu-dock-chip clip-deck-sm'
+                >
+                  <span aria-hidden='true' className={`h-1.5 w-1.5 rounded-full ${online ? 'deck-pulse bg-emerald-400' : 'bg-amber-400'}`} />
+                  {online ? (
+                    <span>
+                      {lobbyCount} {lobbyCount === 1 ? 'lobby' : 'lobbies'} · {onlineCount} online · <span className='text-white'>Chat</span>
+                    </span>
+                  ) : (
+                    <span>
+                      Linking to server · <span className='text-white'>Chat</span>
+                    </span>
+                  )}
+                </button>
               )}
-            </SocialDock>
+              <SocialDock
+                open={dockOpen && !dockCompact}
+                onToggle={toggleDock}
+                tab={dockTab}
+                onTab={setDockTab}
+                lobbies={online ? rooms.length : 0}
+                online={presence?.online ?? null}
+              >
+                {dockTab === 'lobbies' ? (
+                  <OpenLobbies
+                    rooms={rooms}
+                    online={online}
+                    onJoin={(r) => startOnline(r.id, r.mapId)}
+                    onSpectate={(r) => startSpectate(r.id, r.mapId)}
+                    onRefresh={() => lobbyRef.current?.refresh()}
+                  />
+                ) : dockTab === 'chat' ? (
+                  <GlobalChatPanel
+                    messages={chatLog}
+                    online={online}
+                    canChat={!!account}
+                    youName={account?.username ?? null}
+                    onSend={(text) => lobbyRef.current?.sendChat(text)}
+                  />
+                ) : (
+                  <OnlinePlayersPanel presence={presence} youName={account?.username ?? null} />
+                )}
+              </SocialDock>
+            </div>
           </div>
         </main>
 
-        {/* ── Footer: what you're looking at + the pitch, whisper-quiet ─ */}
+        {/* ── Footer: what you're looking at, whisper-quiet ─────────────── */}
         <footer className='flex shrink-0 items-center justify-between gap-4 pt-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35'>
           <span className='truncate'>
             {arenaName && (
@@ -4378,6 +4466,7 @@ function Lobby({
       {statsOpen && <StatsModal onClose={() => setStatsOpen(false)} />}
       {challengesOpen && (
         <ChallengesModal
+          guest={!account}
           onClose={() => {
             setChallengesOpen(false);
             setRefreshTick((t) => t + 1); // claiming changed credits + claim count
@@ -4432,6 +4521,18 @@ function Lobby({
           onChange={onChangeSettings}
           initialTab={settingsTab}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      {roadOpen && (
+        <CareerRoad
+          profile={lobbyProfile}
+          guest={!account}
+          reduced={settings.reducedEffects}
+          onClose={() => setRoadOpen(false)}
+          onLogin={() => {
+            setRoadOpen(false);
+            onOpenLogin();
+          }}
         />
       )}
       {lockerOpen && (
@@ -4849,31 +4950,6 @@ function CreateOnlineModal({
   );
 }
 
-function LastMatchBanner({ result }: { result: MatchResult }) {
-  const acc = result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
-  return (
-    <div
-      className={`clip-deck-sm mt-2 border px-4 py-3 ${
-        result.won ? 'border-emerald-400/40 bg-emerald-400/10' : 'border-white/12 bg-white/5'
-      }`}
-    >
-      <div
-        className={`text-xs font-bold uppercase tracking-[0.2em] ${
-          result.won ? 'text-emerald-300' : 'text-white/70'
-        }`}
-      >
-        {result.won ? 'Victory' : 'Match complete'}
-      </div>
-      <div className='mt-2 grid grid-cols-4 gap-2 text-center'>
-        <MiniStat label='Kills' value={result.kills} />
-        <MiniStat label='Deaths' value={result.deaths} />
-        <MiniStat label='Streak' value={result.bestStreak} />
-        <MiniStat label='Acc' value={`${acc}%`} />
-      </div>
-    </div>
-  );
-}
-
 // (ModalShell — the shared dialog frame with Escape/backdrop close, exit motion,
 // focus trap + restore, and the modal stack — lives in src/deck.tsx.)
 
@@ -5065,156 +5141,6 @@ function StatsModal({ onClose }: { onClose: () => void }) {
             <BigStat label='Headshots' value={stats.headshots} />
           </div>
         </>
-      )}
-    </ModalShell>
-  );
-}
-
-type ChallengeView = {
-  id: string;
-  title: string;
-  period: 'daily' | 'weekly';
-  goal: number;
-  progress: number;
-  claimed: boolean;
-  complete: boolean;
-  rewardXp: number;
-  rewardCredits: number;
-};
-
-function ChallengesModal({ onClose }: { onClose: () => void }) {
-  const [data, setData] = useState<{ daily: ChallengeView[]; weekly: ChallengeView[] } | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [claiming, setClaiming] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    fetch('/api/challenges', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenges'))))
-      .then((d: { challenges?: { daily: ChallengeView[]; weekly: ChallengeView[] } }) => {
-        if (d.challenges) {
-          setData(d.challenges);
-          setState('ready');
-        } else setState('error');
-      })
-      .catch(() => setState('error'));
-  }, []);
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const claim = async (id: string) => {
-    setClaiming(id);
-    try {
-      const res = await fetch('/api/challenges/claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ id }),
-      });
-      const d = (await res.json()) as { ok?: boolean; xpGained?: number; creditsGained?: number };
-      if (res.ok && d.ok) {
-        toast(`Reward claimed · +${d.xpGained} XP · +${d.creditsGained} ⛁`, { tone: 'ok' });
-        load();
-      } else toast('Could not claim that reward.', { tone: 'err' });
-    } catch {
-      toast('Network error.', { tone: 'err' });
-    }
-    setClaiming(null);
-  };
-
-  const Row = (c: ChallengeView) => {
-    const pct = Math.min(100, Math.round((c.progress / c.goal) * 100));
-    return (
-      <div
-        key={c.id}
-        data-challenge={c.id}
-        data-complete={c.complete ? '1' : '0'}
-        data-claimed={c.claimed ? '1' : '0'}
-        className={`deck-card px-3 py-2.5 ${c.complete && !c.claimed ? 'border-emerald-400/40' : ''}`}
-      >
-        <div className='flex items-center justify-between gap-2'>
-          <span className='font-sans text-sm text-white/90'>{c.title}</span>
-          <span className='shrink-0 text-[10px] uppercase tracking-[0.12em] text-amber-300/90'>
-            {c.rewardXp} XP · {c.rewardCredits} ⛁
-          </span>
-        </div>
-        <div className='mt-2 flex items-center gap-2'>
-          <div className='deck-bar h-2 flex-1'>
-            <div className={c.complete ? 'bg-emerald-400' : 'bg-cyan-400/80'} style={{ width: `${pct}%` }} />
-          </div>
-          <span className='w-14 shrink-0 text-right text-[11px] tabular-nums text-white/55'>
-            {Math.min(c.progress, c.goal)}/{c.goal}
-          </span>
-          {c.claimed ? (
-            <span className='w-[4.5rem] shrink-0 text-right text-[10px] uppercase tracking-[0.14em] text-white/35'>
-              Claimed
-            </span>
-          ) : (
-            <DeckButton
-              data-action='claim'
-              disabled={!c.complete || claiming === c.id}
-              onClick={() => claim(c.id)}
-              accent='emerald'
-              size='xs'
-              center
-              className='w-[4.5rem] shrink-0'
-            >
-              {claiming === c.id ? '…' : 'Claim'}
-            </DeckButton>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const RowSkeleton = (i: number) => (
-    <div key={i} className='deck-card px-3 py-2.5'>
-      <div className='flex items-center justify-between gap-2'>
-        <Skeleton className='h-3.5 w-40' />
-        <Skeleton className='h-2.5 w-16' />
-      </div>
-      <div className='mt-2.5 flex items-center gap-2'>
-        <Skeleton className='h-2 flex-1' />
-        <Skeleton className='h-3 w-14' />
-        <Skeleton className='h-6 w-[4.5rem]' />
-      </div>
-    </div>
-  );
-
-  return (
-    <ModalShell title='Challenges' onClose={onClose}>
-      {state === 'loading' && (
-        <div className='flex flex-col gap-4' aria-busy='true' aria-label='Loading challenges'>
-          <div>
-            <div className='deck-label mb-2'>Daily · resets every day</div>
-            <div className='flex flex-col gap-2'>{[0, 1, 2].map(RowSkeleton)}</div>
-          </div>
-          <div>
-            <div className='deck-label mb-2'>Weekly · bigger rewards</div>
-            <div className='flex flex-col gap-2'>{[3, 4].map(RowSkeleton)}</div>
-          </div>
-        </div>
-      )}
-      {state === 'error' && (
-        <div className='font-sans text-sm text-white/55'>
-          Couldn&apos;t load challenges. Play an online match to start earning.
-        </div>
-      )}
-      {state === 'ready' && data && (
-        <div className='flex flex-col gap-4'>
-          <div>
-            <div className='deck-label mb-2'>Daily · resets every day</div>
-            <div className='flex flex-col gap-2'>{data.daily.map(Row)}</div>
-          </div>
-          <div>
-            <div className='deck-label mb-2'>Weekly · bigger rewards</div>
-            <div className='flex flex-col gap-2'>{data.weekly.map(Row)}</div>
-          </div>
-          <div className='text-[10px] normal-case tracking-normal text-white/35'>
-            Challenges progress from online matches only. Complete one, then Claim
-            its XP + credits.
-          </div>
-        </div>
       )}
     </ModalShell>
   );

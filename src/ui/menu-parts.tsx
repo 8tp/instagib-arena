@@ -1,10 +1,20 @@
-import { type ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import { sfxProps } from '../deck-core';
+import '../menu/menu.css';
 
 // Main-menu building blocks. Game-menu grammar over the live arena: one big
 // wordmark, one solid Play block, a vertical list of big display-type items
 // (accent bar + quiet qualifier on hover/focus, no hover-lift), and quiet text
-// links for the meta surfaces. Styling lives in index.css (.menu-*).
+// links for the meta surfaces. Styling lives in index.css (.menu-*) and
+// src/menu/menu.css (entrance stagger, Play charge/discharge).
+//
+// `delay` = entrance order: the element slides in `delay` steps after the
+// first (CSS var --d, see .menu-in); omit it for no entrance.
+
+function enter(delay: number | undefined, base: string): { className: string; style?: CSSProperties } {
+  if (delay === undefined) return { className: base };
+  return { className: `${base} menu-in`, style: { ['--d' as string]: delay } };
+}
 
 export type MenuAccent = 'cyan' | 'fuchsia' | 'amber' | 'emerald' | 'plain';
 
@@ -22,7 +32,9 @@ export function MenuWordmark({ as = 'h1' }: { as?: 'h1' | 'div' }) {
 }
 
 // The one primary action. Solid, heavy, wide. `sub` rides the right edge;
-// `busy` swaps in the search sweep.
+// `busy` swaps in the search sweep. Hover charges it (a light sweep + a
+// charge bar filling along the bottom edge); a click discharges it (a flash
+// and a beam off the right edge, keyed per click so it replays).
 export function MenuPlayButton({
   onClick,
   disabled,
@@ -36,10 +48,16 @@ export function MenuPlayButton({
   label?: string;
   sub: string;
 }) {
+  // (No `delay` here: an entrance animation's fill would pin `transform` and
+  // swallow the press — wrap it in an entering element instead.)
+  const [shots, setShots] = useState(0);
   return (
     <button
       type='button'
-      onClick={onClick}
+      onClick={() => {
+        setShots((n) => n + 1);
+        onClick();
+      }}
       disabled={disabled}
       aria-busy={busy}
       {...sfxProps('uiConfirm')}
@@ -47,6 +65,8 @@ export function MenuPlayButton({
     >
       <span className='menu-play-label'>{label}</span>
       <span className='menu-play-sub'>{sub}</span>
+      <span aria-hidden='true' className='menu-play-charge' />
+      {shots > 0 && <span key={shots} aria-hidden='true' className='menu-play-fire' />}
       {busy && <span aria-hidden='true' className='menu-play-sweep' />}
     </button>
   );
@@ -59,6 +79,7 @@ export function MenuItem({
   sub,
   badge,
   children,
+  delay,
 }: {
   onClick: () => void;
   disabled?: boolean;
@@ -66,7 +87,9 @@ export function MenuItem({
   sub?: string;
   badge?: ReactNode;
   children: ReactNode;
+  delay?: number;
 }) {
+  const e = enter(delay, 'menu-item');
   return (
     <button
       type='button'
@@ -74,7 +97,8 @@ export function MenuItem({
       disabled={disabled}
       data-accent={accent}
       {...sfxProps('uiClick')}
-      className='menu-item'
+      className={e.className}
+      style={e.style}
     >
       <span className='menu-item-label'>{children}</span>
       {badge}

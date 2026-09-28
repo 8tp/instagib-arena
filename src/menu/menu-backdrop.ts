@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import { applyMapShadowFlags, createRenderer, createScene, PostFxPipeline } from '../game/renderer';
 import { buildMapMesh, mapById, MAPS, rayAabb, type ArenaMap } from '../game/map';
 import type { AABB, Vec3 } from '../game/types';
+import { MenuHero, type HeroFrame, type HeroLoadout } from './menu-hero';
 
 // The rotation (the practice range is the one bright, empty room — skip it).
 export const BACKDROP_MAPS: readonly string[] = ['reactor', 'causeway', 'lounge', 'nuketown', 'containeryard', 'derrick'];
@@ -35,6 +36,8 @@ export type BackdropOptions = {
   startMap?: string;
   shift?: number; // lens shift toward the right (fraction of half-width), default 0.26
   onMap?: (id: string, name: string) => void;
+  // Your combatant in the foreground (see menu-hero.ts); null = arena only.
+  hero?: HeroLoadout | null;
 };
 
 /* ── Shot planning ──────────────────────────────────────────────────────── */
@@ -244,6 +247,10 @@ class Stage {
   readonly postFx: PostFxPipeline;
   map: ArenaMap | null = null;
   mapId = '';
+  // Second pass drawn into the same frame right after the arena (before
+  // bloom/vignette): the menu hero. Off while a levelshot is captured.
+  overlay: ((renderer: THREE.WebGLRenderer) => void) | null = null;
+  overlayEnabled = true;
   private mapMesh: THREE.Group | null = null;
 
   constructor(
@@ -256,6 +263,11 @@ class Stage {
     this.postFx = new PostFxPipeline(this.renderer, this.scene, this.camera);
     this.postFx.setShadowMapSize(1024);
     this.postFx.setOptions({ bloom: opts.bloom, shadows: opts.shadows, aa: false, vignette: true });
+    // The arena's RenderPass renders this scene into the composer's HDR
+    // buffer; hooking its onAfterRender puts the overlay in that same buffer.
+    this.scene.onAfterRender = (renderer) => {
+      if (this.overlayEnabled) this.overlay?.(renderer);
+    };
   }
 
   // `shift` is a horizontal lens shift as a fraction of the half-width: the
@@ -348,7 +360,9 @@ function captureLevelshot(stage: Stage): string | null {
   cam.filmOffset = 0; // levelshots are centred
   cam.updateProjectionMatrix();
   poseAt(shot, SHOT_SECONDS * 0.3, cam, look);
+  stage.overlayEnabled = false; // the arena only — no menu hero in a levelshot
   stage.render();
+  stage.overlayEnabled = true;
   let url: string | null = null;
   try {
     // Read back in the same task as the render (no preserveDrawingBuffer).
@@ -419,6 +433,10 @@ export class MenuBackdrop {
   private disposed = false;
   private fadeTimer = 0;
   private readonly look = new THREE.Vector3();
+  private hero: MenuHero | null = null;
+  private heroLoadout: HeroLoadout | null = null;
+  private heroFrame: HeroFrame | null = null;
+  private heroHover = false;
   private readonly rand = mulberry((Date.now() & 0xffff) ^ 0x9e37);
   private readonly resizeObs: ResizeObserver | null = null;
   private readonly onVisibility = () => {
@@ -445,6 +463,8 @@ export class MenuBackdrop {
     const want = opts.startMap ?? lastMapId;
     const start = want ? this.maps.indexOf(want) : -1;
     this.mapIndex = start >= 0 ? start : Math.floor(this.rand() * this.maps.length);
+    this.stage.overlay = (renderer) => this.hero?.render(renderer);
+    this.heroLoadout = opts.hero ?? null;
     this.resize();
     this.enterMap(this.maps[this.mapIndex]);
     // Start part-way into the shot so the first frame is already mid-move.
@@ -472,6 +492,64 @@ export class MenuBackdrop {
     return this.stage.mapId;
   }
 
+  /* ── Hero (your combatant, composited over the arena) ──────────────── */
+
+  // Loadout to wear; null removes the hero. Built lazily once there is also a
+  // frame to stand in, so a narrow layout never pays for it.
+  setHero(loadout: HeroLoadout | null) {
+    this.heroLoadout = loadout;
+    if (!loadout) {
+      this.dropHero();
+    } else if (this.hero) {
+      this.hero.setLoadout(loadout);
+    } else {
+      this.ensureHero();
+    }
+    this.redrawIfIdle();
+  }
+
+  // Where the hero stands (canvas CSS px); null or tiny = hidden.
+  setHeroFrame(frame: HeroFrame | null) {
+    this.heroFrame = frame;
+    this.ensureHero();
+    this.hero?.setFrame(frame);
+    this.redrawIfIdle();
+  }
+
+  setHeroHover(on: boolean) {
+    this.heroHover = on;
+    this.hero?.setHover(on);
+    this.redrawIfIdle();
+  }
+
+  heroEmote() {
+    this.hero?.emoteNow();
+  }
+
+  private ensureHero() {
+    if (this.hero || this.disposed || !this.heroLoadout) return;
+    const f = this.heroFrame;
+    if (!f || f.w < 2 || f.h < 2) return;
+    const env = (this.stage.scene.environment as THREE.Texture | null) ?? null;
+    const hero = new MenuHero(this.heroLoadout, env, { still: this.still });
+    hero.onDirty = () => this.redrawIfIdle();
+    hero.setFrame(f);
+    hero.setHover(this.heroHover);
+    this.hero = hero;
+  }
+
+  private dropHero() {
+    this.hero?.dispose();
+    this.hero = null;
+  }
+
+  // A paused or still backdrop redraws one frame so hero changes show.
+  private redrawIfIdle() {
+    if (this.disposed || this.running) return;
+    this.hero?.update(0);
+    this.renderFrame();
+  }
+
   // Dev probe (critique harness): mean ms per backdrop frame over n renders.
   benchmark(n = 30): number {
     const gl = this.stage.renderer.getContext();
@@ -492,6 +570,8 @@ export class MenuBackdrop {
     window.clearTimeout(this.fadeTimer);
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.resizeObs?.disconnect();
+    this.stage.overlay = null;
+    this.dropHero();
     this.stage.dispose();
   }
 
@@ -523,6 +603,7 @@ export class MenuBackdrop {
     this.acc = 0;
     this.shotT += step;
     if (this.shotT >= SHOT_SECONDS) this.nextMap();
+    this.hero?.update(step);
     this.renderFrame();
   };
 

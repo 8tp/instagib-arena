@@ -822,9 +822,12 @@ canvas {
   opacity: 1;
 }
 .menu-scrim {
+  /* Keeps the menu column legible; eases off before the hero (centre) so
+     your combatant isn't dimmed, and stays light along the bottom so the
+     spawn pad glows. */
   background:
-    linear-gradient(90deg, rgba(3, 4, 6, 0.94) 0%, rgba(3, 4, 6, 0.8) 24%, rgba(3, 4, 6, 0.32) 46%, rgba(3, 4, 6, 0) 64%),
-    linear-gradient(0deg, rgba(3, 4, 6, 0.82) 0%, rgba(3, 4, 6, 0) 24%),
+    linear-gradient(90deg, rgba(3, 4, 6, 0.94) 0%, rgba(3, 4, 6, 0.82) 24%, rgba(3, 4, 6, 0.5) 36%, rgba(3, 4, 6, 0) 50%),
+    linear-gradient(0deg, rgba(3, 4, 6, 0.6) 0%, rgba(3, 4, 6, 0) 16%),
     linear-gradient(180deg, rgba(3, 4, 6, 0.6) 0%, rgba(3, 4, 6, 0) 16%);
 }
 @media (max-width: 1023px) {

@@ -1,0 +1,807 @@
+/* ── Main menu: hero, profile, challenges, Career Road, juice ─────────────
+   Same grammar as the rest of the deck (index.css): near-black clipped
+   panels, hairlines, Chakra Petch display type, Geist Mono numerals, cyan =
+   you/selection, emerald = go, amber = rewards. Everything animated here is
+   CSS (keyed by React ids) and switched off under prefers-reduced-motion or
+   the reduced-effects setting (.menu-reduced on the menu root). */
+
+/* ── Staggered entrance ─────────────────────────────────────────────────── */
+@keyframes menu-in-x {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes menu-in-y {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes menu-in-r {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.menu-in {
+  animation: menu-in-x 0.44s cubic-bezier(0.16, 0.8, 0.24, 1) both;
+  animation-delay: calc(var(--d, 0) * 36ms + 40ms);
+}
+.menu-in-top {
+  animation: menu-in-y 0.4s cubic-bezier(0.16, 0.8, 0.24, 1) both;
+  animation-delay: calc(var(--d, 0) * 36ms + 40ms);
+}
+.menu-in-right {
+  animation: menu-in-r 0.46s cubic-bezier(0.16, 0.8, 0.24, 1) both;
+  animation-delay: calc(var(--d, 0) * 36ms + 160ms);
+}
+
+/* ── Play: charge sweep on hover, discharge on press ────────────────────── */
+.menu-play::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(104deg, transparent 32%, rgba(255, 255, 255, 0.6) 48%, rgba(255, 255, 255, 0.15) 56%, transparent 66%);
+  transform: translateX(-110%);
+}
+.menu-play:hover:not(:disabled)::before,
+.menu-play:focus-visible::before {
+  animation: menu-play-charge-sweep 0.62s cubic-bezier(0.3, 0.6, 0.2, 1) both;
+}
+@keyframes menu-play-charge-sweep {
+  to {
+    transform: translateX(110%);
+  }
+}
+.menu-play-charge {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  pointer-events: none;
+  background: linear-gradient(90deg, #d1fae5, #ffffff);
+  box-shadow: 0 0 12px rgba(167, 243, 208, 0.9);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.38s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.menu-play:hover:not(:disabled) .menu-play-charge,
+.menu-play:focus-visible .menu-play-charge {
+  transform: scaleX(1);
+}
+.menu-play-label {
+  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.menu-play:hover:not(:disabled) .menu-play-label {
+  transform: translateX(4px);
+}
+.menu-play:active:not(:disabled) {
+  transform: translateY(1px) scale(0.992);
+  filter: brightness(1.1);
+}
+.menu-play-fire {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: #fff;
+  animation: menu-play-fire 0.42s ease-out both;
+}
+.menu-play-fire::after {
+  /* the discharge: a white-hot line firing off the right edge */
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(90deg, transparent, #ecfeff 60%, #fff);
+  box-shadow: 0 0 14px #a5f3fc;
+  transform-origin: left;
+  animation: menu-play-beam 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes menu-play-fire {
+  from {
+    opacity: 0.7;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes menu-play-beam {
+  from {
+    transform: scaleX(0);
+    opacity: 1;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 0;
+  }
+}
+
+/* ── Profile block (top-left) ──────────────────────────────────────────── */
+.menu-profile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+  width: 100%;
+  max-width: 29rem;
+  padding: 0.45rem 0.8rem 0.45rem 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(6, 8, 11, 0.74);
+  text-align: left;
+  transition:
+    border-color 0.12s,
+    background-color 0.12s;
+}
+button.menu-profile:hover {
+  border-color: rgba(103, 232, 249, 0.45);
+  background: rgba(8, 13, 17, 0.86);
+}
+.menu-level {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 3.35rem;
+  height: 3.35rem;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  background: linear-gradient(150deg, #67e8f9 0%, #22d3ee 40%, #0e7490 100%);
+  color: #021216;
+}
+.menu-level-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.75rem;
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+.menu-level-cap {
+  margin-top: 0.1rem;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  opacity: 0.7;
+}
+.menu-level-guest {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.55);
+}
+.menu-profile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.08rem;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.menu-profile-title {
+  flex: none;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+/* In the lobby the hero is the loud element: the wordmark steps down a size
+   (the landing page keeps its own, bigger, override). */
+.menu-root .menu-wordmark-main {
+  font-size: clamp(3rem, 5vw, 5.2rem);
+}
+.menu-root .menu-tagline {
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+.menu-xp {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+.menu-xp > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #0ea5b7, #22d3ee 60%, #cffafe);
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.55);
+  transform-origin: left;
+  animation: menu-xp-fill 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.3s both;
+}
+@keyframes menu-xp-fill {
+  from {
+    transform: scaleX(0);
+  }
+}
+.menu-profile-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+.menu-profile-link {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #67e8f9;
+}
+.menu-profile-guest:hover .menu-profile-link,
+button.menu-profile:hover .menu-profile-link {
+  color: #cffafe;
+}
+.menu-profile-next {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
+
+/* ── Reward tiles (credits / case key) ─────────────────────────────────── */
+.menu-reward {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.menu-reward-credits {
+  background: radial-gradient(120% 90% at 50% 20%, #7a5a12, #231704);
+  box-shadow: inset 0 0 0 1px rgba(252, 211, 77, 0.45);
+  color: #fde68a;
+}
+.menu-reward-key {
+  background: radial-gradient(120% 90% at 50% 20%, #0f5f6b, #04191d);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.45);
+  color: #a5f3fc;
+}
+.menu-reward-amount {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.7rem;
+}
+.menu-reward-label {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 0.75rem 0.4rem 0.25rem;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+}
+
+/* ── Hero slot: the box the 3D hero is framed into ─────────────────────── */
+.menu-hero-slot {
+  position: relative;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.menu-hero-hit {
+  /* Roughly the character's silhouette box: the hero is framed into the
+     bottom min(100%, 72vh) of the slot (menu-hero.ts), head ~22% down it. */
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  height: min(80%, 58vh);
+  width: clamp(9rem, 24vh, 100%);
+  transform: translateX(-50%);
+  cursor: pointer;
+  outline: none;
+}
+.menu-hero-tag {
+  position: absolute;
+  left: 50%;
+  bottom: -0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.1rem;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  background: #67e8f9;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #021216;
+  opacity: 0;
+  transform: translate(-50%, 6px);
+  transition:
+    opacity 0.16s ease-out,
+    transform 0.16s ease-out;
+}
+.menu-hero-hit:hover .menu-hero-tag,
+.menu-hero-hit:focus-visible .menu-hero-tag,
+.menu-hero-hit[data-hover='1'] .menu-hero-tag {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.menu-hero-hit:focus-visible .menu-hero-tag {
+  box-shadow: inset 0 0 0 2px #ffffff;
+}
+.menu-hero-tag kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ── Right column + challenges strip ───────────────────────────────────── */
+/* Wide layouts: the social dock fills the right column under the strip. */
+@media (min-width: 1024px) {
+  .menu-dock-col .menu-dock {
+    width: 100%;
+    height: min(30rem, 100%);
+  }
+}
+.menu-panel {
+  clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(6, 8, 11, 0.8);
+}
+.menu-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem 0.35rem;
+}
+.menu-panel-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.92);
+}
+.menu-panel-action {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.12s;
+}
+.menu-panel-action:hover {
+  color: #a5f3fc;
+}
+.menu-ch-group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.9rem 0.2rem;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.42);
+}
+.menu-ch-group b {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+}
+.menu-ch-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.7rem;
+  row-gap: 0.3rem;
+  width: 100%;
+  padding: 0.42rem 0.9rem;
+  text-align: left;
+  transition: background-color 0.12s;
+}
+button.menu-ch-row:hover,
+button.menu-ch-row:focus-visible {
+  background: rgba(255, 255, 255, 0.045);
+  outline: none;
+}
+.menu-ch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.86);
+}
+.menu-ch-reward {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #fcd34d;
+  white-space: nowrap;
+}
+.menu-ch-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.menu-ch-track {
+  flex: 1;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+.menu-ch-track > span {
+  display: block;
+  height: 100%;
+  background: #22d3ee;
+  transform-origin: left;
+  animation: menu-xp-fill 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) 0.35s both;
+}
+.menu-ch-count {
+  min-width: 2.6rem;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.5);
+}
+.menu-ch-row[data-state='done'] .menu-ch-name {
+  color: rgba(255, 255, 255, 0.42);
+}
+.menu-ch-row[data-state='done'] .menu-ch-track > span {
+  background: rgba(52, 211, 153, 0.7);
+}
+.menu-ch-row[data-state='done'] .menu-ch-reward {
+  color: rgba(52, 211, 153, 0.8);
+}
+.menu-ch-row[data-state='claimable'] {
+  background: linear-gradient(90deg, rgba(52, 211, 153, 0.12), rgba(52, 211, 153, 0) 80%);
+}
+.menu-ch-row[data-state='claimable']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 18%;
+  bottom: 18%;
+  width: 2px;
+  background: #34d399;
+  box-shadow: 0 0 8px #34d399;
+}
+.menu-ch-row[data-state='claimable'] .menu-ch-track > span {
+  background: #34d399;
+}
+.menu-ch-claim {
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  background: #34d399;
+  padding: 0.15rem 0.55rem;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #03140d;
+  transition: background-color 0.12s;
+}
+.menu-ch-claim:hover:not(:disabled) {
+  background: #6ee7b7;
+}
+.menu-ch-claim:disabled {
+  opacity: 0.6;
+}
+.menu-ch-foot {
+  padding: 0.35rem 0.9rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.menu-ch-foot button {
+  color: #67e8f9;
+  text-decoration: underline;
+  text-decoration-color: rgba(103, 232, 249, 0.35);
+  text-underline-offset: 3px;
+}
+.menu-ch-foot button:hover {
+  color: #cffafe;
+}
+.menu-ch-guest .menu-ch-row {
+  opacity: 0.55;
+}
+
+/* ── Last match banner ─────────────────────────────────────────────────── */
+.menu-last {
+  margin-top: 1rem;
+  padding: 0.7rem 0.9rem 0.8rem;
+}
+.menu-last[data-won='1'] {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: linear-gradient(90deg, rgba(16, 60, 44, 0.7), rgba(6, 8, 11, 0.8) 70%);
+}
+.menu-last-gain {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.7rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #67e8f9;
+  animation: menu-in-y 0.4s cubic-bezier(0.16, 0.8, 0.24, 1) 0.5s both;
+}
+
+/* ── Career Road ───────────────────────────────────────────────────────── */
+.road-scroller {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  cursor: grab;
+  outline: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.35) transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: pan-x;
+  /* the track runs off both edges instead of stopping at a hard cut */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}
+.road-scroller[data-dragging='1'] {
+  cursor: grabbing;
+}
+.road-scroller:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(34, 211, 238, 0.6);
+}
+.road-scroller::-webkit-scrollbar {
+  height: 8px;
+}
+.road-scroller::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.32);
+}
+.road-scroller::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+}
+.road-track {
+  position: relative;
+  display: flex;
+  padding-left: var(--road-pad, 2rem);
+  padding-right: var(--road-pad, 2rem);
+}
+.road-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--rail-y);
+  height: 4px;
+  margin-top: -2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.road-rail-fill {
+  position: absolute;
+  left: 0;
+  top: var(--rail-y);
+  height: 4px;
+  margin-top: -2px;
+  background: linear-gradient(90deg, #0e7490, #22d3ee 85%, #cffafe);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.6);
+}
+.road-node {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+}
+.road-lv {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 2.6rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.15rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.4);
+}
+.road-lv small {
+  margin-right: 0.2rem;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  opacity: 0.6;
+}
+.road-node[data-milestone='1'] .road-lv {
+  font-size: 1.55rem;
+}
+.road-node[data-state='claimed'] .road-lv {
+  color: rgba(165, 243, 252, 0.8);
+}
+.road-node[data-state='next'] .road-lv {
+  color: #fff;
+}
+.road-pip-row {
+  position: relative;
+  display: flex;
+  height: 2.2rem;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+}
+.road-pip {
+  width: 14px;
+  height: 14px;
+  transform: rotate(45deg);
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  background: #0b0c0f;
+}
+.road-node[data-milestone='1'] .road-pip {
+  width: 18px;
+  height: 18px;
+}
+.road-node[data-state='claimed'] .road-pip {
+  border-color: #67e8f9;
+  background: #22d3ee;
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.6);
+}
+.road-node[data-state='next'] .road-pip {
+  border-color: #fff;
+  background: #0b0c0f;
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.25);
+  animation: road-pip-pulse 1.6s ease-in-out infinite;
+}
+@keyframes road-pip-pulse {
+  50% {
+    box-shadow: 0 0 0 7px rgba(34, 211, 238, 0.08);
+  }
+}
+.road-rewards {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+.road-next {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 12.5rem;
+  padding: 1.1rem 1.25rem 1.25rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.07), rgba(34, 211, 238, 0) 70%);
+}
+.road-node[data-state='locked'] .road-rewards {
+  filter: saturate(0.55) brightness(0.8);
+}
+.road-owned {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  background: #22d3ee;
+  color: #021216;
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
+}
+.road-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.3;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.32);
+  padding: 0.5rem;
+}
+.road-here {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.road-here-flag {
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+  background: #22d3ee;
+  padding: 0.2rem 0.55rem;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #021216;
+}
+.road-here-stem {
+  width: 2px;
+  flex: 1;
+  background: linear-gradient(#22d3ee, rgba(34, 211, 238, 0.2));
+}
+.road-stat {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.6rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Motion off ────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .menu-in,
+  .menu-in-top,
+  .menu-in-right,
+  .menu-xp > span,
+  .menu-ch-track > span,
+  .menu-last-gain,
+  .menu-play-fire,
+  .menu-play-fire::after,
+  .road-node[data-state='next'] .road-pip {
+    animation: none;
+  }
+  .menu-play:hover:not(:disabled)::before,
+  .menu-play:focus-visible::before {
+    animation: none;
+  }
+  .menu-play-charge,
+  .menu-play-label,
+  .menu-hero-tag {
+    transition: none;
+  }
+}
+.menu-reduced .menu-in,
+.menu-reduced .menu-in-top,
+.menu-reduced .menu-in-right,
+.menu-reduced .menu-xp > span,
+.menu-reduced .menu-ch-track > span,
+.menu-reduced .menu-last-gain,
+.menu-reduced .menu-play-fire,
+.menu-reduced .menu-play-fire::after,
+.menu-reduced .road-node[data-state='next'] .road-pip,
+.menu-reduced .menu-play:hover:not(:disabled)::before {
+  animation: none;
+}
