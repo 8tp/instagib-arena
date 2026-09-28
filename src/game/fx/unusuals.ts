@@ -70,6 +70,7 @@ uniform float uViewH;    // current viewport height, physical px
 uniform float uMinPx;
 uniform float uGain;
 uniform float uHdrCap;
+uniform float uMinLum; // far away, dim particles are lifted to this peak so the effect still reads
 varying vec4 vColor;
 varying vec2 vCell;
 varying vec2 vRot;
@@ -85,6 +86,7 @@ void main() {
   vec3 c = aColor.rgb * uGain;
   float peak = max(c.r, max(c.g, c.b));
   if (peak > uHdrCap) c *= uHdrCap / peak;
+  else if (peak < uMinLum && peak > 0.015) c *= uMinLum / peak;
   vColor = vec4(c, aColor.a * k);
   vCell = vec2(mod(aSprite.x, 4.0), floor(aSprite.x / 4.0 + 0.001));
   vRot = vec2(cos(aSprite.y), sin(aSprite.y));
@@ -129,6 +131,7 @@ type SharedUniforms = {
   uMinPx: { value: number };
   uGain: { value: number };
   uHdrCap: { value: number };
+  uMinLum: { value: number };
   uOcclude: { value: number };
 };
 
@@ -235,14 +238,14 @@ type Layout = { count: number; roles: [role: number, n: number][]; cloud?: numbe
 // Particle budgets per kind (role → count). Roles index the recipe's parts.
 const LAYOUTS: Record<Exclude<UnusualKind, 'none'>, Layout> = {
   embers: { count: 0, roles: [[0, 2], [1, 24], [2, 6], [3, 22]] }, // heat glow, fire blobs, tongues, sparks
-  aura: { count: 0, roles: [[0, 16], [1, 16], [2, 5], [3, 15]] }, // crown ring, rising motes, tine stars, tines
+  aura: { count: 0, roles: [[0, 10], [1, 8], [2, 5]], ribbons: [2, 61] }, // band glow, rising motes, tip stars; band + crown ribbons
   orbit: { count: 0, roles: [[0, 36], [1, 32]] }, // comets (2 rings × 3 × 6), dim ring motes
-  halo: { count: 0, roles: [[0, 24], [1, 4], [2, 12]], ribbons: [1, 41] }, // band glow, glints, dust
+  halo: { count: 0, roles: [[0, 24], [1, 4], [2, 12]], ribbons: [1, 49] }, // band glow, glints, dust
   storm: { count: 0, roles: [[0, 18], [1, 3]], cloud: 13, ribbons: [2, 9] }, // rain, inner glow
   plasma: { count: 0, roles: [[0, 2], [1, 3], [2, 24]], ribbons: [3, 10] }, // core, arc ends, sparks
   prism: { count: 0, roles: [[0, 16], [1, 8], [2, 2]], ribbons: [2, 28] }, // beads, glints, apex; helix ribbons
   galaxy: { count: 0, roles: [[0, 3], [1, 48], [2, 10]] }, // core, arm stars, dust
-  ghostfire: { count: 0, roles: [[0, 2], [1, 12], [2, 13], [3, 10], [4, 10]] }, // glow, blobs, tongues, wisps, souls
+  ghostfire: { count: 0, roles: [[0, 2], [1, 22], [2, 10], [3, 8]] }, // cold core, wisps, veils, soul lights
   hearts: { count: 0, roles: [[0, 8], [1, 28], [2, 6]] }, // hearts, pop sparkles, motes
   binary: { count: 0, roles: [[0, 42], [1, 6]] }, // glyphs (6 columns × 7), crown motes
 };
@@ -251,7 +254,6 @@ for (const l of Object.values(LAYOUTS)) l.count = l.roles.reduce((s, [, n]) => s
 type FirePalette = { c: readonly number[]; scale: number; tongue: number; waveK: number };
 // hot (rgb), mid, cool — linear HDR.
 const FIRE_EMBERS: FirePalette = { c: [2.1, 1.55, 0.6, 1.7, 0.55, 0.07, 0.5, 0.06, 0.0], scale: 1, tongue: 1, waveK: 6 };
-const FIRE_GHOST: FirePalette = { c: [1.0, 2.0, 1.6, 0.1, 1.5, 0.9, 0.0, 0.3, 0.28], scale: 0.95, tongue: 1.45, waveK: 16 };
 
 // How much each kind's particles dim what's behind them (0 = pure additive).
 const OCCLUDE: Record<Exclude<UnusualKind, 'none'>, number> = {
@@ -300,6 +302,9 @@ export class UnusualEffect {
   private lastSeen = 0;
   private ppm = 300; // projected px per metre at the last render (closest view)
   private ppmFrame = 0;
+  // Ghostfire's cold flicker.
+  private ghostNext = 0;
+  private ghostFlick = 1;
   // Last viewing camera (galaxy leans toward it).
   private camX = 0;
   private camZ = 5;
@@ -332,6 +337,7 @@ export class UnusualEffect {
     this.u.uMinPx = { value: 1.5 };
     this.u.uGain = { value: 1 };
     this.u.uHdrCap = { value: 2.4 };
+    this.u.uMinLum = { value: 0 };
     this.u.uOcclude = { value: OCCLUDE[kind] };
     const layout = LAYOUTS[kind];
     this.f = new Field(layout.count, this.u, true);
@@ -377,6 +383,7 @@ export class UnusualEffect {
       this.u.uViewH.value = vh;
       this.u.uGain.value = 0.5 + 0.5 * smooth(8, 60, ppm);
       this.u.uHdrCap.value = 1.0 + 1.4 * smooth(10, 80, ppm);
+      this.u.uMinLum.value = 0.85 * (1 - smooth(25, 90, ppm));
       mat.uniformsNeedUpdate = true;
       this.lastSeen = now();
       // Keep the closest view's size for the LOD decision.
@@ -407,8 +414,7 @@ export class UnusualEffect {
       for (const p of ps) if (p.k === 0) p.rank = ((p.a % 22) * GOLDEN + 0.1) % 1;
     }
     if (this.kind === 'aura') {
-      for (const p of ps) if (p.k === 3) p.rank = ((Math.floor(p.a / 3) + 0.2) * GOLDEN) % 1;
-      for (const p of ps) if (p.k === 2) p.rank = ((p.a + 0.2) * GOLDEN) % 1;
+      for (const p of ps) if (p.k === 2) p.rank = 0; // the five tip stars always show
     }
     // Cores / apexes are always on.
     for (const p of ps) {
@@ -583,51 +589,52 @@ export class UnusualEffect {
     else this.f.put(i, p.x, p.y, p.z, r, g, b, al, mix(0.09, 0.028, fr) * pal.scale, CELL.glow, 0);
   }
 
-  // ── Sovereign Aura: a golden CROWN — a ring of motes with five tines
-  // rising off it, star glints on the tine tips and motes spiralling up
-  // (a halo is a flat band; this has points). ──
+  // ── Sovereign Aura: a floating CROWN of light — a gold ribbon band whose
+  // top edge rises into five points, slowly turning, a star on each tip and
+  // a few motes lifting off it. ──
   private aura(dt: number, frac: number) {
     const t = this.t;
     const f = this.f;
-    const R = 0.18;
-    const spin = t * 0.5;
+    const rib = this.rib!;
+    const R = 0.17;
+    const spin = t * 0.45;
+    const P = rib.points;
+    // Band (strip 0) and the pointed crown outline (strip 1).
+    for (let j = 0; j < P; j++) {
+      const a = (j / (P - 1)) * TAU + spin;
+      this.lw(Math.cos(a) * R, -0.04, Math.sin(a) * R);
+      rib.push(0, this.wx, this.wy, this.wz, 1.5, 1.1, 0.4, 0.014);
+      // Triangle wave: 5 points, peaks 0.12 m above the band.
+      const ph = ((j / (P - 1)) * 5) % 1;
+      const tri = 1 - Math.abs(ph * 2 - 1);
+      const h = -0.04 + 0.02 + tri * 0.12;
+      const r = R * (1 - 0.1 * tri);
+      this.lw(Math.cos(a) * r, h, Math.sin(a) * r);
+      const k = 1.3 + 0.9 * tri;
+      rib.push(1, this.wx, this.wy, this.wz, 1.2 * k, 0.9 * k, 0.32 * k, 0.012);
+    }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
-        const a = (p.a / 16) * TAU + spin;
-        this.lw(Math.cos(a) * R, -0.05, Math.sin(a) * R);
-        const pulse = 0.5 + 0.5 * Math.sin(t * 3 + a * 2);
-        const k = 1.1 + 0.6 * pulse;
-        f.put(i, this.wx, this.wy, this.wz, 1.0 * k, 0.74 * k, 0.28 * k, 0.9, 0.045, CELL.glow, 0);
-      } else if (p.k === 3) {
-        // Tines: five columns of three motes, tapering up.
-        const j = Math.floor(p.a / 3);
-        const l = p.a % 3;
-        const a = (j / 5) * TAU + spin;
-        const r = R * (1 - 0.07 * (l + 1));
-        this.lw(Math.cos(a) * r, -0.05 + 0.036 * (l + 1), Math.sin(a) * r);
-        f.put(i, this.wx, this.wy, this.wz, 1.9, 1.45, 0.6, 0.95, 0.042 * (1 - l * 0.2), CELL.dot, 0);
+        // Soft gold glow under the band.
+        const a = (p.a / 10) * TAU + spin;
+        this.lw(Math.cos(a) * R, -0.02, Math.sin(a) * R);
+        f.put(i, this.wx, this.wy, this.wz, 0.34, 0.24, 0.07, 0.9, 0.1, CELL.glow, 0);
       } else if (p.k === 2) {
-        const a = (p.a / 5) * TAU + spin;
-        const r = R * 0.76;
-        this.lw(Math.cos(a) * r, -0.05 + 0.15, Math.sin(a) * r);
-        const fl = 0.45 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 2.6 + p.a * 1.9)), 6);
-        f.put(i, this.wx, this.wy, this.wz, 2.4, 2.2, 1.6, fl, 0.085 * fl, CELL.star, t * 1.2 + p.a);
+        // A star on each of the five tips.
+        const a = ((p.a + 0.5) / 5) * TAU + spin;
+        const r = R * 0.9;
+        this.lw(Math.cos(a) * r, 0.1, Math.sin(a) * r);
+        const fl = 0.55 + 0.45 * Math.pow(Math.max(0, Math.sin(t * 2.6 + p.a * 1.9)), 6);
+        f.put(i, this.wx, this.wy, this.wz, 2.4, 2.1, 1.4, fl, 0.075 * fl, CELL.star, t * 1.2 + p.a);
       } else {
-        if (p.age < 0) this.emitRing(p, R, -0.05, 0.12, 0.2, 0.1, 1.0, 0.5, 0.7, true);
+        if (p.age < 0) this.emitRing(p, R, 0.02, 0.1, 0.18, 0.08, 0.9, 0.4, 0.7, true);
         p.age += dt;
-        if (p.age >= p.life) this.emitRing(p, R, -0.05, 0.12, 0.2, 0.1, 1.0, 0.5, 0.7, false);
-        // Spiral: swing the horizontal velocity around world up.
-        const c = Math.cos(1.3 * dt), sn = Math.sin(1.3 * dt);
-        const vx = p.vx * c - p.vz * sn;
-        p.vz = p.vx * sn + p.vz * c;
-        p.vx = vx;
-        p.vy += 0.05 * dt;
+        if (p.age >= p.life) this.emitRing(p, R, 0.02, 0.1, 0.18, 0.08, 0.9, 0.4, 0.7, false);
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
         const fr = p.age / p.life;
-        const al = Math.min(1, fr * 6) * (1 - fr);
-        f.put(i, p.x, p.y, p.z, 1.9, 1.65, 1.0, al, mix(0.03, 0.012, fr), CELL.dot, 0);
+        f.put(i, p.x, p.y, p.z, 1.9, 1.6, 0.9, Math.min(1, fr * 6) * (1 - fr), mix(0.028, 0.012, fr), CELL.dot, 0);
       }
     }
   }
@@ -694,36 +701,52 @@ export class UnusualEffect {
     }
   }
 
-  // ── Radiant Halo: a crisp golden band (ribbon) with a travelling crest,
-  // a soft glow under it, glints, and a little falling gold dust. ──
+  // ── Radiant Halo: a crisp, perfectly circular golden ring floating level
+  // above the head, leaned ~15° toward whoever is looking — a thin bright
+  // core ribbon, a soft glow under it, a travelling crest, the odd glint and
+  // a little falling gold dust. ──
   private halo(dt: number, frac: number) {
     const t = this.t;
     const f = this.f;
-    const R = 0.165;
+    const R = 0.16;
     const rib = this.rib!;
     const P = rib.points;
+    // World-level frame (not the head's pitch), leaned toward the viewer.
+    this.lw(0, 0, 0);
+    const cx = this.wx, cy = this.wy, cz = this.wz;
+    let hx = this.camX - cx, hz = this.camZ - cz;
+    const hl = Math.hypot(hx, hz) || 1;
+    hx /= hl; hz /= hl;
+    const lean = 0.27; // tan(15°)
+    let nx = hx * lean, ny = 1, nz = hz * lean;
+    const nl = Math.hypot(nx, ny, nz);
+    nx /= nl; ny /= nl; nz /= nl;
+    let ux = -hz, uz = hx; // horizontal, ⊥ the lean
+    const ul = Math.hypot(ux, uz) || 1;
+    ux /= ul; uz /= ul;
+    const vx = ny * uz, vy = nz * ux - nx * uz, vz = -ny * ux;
     for (let j = 0; j < P; j++) {
       const a = (j / (P - 1)) * TAU;
-      this.lw(Math.cos(a) * R, 0.012 * Math.sin(a * 3 + t * 1.5), Math.sin(a) * R);
+      const ca = Math.cos(a) * R, sa = Math.sin(a) * R;
       const crest = Math.pow(Math.max(0, Math.cos(a - t * 2.0)), 10);
-      const k = 1.2 + 1.5 * crest;
-      rib.push(0, this.wx, this.wy, this.wz, 1.0 * k, 0.78 * k, 0.34 * k, 0.017);
+      const k = 1.25 + 1.2 * crest;
+      rib.push(0, cx + ux * ca + vx * sa, cy + vy * sa, cz + uz * ca + vz * sa, 1.0 * k, 0.78 * k, 0.34 * k, 0.013);
     }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
         const a = (p.a / 24) * TAU + t * 0.3;
-        this.lw(Math.cos(a) * R, 0, Math.sin(a) * R);
-        f.put(i, this.wx, this.wy, this.wz, 0.3, 0.22, 0.08, 0.9, 0.09, CELL.glow, 0);
+        const ca = Math.cos(a) * R, sa = Math.sin(a) * R;
+        f.put(i, cx + ux * ca + vx * sa, cy + vy * sa, cz + uz * ca + vz * sa, 0.3, 0.22, 0.08, 0.9, 0.075, CELL.glow, 0);
       } else if (p.k === 1) {
         const sn = Math.sin(t * 1.7 + p.seed * 20);
         if (sn <= 0) { p.b = -1; f.hide(i); continue; }
         if (p.b < 0) p.b = rnd() * TAU;
         const fl = Math.pow(sn, 14);
         const a = p.b + t * 0.4;
-        this.lw(Math.cos(a) * R, 0, Math.sin(a) * R);
-        f.put(i, this.wx, this.wy, this.wz, 2.4, 2.2, 1.8, fl, 0.1 * (0.3 + 0.7 * fl), CELL.star, t + p.seed * 5);
+        const ca = Math.cos(a) * R, sa = Math.sin(a) * R;
+        f.put(i, cx + ux * ca + vx * sa, cy + vy * sa, cz + uz * ca + vz * sa, 2.4, 2.2, 1.8, fl, 0.1 * (0.3 + 0.7 * fl), CELL.star, t + p.seed * 5);
       } else {
         if (p.age < 0) this.emitRing(p, R, 0, 0.02, -0.05, 0.05, 1.0, 0.6, 0.8, true);
         p.age += dt;
@@ -766,7 +789,7 @@ export class UnusualEffect {
         if (ba >= 0.075 && this.boltJag === 0) { this.boltJag = 1; this.rejagBolt(); }
       }
     }
-    const glowK = calm ? 0.12 + 0.08 * Math.sin(t * 1.4) : flash;
+    const glowK = Math.max(calm ? 0.12 + 0.08 * Math.sin(t * 1.4) : flash, 0.1);
     // Cloud body.
     for (let j = 0; j < this.cps.length; j++) {
       const p = this.cps[j];
@@ -1026,42 +1049,83 @@ export class UnusualEffect {
     }
   }
 
-  // ── Ghostfire: tall spectral green-teal fire that sways like a ghost,
-  // wisps curling off it and bright soul sparks; it trails far behind a
-  // running wearer (low velocity inheritance). ──
+  // ── Ghostfire: spectral, not fire — pale translucent wisps well up out of
+  // a cold teal core and CURL OVER and down around the crown like a ghostly
+  // fountain, with a cold, uneven flicker and a few drifting soul lights.
+  // Low velocity inheritance: they stream behind a running wearer. ──
   private ghostfire(dt: number, frac: number) {
     const t = this.t;
     const f = this.f;
+    // Cold flicker: a stepped random dimming (not fire's warm shimmer).
+    if (t >= this.ghostNext) {
+      this.ghostNext = t + 0.05 + rnd() * 0.12;
+      this.ghostFlick = rnd() < 0.18 ? 0.45 + rnd() * 0.2 : 0.85 + rnd() * 0.15;
+    }
+    const fl = this.ghostFlick;
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
-        this.lw(0, -0.02 + p.a * 0.04, 0);
-        const fl = 0.85 + 0.15 * Math.sin(t * 9 + p.a * 3);
-        f.put(i, this.wx, this.wy, this.wz, 0.02 * fl, 0.55 * fl, 0.42 * fl, 1, 0.22 - p.a * 0.08, CELL.glow, 0);
+        this.lw(0, 0.0 + p.a * 0.03, 0);
+        f.put(i, this.wx, this.wy, this.wz, 0.05 * fl, 0.5 * fl, 0.46 * fl, 1, 0.16 - p.a * 0.07, CELL.glow, 0);
       } else if (p.k === 1 || p.k === 2) {
-        this.fire(p, i, dt, FIRE_GHOST, p.k === 2, 0.28, 0.065, 0.34);
-      } else if (p.k === 3) {
-        if (p.age < 0) this.emit(p, 0.1, 0.02, 0.17, 0.1, 0.9, 0.5, 0.28, true);
+        // Wisps (1) and their faint trailing veils (2).
+        if (p.age < 0 || p.age >= p.life) {
+          const stagger = p.age < 0;
+          const a = rnd() * TAU;
+          const r = 0.03 + rnd() * 0.04;
+          this.lw(0, 0.0, 0);
+          p.x = this.wx + Math.cos(a) * r; p.y = this.wy; p.z = this.wz + Math.sin(a) * r;
+          const out = 0.1 + rnd() * 0.08;
+          p.vx = Math.cos(a) * out + this.evx * 0.25;
+          p.vz = Math.sin(a) * out + this.evz * 0.25;
+          p.vy = 0.42 + rnd() * 0.16;
+          p.life = 1.2 + rnd() * 0.5;
+          p.seed = rnd();
+          p.b = a;
+          p.age = stagger ? rnd() * p.life * 0.9 : 0;
+          if (stagger) {
+            // Fast-forward the curl so the fountain is full at once.
+            let tt = 0;
+            while (tt < p.age) {
+              const h = Math.min(0.05, p.age - tt);
+              this.curl(p, h);
+              tt += h;
+            }
+          }
+        }
         p.age += dt;
-        if (p.age >= p.life) this.emit(p, 0.1, 0.02, 0.17, 0.1, 0.9, 0.5, 0.28, false);
-        p.vx += Math.sin(t * 2.5 + p.seed * 20) * 0.3 * dt;
-        p.vz += Math.cos(t * 2.1 + p.seed * 17) * 0.3 * dt;
-        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        this.curl(p, dt);
         const fr = p.age / p.life;
-        const al = Math.min(1, fr * 4) * (1 - fr) * 0.55;
-        f.put(i, p.x, p.y, p.z, 0.1, 0.95, 0.85, al, mix(0.07, 0.12, fr), CELL.wisp, Math.sin(t * 1.3 + p.seed * 9) * 0.15);
+        // Fade out before it sinks below the crown (never veils the face).
+        const low = smooth(-0.1, 0.0, p.y - this.oy);
+        const al = Math.min(1, fr * 5) * (1 - fr) * low * (p.k === 1 ? 0.6 : 0.3) * fl;
+        const sz = p.k === 1 ? mix(0.06, 0.12, fr) : mix(0.1, 0.16, fr);
+        f.put(i, p.x, p.y, p.z, p.k === 1 ? 0.55 : 0.1, p.k === 1 ? 1.25 : 0.8, p.k === 1 ? 1.15 : 0.75, al, sz, p.k === 1 ? CELL.wisp : CELL.glow, Math.sin(p.b + p.age * 1.5) * 0.5);
       } else {
-        if (p.age < 0) this.emit(p, 0.08, 0.0, 0.45, 0.3, 0.5, 0.4, 0.3, true);
+        if (p.age < 0) this.emit(p, 0.1, 0.02, 0.12, 0.1, 0.9, 0.6, 0.25, true);
         p.age += dt;
-        if (p.age >= p.life) this.emit(p, 0.08, 0.0, 0.45, 0.3, 0.5, 0.4, 0.3, false);
-        p.x += (p.vx + Math.sin(t * 13 + p.seed * 60) * 0.12) * dt;
-        p.z += (p.vz + Math.cos(t * 11 + p.seed * 50) * 0.12) * dt;
+        if (p.age >= p.life) this.emit(p, 0.1, 0.02, 0.12, 0.1, 0.9, 0.6, 0.25, false);
+        p.x += (p.vx + Math.sin(t * 3 + p.seed * 60) * 0.05) * dt;
+        p.z += (p.vz + Math.cos(t * 2.6 + p.seed * 50) * 0.05) * dt;
         p.y += p.vy * dt;
         const fr = p.age / p.life;
-        f.put(i, p.x, p.y, p.z, 1.0, 2.1, 1.6, Math.min(1, fr * 8) * (1 - fr), 0.02, CELL.dot, 0);
+        f.put(i, p.x, p.y, p.z, 0.8 * fl, 1.8 * fl, 1.6 * fl, Math.min(1, fr * 6) * (1 - fr), 0.022, CELL.dot, 0);
       }
     }
+  }
+
+  // Ghostfire wisp motion: rises, is pushed outward and pulled back down —
+  // a slow fountain that curls over the crown.
+  private curl(p: P, dt: number) {
+    const ox = p.x - this.ox, oz = p.z - this.oz;
+    const ol = Math.hypot(ox, oz) || 1;
+    p.vx += (ox / ol) * 0.22 * dt;
+    p.vz += (oz / ol) * 0.22 * dt;
+    p.vy -= 0.75 * dt;
+    const d = Math.exp(-0.6 * dt);
+    p.vx *= d; p.vz *= d;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
   }
 
   // ── Lovestruck: neon hearts float up, wobble, beat — and pop into little

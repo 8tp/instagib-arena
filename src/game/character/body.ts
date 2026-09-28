@@ -694,6 +694,12 @@ export type CharacterUniforms = {
   uArcCol: { value: THREE.Color };
   uRainbow: { value: number }; // prism: per-chunk rainbow seam glow
   uFlash: { value: THREE.Color }; // whole-body emissive flash (the frag's white-hot beat)
+  // Fairness: after 0.5 s nothing on a dying body glows above this world
+  // height (the victim's knee), so no emissive debris hangs on the crosshair line.
+  uKneeY: { value: number };
+  // Directional dissolve (vaporize's ash sheet): xyz = wind in rest model
+  // space, w = weight of the directional term vs noise (0 = off).
+  uDissolveDir: { value: THREE.Vector4 };
 };
 
 export const DEREZ_BANDS = 24;
@@ -735,6 +741,7 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'varying vec3 vBary;',
         'varying vec3 vRest;',
         'varying float vBone;',
+        'varying float vIgWorldY;',
         'uniform vec2 uBands;',
         'uniform vec3 uBandDir;',
         `uniform float uBandO[${DEREZ_BANDS}];`,
@@ -761,6 +768,7 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         `  int igB = clamp(int(floor(vRest.y / uBands.x)), 0, ${DEREZ_BANDS - 1});`,
         '  transformed += uBandDir * uBandO[igB] * uBands.y;',
         '}',
+        'vIgWorldY = (modelMatrix * vec4(transformed, 1.0)).y;',
       ].join('\n'),
     );
   shader.fragmentShader = shader.fragmentShader
@@ -773,6 +781,9 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'varying vec3 vBary;',
         'varying vec3 vRest;',
         'varying float vBone;',
+        'varying float vIgWorldY;',
+        'uniform float uKneeY;',
+        'uniform vec4 uDissolveDir;',
         'uniform vec3 uPlayer;',
         'uniform vec3 uVisorCore;',
         'uniform vec3 uVisorEdge;',
@@ -811,6 +822,8 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         '  float igH = clamp(vRest.y / 1.85, 0.0, 1.0);',
         '  float igHb = uDissolveH >= 0.0 ? 1.0 - igH : igH;',
         '  float igKey = mix(igN, igHb * 0.8 + igN * 0.2, abs(uDissolveH));',
+        // Wind sheet: the upwind side goes first, the front sweeps downwind.
+        '  if (uDissolveDir.w > 0.0) igKey = mix(igKey, clamp(0.5 + dot(vRest - vec3(0.0, 1.0, 0.0), uDissolveDir.xyz) / 0.7, 0.0, 1.0) * 0.85 + igN * 0.15, uDissolveDir.w);',
         '  if (igKey < uDissolve) discard;',
         '  igCut = 1.0 - smoothstep(0.0, 0.07, igKey - uDissolve);',
         '}',
@@ -889,19 +902,20 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         '  vec3 igHue = 0.5 + 0.5 * cos(6.2831853 * (vBone * 0.137 + uFxTime * 0.9 + vec3(0.0, 0.33, 0.67)));',
         '  igGlowCol = mix(uGlowCol, igHue * 1.8, uRainbow);',
         '}',
-        'totalEmissiveRadiance += igGlowCol * uGlow * (igEdgeRaw * 1.1 + igFres * igFres * 1.6 + 0.22 * (1.0 - vMat.x));',
-        // Finisher emission.
-        'totalEmissiveRadiance += uFlash;',
-        'if (igCut > 0.0) totalEmissiveRadiance += uEdgeCol * igCut * 2.2;',
+        'float igKneeCut = uFxTime > 0.0 ? 1.0 - smoothstep(0.34, 0.5, uFxTime) * smoothstep(uKneeY - 0.05, uKneeY + 0.12, vIgWorldY) : 1.0;',
+        'totalEmissiveRadiance += igGlowCol * uGlow * igKneeCut * (igEdgeRaw * 1.1 + igFres * igFres * 1.6 + 0.22 * (1.0 - vMat.x));',
+        // Finisher emission — above the knee it is all gone after 0.5 s.
+        'vec3 igFinEm = uFlash;',
+        'if (igCut > 0.0) igFinEm += uEdgeCol * igCut * 2.2;',
         'if (igAsh > 0.0) {',
         '  float igCr = 1.0 - smoothstep(0.0, 0.035, abs(igNoise(vRest * 17.0) - 0.5));',
-        '  totalEmissiveRadiance += uEdgeCol * igAsh * (igCr * 1.1 + igEdgeRaw * 0.2);',
+        '  igFinEm += uEdgeCol * igAsh * (igCr * 1.1 + igEdgeRaw * 0.2);',
         '}',
-        'totalEmissiveRadiance += uEdgeCol * igFront * 2.6;',
-        'if (uCrystal > 0.0) totalEmissiveRadiance += uCrystalCol * uCrystal * (igFres * igFres * 1.9 + igEdgeRaw * 1.7 + 0.05);',
+        'igFinEm += uEdgeCol * igFront * 2.6;',
+        'if (uCrystal > 0.0) igFinEm += uCrystalCol * uCrystal * (igFres * igFres * 1.9 + igEdgeRaw * 1.7 + 0.05);',
         'if (uBands.x > 0.0) {',
         '  float igScan = pow(0.5 + 0.5 * sin(vRest.y * 190.0), 14.0);',
-        '  totalEmissiveRadiance += uEdgeCol * (igEdgeRaw * 0.6 + igBandGlow * 1.6 + igScan * 0.15 + igFres * 0.3 + 0.06);',
+        '  igFinEm += uEdgeCol * (igEdgeRaw * 0.6 + igBandGlow * 1.6 + igScan * 0.15 + igFres * 0.3 + 0.06);',
         '}',
         // A dying body close to the camera: its glow backs off (a point-blank
         // frag must never swamp the view).
@@ -910,8 +924,14 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         '  float igA = igNoise(vRest * 7.0 + vec3(0.0, uFxTime * 6.0, uFxTime * 2.0));',
         '  float igA2 = igNoise(vRest * 13.0 - vec3(uFxTime * 5.0, 0.0, 0.0));',
         '  float igVein = (1.0 - smoothstep(0.0, 0.045, abs(igA - 0.5))) + 0.6 * (1.0 - smoothstep(0.0, 0.03, abs(igA2 - 0.5)));',
-        '  totalEmissiveRadiance += uArcCol * igVein * uArc;',
+        '  igFinEm += uArcCol * igVein * uArc;',
         '}',
+        'if (uFxTime > 0.0) {',
+        '  float igLate = smoothstep(0.34, 0.5, uFxTime);',
+        '  float igHigh = smoothstep(uKneeY - 0.05, uKneeY + 0.12, vIgWorldY);',
+        '  igFinEm *= 1.0 - igLate * igHigh;',
+        '}',
+        'totalEmissiveRadiance += igFinEm;',
       ].join('\n'),
     );
 }
@@ -944,6 +964,8 @@ export function createCharacterMaterial(): { material: THREE.MeshPhysicalMateria
     uArcCol: { value: new THREE.Color(0.6, 0.8, 1) },
     uRainbow: { value: 0 },
     uFlash: { value: new THREE.Color(0, 0, 0) },
+    uKneeY: { value: -1e4 },
+    uDissolveDir: { value: new THREE.Vector4(0, 0, 0, 0) },
   };
   const material = new THREE.MeshPhysicalMaterial({
     vertexColors: true,
@@ -977,6 +999,8 @@ export function resetDeathLook(u: CharacterUniforms): void {
   u.uArc.value = 0;
   u.uRainbow.value = 0;
   u.uFlash.value.setRGB(0, 0, 0);
+  u.uKneeY.value = -1e4;
+  u.uDissolveDir.value.set(0, 0, 0, 0);
 }
 
 // ── Surface samples (finisher particles) ─────────────────────────────────────
