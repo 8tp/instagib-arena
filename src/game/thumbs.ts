@@ -14,6 +14,7 @@ import {
   railColorById,
   railgunFinishById,
   spawnEffectById,
+  unusualById,
   type CatalogEntry,
   type EmoteKind,
   type KillEffectStyle,
@@ -38,7 +39,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v6:';
+const STORE_PREFIX = 'ig-thumb:v7:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 const FACE_CAMERA = Math.PI;
@@ -345,6 +346,7 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       // dark halo behind the effect keeps the particles readable.
       const backdrop = darkBackdrop();
       backdrop.position.set(0, 1.95, -0.45);
+      backdrop.visible = unusualById(entry.id).kind !== 'none';
       const root = new THREE.Group();
       root.add(c.holder, backdrop);
       return {
