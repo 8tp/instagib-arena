@@ -7,6 +7,11 @@ import { EffectsManager } from './effects';
 import { emoteClip } from './emotes';
 import { disposeFxContext, getFxContext, peekFxContext } from './fx-pool';
 import { WornHat } from './hats';
+import { HAS_GEAR, WornGearCtor, type GearSlot } from '../economy/gear';
+import { legacyUnusualFor } from '../economy/display';
+import { parseLookKey } from '../economy/look';
+import { itemDef, type ItemDef } from './items/catalog';
+import type { Look } from './items/types';
 import { buildRailgun } from './weapon-model';
 import {
   cosmeticById,
@@ -16,6 +21,7 @@ import {
   railgunFinishById,
   spawnEffectById,
   unusualById,
+  UNUSUALS,
   type CatalogEntry,
   type EmoteKind,
   type KillEffectStyle,
@@ -44,7 +50,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v14:';
+const STORE_PREFIX = 'ig-thumb:v15:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 // Hats sit on a mid-slate helmet: white caps read lighter, black hats darker.
@@ -75,6 +81,20 @@ function storeSet(id: string, url: string) {
   } catch {
     /* quota / privacy mode — memory cache still works */
   }
+}
+
+// A thumbnail request is a cosmetic id or a Look key (id|e=…|p=…, see
+// economy/look.ts) — a rolled variant (unusual effect…) renders and caches on
+// its own.
+type Target = { id: string; look: Look; entry: CatalogEntry | undefined; def: ItemDef | undefined };
+function targetOf(key: string): Target {
+  const look = key.includes('|') ? parseLookKey(key) : { d: key };
+  return { id: look.d, look, entry: cosmeticById(look.d), def: itemDef(look.d) };
+}
+const WEARABLE = new Set(['hat', 'face', 'back']);
+function renderableTarget(t: Target): boolean {
+  if (t.def && WEARABLE.has(t.def.slot) && !t.def.default && HAS_GEAR) return true;
+  return renderable(t.entry);
 }
 
 // Which catalog items get a rendered thumbnail.
@@ -116,7 +136,7 @@ export function getThumbnail(id: string): Promise<string | null> {
     cache.set(id, stored);
     return Promise.resolve(stored);
   }
-  if (typeof document === 'undefined' || !renderable(cosmeticById(id))) {
+  if (typeof document === 'undefined' || !renderableTarget(targetOf(id))) {
     cache.set(id, null); // no 3D subject: permanent, not a failure
     return Promise.resolve(null);
   }
@@ -148,7 +168,7 @@ export function prefetchThumbnails(ids: readonly string[], front = false): void 
 export function thumbnailPending(id: string): boolean {
   if (pending.has(id)) return true;
   // Not asked for yet but it will be (a tile's first paint): also pending.
-  return !cache.has(id) && !failed.has(id) && !studioFailed && typeof document !== 'undefined' && renderable(cosmeticById(id));
+  return !cache.has(id) && !failed.has(id) && !studioFailed && typeof document !== 'undefined' && renderableTarget(targetOf(id));
 }
 
 // Wait for idle time (the preview's frames come first); a timeout keeps the
@@ -388,12 +408,47 @@ function stepEffects(s: Studio, seconds: number, extra?: (dt: number) => void) {
   }
 }
 
-async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | null> {
+// A face / back / new-def hat via the shared wearable builders.
+async function buildGearSubject(slot: GearSlot, look: Look): Promise<Subject | null> {
+  if (!WornGearCtor) return null;
+  const turn = slot === 'back' ? Math.PI - 0.55 : slot === 'face' ? -0.28 : -0.42;
+  const c = combatant(turn, 'idle', 0.6, HAT_SKIN);
+  const gear = new WornGearCtor(c.ch);
+  gear.setLook(slot, look);
+  // Cloth / plumes / unusual particles settle for a second before the shot.
+  for (let i = 0; i < 60; i++) gear.update(1 / 60);
+  const undo = slot === 'hat' && look.e ? silhouette(c.ch) : () => {};
+  const top = gear.headTopY();
+  const target =
+    slot === 'face'
+      ? new THREE.Vector3(0, 1.6, 0)
+      : slot === 'back'
+        ? new THREE.Vector3(0, 1.22, 0)
+        : new THREE.Vector3(0, Math.max(1.7, Math.min(2.4, top - 0.1)), 0);
+  return {
+    root: c.holder,
+    target,
+    dist: slot === 'face' ? 1.05 : slot === 'back' ? 3.1 : look.e ? 1.5 : 1.35,
+    elev: slot === 'back' ? 0.16 : 0.08,
+    exposure: look.e ? 1.2 : 0.95,
+    dispose: () => {
+      gear.dispose();
+      undo();
+      disposeCombatant(c);
+    },
+  };
+}
+
+async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
+  const { look } = t;
+  if (t.def && WEARABLE.has(t.def.slot) && !t.def.default && HAS_GEAR) return buildGearSubject(t.def.slot as GearSlot, look);
+  const entry = t.entry!;
   switch (entry.slot) {
     case 'hat': {
       const c = combatant(-0.42, 'idle', 0.6, HAT_SKIN);
       const hat = new WornHat(c.ch.sockets.headTop);
       await hat.setHat(entry.id);
+      if (look.e) hat.setUnusual(legacyUnusualFor(look.e, UNUSUALS));
       // The hat is the subject: a dark silhouette head (no white mannequin
       // dome competing) and the camera fitted so the hat fills ~60%.
       const undo = silhouette(c.ch);
@@ -401,6 +456,7 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
       const box = new THREE.Box3();
       const tmp = new THREE.Box3();
       const visit = (o: THREE.Object3D) => {
+        if (o.name === 'unusual') return;
         const m = o as THREE.Mesh;
         if (m.isMesh && m.geometry) {
           if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
@@ -431,6 +487,12 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
         elev: 0.3,
         fitBox: box,
         fill: bare ? 0.6 : 0.88,
+        exposure: look.e ? 1.2 : undefined,
+        settle: look.e
+          ? () => {
+              for (let i = 0; i < 60; i++) hat.update(1 / 60);
+            }
+          : undefined,
         dispose: () => {
           hat.dispose();
           undo();
@@ -678,12 +740,12 @@ function fitCamera(cam: THREE.PerspectiveCamera, box: THREE.Box3, target: THREE.
 }
 
 async function renderThumb(id: string): Promise<string | null> {
-  const entry = cosmeticById(id);
-  if (!renderable(entry)) return null;
+  const target = targetOf(id);
+  if (!renderableTarget(target)) return null;
   await idle();
   const s = getStudio();
   if (!s) return null;
-  const subj = await buildSubject(s, entry!);
+  const subj = await buildSubject(s, target);
   if (!subj) return null;
   // The studio may have been released while an async load was in flight.
   if (studio !== s) {
