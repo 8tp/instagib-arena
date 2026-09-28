@@ -38,7 +38,7 @@ function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWi
     const emoteId = s.isLocal
       ? settings.emote
       : s.emote ?? emoteIds[(h >>> 4) % emoteIds.length] ?? DEFAULT_EMOTE;
-    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId };
+    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId, you: !!s.isLocal };
   });
 }
 
