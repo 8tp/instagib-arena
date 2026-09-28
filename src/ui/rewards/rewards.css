@@ -263,46 +263,152 @@
     opacity: 0;
   }
 }
-.rw-lvstamp {
-  animation: rw-lvstamp 1150ms linear both;
+/* The level emblem pops (and brightens) when its number changes (keyed on
+   the level). clip-path would clip a box-shadow, so this is scale + filter. */
+.rw-badge-tick {
+  animation: rw-badge 460ms var(--rw-snap) both;
 }
-@keyframes rw-lvstamp {
+@keyframes rw-badge {
+  from {
+    transform: scale(calc(1 + 0.3 * var(--rw-motion)));
+    filter: brightness(1.8);
+  }
+  to {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* ── Level emblem: the menu profile badge (menu.css .menu-level) ─────────── */
+.rw-level {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: var(--rw-lv, 3.25rem);
+  height: var(--rw-lv, 3.25rem);
+  clip-path: polygon(
+    var(--rw-lv-cut, 10px) 0,
+    100% 0,
+    100% calc(100% - var(--rw-lv-cut, 10px)),
+    calc(100% - var(--rw-lv-cut, 10px)) 100%,
+    0 100%,
+    0 var(--rw-lv-cut, 10px)
+  );
+  background: linear-gradient(150deg, #67e8f9 0%, #22d3ee 40%, #0e7490 100%);
+  color: #021216;
+}
+.rw-level-num {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--rw-lv-num, 1.65rem);
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+.rw-level-cap {
+  margin-top: 0.12em;
+  font-family: var(--font-mono);
+  font-size: var(--rw-lv-cap, 12px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+.rw-level-xl {
+  --rw-lv: 7.25rem;
+  --rw-lv-cut: 22px;
+  --rw-lv-num: 4.4rem;
+  --rw-lv-cap: 15px;
+  background: linear-gradient(150deg, #a5f3fc 0%, #22d3ee 42%, #0e7490 100%);
+}
+.rw-level-guest {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ── Labels + chips (type rule: sentence-case labels ≥ 13 px; caps only on
+   titles, buttons and short state chips ≥ 12 px) ──────────────────────── */
+.rw-label {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.62);
+}
+.rw-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid;
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.rw-chip-amber {
+  border-color: rgba(252, 211, 77, 0.4);
+  color: #fde68a;
+}
+.rw-chip-emerald {
+  border-color: rgba(110, 231, 183, 0.5);
+  background: rgba(110, 231, 183, 0.1);
+  color: #a7f3d0;
+}
+.rw-chip-cyan {
+  border-color: rgba(103, 232, 249, 0.4);
+  color: #a5f3fc;
+}
+.rw-chip-plain {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.62);
+}
+
+/* ── Level-up takeover (TAKEOVER_MS in reveal-model.ts = 2.9 s) ──────────
+   Scrim in, emblem slams, title + "Lv 6 → 7" rise, the reward tile flips in
+   with its burst, hold, then everything collapses back into the column. */
+.rw-takeover {
+  animation: rw-takeover 2900ms linear both;
+}
+@keyframes rw-takeover {
   0% {
     opacity: 0;
-    transform: scale(calc(1 + 1.1 * var(--rw-motion)));
-    animation-timing-function: cubic-bezier(0.55, 0, 0.9, 0.4);
   }
-  22% {
+  6% {
     opacity: 1;
-    transform: scale(calc(1 - 0.06 * var(--rw-motion)));
-    animation-timing-function: ease-out;
   }
-  34% {
-    transform: scale(1);
-  }
-  78% {
+  88% {
     opacity: 1;
     transform: scale(1);
     animation-timing-function: ease-in;
   }
   100% {
     opacity: 0;
-    transform: scale(calc(1 - 0.05 * var(--rw-motion)));
+    transform: scale(calc(1 - 0.04 * var(--rw-motion)));
   }
 }
-/* The level badge ticks when its number changes (keyed on the level). */
-.rw-badge-tick {
-  animation: rw-badge 420ms var(--rw-snap) both;
+.rw-takeover-scrim {
+  background:
+    radial-gradient(55% 60% at 50% 50%, rgba(16, 185, 129, 0.22), transparent 70%),
+    rgba(4, 7, 10, 0.93);
 }
-@keyframes rw-badge {
-  from {
-    transform: scale(calc(1 + 0.35 * var(--rw-motion)));
-    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.8);
-  }
-  to {
-    transform: scale(1);
-    box-shadow: 0 0 0 10px rgba(52, 211, 153, 0);
-  }
+.rw-to-emblem {
+  animation: rw-slam 520ms linear both;
+  animation-delay: 60ms;
+  filter: drop-shadow(0 0 28px rgba(34, 211, 238, 0.55));
+}
+.rw-to-title {
+  animation: rw-rise 380ms var(--rw-ease) both;
+  animation-delay: 260ms;
+}
+.rw-to-sub {
+  animation: rw-rise 380ms var(--rw-ease) both;
+  animation-delay: 380ms;
+}
+.rw-to-tile {
+  perspective: 900px;
+  animation: rw-card-in 560ms linear both;
 }
 
 /* ── Reward cards ───────────────────────────────────────────────────────── */

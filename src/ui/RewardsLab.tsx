@@ -5,10 +5,13 @@
 //        catchup = an existing player after the curve change: Career Road steps
 //        from well below levelBefore are granted at once (a dense card deal)
 //   ?online=1        the online variant (auto-advance countdown; loops back)
-//   ?won=0|1         override the case's Victory/Defeat
+//   ?mode=ffa|tdm|duel  the board + headline (FFA = placement, else Victory/Defeat)
+//   ?name=NAME       your name on the board (default Wraith; "You" = no tag)
+//   ?won=0|1         override the case's win
 //   ?at=MS           freeze the reveal clock MS after mount (deterministic shots)
 //   ?hold=MS         freeze the clock AND pause every CSS animation MS after
-//                    mount — a true mid-animation frame (e.g. a level stamp)
+//                    mount — a true mid-animation frame. Also a named moment:
+//                    hold=takeover | bar | cards (from this case's timeline)
 //   ?skip=1          skip to the end state (as if Space was pressed) after 900 ms
 //   ?late=MS         the server reply lands MS after the panel opens
 //   ?pending=1       the reply never lands (placeholder → "no rewards")
@@ -23,227 +26,186 @@ import type { MatchResult } from '../game/game';
 import type { KillConfirm, PlayerScore } from '../game/types';
 import { FragPopup } from '../game/kill-overlays';
 import { XpTicker } from './hud-quake';
-import { creditsForXp, levelForXp, totalXpForLevel, type RewardExtras, type XpLine } from '../game/progression';
+import {
+  creditsForXp,
+  levelForXp,
+  matchXpLines,
+  roadStepsBetween,
+  totalXpForLevel,
+  type ChallengeCompletion,
+  type XpLine,
+} from '../game/progression';
 import { MatchOverOverlay, OnlineMatchResults } from './results';
+import { buildRevealModel, buildTimeline } from './rewards/reveal-model';
 
 type LabCase = 'levelup' | 'multi' | 'catchup' | 'guest' | 'offline' | 'plain' | 'legacy';
 const CASES: LabCase[] = ['levelup', 'multi', 'catchup', 'guest', 'offline', 'plain', 'legacy'];
 
-// A point `frac` of the way through `level` on the live curve (so the lab never
-// hard-codes thresholds the progression track may retune).
+// One self-consistent fake match: the scoreboard, the stat strip, the XP lines
+// and the Career Road all derive from the same MatchResult via the REAL
+// progression code (matchXpLines / roadStepsBetween / creditsForXp), so the
+// payload has exactly the server's shape and numbers on the live curve.
+type LabSpec = {
+  result: MatchResult;
+  place: number; // your rank on the 8-player board (1 = won the FFA)
+  before: { level: number; frac: number }; // where the XP bar started
+  offline?: boolean;
+  firstWin?: boolean;
+  saved?: boolean;
+  challenges?: ChallengeCompletion[];
+  roadFrom?: number; // Career Road level already granted (catch-up when < level)
+  legacy?: boolean; // today's-server reply: totals only, no breakdown
+};
+
+type LabMatch = { won: boolean; place: number; result: MatchResult; progression: ProgressionResp };
+
+// A point `frac` of the way through `level` on the live curve.
 function xpAt(level: number, frac: number): number {
   const lo = totalXpForLevel(level);
   const hi = totalXpForLevel(level + 1);
   return Math.round(lo + (hi - lo) * frac);
 }
 
-function sum(lines: XpLine[]): number {
-  return lines.reduce((s, l) => s + l.xp, 0);
-}
-
-function payload(
-  base: { before: number; lines: XpLine[]; extraCredits?: number; newUnlocks?: string[] },
-  extras: Partial<RewardExtras> | null,
-): ProgressionResp {
-  const xp = sum(base.lines);
-  const after = base.before + xp;
-  const credits = creditsForXp(xp) + (base.extraCredits ?? 0);
-  const saved = extras?.saved !== false;
-  const levelBefore = levelForXp(base.before);
+function buildMatch(spec: LabSpec): LabMatch {
+  const r = spec.result;
+  const accuracy = r.shotsFired > 0 ? (r.shotsHit / r.shotsFired) * 100 : 0;
+  const match = matchXpLines(
+    { kills: r.kills, headshots: r.headshots, bestStreak: r.bestStreak, won: r.won, accuracy, shotsFired: r.shotsFired },
+    { offline: !!spec.offline, firstWin: !!spec.firstWin && !spec.offline && r.won },
+  );
+  const challenges = spec.challenges ?? [];
+  const lines: XpLine[] = [
+    ...match.lines,
+    ...challenges.map((c) => ({ key: 'challenge' as const, label: c.label, xp: c.xp })),
+  ];
+  const xp = lines.reduce((n, l) => n + l.xp, 0);
+  const before = xpAt(spec.before.level, spec.before.frac);
+  const after = before + xp;
+  const levelBefore = levelForXp(before);
   const levelAfter = levelForXp(after);
-  const resp: ProgressionResp = {
+  const roadRewards = roadStepsBetween(spec.roadFrom ?? levelBefore, levelAfter);
+  const roadCredits = roadRewards.reduce(
+    (n, st) => n + st.rewards.reduce((m, rw) => m + (rw.type === 'credits' ? rw.amount : 0), 0),
+    0,
+  );
+  const credits = creditsForXp(match.xp) + challenges.reduce((n, c) => n + c.credits, 0) + roadCredits;
+  const saved = spec.saved !== false;
+  const base: ProgressionResp = {
     xpGained: xp,
     creditsGained: credits,
     leveledUp: levelAfter > levelBefore,
-    newUnlocks: base.newUnlocks ?? [],
+    newUnlocks: roadRewards.flatMap((st) => st.rewards.flatMap((rw) => (rw.type === 'cosmetic' ? [rw.id] : []))),
+    mode: 'ffa',
     progression: {
-      totalXp: saved ? after : base.before,
+      totalXp: saved ? after : before,
       level: saved ? levelAfter : levelBefore,
       credits: 1480 + (saved ? credits : 0),
       unlocked: [],
       equipped: {},
     },
   };
-  if (!extras) return resp;
-  return {
-    ...resp,
-    saved: true,
-    offline: false,
-    xpLines: base.lines,
-    levelBefore,
-    totalXpBefore: base.before,
-    roadRewards: [],
-    challenges: [],
-    ...extras,
-  };
+  const progression: ProgressionResp = spec.legacy
+    ? base
+    : {
+        ...base,
+        saved,
+        offline: !!spec.offline,
+        xpLines: lines,
+        levelBefore,
+        totalXpBefore: before,
+        roadRewards,
+        challenges,
+      };
+  return { won: r.won, place: spec.place, result: r, progression };
 }
 
-const MATCH: MatchResult = { won: true, kills: 18, deaths: 7, bestStreak: 6, headshots: 5, shotsFired: 44, shotsHit: 18 };
-
-function buildCase(c: LabCase): { won: boolean; result: MatchResult; progression: ProgressionResp } {
-  switch (c) {
-    case 'levelup': {
-      const lines: XpLine[] = [
-        { key: 'base', label: 'Match played', xp: 25 },
-        { key: 'kills', label: 'Frags', xp: 180, detail: '18 × 10' },
-        { key: 'headshots', label: 'Headshots', xp: 30, detail: '5 × 6' },
-        { key: 'streak', label: 'Best streak', xp: 24, detail: '6 × 4' },
-        { key: 'win', label: 'Victory', xp: 60 },
-        { key: 'accuracy', label: 'Accuracy', xp: 16, detail: '41%' },
-        { key: 'firstWin', label: 'First win of the day', xp: 150 },
-        { key: 'challenge', label: 'Daily: land 5 headshots', xp: 100 },
-      ];
-      const lvl = 6;
-      const before = xpAt(lvl + 1, 0) - Math.round(sum(lines) * 0.62);
-      return {
-        won: true,
-        result: MATCH,
-        progression: payload(
-          { before, lines, extraCredits: 175 },
-          {
-            roadRewards: [{ level: lvl + 1, rewards: [{ type: 'cosmetic', id: 'hat.tophat' }, { type: 'credits', amount: 150 }] }],
-            challenges: [{ id: 'daily-hs', label: 'Daily · Land 5 headshots', xp: 100, credits: 25 }],
-          },
-        ),
-      };
-    }
-    case 'multi': {
-      const lines: XpLine[] = [
-        { key: 'base', label: 'Match played', xp: 25 },
-        { key: 'kills', label: 'Frags', xp: 250, detail: '25 × 10' },
-        { key: 'headshots', label: 'Headshots', xp: 66, detail: '11 × 6' },
-        { key: 'streak', label: 'Best streak', xp: 48, detail: '12 × 4' },
-        { key: 'win', label: 'Victory', xp: 60 },
-        { key: 'accuracy', label: 'Accuracy', xp: 23, detail: '58%' },
-        { key: 'firstWin', label: 'First win of the day', xp: 150 },
-        { key: 'challenge', label: 'Daily: win a match', xp: 150 },
-        { key: 'challenge', label: 'Weekly: 100 frags', xp: 400 },
-      ];
-      const lvl = 2;
-      const target = xpAt(lvl + 3, 0.35);
-      // Scale the lines so the gain spans exactly three wraps on this curve.
-      const want = target - xpAt(lvl, 0.55);
-      const k = want / sum(lines);
-      const scaled = lines.map((l) => ({ ...l, xp: Math.max(1, Math.round(l.xp * k)) }));
-      const before = target - sum(scaled);
-      return {
-        won: true,
-        result: { ...MATCH, kills: 25, headshots: 11, bestStreak: 12 },
-        progression: payload(
-          { before, lines: scaled, extraCredits: 400 },
-          {
-            roadRewards: [
-              { level: lvl + 1, rewards: [{ type: 'cosmetic', id: 'rail.plasma' }] },
-              { level: lvl + 2, rewards: [{ type: 'case' }, { type: 'cosmetic', id: 'gun.gold' }] },
-              { level: lvl + 3, rewards: [{ type: 'cosmetic', id: 'prism' }, { type: 'credits', amount: 250 }] },
-            ],
-            challenges: [
-              { id: 'daily-win', label: 'Daily · Win a match', xp: 150, credits: 30 },
-              { id: 'weekly-frags', label: 'Weekly · 100 frags', xp: 400, credits: 120 },
-            ],
-          },
-        ),
-      };
-    }
-    case 'catchup': {
-      const lines: XpLine[] = [
-        { key: 'base', label: 'Match played', xp: 25 },
-        { key: 'kills', label: 'Frags', xp: 140, detail: '14 × 10' },
-        { key: 'headshots', label: 'Headshots', xp: 24, detail: '4 × 6' },
-        { key: 'streak', label: 'Best streak', xp: 20, detail: '5 × 4' },
-        { key: 'win', label: 'Victory', xp: 60 },
-        { key: 'accuracy', label: 'Accuracy', xp: 15, detail: '38%' },
-      ];
-      const lvl = 14;
-      const before = xpAt(lvl + 1, 0) - Math.round(sum(lines) * 0.4);
-      const cos = ['hat.graduation', 'rail.toxic', 'card.cyber', 'gun.crimson', 'confetti', 'gun.void', 'card.nebula', 'unusual.galaxy'];
-      const roadRewards = Array.from({ length: 11 }, (_, i) => {
-        const level = 5 + i;
-        if (i % 3 === 1) return { level, rewards: [{ type: 'credits' as const, amount: 100 + i * 25 }] };
-        if (i === 6) return { level, rewards: [{ type: 'case' as const }] };
-        return { level, rewards: [{ type: 'cosmetic' as const, id: cos[Math.min(cos.length - 1, Math.floor(i * 0.75))] }] };
-      });
-      return {
-        won: true,
-        result: { ...MATCH, kills: 14, headshots: 4, bestStreak: 5 },
-        progression: payload({ before, lines, extraCredits: 1400 }, { roadRewards }),
-      };
-    }
-    case 'guest': {
-      const lines: XpLine[] = [
-        { key: 'base', label: 'Match played', xp: 25 },
-        { key: 'kills', label: 'Frags', xp: 120, detail: '12 × 10' },
-        { key: 'headshots', label: 'Headshots', xp: 18, detail: '3 × 6' },
-        { key: 'streak', label: 'Best streak', xp: 16, detail: '4 × 4' },
-        { key: 'accuracy', label: 'Accuracy', xp: 14, detail: '35%' },
-      ];
-      return {
-        won: false,
-        result: { ...MATCH, won: false, kills: 12, headshots: 3, bestStreak: 4 },
-        progression: payload(
-          { before: 0, lines },
-          { saved: false, roadRewards: levelForXp(sum(lines)) > 1 ? [{ level: 2, rewards: [{ type: 'cosmetic', id: 'nova' }] }] : [] },
-        ),
-      };
-    }
-    case 'offline': {
-      const full: XpLine[] = [
-        { key: 'base', label: 'Match played', xp: 25 },
-        { key: 'kills', label: 'Frags', xp: 200, detail: '20 × 10' },
-        { key: 'headshots', label: 'Headshots', xp: 42, detail: '7 × 6' },
-        { key: 'streak', label: 'Best streak', xp: 32, detail: '8 × 4' },
-        { key: 'win', label: 'Victory', xp: 60 },
-        { key: 'accuracy', label: 'Accuracy', xp: 19, detail: '47%' },
-      ];
-      const t = sum(full);
-      const lines = [...full, { key: 'offline' as const, label: 'Offline practice', xp: Math.floor(t * 0.5) - t, detail: '× 0.5' }];
-      return {
-        won: true,
-        result: { ...MATCH, kills: 20, headshots: 7, bestStreak: 8 },
-        progression: payload({ before: xpAt(9, 0.18), lines }, { offline: true }),
-      };
-    }
-    case 'plain': {
-      const lines: XpLine[] = [
-        { key: 'base', label: 'Match played', xp: 25 },
-        { key: 'kills', label: 'Frags', xp: 90, detail: '9 × 10' },
-        { key: 'headshots', label: 'Headshots', xp: 12, detail: '2 × 6' },
-        { key: 'streak', label: 'Best streak', xp: 12, detail: '3 × 4' },
-        { key: 'accuracy', label: 'Accuracy', xp: 11, detail: '28%' },
-      ];
-      return {
-        won: false,
-        result: { ...MATCH, won: false, kills: 9, deaths: 14, headshots: 2, bestStreak: 3 },
-        progression: payload({ before: xpAt(14, 0.3), lines }, {}),
-      };
-    }
-    case 'legacy': {
-      // Today's server: totals only, no breakdown — the lines are estimated.
-      const lines: XpLine[] = [{ key: 'base', label: 'x', xp: 25 + 180 + 30 + 24 + 60 + 16 }];
-      const before = xpAt(4, 0.8);
-      const resp = payload({ before, lines, newUnlocks: levelForXp(before + sum(lines)) > 4 ? ['rail.toxic'] : [] }, null);
-      return { won: true, result: MATCH, progression: resp };
-    }
-  }
-}
+const SPECS: Record<LabCase, LabSpec> = {
+  // A win, the first of the day, a daily challenge — crosses one level.
+  levelup: {
+    result: { won: true, kills: 25, deaths: 7, bestStreak: 6, headshots: 5, shotsFired: 61, shotsHit: 27 },
+    place: 1,
+    before: { level: 6, frac: 0.55 },
+    firstWin: true,
+    challenges: [{ id: 'daily-hs', label: 'Daily: land 5 headshots', xp: 100, credits: 25 }],
+  },
+  // A big session: two challenges on top of a strong win — several levels.
+  multi: {
+    result: { won: true, kills: 25, deaths: 5, bestStreak: 12, headshots: 11, shotsFired: 52, shotsHit: 30 },
+    place: 1,
+    before: { level: 2, frac: 0.5 },
+    firstWin: true,
+    challenges: [
+      { id: 'daily-win', label: 'Daily: win a match', xp: 150, credits: 30 },
+      { id: 'weekly-frags', label: 'Weekly: 100 kills', xp: 400, credits: 120 },
+    ],
+  },
+  // An existing player after the curve change: Lv 14 on XP, but the road was
+  // only granted to Lv 4 — this reply pays the catch-up and a new level.
+  catchup: {
+    result: { won: false, kills: 14, deaths: 9, bestStreak: 5, headshots: 4, shotsFired: 40, shotsHit: 15 },
+    place: 2,
+    before: { level: 14, frac: 0.82 },
+    roadFrom: 4,
+  },
+  guest: {
+    result: { won: false, kills: 18, deaths: 16, bestStreak: 4, headshots: 3, shotsFired: 55, shotsHit: 20 },
+    place: 3,
+    before: { level: 1, frac: 0 },
+    saved: false,
+  },
+  offline: {
+    result: { won: true, kills: 25, deaths: 7, bestStreak: 8, headshots: 7, shotsFired: 60, shotsHit: 28 },
+    place: 1,
+    before: { level: 9, frac: 0.18 },
+    offline: true,
+  },
+  plain: {
+    result: { won: false, kills: 9, deaths: 14, bestStreak: 3, headshots: 2, shotsFired: 38, shotsHit: 11 },
+    place: 5,
+    before: { level: 14, frac: 0.3 },
+  },
+  legacy: {
+    result: { won: true, kills: 25, deaths: 7, bestStreak: 6, headshots: 5, shotsFired: 61, shotsHit: 27 },
+    place: 1,
+    before: { level: 4, frac: 0.8 },
+    legacy: true,
+  },
+};
 
 const NAMES = ['Razor', 'Kestrel', 'Nyx', 'Halcyon', 'Vex', 'Orbit', 'Tamsin', 'Quill'];
+const HATS_LAB = ['hat.crown', 'hat.tophat', 'hat.wizard', 'hat.cap', 'hat.propeller', 'hat.hardhat', 'hat.graduation', 'hat.baseball'];
+const EMOTES_LAB = ['emote.cheer', 'emote.dance', 'emote.wave', 'emote.flex', 'emote.salute', 'emote.cheer', 'emote.dance', 'emote.wave'];
 
-function fakeScores(won: boolean): PlayerScore[] {
-  const frags = [25, 21, 18, 15, 12, 9, 7, 4];
-  const youAt = won ? 0 : 2;
-  return frags.map((f, i) => ({
-    id: `p${i}`,
-    name: i === youAt ? 'You' : NAMES[i],
-    isLocal: i === youAt,
-    frags: f,
-    deaths: 6 + ((i * 5) % 11),
-    bestStreak: Math.max(1, Math.round(f / 4)),
-    currentStreak: 0,
-    accuracy: 30 + ((i * 7) % 25),
-    hat: ['hat.crown', 'hat.tophat', 'hat.wizard', 'hat.cap', 'hat.propeller', 'hat.hardhat', 'hat.graduation', 'hat.baseball'][i],
-    emote: ['emote.cheer', 'emote.dance', 'emote.wave', 'emote.flex', 'emote.salute', 'emote.cheer', 'emote.dance', 'emote.wave'][i],
-  }));
+// An 8-player board with you at `place` holding the match's kill count; TDM
+// splits it into two teams, duel keeps one opponent.
+function fakeScores(m: LabMatch, mode: 'ffa' | 'tdm' | 'duel', myName: string): PlayerScore[] {
+  const mine = m.result.kills;
+  const n = mode === 'duel' ? 2 : 8;
+  const place = mode === 'duel' ? (m.won ? 1 : 2) : Math.min(m.place, n);
+  const others: number[] = [];
+  for (let i = 1; i < n; i++) others.push(Math.max(0, 25 - i * 3 - (i % 2)));
+  // Players above you: strictly more; below: strictly fewer.
+  const above = Array.from({ length: place - 1 }, (_, i) => Math.min(25, mine + (place - 1 - i) * 2 + 1));
+  const below = others.slice(place - 1).map((f, i) => Math.min(f, Math.max(0, mine - 1 - i * 2)));
+  const frags = [...above, mine, ...below];
+  let bot = 0;
+  return frags.slice(0, n).map((f, i) => {
+    const you = i === place - 1;
+    const k = you ? -1 : bot++;
+    return {
+      id: `p${i}`,
+      name: you ? myName : NAMES[k % NAMES.length],
+      isLocal: you,
+      frags: f,
+      deaths: you ? m.result.deaths : 6 + ((k * 5) % 11),
+      bestStreak: you ? m.result.bestStreak : Math.max(1, Math.round(f / 4)),
+      currentStreak: 0,
+      accuracy: you ? null : 30 + ((k * 7) % 25),
+      team: mode === 'tdm' ? i % 2 : null,
+      hat: you ? undefined : HATS_LAB[k % HATS_LAB.length],
+      emote: you ? undefined : EMOTES_LAB[k % EMOTES_LAB.length],
+    };
+  });
 }
 
 // The XP ticker in context: crosshair, centre-print and a stream of frags.
@@ -283,17 +245,36 @@ export default function RewardsLab() {
 function ResultsLab({ q }: { q: URLSearchParams }) {
   const labCase = (CASES.includes(q.get('case') as LabCase) ? q.get('case') : 'levelup') as LabCase;
   const online = q.get('online') === '1';
-  const hold = q.get('hold') !== null ? Number(q.get('hold')) : undefined;
-  const at = hold ?? (q.get('at') !== null ? Number(q.get('at')) : undefined);
+  const mode = (['ffa', 'tdm', 'duel'].includes(q.get('mode') ?? '') ? q.get('mode') : 'ffa') as 'ffa' | 'tdm' | 'duel';
+  const myName = q.get('name') ?? 'Wraith';
+  const c = useMemo(() => buildMatch(SPECS[labCase]), [labCase]);
+  // Named moments of this case's timeline (the reveal starts 750 ms in):
+  // ?hold=takeover (mid level-up beat), ?hold=bar (mid first fill).
+  const tl = useMemo(() => buildTimeline(buildRevealModel(c.progression, { result: c.result }), 750), [c]);
+  const moment = (v: string | null): number | undefined => {
+    if (v === null) return undefined;
+    if (v === 'takeover') return tl.takeover ? tl.takeover.start + 1500 : tl.seg[0].end;
+    if (v === 'bar') return Math.round((tl.seg[0].start + tl.seg[0].end) / 2);
+    if (v === 'cards') return tl.cardAt.length ? tl.cardAt[tl.cardAt.length - 1] + 500 : tl.creditsAt;
+    return Number(v);
+  };
+  const hold = moment(q.get('hold'));
+  const at = hold ?? moment(q.get('at'));
   const late = Number(q.get('late') ?? 0);
   const pending = q.get('pending') === '1';
   const reduced = q.get('reduced') === '1';
   const clean = q.get('clean') === '1';
   const withLogin = q.get('login') !== '0';
 
-  const c = useMemo(() => buildCase(labCase), [labCase]);
-  const won = q.get('won') !== null ? q.get('won') === '1' : c.won;
-  const scores = useMemo(() => fakeScores(won), [won]);
+  const scores = useMemo(() => fakeScores(c, mode, myName), [c, mode, myName]);
+  // TDM: the win is your team's; everything else follows the case.
+  const teamWon = (() => {
+    const me = scores.find((x) => x.isLocal);
+    if (mode !== 'tdm' || !me) return c.won;
+    const total = (t: number) => scores.filter((x) => x.team === t).reduce((n, x) => n + x.frags, 0);
+    return total(me.team ?? 0) > total(1 - (me.team ?? 0));
+  })();
+  const won = q.get('won') !== null ? q.get('won') === '1' : teamWon;
   const settings = useMemo(
     () => ({ hat: 'hat.crown', emote: 'emote.cheer', reducedEffects: reduced }) as Settings,
     [reduced],
@@ -336,6 +317,7 @@ function ResultsLab({ q }: { q: URLSearchParams }) {
           onContinue={restart}
           onLogin={withLogin ? () => alert('onLogin') : undefined}
           revealFreezeAt={at}
+          mode={mode}
         />
       ) : (
         <MatchOverOverlay
@@ -349,6 +331,7 @@ function ResultsLab({ q }: { q: URLSearchParams }) {
           onLobby={restart}
           onLogin={withLogin ? () => alert('onLogin') : undefined}
           revealFreezeAt={at}
+          mode={mode}
         />
       )}
       {!clean && (
