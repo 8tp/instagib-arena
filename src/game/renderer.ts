@@ -306,6 +306,8 @@ const VIEWMODEL_FAR = 20;
 // a metal gun's shape, and the darkest themes sit at 0.3. Kept below the lab
 // look (0.4–0.5) so the gun never out-shines the world around it.
 const VIEWMODEL_ENV_MIN = 0.42;
+const VIEWMODEL_KEY = 0.55;
+const WHITE = new THREE.Color(0xffffff);
 
 export class ViewmodelLayer {
   readonly scene = new THREE.Scene();
@@ -313,6 +315,10 @@ export class ViewmodelLayer {
   private readonly hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5);
   private readonly sun = new THREE.DirectionalLight(0xffffff, 1);
   private readonly fill = new THREE.DirectionalLight(0xffffff, 0.3);
+  // A soft key riding with the view from the upper left — the flank of the gun
+  // the player actually sees — so its shape reads whatever the map's sun does.
+  // Tinted by the theme's sky light; weak enough to stay a fill.
+  private readonly key = new THREE.DirectionalLight(0xffffff, VIEWMODEL_KEY);
   private readonly tmpScale = new THREE.Vector3();
 
   constructor(
@@ -325,11 +331,16 @@ export class ViewmodelLayer {
     // Directional lights aim at their target's WORLD position; park both at
     // the origin and steer by moving the light itself (see sync).
     this.scene.add(this.sun.target, this.fill.target);
+    this.camera.add(this.key, this.key.target);
+    this.key.position.set(-0.8, 1.0, 0.5);
+    this.key.target.position.set(0.4, -0.4, -1.0);
   }
 
   // True when anything under the camera would draw (skip the pass otherwise).
   get active(): boolean {
-    for (const c of this.camera.children) if (c.visible) return true;
+    for (const c of this.camera.children) {
+      if (c.visible && c !== this.key && c !== this.key.target) return true;
+    }
     return false;
   }
 
@@ -362,6 +373,7 @@ export class ViewmodelLayer {
       this.fill.color.copy(l.fill.color);
       this.fill.intensity = l.fill.intensity;
       this.fill.position.copy(l.fill.position).normalize().multiplyScalar(10);
+      this.key.color.copy(WHITE).lerp(l.hemi.color, 0.5);
     }
   }
 
