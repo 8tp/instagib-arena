@@ -95,7 +95,7 @@ export function ModalShell({
   dismissOnBackdrop = true,
   openSound = 'modalOpen',
   closeSound = 'modalClose',
-  closeLabel = '✕ Esc',
+  closeLabel = '✕ ESC',
 }: {
   title?: string;
   label?: string; // aria-label when there is no visible title
