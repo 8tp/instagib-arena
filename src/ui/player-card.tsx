@@ -1,5 +1,6 @@
 // The playercard (kill banner) + its stat picker, shared by the killcam, the
 // Locker and the results screen.
+import './player-card.css';
 import { useEffect, useState } from 'react';
 import type { Account } from '../auth';
 import type { InstagibProfile, Settings } from '../app-types';

@@ -410,7 +410,20 @@ export const DEFAULT_CARD = 'card.slate';
 // .pcard-anim-* classes in src/index.css); the static gradient stays the base so
 // the card is always legible, and the animation is suppressed under reduced
 // effects / prefers-reduced-motion. `undefined` = a plain static card.
-export type CardAnim = 'holo' | 'shimmer' | 'pulse' | 'aurora' | 'scan';
+export type CardAnim =
+  | 'holo'
+  | 'shimmer'
+  | 'pulse'
+  | 'aurora'
+  | 'scan'
+  | 'circuit' // pulses racing along circuit traces
+  | 'rain' // rain streaks + CRT scanlines
+  | 'stars' // three-layer parallax starfield
+  | 'plasma' // drifting plasma blobs
+  | 'glitch' // RGB-split slice glitches
+  | 'fire' // rising flame tongues + embers
+  | 'foil' // rainbow foil sweep
+  | 'boreal'; // aurora borealis ribbons
 
 export type CardCosmetic = {
   id: string;
@@ -426,16 +439,25 @@ export type CardCosmetic = {
 export const CARD_STYLES: readonly CardCosmetic[] = [
   { id: 'card.slate',  name: 'Slate',     blurb: 'Clean gunmetal.',           rarity: 'common', source: { type: 'default' },              bg: 'linear-gradient(135deg,#1e293b,#0b1220)',                          accent: '#67e8f9' },
   { id: 'card.ember',  name: 'Ember',     blurb: 'Molten edges.',             rarity: 'rare',   source: { type: 'level', level: 11 },      bg: 'linear-gradient(135deg,#7c2d12,#180a05)',                          accent: '#fb923c' },
-  { id: 'card.toxic',  name: 'Toxic',     blurb: 'Acid wash.',                rarity: 'rare',   source: { type: 'credits', price: 600 },  bg: 'linear-gradient(135deg,#14532d,#05140a)',                          accent: '#86efac' },
+  { id: 'card.toxic',  name: 'Toxic',     blurb: 'Acid wash.',                rarity: 'rare',   source: { type: 'level', level: 15 },      bg: 'linear-gradient(135deg,#14532d,#05140a)',                          accent: '#86efac' },
   { id: 'card.cyber',  name: 'Cyber',     blurb: 'Neon grid.',                rarity: 'rare',   source: { type: 'level', level: 27 },     bg: 'linear-gradient(135deg,#0e7490,#3b0764)',                          accent: '#22d3ee' },
-  { id: 'card.void',   name: 'Void',      blurb: 'Deep violet, slow aurora.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa', anim: 'aurora' },
+  { id: 'card.void',   name: 'Void',      blurb: 'Deep violet, slow aurora.', rarity: 'epic',   source: { type: 'level', level: 33 },      bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa', anim: 'aurora' },
   { id: 'card.gold',   name: 'Gilded',    blurb: 'A drifting golden sheen.',  rarity: 'epic',   source: { type: 'level', level: 47 },     bg: 'linear-gradient(135deg,#854d0e,#1c1206)',                          accent: '#fbbf24', anim: 'shimmer' },
   { id: 'card.admin',  name: 'Sovereign', blurb: 'Staff only — holographic.', rarity: 'epic',   source: { type: 'admin' },                bg: 'linear-gradient(135deg,#3a2c05,#0c0a04)',                          accent: '#ffd700', anim: 'holo' },
   // Animated tier — the card slot's premium upgrade. Each pairs a static base
   // gradient with a CSS motion layer (.pcard-anim-*).
-  { id: 'card.prism',  name: 'Prism',     blurb: 'A rotating holographic foil.', rarity: 'epic', source: { type: 'credits', price: 2200 }, bg: 'linear-gradient(135deg,#0b1220,#1e1b4b)',                         accent: '#a5f3fc', anim: 'holo' },
+  { id: 'card.prism',  name: 'Prism',     blurb: 'A rotating holographic foil.', rarity: 'epic', source: { type: 'level', level: 55 },     bg: 'linear-gradient(135deg,#0b1220,#1e1b4b)',                         accent: '#a5f3fc', anim: 'holo' },
   { id: 'card.nebula', name: 'Nebula',    blurb: 'Living violet-teal aurora.',   rarity: 'epic', source: { type: 'level', level: 65 },     bg: 'radial-gradient(circle at 70% 30%,#155e75,#1e1b4b 60%,#05010f)',  accent: '#67e8f9', anim: 'aurora' },
-  { id: 'card.matrix', name: 'Matrix',    blurb: 'Scrolling neon scanlines.',    rarity: 'epic', source: { type: 'credits', price: 1800 }, bg: 'linear-gradient(135deg,#022c22,#03140f)',                        accent: '#4ade80', anim: 'scan' },
+  { id: 'card.matrix', name: 'Matrix',    blurb: 'Scrolling neon scanlines.',    rarity: 'epic', source: { type: 'level', level: 80 },     bg: 'linear-gradient(135deg,#022c22,#03140f)',                        accent: '#4ade80', anim: 'scan' },
+  // v3 wave: level-unlocked, animated (levels 5–100). Never case items or tradable.
+  { id: 'card.circuit',  name: 'Circuit',    blurb: 'Data pulses race along live traces.',        rarity: 'rare',      source: { type: 'level', level: 5 },   bg: 'linear-gradient(135deg,#06222b,#04121a)',                                        accent: '#67e8f9', anim: 'circuit' },
+  { id: 'card.downpour', name: 'Downpour',   blurb: 'Night rain on a flickering CRT.',            rarity: 'rare',      source: { type: 'level', level: 8 },   bg: 'linear-gradient(160deg,#1b2a3f,#070b14)',                                        accent: '#9cc4ff', anim: 'rain' },
+  { id: 'card.starfield',name: 'Starfield',  blurb: 'Three layers of stars drifting past.',       rarity: 'epic',      source: { type: 'level', level: 20 },  bg: 'radial-gradient(120% 100% at 50% 110%,#1a1446,#04030f 70%)',                     accent: '#c4b5fd', anim: 'stars' },
+  { id: 'card.plasma',   name: 'Plasma',     blurb: 'Slow, hot blobs of magenta and cyan.',       rarity: 'epic',      source: { type: 'level', level: 40 },  bg: 'linear-gradient(135deg,#2a0a3d,#06182b)',                                        accent: '#f0abfc', anim: 'plasma' },
+  { id: 'card.glitch',   name: 'Glitch',     blurb: 'The signal tears. Then it doesn’t.',         rarity: 'epic',      source: { type: 'level', level: 60 },  bg: 'linear-gradient(135deg,#150c1f,#08111a)',                                        accent: '#5eead4', anim: 'glitch' },
+  { id: 'card.inferno',  name: 'Inferno',    blurb: 'Flames lick up the card, embers rising.',    rarity: 'legendary', source: { type: 'level', level: 72 },  bg: 'linear-gradient(180deg,#1c0703,#3d0e05)',                                        accent: '#fdba74', anim: 'fire' },
+  { id: 'card.foil',     name: 'Holo Foil',  blurb: 'A rainbow sweep across brushed foil.',       rarity: 'legendary', source: { type: 'level', level: 90 },  bg: 'linear-gradient(135deg,#1b1f2b,#2b2f3d 50%,#141826)',                            accent: '#fde68a', anim: 'foil' },
+  { id: 'card.boreal',   name: 'Boreal',     blurb: 'Aurora ribbons over a frozen night.',        rarity: 'legendary', source: { type: 'level', level: 100 }, bg: 'linear-gradient(180deg,#03101c,#071a2a 55%,#0a2233)',                            accent: '#86efac', anim: 'boreal' },
 ];
 
 export function cardById(id: string): CardCosmetic {

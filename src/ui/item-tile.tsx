@@ -3,8 +3,11 @@
 // Road. Rendered thumbnails come from game/thumbs.ts; slots without a 3D
 // subject (name colours, titles, cards) get a CSS treatment here instead.
 import type { CSSProperties, FocusEvent, HTMLAttributes, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
-import { cardById, cosmeticById, nameColorById, titleById, type CatalogEntry, type CosmeticSource, type Rarity } from '../game/cosmetics';
-import { RARITY_COLOR, useThumbnailState } from './rarity';
+import { cardById, cosmeticById, nameColorById, titleById, type CatalogEntry, type CosmeticSource } from '../game/cosmetics';
+import { lookKey } from '../economy/look';
+import { itemDef } from '../game/items/catalog';
+import type { Look, Tier } from '../game/items/types';
+import { TIER_COLOR, TIER_LABEL, isIridescent, tierOfRarity, useThumbnailState } from './rarity';
 
 export function ItemTile({
   id,
@@ -19,6 +22,13 @@ export function ItemTile({
   hint = 'auto',
   caption,
   label = true,
+  tier: tierProp,
+  look,
+  name: nameProp,
+  sub,
+  subColor,
+  mint,
+  badge,
   onClick,
   onDoubleClick,
   onPointerEnter,
@@ -40,6 +50,13 @@ export function ItemTile({
   price?: number; // overrides the credits hint on a buyable locked item
   hint?: 'auto' | 'none' | ReactNode; // locked tiles: unlock route in the name row (auto from the catalog)
   caption?: string; // tiny top-left caption (the slot name on the loadout rail)
+  tier?: Tier; // economy v3: overrides the def's tier (admin one-offs)
+  look?: Look; // economy v3: render + cache the thumbnail per Look (effect / pattern)
+  name?: string; // display-name override (quality prefix, custom names)
+  sub?: string; // one short attribute line under the name (effect, kills, wear)
+  subColor?: string;
+  mint?: number; // serial → "#37" chip
+  badge?: ReactNode; // small chip, top-left (quality marks)
   label?: boolean;
   onClick?: () => void;
   onDoubleClick?: (e: MouseEvent<HTMLElement>) => void;
@@ -52,15 +69,17 @@ export function ItemTile({
   className?: string;
 }) {
   const item = cosmeticById(id);
-  const rarity: Rarity = item?.rarity ?? 'common';
-  const c = RARITY_COLOR[rarity];
-  const { url: thumb, pending } = useThumbnailState(id);
+  const def = itemDef(id);
+  const tier: Tier = tierProp ?? def?.tier ?? tierOfRarity(item?.rarity ?? 'common');
+  const c = TIER_COLOR[tier];
+  const displayName = nameProp ?? def?.name ?? item?.name ?? id;
+  const { url: thumb, pending } = useThumbnailState(look ? lookKey(look) : id);
   const interactive = !!onClick;
   const Tag = interactive ? 'button' : 'div';
   const lit = selected || equipped;
   // Unusual effects are glow on dark: the tile stays dark behind the effect,
   // the rarity colour lives on the rim, bar and name band.
-  const darkFill = item?.slot === 'unusual';
+  const darkFill = item?.slot === 'unusual' || !!look?.e;
   // Every locked tile says how to get it (price / level / case / achievement).
   const shownHint: ReactNode =
     hint === 'none' || !locked
@@ -87,13 +106,13 @@ export function ItemTile({
       onFocus={onFocus}
       onKeyDown={onKeyDown}
       tabIndex={tabIndex}
-      data-rarity={rarity}
+      data-rarity={tier}
       aria-pressed={interactive && !rootProps?.role ? selected : undefined}
-      aria-label={interactive ? `${item?.name ?? id}, ${rarity}${equipped ? ', equipped' : ''}${locked ? ', locked' : ''}${isNew ? ', new' : ''}` : undefined}
+      aria-label={interactive ? `${displayName}, ${TIER_LABEL[tier]}${equipped ? ', equipped' : ''}${locked ? ', locked' : ''}${isNew ? ', new' : ''}` : undefined}
       {...rootProps}
       className={`group relative block shrink-0 text-left outline-none transition-transform duration-150 ease-out motion-reduce:transition-none ${
         interactive ? 'cursor-pointer hover:-translate-y-[3px] focus-visible:-translate-y-[3px] active:translate-y-0' : ''
-      } ${className}`}
+      } ${isIridescent(tier) ? 'ec-iri' : ''} ${className}`}
       style={style}
     >
       {/* Rarity glow: fades in on hover / keyboard focus, held while selected. */}
@@ -132,7 +151,7 @@ export function ItemTile({
         ) : pending ? (
           <span aria-hidden className='deck-skeleton absolute inset-[18%] opacity-40' />
         ) : (
-          <Treatment item={item} id={id} locked={locked} color={c.edge} />
+          <Treatment item={item} id={id} locked={locked} color={c.edge} displayName={displayName} />
         )}
         {/* Rarity bar along the bottom edge. */}
         <span aria-hidden className='absolute inset-x-0 bottom-0 h-[3px]' style={{ background: c.edge }} />
@@ -157,8 +176,16 @@ export function ItemTile({
                 overflowWrap: 'break-word',
               }}
             >
-              {item?.name ?? id}
+              {displayName}
             </span>
+            {sub && (
+              <span
+                className='truncate font-sans font-medium leading-none'
+                style={{ color: subColor ?? `${c.text}b0`, fontSize: 'max(12px, 8cqw)' }}
+              >
+                {sub}
+              </span>
+            )}
           </span>
         )}
         {caption && (
@@ -167,6 +194,15 @@ export function ItemTile({
             style={{ fontSize: 'max(12px, 9cqw)' }}
           >
             {caption}
+          </span>
+        )}
+        {badge && <span className='absolute left-[4cqw] top-[4cqw] flex max-w-[70%] flex-wrap gap-[2px]'>{badge}</span>}
+        {mint != null && (
+          <span
+            className='absolute right-[4cqw] top-[4cqw] bg-black/60 px-[4px] py-[1px] font-mono font-semibold leading-tight text-white/80'
+            style={{ fontSize: 'max(12px, 8cqw)', marginRight: equipped ? 'max(18px, 15cqw)' : 0 }}
+          >
+            #{mint}
           </span>
         )}
         {isNew && (
@@ -301,11 +337,13 @@ function Treatment({
   id,
   locked,
   color,
+  displayName,
 }: {
   item: CatalogEntry | undefined;
   id: string;
   locked: boolean;
   color: string;
+  displayName: string;
 }) {
   const dim = locked ? { filter: 'grayscale(0.5) brightness(0.7)' } : undefined;
   if (item?.slot === 'nameColor') {
@@ -382,7 +420,7 @@ function Treatment({
       className='absolute inset-0 grid place-items-center pb-[12cqw] font-display font-bold'
       style={{ color: `${color}88`, fontSize: '30cqw' }}
     >
-      {(item?.name ?? '?').slice(0, 1)}
+      {displayName.slice(0, 1)}
     </span>
   );
 }
