@@ -13,7 +13,13 @@ import {
   type ReplayKill,
   type ReplayPose,
   type ReplayShot,
+  type ReplayTaunt,
 } from './replay-codec';
+import type { Look } from './items/types';
+import { emoteClip } from './emotes';
+import { emoteKindOfLook } from './look-runtime';
+import { isKillEffectStyle, DEFAULT_KILL_EFFECT } from './cosmetics';
+import { MotionTracker, type MotionEventKind } from './sfx/motion-tracker';
 
 // The pure data shapes live in replay-codec (so the server can import them too);
 // re-export here so existing call sites keep importing them from './replay'.
@@ -24,6 +30,7 @@ export type {
   ReplayFrame,
   ReplayKill,
   ReplayShot,
+  ReplayTaunt,
 } from './replay-codec';
 
 // ── Play of the Match: record the match, pick the best moment, replay it ──────
@@ -39,6 +46,7 @@ const RECORD_DT = 1 / RECORD_HZ;
 // Hard caps so a pathologically long match can't grow the buffer without bound.
 const MAX_FRAMES = 9000; // 300s @ 30Hz — well past the frag limit / mercy rule
 const MAX_SHOTS = 2000; // FIFO; only shots inside the final clip window matter
+const MAX_TAUNTS = 400;
 
 // Clip framing around the chosen kill cluster.
 const PREROLL_SEC = 2.0;
@@ -70,6 +78,7 @@ export class MatchRecorder {
   readonly frames: ReplayFrame[] = [];
   readonly kills: ReplayKill[] = [];
   readonly shots: ReplayShot[] = [];
+  readonly taunts: ReplayTaunt[] = [];
 
   private clock = 0;
   private frameAccum = 0;
@@ -80,8 +89,27 @@ export class MatchRecorder {
 
   // Capture this entity's static identity once (idempotent). Cosmetics are read
   // at first sight; they don't change mid-match.
+  // Idempotent, but a profile first seen BEFORE its looks arrived (a remote whose
+  // loadout snapshot lands a beat after they appear) is upgraded in place — the
+  // replay must dress everyone in what they actually wore.
   ensureProfile(p: ReplayActorProfile) {
-    if (!this.profiles.has(p.id)) this.profiles.set(p.id, p);
+    const cur = this.profiles.get(p.id);
+    if (!cur) {
+      this.profiles.set(p.id, p);
+      return;
+    }
+    if (p.looks && (!cur.looks || Object.keys(p.looks).length > Object.keys(cur.looks).length)) {
+      cur.looks = p.looks;
+      cur.hat = p.hat;
+      cur.unusual = p.unusual;
+      cur.nameColor = p.nameColor;
+    }
+  }
+
+  // A taunt started (any actor): recorded so the replay plays the emote.
+  logTaunt(actorId: string, look: Look | undefined) {
+    this.taunts.push({ t: this.clock, actorId, look });
+    if (this.taunts.length > MAX_TAUNTS) this.taunts.shift();
   }
 
   // Advance the recorder clock and capture a downsampled pose frame. `sample`
@@ -110,6 +138,7 @@ export class MatchRecorder {
     this.frames.length = 0;
     this.kills.length = 0;
     this.shots.length = 0;
+    this.taunts.length = 0;
     this.clock = 0;
     this.frameAccum = 0;
   }
@@ -129,6 +158,7 @@ export class MatchRecorder {
       frames: this.frames,
       kills: this.kills,
       shots: this.shots,
+      taunts: this.taunts,
     };
   }
 
@@ -265,20 +295,42 @@ export type ReplayDeps = {
   botModel: BotModel | null;
   spawnBeam: (origin: Vec3, end: Vec3) => void;
   spawnMuzzleFlash: (at: Vec3) => void;
-  spawnKillEffect: (at: THREE.Vector3, headshot: boolean, killerId: string) => void;
-  // The killer's finisher — also how the victim's replayed body breaks apart.
+  // `finisher` is the killer's recorded finisher (from their looks; the caller's
+  // `finisherFor` covers profiles recorded without looks).
+  spawnKillEffect: (at: THREE.Vector3, headshot: boolean, killerId: string, finisher: KillEffectStyle) => void;
+  // Fallback finisher lookup for a killer whose profile has no finisher Look.
   finisherFor?: (killerId: string) => KillEffectStyle;
+  // A (re)spawn: the actor's own spawn-in effect (their equipped spawn id).
+  spawnIn?: (at: THREE.Vector3, spawnEffectId: string) => void;
   reducedEffects: () => boolean;
   // Fired when the POV star (whose eyes we're in) scores a kill in the clip, so
-  // the HUD can flash a hit-marker over the crosshair.
-  onStarKill?: (headshot: boolean) => void;
+  // the HUD can flash a hit-marker over the crosshair. `chain` = the star's
+  // running multi-kill count (1 = a lone kill).
+  onStarKill?: (headshot: boolean, chain: number) => void;
+  // The star's own body events (for the first-person viewmodel: fire kick, hop,
+  // landing dip).
+  onStarEvent?: (kind: 'fire' | MotionEventKind, strength: number) => void;
+  // Replay audio (see replay-audio.ts). Optional: the player is silent without it.
+  sfx?: ReplaySfx;
 };
+
+export interface ReplaySfx {
+  // A replayed rail shot; `lethal` = it killed someone (the gib carries the sound).
+  shot(s: ReplayShot, star: boolean, lethal: boolean): void;
+  // A replayed frag at the victim's body.
+  kill(at: Vec3, k: ReplayKill, finisher: KillEffectStyle, star: boolean, chain: number): void;
+  // Footsteps / jumps / lands of replay actors (feet position, strength = m/s).
+  move(kind: MotionEventKind, x: number, y: number, z: number, strength: number, star: boolean): void;
+}
 
 // First-person replay camera: the clip is shown through the star's own eyes
 // (like Overwatch's Play of the Game). Light exponential smoothing masks the
 // 30Hz pose sampling without making the look feel laggy.
-const EYE_POS_SMOOTH = 16; // exp smoothing rate for the eye position
-const EYE_LOOK_SMOOTH = 20; // exp smoothing rate for yaw/pitch
+// The poses themselves are Catmull-Rom interpolated (C1-continuous through the
+// 30 Hz samples), so this is only a light residual filter — it must stay well
+// above the render rate's Nyquist so it never reads as lag, in slow-mo included.
+const EYE_POS_SMOOTH = 34; // exp smoothing rate for the eye position
+const EYE_LOOK_SMOOTH = 40; // exp smoothing rate for yaw/pitch
 
 // Replay playback options. `timeScale` < 1 plays the clip in slow motion;
 // `freezeSec` holds on the final frame afterwards (the cinematic "pause").
@@ -294,6 +346,7 @@ export type ReplaySource = {
   frames: ReplayFrame[];
   kills: ReplayKill[];
   shots: ReplayShot[];
+  taunts?: ReplayTaunt[];
 };
 
 function lerpAngle(a: number, b: number, t: number): number {
@@ -326,6 +379,22 @@ export class ReplayPlayer {
   private frameIdx = 0;
   private nextShotIdx = 0;
   private nextKillIdx = 0;
+  private taunts: ReplayTaunt[] = [];
+  private nextTauntIdx = 0;
+  private profiles = new Map<string, ReplayActorProfile>();
+  // Each actor's running killstreak this life (drives the gun's killstreak sheen).
+  private streaks = new Map<string, number>();
+  private wasVisible = new Map<string, boolean>();
+  // Footsteps / jumps / lands from observed motion: the star's (centred, own
+  // body) and everyone else's (positional).
+  private starMotion = new MotionTracker((kind, x, y, z, s) => {
+    this.deps.sfx?.move(kind, x, y, z, s, true);
+    this.deps.onStarEvent?.(kind, s);
+  });
+  private otherMotion = new MotionTracker((kind, x, y, z, s) => this.deps.sfx?.move(kind, x, y, z, s, false));
+  private starVel = { x: 0, z: 0 };
+  private lastStar = { x: 0, z: 0 };
+  private lastStarValid = false;
   private camPos = new THREE.Vector3();
   private camYaw = 0;
   private camPitch = 0;
@@ -367,6 +436,11 @@ export class ReplayPlayer {
   get isPaused(): boolean { return this.paused; }
   get reachedEnd(): boolean { return this.atEnd; }
   get speed(): number { return this.timeScale; }
+  // The star's camera orientation + horizontal speed, for the first-person
+  // viewmodel's sway / bob (the game feeds these to its viewmodel motion).
+  get camYawNow(): number { return this.camYaw; }
+  get camPitchNow(): number { return this.camPitch; }
+  get starGroundSpeed(): number { return Math.hypot(this.starVel.x, this.starVel.z); }
 
   pause() { this.paused = true; }
   resume() {
@@ -387,7 +461,47 @@ export class ReplayPlayer {
     this.frameIdx = 0; // sampleAll re-advances forward from 0
     this.nextShotIdx = firstAtOrAfter(this.shots, t);
     this.nextKillIdx = firstAtOrAfter(this.kills, t);
+    this.nextTauntIdx = firstAtOrAfter(this.taunts, t);
     this.seekSnap = true;
+    this.starMotion.clear();
+    this.otherMotion.clear();
+    this.wasVisible.clear();
+    this.recomputeStreaks(t);
+  }
+
+  // Every actor's killstreak as of match-time `time` (kills since their last death).
+  private recomputeStreaks(time: number) {
+    this.streaks.clear();
+    for (const k of this.kills) {
+      if (k.t >= time) break;
+      this.streaks.set(k.killerId, (this.streaks.get(k.killerId) ?? 0) + 1);
+      this.streaks.delete(k.victimId);
+    }
+    for (const [id, actor] of this.actors) actor.setStreak(this.streaks.get(id) ?? 0);
+  }
+
+  // The finisher a killer's frag plays: their recorded Look, else the caller's
+  // lookup (profiles recorded without looks), else the default.
+  private finisherOf(killerId: string): KillEffectStyle {
+    const d = this.profiles.get(killerId)?.looks?.finisher?.d;
+    if (d && isKillEffectStyle(d)) return d;
+    return this.deps.finisherFor?.(killerId) ?? DEFAULT_KILL_EFFECT;
+  }
+
+  // The running multi-kill count of the killer of kills[idx]: how many of their
+  // kills chain back within the multi-kill window.
+  private chainOf(idx: number): number {
+    const id = this.kills[idx].killerId;
+    let chain = 1;
+    let lastT = this.kills[idx].t;
+    for (let i = idx - 1; i >= 0; i--) {
+      const k = this.kills[i];
+      if (lastT - k.t > MULTIKILL_WINDOW_SEC) break;
+      if (k.killerId !== id) continue;
+      chain++;
+      lastT = k.t;
+    }
+    return chain;
   }
 
   start(clip: HighlightClip, src: ReplaySource, opts: ReplayOptions = {}) {
@@ -395,6 +509,8 @@ export class ReplayPlayer {
     this.frames = src.frames;
     this.kills = src.kills;
     this.shots = src.shots;
+    this.taunts = src.taunts ?? [];
+    this.profiles = src.profiles;
     this.t = clip.startT;
     this.timeScale = opts.timeScale && opts.timeScale > 0 ? opts.timeScale : 1;
     this.freezeSec = Math.max(0, opts.freezeSec ?? 0);
@@ -438,6 +554,8 @@ export class ReplayPlayer {
     while (this.nextKillIdx < this.kills.length && this.kills[this.nextKillIdx].t < clip.startT) {
       this.nextKillIdx++;
     }
+    this.nextTauntIdx = firstAtOrAfter(this.taunts, clip.startT);
+    this.recomputeStreaks(clip.startT);
 
     // Seed the camera in the star's eyes so it doesn't snap on the first frame.
     const star = this.poseAt(clip.starId, clip.startT);
@@ -475,17 +593,56 @@ export class ReplayPlayer {
     // Sample poses at the current replay time and drive every actor. This
     // frame's victims are tagged with their killer's finisher first, so the
     // snap that hides (gibs) them plays the right death.
+    const advancing = !this.frozen && !this.paused && !this.seekSnap;
     const poses = this.sampleAll();
-    if (this.deps.finisherFor) {
-      for (let i = this.nextKillIdx; i < this.kills.length && this.kills[i].t <= this.t; i++) {
-        const k = this.kills[i];
-        const victim = this.actors.get(k.victimId);
-        if (victim) victim.replayFinisher = this.deps.finisherFor(k.killerId);
-      }
+    for (let i = this.nextKillIdx; i < this.kills.length && this.kills[i].t <= this.t; i++) {
+      const k = this.kills[i];
+      const victim = this.actors.get(k.victimId);
+      if (victim) victim.replayFinisher = this.finisherOf(k.killerId);
     }
     for (const [id, actor] of this.actors) {
-      const pose = poses[id];
-      actor.snap(pose ?? ZERO_POSE, dt);
+      const pose = poses[id] ?? ZERO_POSE;
+      // A hidden → visible flip on a live clock is a respawn: play their own
+      // spawn-in effect (cosmetic; first sight / a seek never triggers it).
+      const was = this.wasVisible.get(id);
+      if (advancing && was === false && pose.visible) {
+        this.deps.spawnIn?.(new THREE.Vector3(pose.x, pose.y, pose.z), actor.equippedSpawnEffect);
+      }
+      this.wasVisible.set(id, pose.visible);
+      actor.snap(pose, dt);
+    }
+
+    // Taunts that started in this slice of time: the emote clip + its aura.
+    while (this.nextTauntIdx < this.taunts.length && this.taunts[this.nextTauntIdx].t <= this.t) {
+      const tn = this.taunts[this.nextTauntIdx++];
+      const actor = this.actors.get(tn.actorId);
+      if (actor && (poses[tn.actorId]?.visible ?? false)) {
+        const kind = emoteKindOfLook(tn.look);
+        actor.playTaunt(kind, tn.look, emoteClip(kind).duration);
+      }
+    }
+
+    // Footsteps / jumps / lands from observed motion (live clock only).
+    if (advancing) {
+      for (const id in poses) {
+        const p = poses[id];
+        (id === this.clip.starId ? this.starMotion : this.otherMotion).sample(id, p.x, p.y, p.z, this.t, p.visible);
+      }
+    }
+    // The star's ground speed (viewmodel bob), measured from the sampled poses.
+    const sp = poses[this.clip.starId];
+    if (sp) {
+      if (advancing && this.lastStarValid && dt > 1e-4) {
+        const k = 1 - Math.exp(-14 * dt);
+        this.starVel.x += ((sp.x - this.lastStar.x) / (dt * this.timeScale) - this.starVel.x) * k;
+        this.starVel.z += ((sp.z - this.lastStar.z) / (dt * this.timeScale) - this.starVel.z) * k;
+      } else if (!advancing) {
+        this.starVel.x = 0;
+        this.starVel.z = 0;
+      }
+      this.lastStar.x = sp.x;
+      this.lastStar.z = sp.z;
+      this.lastStarValid = !this.seekSnap;
     }
 
     // Replay rail beams (only the local player's + bots' are known client-side).
@@ -494,17 +651,35 @@ export class ReplayPlayer {
       const s = this.shots[this.nextShotIdx++];
       this.deps.spawnBeam(s.origin, s.end);
       if (!reduced) this.deps.spawnMuzzleFlash(s.origin);
+      const star = s.killerId === this.clip.starId;
+      if (star) this.deps.onStarEvent?.('fire', 0);
+      // A shot that killed (a kill by the same shooter within a tick) is voiced by
+      // the frag's gib; only a miss gets the wall impact.
+      const lethal = this.kills.some((k) => k.killerId === s.killerId && Math.abs(k.t - s.t) < 0.12);
+      this.deps.sfx?.shot(s, star, lethal);
     }
 
     // Replay kill bursts at the victim's recorded position.
     while (this.nextKillIdx < this.kills.length && this.kills[this.nextKillIdx].t <= this.t) {
-      const k = this.kills[this.nextKillIdx++];
+      const idx = this.nextKillIdx++;
+      const k = this.kills[idx];
+      const finisher = this.finisherOf(k.killerId);
       const vp = poses[k.victimId] ?? this.poseAt(k.victimId, k.t);
+      const isStarKill = k.killerId === this.clip.starId;
+      const chain = isStarKill ? this.chainOf(idx) : 1;
       if (vp) {
-        this.deps.spawnKillEffect(new THREE.Vector3(vp.x, vp.y + 0.9, vp.z), k.headshot, k.killerId);
+        const at = new THREE.Vector3(vp.x, vp.y + 0.9, vp.z);
+        this.deps.spawnKillEffect(at, k.headshot, k.killerId, finisher);
+        this.deps.sfx?.kill({ x: at.x, y: at.y, z: at.z }, k, finisher, isStarKill, chain);
       }
+      // Killstreaks: the killer's climbs, the victim's resets — on the gun sheen.
+      const n = (this.streaks.get(k.killerId) ?? 0) + 1;
+      this.streaks.set(k.killerId, n);
+      this.streaks.delete(k.victimId);
+      this.actors.get(k.killerId)?.setStreak(n);
+      this.actors.get(k.victimId)?.setStreak(0);
       // A kill BY the star we're spectating → flash a hit-marker on the crosshair.
-      if (k.killerId === this.clip.starId) this.deps.onStarKill?.(k.headshot);
+      if (isStarKill) this.deps.onStarKill?.(k.headshot, chain);
     }
 
     // First-person camera riding the star's eyes (snap on the frame after a seek
@@ -561,11 +736,14 @@ export class ReplayPlayer {
     const alpha = span > 1e-6 ? Math.max(0, Math.min(1, (this.t - f0.t) / span)) : 0;
 
     const out = this.tmpPose;
+    const fm = this.frames[Math.max(0, this.frameIdx - 1)];
+    const f2 = this.frames[Math.min(this.frames.length - 1, this.frameIdx + 2)];
     for (const id of this.actors.keys()) {
-      const a = f0.poses[id];
-      const b = f1.poses[id];
-      out[id] = blendPose(a, b, alpha);
+      out[id] = cubicPose(fm.poses[id], f0.poses[id], f1.poses[id], f2.poses[id], alpha);
     }
+    // The star isn't an actor (we ride their eyes) but is sampled the same way.
+    const sid = this.clip.starId;
+    out[sid] = cubicPose(fm.poses[sid], f0.poses[sid], f1.poses[sid], f2.poses[sid], alpha);
     return out;
   }
 
@@ -587,6 +765,39 @@ export class ReplayPlayer {
     const alpha = span > 1e-6 ? Math.max(0, Math.min(1, (time - f0.t) / span)) : 0;
     return blendPose(f0.poses[id], f1.poses[id], alpha);
   }
+}
+
+// Catmull-Rom through four consecutive 30 Hz samples (p1→p2 is the span being
+// played): position and look angles are C1-continuous, so the first-person
+// camera (and actors) glide instead of changing velocity at every sample. Falls
+// back to the linear blend across visibility flips, respawn teleports and gaps.
+function cubicPose(
+  p0: ReplayPose | undefined,
+  p1: ReplayPose | undefined,
+  p2: ReplayPose | undefined,
+  p3: ReplayPose | undefined,
+  t: number,
+): ReplayPose {
+  if (!p0 || !p1 || !p2 || !p3 || !p0.visible || !p1.visible || !p2.visible || !p3.visible) return blendPose(p1, p2, t);
+  const jump = (a: ReplayPose, b: ReplayPose) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) > 6;
+  if (jump(p0, p1) || jump(p1, p2) || jump(p2, p3)) return blendPose(p1, p2, t);
+  const cr = (a: number, b: number, c: number, d: number) =>
+    0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (-a + 3 * b - 3 * c + d) * t * t * t);
+  const unwrap = (a: number, ref: number) => {
+    let d = a - ref;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return ref + d;
+  };
+  const y1 = p1.yaw;
+  return {
+    x: cr(p0.x, p1.x, p2.x, p3.x),
+    y: cr(p0.y, p1.y, p2.y, p3.y),
+    z: cr(p0.z, p1.z, p2.z, p3.z),
+    yaw: cr(unwrap(p0.yaw, y1), y1, unwrap(p2.yaw, y1), unwrap(p3.yaw, y1)),
+    pitch: cr(p0.pitch, p1.pitch, p2.pitch, p3.pitch),
+    visible: true,
+  };
 }
 
 function blendPose(a: ReplayPose | undefined, b: ReplayPose | undefined, alpha: number): ReplayPose {

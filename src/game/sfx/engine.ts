@@ -20,6 +20,7 @@ import {
   type SurfaceProfile,
 } from './movement-sfx';
 import { medalSting, type StingKind } from './stings';
+import { finisherAccent, wallImpact } from './finisher-sfx';
 import { chargeHum, death, gib, hitTick, railShot, readyCue } from './weapon-sfx';
 
 export type LocalMoveKind = 'step' | 'jump' | 'airjump' | 'walljump' | 'land' | 'dash' | 'boost';
@@ -48,6 +49,9 @@ export class SfxEngine {
   private stepSide = 1;
   private lastHup = -99;
   private lastRemoteHup = -99;
+  // Replay slow-mo: cents applied to every new voice's sources while a slowed
+  // clip plays (0 = off).
+  private replayCents = 0;
 
   constructor(readonly ctx: AC, dest?: AudioNode) {
     this.bank = new NoiseBank(ctx);
@@ -114,6 +118,12 @@ export class SfxEngine {
   }
 
   private commit(v: Voice, cat: VoiceCat): Voice {
+    if (this.replayCents !== 0) {
+      for (const s of v.srcs) {
+        const d = (s as unknown as { detune?: AudioParam }).detune;
+        if (d) d.value = this.replayCents;
+      }
+    }
     this.mixer.add(v, cat);
     return v;
   }
@@ -200,6 +210,46 @@ export class SfxEngine {
     medalSting(v, kind, level);
     v.out.connect(this.mixer.hud);
     return this.commit(v, 'hud');
+  }
+
+  // ── Replay (killcam / Play of the Match / rewatch) ─────────────────────────
+  /** Begin/end the replay audio treatment; `timeScale` < 1 also drops pitch a little. */
+  setReplay(on: boolean, timeScale = 1, fade = 0.4) {
+    this.mixer.setReplay(on, fade);
+    this.replayCents = on && timeScale > 0 && timeScale < 1 ? Math.round(1200 * Math.log2(timeScale) * 0.4) : 0;
+  }
+
+  /** A replayed rail shot: the star's own (layered, centred) or someone's at the muzzle (3D). */
+  replayShot(x: number, y: number, z: number, star: boolean, vol = 1) {
+    return star ? this.railShot(vol) : this.railAt(x, y, z, vol);
+  }
+
+  /** A rail striking geometry (a miss), heard at the impact point. */
+  railImpactAt(x: number, y: number, z: number, vol = 1) {
+    const d = this.mixer.audible(x, y, z, GIB_3D.max);
+    if (d < 0) return null;
+    const v = this.voice(vol);
+    wallImpact(v, this.bank);
+    this.mixer.spatial(v, x, y, z, d, GIB_3D);
+    return this.commit(v, 'impact');
+  }
+
+  /** A replayed frag: the gib + the killer's finisher accent (centred for the star, else 3D). */
+  replayGib(x: number, y: number, z: number, style: string, headshot: boolean, star: boolean, vol = 1) {
+    if (star) {
+      const v = this.voice(vol);
+      gib(v, this.bank, headshot, 1);
+      finisherAccent(v, this.bank, style);
+      this.mixer.toWorld(v, this.mixer.sendLo);
+      return this.commit(v, 'self');
+    }
+    const d = this.mixer.audible(x, y, z, GIB_3D.max);
+    if (d < 0) return null;
+    const v = this.voice(vol);
+    gib(v, this.bank, false, 0.5);
+    finisherAccent(v, this.bank, style);
+    this.mixer.spatial(v, x, y, z, d, GIB_3D);
+    return this.commit(v, 'impact');
   }
 
   // ── Local movement ─────────────────────────────────────────────────────────
