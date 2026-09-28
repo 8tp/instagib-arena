@@ -17,9 +17,12 @@ import {
   type ItemRow,
 } from './economy';
 import { MARKET, TIER_META, type ItemInstanceWire, type ItemSlot, type Tier, TIERS } from '../src/game/items/types';
+import { tradeGate } from './trades';
 import { ITEM_DEFS, itemDef } from '../src/game/items/catalog';
 
 const PAGE_SIZE = 30;
+// Daily purchase cap per account (rolling 24 h) — alts can't funnel credits past the trade cap.
+export const MARKET_DAILY_SPEND = 5000;
 
 export const listingFee = (price: number): number => Math.max(1, Math.round(price * MARKET.listingFeePct));
 export const saleTax = (price: number): number => Math.max(1, Math.ceil(price * MARKET.saleTaxPct));
@@ -76,6 +79,8 @@ export function listItem(playerId: string, uid: string, price: unknown): MarketR
   const p = price as number;
   return sqlite.transaction((): MarketResult<{ listing: ListingWire; credits: number; fee: number }> => {
     ensureOnboarded(playerId);
+    const g = tradeGate(playerId);
+    if (!g.ok) return { ok: false, error: `gate_${g.reason}`, need: g.need };
     const r = getItemRow(uid);
     if (!r || r.owner_id !== playerId || r.state !== 'owned') return { ok: false, error: 'not_owned' };
     if (!r.tradable) return { ok: false, error: 'bound' };
@@ -119,6 +124,8 @@ export function buyListing(playerId: string, id: unknown): MarketResult<{ item: 
   if (!Number.isInteger(id)) return { ok: false, error: 'bad_request' };
   return sqlite.transaction((): MarketResult<{ item: ItemInstanceWire; price: number; credits: number }> => {
     ensureOnboarded(playerId);
+    const g = tradeGate(playerId);
+    if (!g.ok) return { ok: false, error: `gate_${g.reason}`, need: g.need };
     const l = q(`SELECT * FROM instagib_market WHERE id = ?`).get(id) as ListingRow | undefined;
     if (!l || l.state !== 'active') return { ok: false, error: 'not_active' };
     if (l.seller_id === playerId) return { ok: false, error: 'own_listing' };
@@ -126,6 +133,8 @@ export function buyListing(playerId: string, id: unknown): MarketResult<{ item: 
     if (!r || r.state !== 'listed' || r.owner_id !== l.seller_id) return { ok: false, error: 'not_active' };
     if (econState(playerId).credits < l.price) return { ok: false, error: 'insufficient', need: l.price };
     const now = Date.now();
+    const spent = (q(`SELECT COALESCE(SUM(price), 0) AS n FROM instagib_market WHERE buyer_id = ? AND state = 'sold' AND sold_at >= ?`).get(playerId, now - 24 * 3600_000) as { n: number }).n;
+    if (spent + l.price > MARKET_DAILY_SPEND) return { ok: false, error: 'daily_spend', need: Math.max(0, MARKET_DAILY_SPEND - spent) };
     const tax = saleTax(l.price);
     addCredits(playerId, -l.price);
     addCredits(l.seller_id, l.price - tax); // the tax is burned
