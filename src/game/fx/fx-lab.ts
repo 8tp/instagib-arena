@@ -194,15 +194,12 @@ export class FxLab {
     const anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     anim.updateStatic(0);
     let hat: WornHat | null = null;
-    let fx: UnusualEffect | null = null;
+    const fx: UnusualEffect | null = null;
     if (hatId || unusualId) {
       hat = new WornHat(ch.sockets.headTop);
       if (hatId) void hat.setHat(hatId);
       const kind = unusualKindForEffect(unusualId);
-      if (kind) {
-        fx = new UnusualEffect(kind);
-        (hat as unknown as { unusualAnchor: THREE.Group }).unusualAnchor.add(fx.group);
-      }
+      if (kind) hat.gear?.setUnusual(kind);
     }
     const a: Actor = { slot, ch, anim, hat, fx, style, base: slot.position.clone(), moving: false };
     this.actors.push(a);

@@ -206,3 +206,11 @@ export class Field {
 
 export const tmpVp = new THREE.Vector4();
 export const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+// Pre-made sub-views of a buffer (one per stride), so per-bolt refreshes never
+// allocate a subarray in the hot path.
+export function views(buf: Float32Array, stride: number): Float32Array[] {
+  const out: Float32Array[] = [];
+  for (let i = 0; i + stride <= buf.length; i += stride) out.push(buf.subarray(i, i + stride));
+  return out;
+}

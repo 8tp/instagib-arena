@@ -71,8 +71,11 @@ void main() {
   float band2 = exp(-d2 * d2) * 0.3;
   float fres = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 2.0);
   // A faint constant tint (the glow lives on the whole gun) + the sweep.
-  float k = uK * (band * (0.55 + 0.7 * fres) + band2 * 0.6 + 0.045 * (0.3 + fres));
-  vec3 col = uColor * k;
+  float k = uK * (band * (0.55 + 0.7 * fres) + band2 * 0.6 + 0.25 * (0.4 + fres));
+  // Tint, not just add: mix toward the sheen hue so it reads on any finish
+  // (premultiplied: rgb = hue × alpha; peak stays under the bloom knee).
+  float a = clamp(k * 1.15, 0.0, 0.8);
+  vec3 col = uColor * a * 1.05;
   #ifdef USE_FOG
     #ifdef FOG_EXP2
       col *= exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
@@ -80,7 +83,7 @@ void main() {
       col *= 1.0 - smoothstep(fogNear, fogFar, vFogDepth);
     #endif
   #endif
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col, a);
   #include <colorspace_fragment>
 }
 `;
@@ -123,7 +126,10 @@ export class SheenOverlay {
       fragmentShader: SHEEN_FRAG,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
       // The overlay reuses the body's geometry: pull it a hair toward the camera.
       polygonOffset: true,
       polygonOffsetFactor: -1,
