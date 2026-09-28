@@ -69,7 +69,8 @@ export function Credits({ n, gain = false, className = '' }: { n: number; gain?:
   );
 }
 
-// The level emblem: the menu's filled, corner-cut badge (number over "LV").
+// The level emblem: the menu's filled, corner-cut badge ("Lv" over the number,
+// like the profile badge).
 // `xl` is the takeover's hero numeral.
 export function LevelEmblem({
   level,
@@ -84,10 +85,10 @@ export function LevelEmblem({
 }) {
   return (
     <span className={`rw-level rw-level-${size} ${guest ? 'rw-level-guest' : ''} ${className}`} aria-label={`Level ${level}`}>
-      <span className='rw-level-num'>{level}</span>
       <span className='rw-level-cap' aria-hidden='true'>
-        LV
+        Lv
       </span>
+      <span className='rw-level-num'>{level}</span>
     </span>
   );
 }

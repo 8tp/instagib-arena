@@ -253,7 +253,7 @@ export function ModalShell({
                     type='button'
                     onClick={close}
                     {...sfxProps('none')}
-                    className='text-white/55 transition hover:text-cyan-200'
+                    className='font-sans text-[14px] font-semibold tracking-[0.08em] text-white/55 transition hover:text-cyan-200'
                   >
                     {closeLabel}
                   </button>
