@@ -16,8 +16,9 @@ import { GunMaterial, STOCK_FINISH, type GunUniforms } from './gun/gun-material'
 // material, one draw call for the whole gun).
 //
 // The coils ARE the ammo readout (first-person viewmodel): lit when ready; on
-// a shot they flash white-hot, drop dark, and refill one by one front (muzzle)
-// to back over the recharge, with a glint when the rail is ready. The core,
+// a shot they flash white-hot, drop dark, and relight one by one from the back
+// (receiver) toward the muzzle over the recharge, with a glint when the rail
+// is ready. The core,
 // the capacitor and the flank charge windows follow the same charge. See
 // CoilDriver below.
 //
@@ -35,12 +36,13 @@ import { GunMaterial, STOCK_FINISH, type GunUniforms } from './gun/gun-material'
 // material + flare material are per gun: free them with `model.dispose()`.
 // ─────────────────────────────────────────────────────────────────────────
 
-// Coil emissive levels (linear). REST is a restrained meter glow, well under
-// the bloom threshold (1.5): a ready gun reads "charged", not as a lamp under
-// the crosshair. The fire flash blooms; the fill edge + ready glint just lift.
-const COIL_REST = 0.62;
+// Coil emissive levels (linear, on the band's crown). REST sits just over the
+// bloom threshold (1.5, knee to 2.5): a charged gun carries a restrained glow
+// on its coils, not a lamp under the crosshair. The fire flash blooms hard;
+// the fill edge + ready glint lift a little more.
+const COIL_REST = 1.45;
 const COIL_DARK = 0.03;
-const COIL_EDGE = 1.25; // leading-edge glint while a coil fills
+const COIL_EDGE = 1.6; // leading-edge glint while a coil fills
 const COIL_FLASH = 7;
 const COIL_READY = 1.1;
 const CORE_REST = 0.95;
@@ -89,6 +91,7 @@ export type BuildRailgunOptions = {
 // ── Coil driver ─────────────────────────────────────────────────────────────
 
 const tmpA = new THREE.Color();
+const WHITE = new THREE.Color(1, 1, 1);
 const tmpB = new THREE.Color();
 
 // Animates the coils, core, capacitor and charge windows from the rail charge.
@@ -136,19 +139,20 @@ class CoilDriver {
     const sinceReady = (now - this.readyMs) / 1000;
     const ready = sinceReady >= 0 && sinceReady < 0.6 ? Math.exp(-sinceReady * 8) : 0;
     // The first ~12 % of the recharge stays dark so the discharge reads, then
-    // the coils refill one after another, front (muzzle) to back.
+    // the coils relight one after another from the back toward the muzzle.
     const fill = Math.max(0, Math.min(1, (charge - 0.12) / 0.86));
     const t = (now / 1000) % 3600;
     for (let i = 0; i < COIL_COUNT; i++) {
-      const p = Math.max(0, Math.min(1, fill * COIL_COUNT - i));
+      // i = 0 is the front coil: it lights last.
+      const p = Math.max(0, Math.min(1, fill * COIL_COUNT - (COIL_COUNT - 1 - i)));
       const level = p * p * (3 - 2 * p);
       const edge = p > 0 && p < 1 ? 4 * p * (1 - p) : 0;
       // Charged coils carry a faint wave running back along the barrel, so a
       // ready gun reads as live energy rather than a static light.
-      const hum = 1 + 0.1 * level * Math.sin(t * 5.2 - i * 1.1);
+      const hum = 1 + 0.12 * level * Math.sin(t * 5.2 + i * 1.1);
       const k = (COIL_DARK + (COIL_REST - COIL_DARK) * level) * hum + COIL_EDGE * edge + COIL_FLASH * flash + COIL_READY * ready;
-      const h = Math.min(1, flash * 1.4 + edge * 0.7 + ready * 0.8);
-      u.uCoil.value[i].copy(accent).lerp(hot, h).multiplyScalar(k);
+      const h = Math.min(1, 0.08 + flash * 1.4 + edge * 0.7 + ready * 0.8);
+      u.uCoil.value[i].copy(accent).lerp(WHITE, u.coilWhite.value).lerp(hot, h).multiplyScalar(k);
     }
     // Core: powers down on the shot, refills with the charge.
     const coreK = CORE_DARK + (CORE_REST - CORE_DARK) * fill + CORE_FLASH * flash + 0.7 * ready;
