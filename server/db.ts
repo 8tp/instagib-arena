@@ -605,6 +605,8 @@ export type MatchDelta = {
   // 0..1 share of the flat base XP (online: time present in the match / a full
   // match). Omitted = 1.
   presence?: number;
+  // 0..1 repeat-victim decay on kill/headshot/streak XP (online FFA/TDM). Omitted = 1.
+  killWeight?: number;
 };
 
 export function getStats(playerId: string): PublicStats {
@@ -646,6 +648,17 @@ const progWriteStmt = sqlite.prepare(`
          first_win_day = @firstWinDay, road_level = @roadLevel, case_keys = @caseKeys,
          offline_day = @offlineDay, offline_xp = @offlineXp
    WHERE player_id = @playerId`);
+// Same, leaving `unlocked` untouched (its stored JSON is unreadable).
+const progWriteKeepUnlockedStmt = sqlite.prepare(`
+  UPDATE instagib_stats
+     SET total_xp = @totalXp, level = @level, credits = @credits,
+         first_win_day = @firstWinDay, road_level = @roadLevel, case_keys = @caseKeys,
+         offline_day = @offlineDay, offline_xp = @offlineXp
+   WHERE player_id = @playerId`);
+// Offline matches don't touch career totals; just keep the row's name/last-seen fresh.
+const touchRowStmt = sqlite.prepare(
+  `UPDATE instagib_stats SET user_name = @userName, updated_at = @now WHERE player_id = @playerId`,
+);
 
 const equipUpdateStmt = sqlite.prepare(
   `UPDATE instagib_stats SET equipped = @equipped WHERE player_id = @playerId`,
@@ -658,13 +671,16 @@ const ensureRowStmt = sqlite.prepare(
    VALUES (?, 'Player', ?, ?)`,
 );
 
-function parseIdList(json: string | undefined): string[] {
+// Parse the `unlocked` JSON column. `null` = unreadable (corrupt JSON / not an
+// array): callers must then NOT write the column back, or they'd replace a
+// player's whole collection with whatever they just granted.
+function parseIdList(json: string | undefined): string[] | null {
   if (!json) return [];
   try {
     const v = JSON.parse(json);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -699,8 +715,9 @@ export function isAdminId(playerId: string): boolean {
 }
 
 // The persisted unlocks (bought / dropped / road / titles), minus admin items.
+// An unreadable column reads as empty (and is never written back — see saveLedger).
 function storedUnlocked(prog: ProgRow | undefined): Set<string> {
-  return new Set(parseIdList(prog?.unlocked).filter((id) => !ADMIN_COSMETIC_IDS.has(id)));
+  return new Set((parseIdList(prog?.unlocked) ?? []).filter((id) => !ADMIN_COSMETIC_IDS.has(id)));
 }
 
 // Owned = default freebies ∪ live level grants (from total XP, never the stored
@@ -775,6 +792,7 @@ type Ledger = {
   caseKeys: number;
   roadLevel: number;
   stored: Set<string>;
+  unlockedReadable: boolean; // false → the stored JSON is corrupt: never write `unlocked`
   equipped: Record<string, string>;
   firstWinDay: number;
   offlineDay: number;
@@ -790,6 +808,7 @@ function loadLedger(playerId: string, prog: ProgRow | undefined): Ledger {
     caseKeys: prog?.case_keys ?? 0,
     roadLevel: Math.max(1, prog?.road_level ?? 1),
     stored: storedUnlocked(prog),
+    unlockedReadable: parseIdList(prog?.unlocked) !== null,
     equipped: parseEquipped(prog?.equipped),
     firstWinDay: prog?.first_win_day ?? 0,
     offlineDay: prog?.offline_day ?? 0,
@@ -801,18 +820,28 @@ const ledgerOwned = (l: Ledger): Set<string> => ownedFrom(l.totalXp, l.stored, l
 
 function saveLedger(l: Ledger): void {
   if (!l.playerId) return;
-  progWriteStmt.run({
+  const row = {
     playerId: l.playerId,
     totalXp: l.totalXp,
     level: levelForXp(l.totalXp),
     credits: l.credits,
-    unlocked: JSON.stringify([...l.stored].filter((id) => !ADMIN_COSMETIC_IDS.has(id))),
     firstWinDay: l.firstWinDay,
     roadLevel: l.roadLevel,
     caseKeys: l.caseKeys,
     offlineDay: l.offlineDay,
     offlineXp: l.offlineXp,
-  });
+  };
+  if (l.unlockedReadable) {
+    progWriteStmt.run({
+      ...row,
+      unlocked: JSON.stringify([...l.stored].filter((id) => !ADMIN_COSMETIC_IDS.has(id))),
+    });
+  } else {
+    // Never clobber an unreadable collection with a partial one — leave it for
+    // a human to repair (the rest of the progression still saves).
+    console.error(`[progression] ${l.playerId}: unreadable 'unlocked' JSON — left untouched`);
+    progWriteKeepUnlockedStmt.run(row);
+  }
 }
 
 // Pay out every Career Road step in (roadLevel, level(totalXp)] onto the ledger:
@@ -872,15 +901,20 @@ export function recordMatch(delta: MatchDelta): MatchRecordResult {
 }
 
 const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult => {
-  // Best-accuracy (career + period, and the Sharpshooter title) only counts a
-  // match with enough shots — a 1-shot/1-hit "100%" is noise.
-  const bestAccuracy = delta.shotsFired >= ACCURACY_MIN_SHOTS ? delta.accuracy : 0;
-  const row = { ...delta, bestAccuracy };
-  const stats = toPublic(upsertStmt.get(row) as Row | undefined); // also creates the row
-
-  // Daily/weekly leaderboard buckets — online matches only (these are the
-  // competitive ladders; offline bot grinding shouldn't seed them).
-  if (!delta.offline) {
+  let stats: PublicStats;
+  if (delta.offline) {
+    // Offline (client-reported) matches are XP-only: they never feed career
+    // totals, leaderboards or achievement titles — a forged POST can't pump them.
+    ensureRowStmt.run(delta.playerId, delta.now, delta.now);
+    touchRowStmt.run({ playerId: delta.playerId, userName: delta.userName, now: delta.now });
+    stats = getStats(delta.playerId);
+  } else {
+    // Best-accuracy (career + period, and the Sharpshooter title) only counts a
+    // match with enough shots — a 1-shot/1-hit "100%" is noise.
+    const bestAccuracy = delta.shotsFired >= ACCURACY_MIN_SHOTS ? delta.accuracy : 0;
+    const row = { ...delta, bestAccuracy };
+    stats = toPublic(upsertStmt.get(row) as Row | undefined); // also creates the row
+    // Daily/weekly leaderboard buckets.
     periodUpsertStmt.run({ ...row, periodKey: dayKey(delta.now) });
     periodUpsertStmt.run({ ...row, periodKey: weekKey(delta.now) });
   }
@@ -901,6 +935,7 @@ const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult 
       accuracy: delta.accuracy,
       shotsFired: delta.shotsFired,
       presence: delta.presence,
+      killWeight: delta.killWeight,
     },
     {
       offline: delta.offline,
@@ -919,18 +954,21 @@ const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult 
   // Challenges: online matches advance them; any completed-but-unpaid row is
   // then paid out right here (incl. legacy rows from before auto-payout).
   if (!delta.offline) trackChallenges(delta.playerId, delta);
-  const challenges = payoutCompletedChallenges(l, lines);
+  const challenges = payoutCompletedChallenges(l, lines, delta.now);
 
-  // Achievement titles from the post-match career aggregate (server-derived).
-  for (const id of titleGrantsFrom({
-    kills: stats.totalKills,
-    headshots: stats.headshots,
-    wins: stats.totalWins,
-    bestStreak: stats.bestKillStreak,
-    games: stats.totalGames,
-    accuracy: stats.bestAccuracy,
-  })) {
-    l.stored.add(id);
+  // Achievement titles from the post-match career aggregate (server-derived;
+  // online matches only move it).
+  if (!delta.offline) {
+    for (const id of titleGrantsFrom({
+      kills: stats.totalKills,
+      headshots: stats.headshots,
+      wins: stats.totalWins,
+      bestStreak: stats.bestKillStreak,
+      games: stats.totalGames,
+      accuracy: stats.bestAccuracy,
+    })) {
+      l.stored.add(id);
+    }
   }
 
   const roadRewards = grantRoad(l);
@@ -956,6 +994,7 @@ function previewMatch(delta: MatchDelta): MatchRecordResult {
       accuracy: delta.accuracy,
       shotsFired: delta.shotsFired,
       presence: delta.presence,
+      killWeight: delta.killWeight,
     },
     { offline: delta.offline, firstWin: won && !delta.offline },
   );
@@ -963,15 +1002,18 @@ function previewMatch(delta: MatchDelta): MatchRecordResult {
   l.credits += creditsForXp(xp);
   const roadRewards = grantRoad(l);
   return {
-    stats: {
-      totalKills: delta.kills,
-      totalDeaths: delta.deaths,
-      totalGames: 1,
-      totalWins: delta.wins,
-      bestKillStreak: delta.bestStreak,
-      headshots: delta.headshots,
-      bestAccuracy: delta.shotsFired >= ACCURACY_MIN_SHOTS ? delta.accuracy : 0,
-    },
+    // Would-be career stats after this one match (offline never feeds them).
+    stats: delta.offline
+      ? { ...ZERO_STATS }
+      : {
+          totalKills: delta.kills,
+          totalDeaths: delta.deaths,
+          totalGames: 1,
+          totalWins: delta.wins,
+          bestKillStreak: delta.bestStreak,
+          headshots: delta.headshots,
+          bestAccuracy: delta.shotsFired >= ACCURACY_MIN_SHOTS ? delta.accuracy : 0,
+        },
     ...buildReply(l, before, { saved: false, offline: delta.offline, xpLines: lines, roadRewards, challenges: [] }),
   };
 }
@@ -1074,7 +1116,8 @@ const buyTx = sqlite.transaction((playerId: string, id: string): BuyResult => {
   const c = cosmeticById(id);
   const l = loadLedger(playerId, progSelectStmt.get(playerId) as ProgRow | undefined);
   const owned = ledgerOwned(l);
-  if (!c) return { ok: false, reason: 'unknown', credits: l.credits, unlocked: [...owned] };
+  // Unreadable stored collection: the purchase couldn't be saved — don't charge.
+  if (!c || !l.unlockedReadable) return { ok: false, reason: 'unknown', credits: l.credits, unlocked: [...owned] };
   if (c.source.type !== 'credits')
     return { ok: false, reason: 'not_for_sale', credits: l.credits, unlocked: [...owned] };
   if (owned.has(id)) return { ok: false, reason: 'owned', credits: l.credits, unlocked: [...owned] };
@@ -1099,7 +1142,7 @@ export type CaseResult =
       caseKeys: number;
       unlocked: string[];
     }
-  | { ok: false; reason: 'insufficient' | 'complete'; credits: number; caseKeys: number };
+  | { ok: false; reason: 'insufficient' | 'complete' | 'error'; credits: number; caseKeys: number };
 
 // Open a hat case (server-authoritative roll). Spends a free key if the player
 // has one, else HAT_CASE_COST credits. Never drops a duplicate: CASE_JACKPOT_CHANCE
@@ -1115,6 +1158,8 @@ const openCaseTx = sqlite.transaction((playerId: string): CaseResult => {
   const now = Date.now();
   ensureRowStmt.run(playerId, now, now);
   const l = loadLedger(playerId, progSelectStmt.get(playerId) as ProgRow | undefined);
+  // Unreadable stored collection: a drop couldn't be saved — don't charge.
+  if (!l.unlockedReadable) return { ok: false, reason: 'error', credits: l.credits, caseKeys: l.caseKeys };
   const pool = casePool(ledgerOwned(l));
   if (pool.hats.length === 0 && pool.jackpots.length === 0) {
     return { ok: false, reason: 'complete', credits: l.credits, caseKeys: l.caseKeys };
@@ -1181,12 +1226,28 @@ const chClaimStmt = sqlite.prepare(
   `UPDATE instagib_challenges SET claimed = 1
     WHERE player_id = @playerId AND challenge = @challenge AND period = @period AND claimed = 0`,
 );
-// Completed but not yet paid — in ANY period, so nothing completed is ever lost
-// to a daily/weekly rollover.
+// Completed but not yet paid, in the current or previous daily/weekly period —
+// so a completion is never lost to a rollover, but a stale backlog from the
+// manual-claim era can't land as one windfall (older rows simply never pay).
 const chUnpaidStmt = sqlite.prepare(
   `SELECT challenge, period FROM instagib_challenges
-    WHERE player_id = ? AND claimed = 0 AND progress >= goal`,
+    WHERE player_id = @playerId AND claimed = 0 AND progress >= goal
+      AND period IN (@d0, @d1, @w0, @w1, @lw0, @lw1)`,
 );
+const DAY_MS_CH = 86_400_000;
+function payablePeriods(now: number) {
+  // lw0/lw1: the pre-Monday weekly keys (`w` + floor(epochDays / 7)) so the
+  // last legacy week still pays across the switch. Harmless once it's aged out.
+  const legacyWeek = Math.floor(now / DAY_MS_CH / 7);
+  return {
+    d0: dailyPeriod(now),
+    d1: dailyPeriod(now - DAY_MS_CH),
+    w0: weeklyPeriod(now),
+    w1: weeklyPeriod(now - 7 * DAY_MS_CH),
+    lw0: `w${legacyWeek}`,
+    lw1: `w${legacyWeek - 1}`,
+  };
+}
 
 function metricValue(metric: ChallengeMetric, d: MatchDelta): number {
   switch (metric) {
@@ -1228,9 +1289,12 @@ const challengeLabel = (def: ChallengeDef): string =>
 
 // Auto-payout: claim (atomically — `AND claimed = 0`) every completed row and
 // add its XP + credits to the ledger, appending a 'challenge' XP line each.
-function payoutCompletedChallenges(l: Ledger, lines: XpLine[]): ChallengeCompletion[] {
+function payoutCompletedChallenges(l: Ledger, lines: XpLine[], now: number): ChallengeCompletion[] {
   const out: ChallengeCompletion[] = [];
-  const rows = chUnpaidStmt.all(l.playerId) as { challenge: string; period: string }[];
+  const rows = chUnpaidStmt.all({ playerId: l.playerId, ...payablePeriods(now) }) as {
+    challenge: string;
+    period: string;
+  }[];
   for (const r of rows) {
     const info = chClaimStmt.run({ playerId: l.playerId, challenge: r.challenge, period: r.period });
     if (info.changes === 0) continue;

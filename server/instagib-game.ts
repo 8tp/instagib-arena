@@ -257,11 +257,19 @@ const CHAT_HISTORY_MAX = 50; // recent messages replayed to a client on open
 const PLAYER_RADIUS = 0.4;
 const PLAYER_HEIGHT = 1.8;
 const HEADSHOT_FRAC = 0.72;
-// Server-authoritative progression (see settleClient). Only a match played to
-// its frag limit earns the flat "match played" base XP in full; a partial (left
-// early) or a forfeit earns it pro rata by time present up to this, so
-// join/leave (or join/frag/forfeit) cycling earns ~0 base.
+// Server-authoritative progression (see settleClient). The flat "match played"
+// base XP is pro rata by time present, full at this, so join/leave (or
+// join/frag/forfeit) cycling earns ~0 base.
 const PRESENCE_FULL_MS = 180_000;
+// A match is only recorded at all (XP, total_games, the "games" challenge) for
+// a player present at least this long, or with at least one frag/death.
+const MIN_RECORD_PRESENCE_MS = 45_000;
+// Repeat-victim decay (FFA/TDM): the first VICTIM_FULL_KILLS frags on the same
+// account in one match are full value, then kill/headshot/streak XP halves
+// every further VICTIM_DECAY_EVERY. Duels are exempt — one opponent is the
+// format, and a duel is capped at its frag limit.
+const VICTIM_FULL_KILLS = 5;
+const VICTIM_DECAY_EVERY = 5;
 // A TDM team win only counts for a member who was in the match at least this
 // long (no joining 10s before the end to collect the win + first-win bonus).
 const TDM_WIN_MIN_PRESENCE_MS = 60_000;
@@ -339,8 +347,11 @@ type ClientRecord = {
   // Per-match counters for server-authoritative progression. Reset with
   // frags/deaths (join, map-vote reset), carried over on resume, consumed by
   // settleClient at match end / mid-match leave.
-  mShots: number; // accepted shots (past the fire-rate/origin/warmup gates)
-  mHits: number; // shots that landed a frag
+  mShots: number; // accepted shots (past the fire-rate/origin/warmup gates), minus shots spent on non-counting victims
+  mHits: number; // shots that landed a counting frag
+  mKills: number; // counting frags: victims on another ACCOUNT (never a guest or your own account)
+  mKillWeight: number; // Σ repeat-victim weights of those frags (≤ mKills)
+  mVictims: Map<string, number>; // victim account id → counting frags on them this match
   mHeadshots: number; // frags that were headshots
   mStreak: number; // current kill streak (reset on death)
   mBestStreak: number;
@@ -394,6 +405,9 @@ type Room = {
   // Recently-used spawn spots (anti-camp): pickSpawn penalizes candidates near
   // these so a camper can't farm the same spawn. Pruned by age (SPAWN_RECENT_MS).
   recentSpawns: { x: number; z: number; t: number }[];
+  // Accounts that already left this match with a recorded partial — they still
+  // count toward "≥ 2 accounts played" for the win bonus. Reset per match.
+  matchAccounts: Set<string>;
 };
 
 type ClientMessage =
@@ -817,6 +831,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       wasEverOccupied: false,
       createdAt: Date.now(),
       recentSpawns: [],
+      matchAccounts: new Set(),
     };
     rooms.set(room.id, room);
     return room;
@@ -909,29 +924,32 @@ export function attachInstagibWs(wss: WebSocketServer) {
   const resetMatchStats = (c: ClientRecord, now: number) => {
     c.mShots = 0;
     c.mHits = 0;
+    c.mKills = 0;
+    c.mKillWeight = 0;
+    c.mVictims.clear();
     c.mHeadshots = 0;
     c.mStreak = 0;
     c.mBestStreak = 0;
     c.mStartedAt = now;
     c.mSettled = false;
+    // A push held for a resume belongs to the match that just ended — never
+    // deliver it into the next one.
+    c.undeliveredProgression = null;
   };
+
+  // Did this player take part enough for a match to count (total_games, the
+  // "games" challenge, any XP)? ≥ MIN_RECORD_PRESENCE_MS present, or at least
+  // one frag/death. Applies to every settle path (end, forfeit, leave).
+  const recordable = (c: ClientRecord, now: number): boolean =>
+    now - c.mStartedAt >= MIN_RECORD_PRESENCE_MS || c.frags > 0 || c.deaths > 0;
 
   // Record one player's match (full at match end, or `partial` when they leave
   // an active match) and push the reward payload. Idempotent per match.
-  // `fullBase`: the match was played to its frag limit → the full flat base XP;
-  // otherwise (partial, forfeit) the base is pro rata by time present.
-  const settleClient = (
-    c: ClientRecord,
-    room: Room,
-    won: boolean,
-    partial: boolean,
-    now: number,
-    fullBase = false,
-  ) => {
-    if (c.mSettled) return;
+  // Returns true if a match was recorded.
+  const settleClient = (c: ClientRecord, room: Room, won: boolean, partial: boolean, now: number): boolean => {
+    if (c.mSettled) return false;
     c.mSettled = true;
-    // An empty bounce (joined, never fired/fragged/died) isn't a match.
-    if (partial && c.frags === 0 && c.deaths === 0 && c.mShots === 0) return;
+    if (!recordable(c, now)) return false; // a bounce, not a match
     const mode = room.isRanked ? 'ranked' : room.mode;
     const accuracy = c.mShots > 0 ? (c.mHits / c.mShots) * 100 : 0;
     let reply: ReturnType<typeof recordMatch>;
@@ -939,7 +957,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       reply = recordMatch({
         playerId: c.playerId,
         userName: c.name,
-        kills: c.frags,
+        // Progression counts only frags on OTHER accounts (not guests, not a
+        // second tab of your own) — see handleShoot.
+        kills: c.mKills,
         deaths: c.deaths,
         wins: won ? 1 : 0,
         bestStreak: c.mBestStreak,
@@ -949,18 +969,20 @@ export function attachInstagibWs(wss: WebSocketServer) {
         accuracy,
         offline: false,
         now,
-        presence: fullBase ? 1 : Math.max(0, Math.min(1, (now - c.mStartedAt) / PRESENCE_FULL_MS)),
+        // Base XP is always pro rata by time present (full at PRESENCE_FULL_MS).
+        presence: Math.max(0, Math.min(1, (now - c.mStartedAt) / PRESENCE_FULL_MS)),
+        killWeight: c.mKills > 0 ? c.mKillWeight / c.mKills : 1,
       });
     } catch (err) {
       console.error('[instagib] recordMatch failed', err);
-      return;
+      return false;
     }
     logEvent({
       event: 'match',
       actorId: c.playerId,
       actorName: c.name,
       detail: {
-        kills: c.frags,
+        kills: c.mKills,
         deaths: c.deaths,
         won,
         headshots: c.mHeadshots,
@@ -982,6 +1004,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     } else {
       c.undeliveredProgression = msg; // dropped mid-grace: deliver on resume
     }
+    return true;
   };
 
   // Match over: record every member. `winnerId` (FFA/duel/ranked) or
@@ -994,16 +1017,36 @@ export function attachInstagibWs(wss: WebSocketServer) {
   ) => {
     const now = Date.now();
     const minForfeitFrags = Math.ceil(fragLimitFor(room) * FORFEIT_WIN_MIN_FRAC);
+    // A win (and with it the first-win bonus) only counts if at least two
+    // distinct ACCOUNTS took part in this match — one account alone (or with
+    // guests) can't manufacture wins.
+    const accounts = new Set(room.matchAccounts);
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c?.playerId && recordable(c, now)) accounts.add(c.playerId);
+    }
+    const contested = accounts.size >= 2;
     for (const id of room.members) {
       const c = clients.get(id);
       if (!c) continue;
       let won =
-        winnerTeam != null
+        contested &&
+        (winnerTeam != null
           ? c.team === winnerTeam && now - c.mStartedAt >= TDM_WIN_MIN_PRESENCE_MS
-          : c.id === winnerId;
+          : c.id === winnerId);
       if (won && forfeit && c.frags < minForfeitFrags) won = false; // no contest
-      settleClient(c, room, won, false, now, !forfeit);
+      settleClient(c, room, won, false, now);
     }
+  };
+
+  // An account already holding a slot in `room` on another connection.
+  const sameAccountMember = (room: Room, record: ClientRecord): ClientRecord | null => {
+    if (!record.playerId) return null;
+    for (const id of room.members) {
+      const c = clients.get(id);
+      if (c && c !== record && c.playerId === record.playerId) return c;
+    }
+    return null;
   };
 
   // Pick a spawn for `forClient`. Two independent concerns:
@@ -1171,6 +1214,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     record.deaths = old.deaths;
     record.mShots = old.mShots;
     record.mHits = old.mHits;
+    record.mKills = old.mKills;
+    record.mKillWeight = old.mKillWeight;
+    record.mVictims = old.mVictims;
     record.mHeadshots = old.mHeadshots;
     record.mStreak = old.mStreak;
     record.mBestStreak = old.mBestStreak;
@@ -1227,13 +1273,28 @@ export function attachInstagibWs(wss: WebSocketServer) {
     return true;
   };
 
+  // One account, one slot per room. If this account already holds a slot in
+  // `room`: a dropped one (a reconnect that lost its resume token — same
+  // account, so the same player) is reclaimed via resumeMatch; a live one (a
+  // second tab) is refused with join-failed 'duplicate'. Returns true when it
+  // handled the join (the caller stops).
+  const handleSameAccount = (record: ClientRecord, room: Room): boolean => {
+    const dup = sameAccountMember(room, record);
+    if (!dup) return false;
+    if (dup.disconnectedAt > 0 && resumeMatch(record, dup)) return true;
+    sendRaw(record.socket, { type: 'join-failed', reason: 'duplicate' });
+    return true;
+  };
+
   const leaveRoom = (record: ClientRecord) => {
     if (!record.roomId) return;
     const room = rooms.get(record.roomId);
     // Leaving a live match (leave button, AFK/stale kick, resume grace expiry,
     // joining elsewhere) records what they played so far as a loss.
     if (room && room.state === 'active' && room.members.has(record.id)) {
-      settleClient(record, room, false, true, Date.now());
+      if (settleClient(record, room, false, true, Date.now()) && record.playerId) {
+        room.matchAccounts.add(record.playerId);
+      }
     }
     record.roomId = null;
     record.team = null;
@@ -1618,6 +1679,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
     room.firstBloodAwarded = false;
+    room.matchAccounts.clear();
 
     // Reset scoreboard + reposition everyone onto the new map.
     const now = Date.now();
@@ -1817,12 +1879,25 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
     shooter.frags += 1;
     victim.deaths += 1;
-    // Progression counters: only a landed frag counts as a hit (a throttled
-    // aimbot shot above never gets here).
-    shooter.mHits += 1;
-    if (bestHeadshot) shooter.mHeadshots += 1;
-    shooter.mStreak += 1;
-    if (shooter.mStreak > shooter.mBestStreak) shooter.mBestStreak = shooter.mStreak;
+    // Progression counters (a throttled aimbot shot above never gets here).
+    // Only a frag on ANOTHER ACCOUNT counts — a guest tab or a second tab of
+    // your own account is not someone to farm. A shot spent on a non-counting
+    // victim leaves accuracy untouched (out of both hits and shots).
+    if (victim.playerId && victim.playerId !== shooter.playerId) {
+      shooter.mKills += 1;
+      shooter.mHits += 1;
+      const n = (shooter.mVictims.get(victim.playerId) ?? 0) + 1;
+      shooter.mVictims.set(victim.playerId, n);
+      shooter.mKillWeight +=
+        room.mode === 'duel' || n <= VICTIM_FULL_KILLS
+          ? 1
+          : 2 ** -Math.ceil((n - VICTIM_FULL_KILLS) / VICTIM_DECAY_EVERY);
+      if (bestHeadshot) shooter.mHeadshots += 1;
+      shooter.mStreak += 1;
+      if (shooter.mStreak > shooter.mBestStreak) shooter.mBestStreak = shooter.mStreak;
+    } else {
+      shooter.mShots = Math.max(0, shooter.mShots - 1);
+    }
     victim.mStreak = 0;
     const respawnPos = pickSpawn(room, victim, shooter.pos);
     const firstBlood = !room.firstBloodAwarded;
@@ -1967,6 +2042,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       aimFlagged: false,
       mShots: 0,
       mHits: 0,
+      mKills: 0,
+      mKillWeight: 0,
+      mVictims: new Map(),
       mHeadshots: 0,
       mStreak: 0,
       mBestStreak: 0,
@@ -2129,6 +2207,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (!anyMode && r.mode !== mode) continue;
             if (r.members.size >= r.capacity) continue;
             if (r.state !== 'active') continue;
+            if (sameAccountMember(r, record)) continue; // this account is already in there (another tab)
             const reserved =
               r.members.size === 0 &&
               !r.wasEverOccupied &&
@@ -2215,6 +2294,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
             break;
           }
+          if (handleSameAccount(record, room)) break; // reclaimed own slot, or 'duplicate'
           if (room.members.size >= room.capacity && !room.members.has(record.id)) {
             sendRaw(socket, { type: 'join-failed', reason: 'full' });
             break;
@@ -2291,6 +2371,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             sendRaw(socket, { type: 'join-failed', reason: 'gone' });
             break;
           }
+          if (handleSameAccount(record, room)) break; // reclaimed own slot, or 'duplicate'
           if (room.members.size >= room.capacity && !room.members.has(record.id)) {
             sendRaw(socket, { type: 'join-failed', reason: 'full' });
             break;

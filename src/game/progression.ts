@@ -82,9 +82,13 @@ export type MatchXpInput = {
   // Shots behind `accuracy`. The accuracy bonus needs ≥ ACCURACY_MIN_SHOTS so a
   // 1-shot/1-hit "100%" match earns nothing. Omitted → treated as enough.
   shotsFired?: number;
-  // 0..1 share of the flat base XP earned — online partial matches (joined late
-  // / left early) scale by time present so join-leave spam earns ~nothing.
+  // 0..1 share of the flat base XP earned — online matches scale it by time
+  // present (full at 3 min) so join/leave spam earns ~nothing.
   presence?: number;
+  // 0..1 multiplier on the kill / headshot / streak XP: the server's repeat-
+  // victim decay (fragging the same player over and over in one FFA/TDM match
+  // is worth less). Omitted = 1.
+  killWeight?: number;
 };
 
 export type MatchXpContext = {
@@ -159,11 +163,24 @@ export function matchXpLines(d: MatchXpInput, ctx: MatchXpContext): { xp: number
     xp: base,
     detail: presence < 1 ? `${Math.round(presence * 100)}% of a full match` : undefined,
   });
-  if (kills > 0) lines.push({ key: 'kills', label: 'Kills', xp: kills * XP_PER_KILL, detail: `${kills} × ${XP_PER_KILL}` });
+  const w = d.killWeight == null ? 1 : Math.max(0, Math.min(1, d.killWeight));
+  const decay = w < 1 ? ` · repeat victims ×${w.toFixed(2)}` : '';
+  if (kills > 0)
+    lines.push({ key: 'kills', label: 'Kills', xp: Math.round(kills * XP_PER_KILL * w), detail: `${kills} × ${XP_PER_KILL}${decay}` });
   if (headshots > 0)
-    lines.push({ key: 'headshots', label: 'Headshots', xp: headshots * XP_PER_HEADSHOT, detail: `${headshots} × ${XP_PER_HEADSHOT}` });
+    lines.push({
+      key: 'headshots',
+      label: 'Headshots',
+      xp: Math.round(headshots * XP_PER_HEADSHOT * w),
+      detail: `${headshots} × ${XP_PER_HEADSHOT}${decay}`,
+    });
   if (streak > 0)
-    lines.push({ key: 'streak', label: 'Best streak', xp: streak * XP_PER_STREAK, detail: `${streak} × ${XP_PER_STREAK}` });
+    lines.push({
+      key: 'streak',
+      label: 'Best streak',
+      xp: Math.round(streak * XP_PER_STREAK * w),
+      detail: `${streak} × ${XP_PER_STREAK}${decay}`,
+    });
   if (d.won) lines.push({ key: 'win', label: 'Victory', xp: XP_WIN_BONUS });
   const acc = Math.max(0, Math.min(100, Number.isFinite(d.accuracy) ? d.accuracy : 0));
   const enoughShots = d.shotsFired == null || d.shotsFired >= ACCURACY_MIN_SHOTS;
