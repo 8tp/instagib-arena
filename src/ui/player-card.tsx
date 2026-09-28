@@ -9,18 +9,26 @@ import type { CardPayload } from '../game/types';
 import { NameBadges } from './badges';
 import { CARD_STAT_DEFS, MAX_CARD_STATS, buildCardPayload } from './player-card-data';
 
-// Pick up to 3 career stats for the playercard, with a live preview.
+// Pick up to 3 career stats for the playercard, with a live preview. Pass
+// `profile` when the caller already has it (skips the fetch) and
+// `showPreview={false}` when the card is already on show elsewhere (Locker).
 export function CardStatsEditor({
   settings,
   onChange,
   account,
+  profile: givenProfile,
+  showPreview = true,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   account?: Account;
+  profile?: InstagibProfile | null;
+  showPreview?: boolean;
 }) {
-  const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  const [fetched, setProfile] = useState<InstagibProfile | null>(null);
+  const profile = givenProfile ?? fetched;
   useEffect(() => {
+    if (givenProfile !== undefined) return;
     let active = true;
     fetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
@@ -31,7 +39,7 @@ export function CardStatsEditor({
     return () => {
       active = false;
     };
-  }, []);
+  }, [givenProfile]);
 
   const toggle = (key: string) => {
     const cur = settings.cardStats;
@@ -61,9 +69,11 @@ export function CardStatsEditor({
     <div className='mt-1 border-t border-white/10 pt-4'>
       <div className='mb-3 text-[10px] font-bold uppercase tracking-[0.2em] text-white/55'>Card Stats</div>
       <div className='flex flex-col gap-4'>
-      <div className='flex justify-center py-1'>
-        <PlayerCard card={preview} size='small' reduced={settings.reducedEffects} />
-      </div>
+      {showPreview && (
+        <div className='flex justify-center py-1'>
+          <PlayerCard card={preview} size='small' reduced={settings.reducedEffects} />
+        </div>
+      )}
       <div className='grid grid-cols-2 gap-2'>
         {CARD_STAT_DEFS.map((d) => (
           <SegButton key={d.key} active={settings.cardStats.includes(d.key)} onClick={() => toggle(d.key)}>
