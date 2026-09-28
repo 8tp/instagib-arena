@@ -97,6 +97,9 @@ import {
 import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
+import { applyFinishLook, asV3, emoteKindOfLook } from './look-runtime';
+import { emoteClip, type AnyEmoteKind } from './emotes';
+import type { ItemSlot, Loadout, Look } from './items/types';
 import {
   MatchRecorder,
   ReplayPlayer,
@@ -240,6 +243,24 @@ const MEDAL_PRIORITY: Record<Medal, number> = {
   'first-blood':   30,
   'headshot':      20,
   'mid-air':       15,
+};
+
+// Taunt camera: a third-person orbit around your own body for one emote loop.
+const TAUNT_ORBIT_RADIUS = 2.5; // metres (kept short so it can't scout far around cover)
+const TAUNT_ORBIT_RISE = 0.55; // camera height above the body centre
+const TAUNT_ORBIT_SPEED = 0.55; // rad/s (eased in)
+const TAUNT_OUT_SEC = 0.45; // the camera returns to your eyes over the last stretch
+const TAUNT_COOLDOWN_MS = 3000;
+const TAUNT_WALL_MARGIN = 0.35; // keep the camera this far off any wall
+type TauntState = {
+  kind: AnyEmoteKind;
+  look: Look | undefined;
+  t: number;
+  dur: number;
+  blend: number; // 0 = your eyes, 1 = full orbit
+  orbit: number; // radians travelled round the body
+  dist: number; // smoothed, wall-clamped orbit distance
+  cancelled: boolean; // jumped out: movement is yours again, the camera is returning
 };
 
 export class Game {
@@ -455,6 +476,28 @@ export class Game {
   private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
   private localTitle: string = DEFAULT_TITLE; // earned title flair under the name (broadcast)
   private botAlive = new Map<string, boolean>(); // prev alive-state per bot (spawn fx edge)
+  // ── v3 Looks + killstreak/strange runtime ──
+  private localLooks: Loadout | undefined = undefined; // resolved equipped Looks (Settings.looks)
+  private localUids: Partial<Record<ItemSlot, string>> | undefined = undefined;
+  private localUidsKey = ''; // dedupe of the loadout we last told the server
+  private strangeBase: number | null = null; // equipped Strange finish's kills before this match
+  private vmStreakShown = -1;
+  private vmStrangeShown = -2;
+  // Killstreak of every OTHER combatant (net ids / bot ids), from kill events.
+  private readonly streaks = new Map<string, number>();
+  // ── Taunt (in-game emote) ──
+  private taunt: TauntState | null = null;
+  private tauntBody: RemotePlayer | null = null; // your own 3rd-person body, shown during a taunt only
+  private tauntCooldownUntil = 0; // performance.now() ms
+  private tauntCode = 'KeyG';
+  private readonly tauntKeyHandler = (e: KeyboardEvent) => {
+    if (e.code === this.tauntCode && !e.repeat) this.tryTaunt();
+  };
+  private readonly tmpM4 = new THREE.Matrix4();
+  private readonly tmpQ1 = new THREE.Quaternion();
+  private readonly tmpQ2 = new THREE.Quaternion();
+  private readonly tmpV3 = new THREE.Vector3();
+  private readonly tmpV3b = new THREE.Vector3();
   private localHat: string = DEFAULT_HAT; // equipped hat (broadcast to remotes)
   private localUnusual: string = DEFAULT_UNUSUAL; // equipped unusual effect
   private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
@@ -576,6 +619,7 @@ export class Game {
 
     this.resizeHandler = () => this.handleResize();
     window.addEventListener('resize', this.resizeHandler);
+    window.addEventListener('keydown', this.tauntKeyHandler);
     this.handleResize();
     this.emitHud();
   }
@@ -603,6 +647,7 @@ export class Game {
 
   setKeybinds(binds: Record<KeybindAction, string>) {
     this.input.setBindings(binds);
+    this.tauntCode = binds.taunt || '';
   }
 
   // ── In-game chat (online only) ────────────────────────────────────────
@@ -915,8 +960,18 @@ export class Game {
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
     if (this.viewmodelRail) {
-      this.viewmodelRail.setFinish(finish); // recolour only — the geometry is shared
-      return;
+      // Same gun model → recolour in place (geometry shared). A finish with a
+      // different (custom) model needs a fresh build.
+      const norm = (v: unknown) => (!v || v === 'default' || v === 'standard' ? '' : String(v));
+      const cur = (this.viewmodelRail as unknown as { modelKey?: string }).modelKey;
+      if (norm(cur) === norm((finish as { model?: string }).model)) {
+        this.viewmodelRail.setFinish(finish);
+        this.applyViewmodelV3(true);
+        return;
+      }
+      if (this.viewmodel) this.postFx.viewmodel.camera.remove(this.viewmodel);
+      this.viewmodelRail.dispose();
+      this.viewmodelRail = null;
     }
     const vm = buildRailgun(finish);
     this.viewmodelRail = vm;
@@ -929,6 +984,201 @@ export class Game {
     // Drawn in the viewmodel layer (after the world, depth cleared) so the gun
     // never clips into walls; its camera mirrors the world camera every frame.
     this.postFx.viewmodel.camera.add(this.viewmodel);
+    this.applyViewmodelV3(true);
+  }
+
+  // Economy v3: the resolved equipped Looks (drive the finish's sheen / festive /
+  // strange counter here, and what the taunt body wears) + the equipped item
+  // instance ids, which the server validates and turns into the Looks everyone
+  // else sees. Legacy per-slot setters still run for un-migrated consumers.
+  setLooks(
+    looks: Loadout | undefined,
+    uids?: Partial<Record<ItemSlot, string>>,
+    strangeKills?: number | null,
+  ) {
+    this.localLooks = looks;
+    this.strangeBase = typeof strangeKills === 'number' ? strangeKills : null;
+    const key = uids ? JSON.stringify(uids) : '';
+    if (key !== this.localUidsKey) {
+      this.localUidsKey = key;
+      this.localUids = uids;
+      this.net?.setLocalLoadout(uids);
+    }
+    this.applyViewmodelV3(true);
+  }
+
+  // Push the finish Look + this life's streak + the Strange counter onto the
+  // first-person gun. The setters are the VFX track's (optional until merged).
+  private applyViewmodelV3(force = false) {
+    const vm = this.viewmodelRail;
+    if (!vm || this.viewmodelFinishOverride) return;
+    const streak = this.medals.currentStreak;
+    const frags = this.net ? this.net.localFrags : this.playerFrags;
+    const strange = this.strangeBase === null ? null : this.strangeBase + frags;
+    if (force) {
+      applyFinishLook(vm, this.localLooks?.finish);
+      this.vmStreakShown = -1;
+      this.vmStrangeShown = -2;
+    }
+    if (streak !== this.vmStreakShown) {
+      this.vmStreakShown = streak;
+      asV3(vm).setStreak?.(streak);
+    }
+    const sk = strange ?? -1;
+    if (sk !== this.vmStrangeShown) {
+      this.vmStrangeShown = sk;
+      asV3(vm).setStrangeKills?.(strange);
+    }
+  }
+
+  // ── Taunts ──────────────────────────────────────────────────────────────
+  // Taunt key: play your equipped emote in-match. The camera swings out to a
+  // third-person orbit around your body (wall-clamped along the line from your
+  // eyes, so it never shows anything you couldn't have seen from where you
+  // stand), you can't fire, movement is locked for the clip, jump cancels.
+  // Returns whether a taunt started. 3 s cooldown.
+  tryTaunt(): boolean {
+    if (this.spectator || !this.locked || this.matchOver || this.vote || this.killcam || this.replay) return false;
+    if (this.chatOpen || this.taunt || this.inCountdown) return false;
+    if (!this.player.onGround) return false;
+    const now = performance.now();
+    if (now < this.tauntCooldownUntil) return false;
+    if (!this.botModel) return false; // the combatant model isn't loaded yet
+    const look = this.localLooks?.emote ?? { d: this.localEmote };
+    return this.startTaunt(emoteKindOfLook(look), look, now);
+  }
+
+  private startTaunt(kind: AnyEmoteKind, look: Look | undefined, now: number): boolean {
+    if (!this.botModel) return false;
+    let body = this.tauntBody;
+    if (!body) {
+      body = new RemotePlayer('local-taunt', this.playerName, this.scene, this.botModel);
+      body.hidePlate();
+      body.setLocalShown(false);
+      this.tauntBody = body;
+    }
+    body.team = this.localTeam;
+    this.applyRemoteColor(body);
+    // Dress the body in what you have equipped (Looks when the hub provides them).
+    const p = this.player.pos;
+    body.apply(this.localSnapshot(), 0);
+    body.group.position.set(p.x, p.y, p.z);
+    const dur = emoteClip(kind).duration;
+    body.playTaunt(kind, look, dur);
+    this.tauntCooldownUntil = now + TAUNT_COOLDOWN_MS;
+    this.taunt = { kind, look, t: 0, dur, blend: 0, orbit: 0, dist: 0, cancelled: false };
+    this.net?.sendTaunt();
+    return true;
+  }
+
+  // The local player as a RemotePlayer snapshot (cosmetics only) so the taunt
+  // body resolves its look exactly like everyone else's view of you.
+  private localSnapshot() {
+    const p = this.player.pos;
+    return {
+      id: 'local-taunt',
+      name: this.playerName,
+      pos: { x: p.x, y: p.y, z: p.z },
+      yaw: this.player.yaw,
+      pitch: 0,
+      frags: 0,
+      deaths: 0,
+      invulnMs: 0,
+      team: this.localTeam,
+      hat: this.localHat,
+      unusual: this.localUnusual,
+      emote: this.localEmote,
+      nameColor: this.localNameColor,
+      spawnEffect: this.localSpawnEffect,
+      title: this.localTitle,
+      railColor: this.net?.localRailColor ?? 'rail.cyan',
+      railgunFinish: this.localRailgunFinish,
+      crosshair: '',
+      looks: this.localLooks,
+      ping: 0,
+      admin: false,
+      verified: false,
+      receivedAt: 0,
+    };
+  }
+
+  // Jump out of a taunt: movement is yours again this tick; the camera glides home.
+  private cancelTaunt() {
+    if (this.taunt) this.taunt.cancelled = true;
+  }
+
+  private abortTaunt() {
+    if (!this.taunt) return;
+    this.taunt = null;
+    this.tauntBody?.endTaunt();
+    this.tauntBody?.setLocalShown(false);
+  }
+
+  // Third-person orbit for the taunt, blended over the first-person camera that
+  // render() just set. (ex,ey,ez) is the eye; dt is the real frame time.
+  private applyTauntCamera(ex: number, ey: number, ez: number) {
+    const T = this.taunt;
+    if (!T) return;
+    const dt = this.frameDt;
+    T.t += dt;
+    const leaving = T.cancelled || T.t >= T.dur - TAUNT_OUT_SEC;
+    T.blend += ((leaving ? 0 : 1) - T.blend) * (1 - Math.exp(-(leaving ? 12 : 6) * dt));
+    T.orbit += dt * TAUNT_ORBIT_SPEED * Math.min(1, T.t / 0.6);
+    const s = T.blend * T.blend * (3 - 2 * T.blend);
+    // Orbit centre = body centre; start behind you, sweep round the side.
+    const cx = ex;
+    const cy = ey - EYE_HEIGHT + 1.0;
+    const cz = ez;
+    const th = this.player.yaw + T.orbit;
+    const dx = cx + Math.sin(th) * TAUNT_ORBIT_RADIUS - ex;
+    const dy = cy + TAUNT_ORBIT_RISE - ey;
+    const dz = cz + Math.cos(th) * TAUNT_ORBIT_RADIUS - ez;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const nx = dx / len;
+    const ny = dy / len;
+    const nz = dz / len;
+    // Line of sight from the EYE: never farther than the nearest wall along the
+    // way (shrinks instantly, grows back smoothly — so it can't poke through).
+    const o = { x: ex, y: ey, z: ez };
+    const d = { x: nx, y: ny, z: nz };
+    let allowed = len;
+    for (const b of this.map.boxes) {
+      const t = rayAabb(o, d, b);
+      if (t !== null && t > 0 && t - TAUNT_WALL_MARGIN < allowed) allowed = Math.max(0, t - TAUNT_WALL_MARGIN);
+    }
+    T.dist = allowed < T.dist ? allowed : T.dist + (allowed - T.dist) * (1 - Math.exp(-10 * dt));
+    const reach = T.dist * s;
+    const cam = this.camera;
+    this.tmpQ1.copy(cam.quaternion); // the first-person view (set just before this call)
+    this.tmpV3.set(ex + nx * reach, ey + ny * reach, ez + nz * reach);
+    // Look at the body from the orbit point.
+    this.tmpV3b.set(cx, cy + 0.35, cz);
+    this.tmpM4.lookAt(this.tmpV3, this.tmpV3b, cam.up);
+    this.tmpQ2.setFromRotationMatrix(this.tmpM4);
+    cam.position.copy(this.tmpV3);
+    cam.quaternion.slerpQuaternions(this.tmpQ1, this.tmpQ2, s);
+    // Your body appears once the camera has pulled clear of it, and leaves as it returns.
+    const body = this.tauntBody;
+    if (body) {
+      body.setLocalShown(s > 0.3);
+      const p = this.player.pos;
+      body.driveLocal(p.x, p.y, p.z, this.player.yaw, dt);
+    }
+    if (T.t >= T.dur || (T.cancelled && T.blend < 0.02)) {
+      this.taunt = null;
+      body?.endTaunt();
+      body?.setLocalShown(false);
+    }
+  }
+
+  // Someone else taunted: play their emote clip on their body (+ aura).
+  private handleNetTaunt(id: string, look: Look | undefined) {
+    if (id === this.net?.clientId) return; // ours already plays locally
+    const rp = this.remotePlayers.get(id);
+    if (!rp) return;
+    const l = look ?? this.net?.remotes.get(id)?.looks?.emote;
+    const kind = emoteKindOfLook(l);
+    rp.playTaunt(kind, l, emoteClip(kind).duration);
   }
 
   // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
@@ -1179,6 +1429,9 @@ export class Game {
     this.tickFn = null;
     this.input.detach();
     window.removeEventListener('resize', this.resizeHandler);
+    window.removeEventListener('keydown', this.tauntKeyHandler);
+    this.tauntBody?.dispose(this.scene);
+    this.tauntBody = null;
     this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.replay?.dispose();
@@ -1304,8 +1557,10 @@ export class Game {
           onProgression: (p) => this.onNetEvent({ type: 'progression', progression: p }),
           onChat: (m) => this.handleNetChat(m),
           onBeam: (b) => this.handleNetBeam(b),
+          onTaunt: (id, look) => this.handleNetTaunt(id, look),
         },
       });
+      if (this.localUidsKey) this.net.setLocalLoadout(this.localUids);
       this.net.connect();
     } else if (!this.wantMultiplayer && this.net) {
       this.net.dispose();
@@ -1492,6 +1747,7 @@ export class Game {
     // (server resets the authoritative scoreboard; HUD reads it from snapshots).
     // Done AFTER handleVoteStart already submitted the finished match's stats.
     this.medals = new MedalTracker();
+    this.streaks.clear();
     this.playerFrags = 0;
     this.playerDeaths = 0;
     if (this.net) {
@@ -1797,6 +2053,7 @@ export class Game {
         );
       }
       rp.setInvuln(snap.invulnMs);
+      rp.setStreak(this.streaks.get(id) ?? 0);
       // Their footsteps / jumps / landings, heard where they are.
       this.motionSfx.sample(id, snap.pos.x, snap.pos.y, snap.pos.z, nowSec, true);
       this.heardFootfalls(id, rp.footfalls, snap.pos.x, snap.pos.y, snap.pos.z);
@@ -1838,6 +2095,7 @@ export class Game {
       unusual: this.localUnusual,
       nameColor: this.localNameColor,
       team: this.localTeam,
+      looks: this.localLooks,
     });
     poses['you'] = {
       x: this.player.pos.x,
@@ -1859,6 +2117,7 @@ export class Game {
         unusual: snap?.unusual ?? 'unusual.none',
         nameColor: snap?.nameColor ?? 'name.default',
         team: rp.team,
+        looks: snap?.looks,
       });
       poses[id] = {
         x: rp.group.position.x,
@@ -1883,6 +2142,7 @@ export class Game {
           unusual: 'unusual.none',
           nameColor: 'name.default',
           team: null,
+          looks: b.loadout,
         });
         poses[id] = {
           x: b.state.pos.x,
@@ -1973,7 +2233,7 @@ export class Game {
     // Always drain the accumulator so a held-but-not-applied delta (dead/paused/
     // match over) can't pile up and snap the view when control resumes.
     const look = this.input.consumeLook();
-    if (!this.locked || this.matchOver || this.killcam !== null || this.replay) return;
+    if (!this.locked || this.matchOver || this.killcam !== null || this.replay || this.taunt) return;
     this.player.yaw -= look.yawDelta;
     this.player.pitch -= look.pitchDelta;
     if (this.player.pitch < -PITCH_LIMIT) this.player.pitch = -PITCH_LIMIT;
@@ -2000,7 +2260,19 @@ export class Game {
     if (!this.locked || this.matchOver) return;
     this.elapsed += dt;
 
-    const input = this.input.consume();
+    let input = this.input.consume();
+    // Taunting: movement + fire are locked for the clip (gravity still applies);
+    // jump cancels it and hands the controls straight back.
+    const tauntLock = this.taunt !== null && !this.taunt.cancelled && this.taunt.t < this.taunt.dur;
+    if (tauntLock) {
+      if (input.jumpPressed) this.cancelTaunt();
+      else {
+        input = {
+          ...input, forward: false, back: false, left: false, right: false, jump: false, jumpPressed: false,
+          dash: false, dashPressed: false, boost: false, boostPressed: false, fire: false, firePressed: false, zoom: false,
+        };
+      }
+    }
     this.wantZoom = input.zoom;
     if (input.chatPressed) this.openChat(); // open the composer (guards inside)
     const dead = this.killcam !== null;
@@ -2082,6 +2354,7 @@ export class Game {
         const p = b.state.pos;
         this.motionSfx.sample(b.state.id, p.x, p.y, p.z, this.elapsed, b.state.alive);
         this.heardFootfalls(b.state.id, b.footfalls, p.x, p.y, p.z);
+        b.setStreak(this.streaks.get(b.state.id) ?? 0);
       }
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
@@ -2111,7 +2384,7 @@ export class Game {
     }
     this.weaponWasReady = ready;
 
-    if (input.firePressed && !dead && !this.inCountdown) this.handleFire();
+    if (input.firePressed && !dead && !this.inCountdown && !this.taunt) this.handleFire();
 
     // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
     // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
@@ -2361,6 +2634,7 @@ export class Game {
         this.killEffectStyle,
       );
       bot.kill(this.killEffectStyle);
+      this.streaks.delete(bot.state.id);
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2520,6 +2794,10 @@ export class Game {
       });
     }
     this.botFrags.set(intent.botId, (this.botFrags.get(intent.botId) ?? 0) + 1);
+    this.streaks.set(intent.botId, (this.streaks.get(intent.botId) ?? 0) + 1);
+    this.streaks.delete(victimId);
+    // Now and then a bot celebrates a frag with its emote (solo variety).
+    if (!this.reducedEffects && Math.random() < 0.07) shooter?.taunt();
     this.checkMatchEnd();
   }
 
@@ -2842,6 +3120,9 @@ export class Game {
         ? ev.finisher
         : DEFAULT_KILL_EFFECT;
     if (!iAmKiller) this.finisherSeen.set(ev.killerId, finisher);
+    // Killstreaks for the third-person sheen / eyes (yours is the medal tracker's).
+    if (!iAmKiller) this.streaks.set(ev.killerId, (this.streaks.get(ev.killerId) ?? 0) + 1);
+    this.streaks.delete(ev.victimId);
     this.spawnKillEffect(burstAt, ev.headshot, finisher);
 
     if (iAmKiller) {
@@ -3359,6 +3640,7 @@ export class Game {
   }
 
   private render() {
+    if (this.taunt && (this.killcam || this.matchOver || this.vote || this.replay || this.spectator)) this.abortTaunt();
     if (this.replay) {
       // Play of the Match: the ReplayPlayer owns the camera (positioned in its
       // update() earlier this frame), so leave it untouched here.
@@ -3449,6 +3731,7 @@ export class Game {
       // viewKick is a transient upward view-punch on fire — visual only, so it
       // never alters the authoritative aim (player.pitch).
       this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');
+      if (this.taunt) this.applyTauntCamera(cx, cy + EYE_HEIGHT, cz);
     }
     // Screen shake: jitter the camera position, decaying each frame. (Skipped
     // during the PoM replay — the ReplayPlayer owns the camera.)
@@ -3493,12 +3776,13 @@ export class Game {
     // two-stage fire kick / zoom tuck / idle breathing on top of the base
     // position + the user's offset (viewmodel-motion.ts; all exp/spring-smoothed
     // on real dt, so the feel is identical at 60fps and uncapped).
+    this.applyViewmodelV3();
     if (this.viewmodel) {
       const specSnap =
         this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
       const specPov = !!specSnap;
       this.viewmodel.visible =
-        !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay;
+        !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay && !this.taunt;
       // Local first person feeds full movement state; spectator POV gets only the
       // watched player's look (idle + sway); killcam/replay coast to rest.
       const localPov = !this.spectator && !this.killcam && !this.replay;
@@ -3535,7 +3819,7 @@ export class Game {
       // Cosmetic landing dip on the camera (≤ 1.5°, zero under reduced effects),
       // added after the aim rotation was set above. The shot direction reads
       // player.pitch/yaw, never the camera, so aim is untouched.
-      if (localPov && pose.camPitch !== 0) this.camera.rotation.x += pose.camPitch;
+      if (localPov && !this.taunt && pose.camPitch !== 0) this.camera.rotation.x += pose.camPitch;
     }
     // Track the HRTF audio listener to the (now finalized) camera so spatial
     // sounds — other players' rail fire etc. — pan to where they actually are.

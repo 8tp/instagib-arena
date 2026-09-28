@@ -5,7 +5,7 @@ import type { AnnouncerPackId } from './game/audio';
 import type { BotDifficulty, KeybindAction } from './game/constants';
 import type { KillEffectStyle } from './game/cosmetics';
 import type { RewardExtras, RoadStep } from './game/progression';
-import type { ItemSlot, Loadout } from './game/items/types';
+import type { ItemInstanceWire, ItemSlot, Loadout } from './game/items/types';
 
 export type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
@@ -26,10 +26,10 @@ export type Settings = {
   // `looks` during the transition (runtime track).
   looks?: Loadout;
   equippedUids?: Partial<Record<ItemSlot, string>>;
-  // Server-counted kills on the equipped Strange finish instance
-  // (attrs.kills; null/undefined = the finish isn't Strange). The hub writes it
-  // with looks; the game adds this match's frags for the viewmodel counter.
-  finishKills?: number | null;
+  // The equipped finish INSTANCE (server truth: mint, quality, attrs incl. the
+  // Strange kill count). The hub writes it together with looks; the match adds
+  // this game's frags to the Strange counter and the inspect card reads it.
+  finishItem?: ItemInstanceWire | null;
   sensitivity: number; // Source/CS2-style sens number
   dpi: number; // mouse DPI (feeds cm/360 readout only)
   vertScale: number; // vertical (pitch) sensitivity multiplier

@@ -619,6 +619,7 @@ function seedSnapshot(profile: ReplayActorProfile, pose: ReplayPose): RemotePlay
     invulnMs: 0,
     team: profile.team,
     hat: profile.hat,
+    looks: profile.looks,
     unusual: profile.unusual,
     emote: 'emote.cheer',
     nameColor: profile.nameColor,

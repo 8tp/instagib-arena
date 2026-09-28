@@ -61,6 +61,7 @@ import {
   type RankedRoom,
   type RankedResult,
 } from './game/net';
+import { withLegacyFromLooks } from './game/look-runtime';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
   AIR_JUMPS,
@@ -411,6 +412,8 @@ function applySettingsToGame(game: Game, s: Settings) {
   // Echo the crosshair (as a share-code) so a spectator can render the same
   // reticle we use; the local HUD still draws it from settings.crosshair.
   game.setCrosshairCode?.(encodeCrosshair(s.crosshair));
+  const strange = s.finishItem?.quality.includes('strange') ? (s.finishItem.attrs.kills ?? 0) : null;
+  game.setLooks?.(s.looks, s.equippedUids, strange);
   game.setHat?.(s.hat);
   game.setUnusual?.(s.unusual);
   game.setEmote?.(s.emote);
@@ -495,7 +498,13 @@ const INITIAL_HUD: HudState = {
 export default function InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // Every settings write keeps the legacy per-slot ids in step with `looks`.
+  const [settings, setSettingsRaw] = useState<Settings>(DEFAULT_SETTINGS);
+  const setSettings = useCallback(
+    (u: Settings | ((s: Settings) => Settings)) =>
+      setSettingsRaw((prev) => withLegacyFromLooks(typeof u === 'function' ? u(prev) : u)),
+    [],
+  );
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
