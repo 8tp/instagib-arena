@@ -400,14 +400,14 @@ export class GibBurst {
 
     // Colours: the victim's energy tints the default-ish styles.
     ch.getColor(this.energy);
-    this.glowCol.copy(this.energy).lerp(WHITE, 0.55);
+    this.glowCol.copy(this.energy).lerp(WHITE, 0.3);
     ch.resetDeathLook();
     const u = ch.uniforms;
     u.uFxCalm.value = this.calm ? 1 : 0;
 
     // Style set-up.
     this.flashDelay = 0;
-    this.flashSize = 2.3;
+    this.flashSize = 1.6;
     switch (this.style) {
       case 'singularity':
         this.flashDelay = FINISHER_TIMING.singularityPop;
@@ -416,11 +416,11 @@ export class GibBurst {
       case 'overload':
         this.flashDelay = FINISHER_TIMING.overloadBlast;
         this.glowCol.setRGB(0.65, 0.82, 1.0);
-        this.flashSize = 2.8;
+        this.flashSize = 1.8;
         break;
       case 'vaporize':
         this.glowCol.setRGB(1, 0.95, 0.85);
-        this.flashSize = 2.6;
+        this.flashSize = 1.9;
         break;
       case 'derez':
         this.flashSize = 1.4;
@@ -440,7 +440,7 @@ export class GibBurst {
       const bt = u.uBandT.value;
       const bo = u.uBandO.value;
       for (let b = 0; b < DEREZ_BANDS; b++) {
-        bt[b] = this.bandT[b] = 0.22 + rnd() * (this.calm ? 0.4 : 0.58);
+        bt[b] = this.bandT[b] = 0.3 + rnd() * (this.calm ? 0.4 : 0.55);
         bo[b] = (b % 2 === 0 ? 1 : -1) * (0.18 + rnd() * 0.5);
       }
       u.uBandDir.value.set(sideX, 0, sideZ).normalize();
@@ -482,7 +482,7 @@ export class GibBurst {
     }
     const f = this.flash;
     f.position.copy(this.style === 'singularity' ? this.pullP : this.flashAt);
-    f.material.color.copy(this.glowCol).multiplyScalar(2.2);
+    f.material.color.copy(this.glowCol).multiplyScalar(1.8);
     f.visible = this.flashDelay <= 0;
     f.scale.set(0.5, 0.5, 0.5);
     f.material.opacity = 1;
@@ -686,9 +686,9 @@ export class GibBurst {
         const k = Math.min(1, t / hold);
         u.uCharLine.value = -0.12 + k * 2.05;
         const cool = t < hold ? 1 : Math.exp(-(t - hold) * 2.2);
-        u.uEdgeCol.value.setRGB(2.8 * cool * gain, 0.95 * cool * gain, 0.16 * cool * gain);
-        _heat.setRGB(2.4, 0.8, 0.12);
-        ch.setGlow(gain * (t < hold ? 0.35 + 0.65 * k : Math.exp(-(t - hold) * 2.5)), _heat);
+        u.uEdgeCol.value.setRGB(2.2 * cool * gain, 0.72 * cool * gain, 0.12 * cool * gain);
+        _heat.setRGB(2.2, 0.7, 0.1);
+        ch.setGlow(gain * (t < hold ? 0.15 + 0.35 * k : 0.5 * Math.exp(-(t - hold) * 3)), _heat);
         u.uDissolve.value = t < hold + 0.05 ? 0 : Math.min(1.05, (t - hold - 0.05) / 0.75);
         u.uDissolveH.value = 0;
         break;
@@ -717,8 +717,8 @@ export class GibBurst {
         break;
       }
       case 'derez': {
-        u.uBands.value.set(1.9 / DEREZ_BANDS, smooth(0.08, calm ? 1.0 : 0.8, t));
-        u.uEdgeCol.value.copy(E).lerp(WHITE, 0.15).multiplyScalar(2.3 * (0.6 + 0.4 * gain));
+        u.uBands.value.set(1.9 / DEREZ_BANDS, smooth(0.04, calm ? 0.8 : 0.5, t));
+        u.uEdgeCol.value.copy(E).lerp(WHITE, 0.15).multiplyScalar(1.3 * (0.6 + 0.4 * gain));
         ch.setGlow(gain * Math.exp(-t * 5), E);
         break;
       }
@@ -727,11 +727,11 @@ export class GibBurst {
         const flashK = 1 - smooth(0.0, 0.09, t);
         if (!calm) u.uFlash.value.setRGB(2.6 * flashK, 2.4 * flashK, 2.1 * flashK);
         u.uAsh.value = smooth(0.04, 0.2, t);
-        const cool = Math.exp(-Math.max(0, t - 0.15) * 2.4);
+        const cool = Math.exp(-Math.max(0, t - 0.1) * 4.5);
         u.uEdgeCol.value.setRGB(2.6 * cool * gain, 0.85 * cool * gain, 0.16 * cool * gain);
         _c.setRGB(3, 2.8, 2.5);
         ch.setGlow(gain * flashK, _c);
-        u.uDissolve.value = t < 0.22 ? 0 : Math.min(1.03, (t - 0.22) / 0.85);
+        u.uDissolve.value = t < 0.2 ? 0 : Math.min(1.03, (t - 0.2) / 0.75);
         u.uDissolveH.value = 0.6;
         break;
       }
@@ -747,8 +747,8 @@ export class GibBurst {
           const k = t - blast;
           u.uArc.value = Math.max(0, 1 - k / 0.25);
           ch.setBurn(Math.min(1, k / 0.07));
-          _c.setRGB(1.6, 2.2, 3.4);
-          ch.setGlow(gain * Math.exp(-k * 2.2), _c);
+          _c.setRGB(1.2, 1.6, 2.5);
+          ch.setGlow(gain * Math.exp(-k * 4), _c);
           if (k < 0.05 && !calm) u.uFlash.value.setRGB(0.9, 1.2, 1.8);
         }
         break;
@@ -756,12 +756,12 @@ export class GibBurst {
       case 'prism': {
         ch.setBurn(Math.min(0.55, t / 0.1));
         u.uRainbow.value = 1;
-        ch.setGlow(gain * (0.6 + 0.6 * Math.exp(-t * 1.2)), E);
+        ch.setGlow(gain * (0.35 + 0.55 * Math.exp(-t * 1.6)), E);
         break;
       }
       case 'nova': {
         ch.setBurn(Math.min(0.6, t / 0.1));
-        _c.copy(E).lerp(WHITE, Math.max(0, 1 - t / 0.12)).multiplyScalar(2.6);
+        _c.copy(E).lerp(WHITE, Math.max(0, 1 - t / 0.06)).multiplyScalar(2.4);
         ch.setGlow(gain * Math.exp(-t * 1.1), _c);
         break;
       }
@@ -776,7 +776,7 @@ export class GibBurst {
         // pulse / starburst: plates char, seams flare white-hot then settle
         // into the victim's energy colour.
         ch.setBurn(Math.min(1, t / 0.07));
-        const w = Math.max(0, 1 - t / (this.style === 'starburst' ? 0.08 : 0.12));
+        const w = Math.max(0, 1 - t / 0.06);
         _c.copy(E).lerp(WHITE, w).multiplyScalar(this.style === 'starburst' ? 2.8 : 2.4);
         ch.setGlow(gain * Math.exp(-t * (this.style === 'starburst' ? 2.0 : 1.5)), _c);
         if (t < 0.04 && !calm) u.uFlash.value.copy(E).multiplyScalar(0.5);
@@ -903,7 +903,7 @@ export class GibBurst {
           p.gravity = 15;
           p.drag = 0.4;
           p.floor = this.floorWorld;
-          p.setScale(0.065 + rnd() * 0.03);
+          p.setScale(0.075 + rnd() * 0.03);
           p.qx = 0; p.qy = 0; p.qz = 0; p.qw = 1; // start grid-aligned — a voxel body
           p.randomSpin(3 + rnd() * 8);
           p.life = 0.85 + rnd() * 0.4;
@@ -1052,7 +1052,7 @@ export class GibBurst {
       }
       case 'confetti': {
         if (!this.once(1)) break;
-        const n = this.n(96);
+        const n = this.n(110);
         for (let k = 0; k < n; k++) {
           const p = this.alloc('flake');
           if (!p) break;
@@ -1061,13 +1061,13 @@ export class GibBurst {
           p.x = cw.x + (_w.x - cw.x) * 0.35;
           p.y = cw.y + (_w.y - cw.y) * 0.35;
           p.z = cw.z + (_w.z - cw.z) * 0.35;
-          const a = rnd() * TAU, rad = 1 + rnd() * 2.6;
+          const a = rnd() * TAU, rad = 1.5 + rnd() * 3;
           p.vx = Math.cos(a) * rad; p.vz = Math.sin(a) * rad;
-          p.vy = 4.5 + rnd() * 4;
-          p.drag = 2.4;
+          p.vy = 3.5 + rnd() * 4.5;
+          p.drag = 2.0;
           p.gravity = 9;
           p.floor = this.floorWorld;
-          p.setScale(0.045 + rnd() * 0.015, 0.03 + rnd() * 0.012, 1);
+          p.setScale(0.075 + rnd() * 0.02, 0.05 + rnd() * 0.015, 1);
           p.randomOrientation();
           p.randomSpin(8 + rnd() * 14);
           p.life = 1.1 + rnd() * 0.35;
@@ -1088,7 +1088,7 @@ export class GibBurst {
           p.drag = 1.8;
           p.gravity = 9;
           p.align = true;
-          p.setScale(0.014, 0.004, 0.26 + rnd() * 0.12);
+          p.setScale(0.022, 0.005, 0.32 + rnd() * 0.14);
           p.life = 0.9 + rnd() * 0.3;
           p.scaleFade = true;
           const c = CONFETTI[k % CONFETTI.length];
@@ -1150,7 +1150,7 @@ export class GibBurst {
             p.setRGB(2.4, 0.8, 0.15);
             p.setRamp(0.6, 0.08, 0.0);
           } else {
-            const sz = 0.03 + rnd() * 0.025;
+            const sz = 0.045 + rnd() * 0.03;
             p.setScale(sz, sz * (0.6 + rnd() * 0.5), 1);
             p.randomOrientation();
             p.randomSpin(3 + rnd() * 7);
@@ -1181,7 +1181,7 @@ export class GibBurst {
             const l = _v2.length();
             if (l > 0.55) _v2.multiplyScalar(0.55 / l);
             _v2.add(_w);
-            arcs.spawn(_w.x, _w.y, _w.z, _v2.x, _v2.y, _v2.z, 1.4, 1.9, 3.0, 0.014, 0.07, 0.05);
+            arcs.spawn(_w.x, _w.y, _w.z, _v2.x, _v2.y, _v2.z, 1.9, 2.5, 3.6, 0.022, 0.08, 0.06);
           }
         } else if (this.once(1)) {
           const n = this.n(26);

@@ -407,7 +407,7 @@ function killSingularity(ctx: FxContext, at: THREE.Vector3) {
   spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.2, -2.5, POP, 0.3, halo, 1.4);
   // The pop.
   const white = kTmp2.setRGB(1, 0.97, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.3, -0.4, 0.13, 1.7, white, 2.2, false, POP);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.0, -0.35, 0.12, 1.7, white, 2.0, false, POP);
   spriteC(ctx, flashTexture(), at.x, cy, at.z, 1.0, 0.25, 0.09, 1.5, white, 2.5, true, POP);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -5.5, 0.3, 1.3, white, 1.8, false, POP);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -4.2, 0.34, 1.5, halo, 1.8, false, POP + 0.04);
@@ -511,7 +511,6 @@ function killConfetti(ctx: FxContext, at: THREE.Vector3) {
 // delayed blast — flash, star and twin shells (the twitching + armour arcs
 // are the body's — gibs.ts).
 function killOverload(ctx: FxContext, at: THREE.Vector3) {
-  const pool = ctx.pool;
   const T = FINISHER_TIMING.overloadBlast;
   const cy = at.y + 0.3;
   const blue = kTmp.setRGB(0.55, 0.75, 1.0);
@@ -526,15 +525,14 @@ function killOverload(ctx: FxContext, at: THREE.Vector3) {
     arcs.spawn(
       at.x + Math.cos(a) * 0.15, y0, at.z + Math.sin(a) * 0.15,
       at.x + Math.cos(a) * r, y0 + (Math.random() - 0.3) * 0.5, at.z + Math.sin(a) * r,
-      blue.r * 2.6, blue.g * 2.6, blue.b * 2.6, 0.02, 0.07, 0.12, (i / n) * (T - 0.06), 30,
+      blue.r * 3, blue.g * 3, blue.b * 3, 0.03, 0.08, 0.14, (i / n) * (T - 0.06), 30,
     );
   }
   const white = kTmp2.setRGB(0.85, 0.93, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.4, -0.35, 0.14, 1.6, white, 2.1, false, T);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.1, -0.3, 0.13, 1.6, white, 1.9, false, T);
   spriteC(ctx, flashTexture(), at.x, cy, at.z, 1.0, 0.25, 0.09, 1.5, white, 2.5, true, T);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -4.4, 0.3, 1.3, blue, 2.2, false, T);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.4, 0.34, 1.5, white, 1.4, false, T + 0.05);
-  ringC(pool, at.x, at.y - 0.85, at.z, blue, 1.5, 0.3, true, 0.36, 6.5, 1.3, T);
 }
 
 // Vaporize: a white-hot flash and a heat shell (the body flash-burns to ash

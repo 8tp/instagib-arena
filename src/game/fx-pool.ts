@@ -551,7 +551,7 @@ export class FxPool {
       const shell = shape === 'column' || shape === 'cone';
       let mat: THREE.Material;
       if (shell) mat = shellMaterial();
-      else if (shape === 'cube') mat = solidMaterial(0.28, 1.4, false);
+      else if (shape === 'cube') mat = solidMaterial(0.45, 1.4, false);
       else if (shape === 'flake') mat = solidMaterial(0.32, 0, true);
       else if (shape === 'shard') mat = shardMaterial();
       else if (shape === 'mote') mat = billboardMaterial(glowTexture());
