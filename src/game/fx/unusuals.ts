@@ -1505,13 +1505,9 @@ export class UnusualEffect {
       }
     }
     const sa = this.boltJag;
-    const shootAt = (u: number) => {
-      // From high on one side down across the crown.
-      this.lw(Math.cos(sa) * (0.32 - 0.64 * u) + 0, 0.34 - 0.3 * u, Math.sin(sa) * (0.32 - 0.64 * u));
-    };
     if (shot > 0) {
       for (let j = 0; j < 8; j++) {
-        shootAt(Math.max(0, shot - j * 0.035));
+        this.shootAt(sa, Math.max(0, shot - j * 0.035));
         const k = 1 - j / 8;
         rib.push(1, this.wx, this.wy, this.wz, 1.6 * k, 1.8 * k, 2.4 * k, 0.012 * k);
       }
@@ -1547,10 +1543,15 @@ export class UnusualEffect {
         f.put(i, this.wx, this.wy, this.wz, 1.3, 1.5, 2.0, 0.25 + 0.75 * tw, 0.02, CELL.dot, 0);
       } else {
         if (shot <= 0) { f.hide(i); continue; }
-        shootAt(shot);
+        this.shootAt(sa, shot);
         f.put(i, this.wx, this.wy, this.wz, 2.4, 2.5, 2.8, 1 - shot * 0.5, 0.05, CELL.star, shot * 8);
       }
     }
+  }
+
+  // Cosmic's shooting star path: from high on one side down across the crown.
+  private shootAt(sa: number, u: number) {
+    this.lw(Math.cos(sa) * (0.32 - 0.64 * u), 0.34 - 0.3 * u, Math.sin(sa) * (0.32 - 0.64 * u));
   }
 
   // ── Thunderhead: a crackling electric crown — four forking yellow-white
