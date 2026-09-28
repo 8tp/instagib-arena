@@ -414,6 +414,16 @@ function Treatment({
       </span>
     );
   }
+  if (id.endsWith('.none')) {
+    return (
+      <span aria-hidden className='absolute inset-0 grid place-items-center pb-[12cqw]' style={{ color: `${color}88` }}>
+        <svg viewBox='0 0 24 24' width='38%' height='38%' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round'>
+          <circle cx='12' cy='12' r='8' />
+          <path d='M6.3 17.7 17.7 6.3' />
+        </svg>
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden

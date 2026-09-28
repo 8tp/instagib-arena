@@ -383,7 +383,7 @@ export function openCase(caseId: CaseId, useRoll: boolean): Promise<Res<OpenCase
   const forced = new URLSearchParams(window.location.search).get('mockTier') as Tier | null;
   let tier = forced && TIERS.includes(forced) ? forced : rollTier(effectiveOdds(c));
   const pool = casePoolFor(c.slots);
-  let list = tier === 'unobtainable' ? vaultUnobtainables() : pool.filter((d) => d.tier === tier);
+  let list = tier === 'unobtainable' ? vaultUnobtainables().filter((d) => c.slots.includes(d.slot)) : pool.filter((d) => d.tier === tier);
   let ti = TIERS.indexOf(tier);
   while (list.length === 0 && ti > 0) {
     ti--;

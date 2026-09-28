@@ -2,7 +2,7 @@
 // shows BOTH sides before you accept, and "New trade" (look a player up by
 // name, pick items + credits on both sides, add a note). Trade gates (level,
 // recorded matches, account age) are shown, and block sending when unmet.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell, SegButton, Skeleton } from '../deck';
 import { sfxProps, toast } from '../deck-core';
 import { TRADE, type ItemInstanceWire } from '../game/items/types';
@@ -177,13 +177,17 @@ function ReviewDialog({ t, dir, econ, onClose, onDone }: { t: Trade; dir: 'in' |
   const recv = incoming ? t.give : t.get;
   const give = incoming ? t.get : t.give;
   const afford = give.credits <= econ.credits;
+  const lock = useRef(false);
   const act = async (a: 'accept' | 'decline' | 'cancel') => {
+    if (lock.current) return;
+    lock.current = true;
     setBusy(true);
     const r = await api.tradeAct(t.id, a);
+    lock.current = false;
     setBusy(false);
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });
-      if (r.reason === 'gone') onDone();
+      if (r.reason === 'not_found' || r.reason === 'offer_stale') onDone();
       return;
     }
     if (a === 'accept') {
@@ -281,10 +285,13 @@ function NewTrade({ econ, gate, preload, onSent }: { econ: Econ; gate?: TradesRe
   const empty = mine.length + theirs.length + gc + rc === 0;
   const canSend = !!partner && !blocked && !empty && gc <= econ.credits && gc <= TRADE.maxCreditsPerDay && rc <= TRADE.maxCreditsPerDay;
 
+  const sendLock = useRef(false);
   const send = async () => {
-    if (!partner) return;
+    if (!partner || sendLock.current) return;
+    sendLock.current = true;
     setSending(true);
     const r = await api.offer({ to: partner.name, giveItems: mine, giveCredits: gc, getItems: theirs, getCredits: rc, note: note.trim() || undefined });
+    sendLock.current = false;
     setSending(false);
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });

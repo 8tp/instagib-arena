@@ -210,6 +210,7 @@ export function Locker({
           econ={econ}
           loggedIn={loggedIn}
           reduced={reduced}
+          lowSpec={settings.lowSpec}
           onEquipItem={(item) => {
             void econ.equip(instSlot(item), item.uid).then((ok) => ok && toast(`Equipped · ${instFullName(item)}`, { tone: 'ok', sound: 'equip' }));
           }}

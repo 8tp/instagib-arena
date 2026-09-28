@@ -243,9 +243,13 @@ function ListingDialog({ l, econ, loggedIn, myName, locked, onClose, onBought }:
   const hist = useHistory(it.def);
   const tier = instTier(it);
   const after = econ.credits - l.price;
+  const lock = useRef(false);
   const buy = async () => {
+    if (lock.current) return;
+    lock.current = true;
     setBusy(true);
     const r = await api.buy(l.id);
+    lock.current = false;
     setBusy(false);
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });
@@ -341,16 +345,20 @@ function SellDialog({ inst, econ, locked, onClose, onListed }: { inst: ItemInsta
   const tax = valid ? saleTax(n) : 0;
   const net = valid ? saleNet(n) : 0;
   const can = valid && econ.credits >= fee && !locked;
+  const lock = useRef(false);
   const submit = async () => {
+    if (lock.current) return;
+    lock.current = true;
     setBusy(true);
     const r = await api.list(inst.uid, n);
+    lock.current = false;
     setBusy(false);
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });
       return;
     }
     econ.setBalance({ credits: r.credits });
-    econ.patchItem(inst.uid, { state: 'listed' });
+    econ.markListed(inst.uid);
     toast(`Listed · ${instBaseName(inst)} for ${fmtCredits(n)}`, { tone: 'ok', sound: 'purchase' });
     onListed();
   };

@@ -25,6 +25,8 @@ export type Econ = EconState & {
   addItem: (it: ItemInstanceWire) => void;
   removeItems: (uids: readonly string[]) => void;
   patchItem: (uid: string, patch: Partial<ItemInstanceWire>) => void;
+  // An item went to the market: escrowed items can't stay equipped.
+  markListed: (uid: string) => void;
   // token = instance uid, `def:<id>` (default / entitlement) or null (stock default)
   equip: (slot: ItemSlot, token: string | null) => Promise<boolean>;
   salvage: (uids: string[]) => Promise<boolean>;
@@ -37,7 +39,12 @@ export function useEconomy(
   loggedIn: boolean,
 ): Econ {
   const [st, setSt] = useState<EconState>({ status: loggedIn ? 'loading' : 'guest', items: [], equipped: {}, credits: 0, freeRolls: 0, entitlements: [] });
-  const [busy, setBusy] = useState<string | null>(null);
+  // One busy key per in-flight action (equip:<slot>, salvage) so they can't clear each other.
+  const [busyKeys, setBusyKeys] = useState<readonly string[]>([]);
+  const busyAdd = useCallback((k: string) => setBusyKeys((b) => [...b, k]), []);
+  const busyDel = useCallback((k: string) => setBusyKeys((b) => { const i = b.indexOf(k); return i < 0 ? b : [...b.slice(0, i), ...b.slice(i + 1)]; }), []);
+  const busy = busyKeys.length ? busyKeys[0] : null;
+  const wasLoggedIn = useRef(loggedIn);
   const [key, setKey] = useState(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -59,8 +66,12 @@ export function useEconomy(
   useEffect(() => {
     if (!loggedIn) {
       setSt({ status: 'guest', items: [], equipped: {}, credits: 0, freeRolls: 0, entitlements: [] });
+      // Logging out: don't leave the last account's looks / uids in Settings.
+      if (wasLoggedIn.current) onChangeRef.current({ ...settingsRef.current, looks: {}, equippedUids: {}, finishItem: null });
+      wasLoggedIn.current = false;
       return;
     }
+    wasLoggedIn.current = true;
     let live = true;
     let retry = 0;
     const run = async (attempt: number) => {
@@ -85,7 +96,8 @@ export function useEconomy(
         publish(r.equipped ?? {}, looks, r.items);
       }
     };
-    setSt((s) => ({ ...s, status: 'loading' }));
+    // Only the first load shows skeletons; a reload keeps the current data on screen.
+    setSt((s) => ({ ...s, status: s.status === 'ready' ? 'ready' : 'loading' }));
     void run(0);
     return () => {
       live = false;
@@ -113,41 +125,10 @@ export function useEconomy(
     setSt((s) => ({ ...s, items: s.items.map((i) => (i.uid === uid ? { ...i, ...patch } : i)) }));
   }, []);
 
-  const equip = useCallback(
-    async (slot: ItemSlot, token: string | null): Promise<boolean> => {
-      const seq = (equipSeq.current[slot] ?? 0) + 1;
-      equipSeq.current[slot] = seq;
-      setBusy(token ?? `default:${slot}`);
-      const r = await econ.equip(slot, token);
-      if (equipSeq.current[slot] !== seq) return false; // a newer equip owns the outcome
-      setBusy(null);
-      if (!r.ok) {
-        toast(reasonText(r), { tone: 'err' });
-        return false;
-      }
-      setSt((s) => ({ ...s, equipped: r.equipped }));
-      publish(r.equipped, r.looks);
-      return true;
-    },
-    [publish],
-  );
-
-  const salvage = useCallback(
-    async (uids: string[]): Promise<boolean> => {
-      setBusy('salvage');
-      const r = await econ.salvage(uids);
-      setBusy(null);
-      if (!r.ok) {
-        toast(reasonText(r), { tone: 'err' });
-        return false;
-      }
-      const dropped = new Set(r.removed);
-      setSt((s) => {
-        const eq = { ...s.equipped };
-        for (const [sl, u] of Object.entries(eq)) if (u && dropped.has(u)) delete eq[sl as ItemSlot];
-        return { ...s, credits: r.credits, items: s.items.filter((i) => !dropped.has(i.uid)), equipped: eq };
-      });
-      // A salvaged equipped item falls back to the default: keep settings honest.
+  // Items that left the loadout (salvaged / listed): fall back to defaults in
+  // Settings too, so the game doesn't keep wearing an escrowed item.
+  const dropEquipped = useCallback(
+    (dropped: ReadonlySet<string>) => {
       const cur = settingsRef.current;
       const looks: Loadout = { ...(cur.looks ?? {}) };
       const eqUids = { ...(cur.equippedUids ?? {}) };
@@ -160,10 +141,61 @@ export function useEconomy(
         }
       }
       if (changed) publish(eqUids, looks, itemsRef.current.filter((i) => !dropped.has(i.uid)));
-      return true;
     },
     [publish],
   );
+  const markListed = useCallback(
+    (uid: string) => {
+      setSt((s) => {
+        const eq = { ...s.equipped };
+        for (const [sl, u] of Object.entries(eq)) if (u === uid) delete eq[sl as ItemSlot];
+        return { ...s, equipped: eq, items: s.items.map((i) => (i.uid === uid ? { ...i, state: 'listed' as const } : i)) };
+      });
+      dropEquipped(new Set([uid]));
+    },
+    [dropEquipped],
+  );
 
-  return { ...st, reload, setBalance, addItem, removeItems, patchItem, equip, salvage, busy };
+  const equip = useCallback(
+    async (slot: ItemSlot, token: string | null): Promise<boolean> => {
+      const seq = (equipSeq.current[slot] ?? 0) + 1;
+      equipSeq.current[slot] = seq;
+      const bk = `equip:${slot}`;
+      busyAdd(bk);
+      const r = await econ.equip(slot, token);
+      busyDel(bk);
+      if (equipSeq.current[slot] !== seq) return false; // a newer equip owns the outcome
+      if (!r.ok) {
+        toast(reasonText(r), { tone: 'err' });
+        return false;
+      }
+      setSt((s) => ({ ...s, equipped: r.equipped }));
+      publish(r.equipped, r.looks);
+      return true;
+    },
+    [publish, busyAdd, busyDel],
+  );
+
+  const salvage = useCallback(
+    async (uids: string[]): Promise<boolean> => {
+      busyAdd('salvage');
+      const r = await econ.salvage(uids);
+      busyDel('salvage');
+      if (!r.ok) {
+        toast(reasonText(r), { tone: 'err' });
+        return false;
+      }
+      const dropped = new Set(r.removed);
+      setSt((s) => {
+        const eq = { ...s.equipped };
+        for (const [sl, u] of Object.entries(eq)) if (u && dropped.has(u)) delete eq[sl as ItemSlot];
+        return { ...s, credits: r.credits, items: s.items.filter((i) => !dropped.has(i.uid)), equipped: eq };
+      });
+      dropEquipped(dropped);
+      return true;
+    },
+    [dropEquipped, busyAdd, busyDel],
+  );
+
+  return { ...st, reload, setBalance, addItem, removeItems, patchItem, markListed, equip, salvage, busy };
 }
