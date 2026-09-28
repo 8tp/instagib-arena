@@ -32,6 +32,7 @@ type Tile = {
   x: number; y: number; w: number; h: number; // CSS px, top-left origin
   cam: THREE.PerspectiveCamera;
   label: string;
+  camX?: number; // unusuals + move: the camera tracks the wearer sideways
 };
 
 type Actor = {
@@ -296,7 +297,7 @@ export class FxLab {
         const cy = (1 - (crown.y * 0.5 + 0.5)) * fullH;
         cam.setViewOffset(fullW, fullH, cx - tw / 2, cy - th / 2, tw, th);
         const name = UNUSUALS.find((u) => u.id === this.kinds[c])?.name ?? this.kinds[c];
-        this.tiles.push({ x: c * tw, y: v * th, w: tw, h: th, cam, label: `${name} · ${view.label}` });
+        this.tiles.push({ x: c * tw, y: v * th, w: tw, h: th, cam, label: `${name} · ${view.label}`, camX: cam.position.x });
       }
     }
   }
@@ -343,6 +344,12 @@ export class FxLab {
         if (a.moving) {
           // Strafe back and forth (±1.6 m, ~7 m/s peak) to show trails.
           a.slot.position.x = a.base.x + Math.sin(this.clock * 2.2) * 1.6;
+          // Track the wearer so the trail reads (the camera slides, never turns).
+          const tile = this.tiles[this.actors.indexOf(a)];
+          if (tile?.camX !== undefined) {
+            tile.cam.position.x = tile.camX + (a.slot.position.x - a.base.x);
+            tile.cam.updateMatrixWorld();
+          }
         }
         a.anim.updateStatic(dt);
         a.hat?.update(dt);
