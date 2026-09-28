@@ -46,7 +46,7 @@ export function ItemTile({
   onFocus?: (e: FocusEvent<HTMLElement>) => void;
   onKeyDown?: (e: KeyboardEvent<HTMLElement>) => void;
   tabIndex?: number;
-  rootProps?: HTMLAttributes<HTMLElement> & Record<`data-${string}`, string | undefined>;
+  rootProps?: HTMLAttributes<HTMLElement> & Record<string, unknown>;
   className?: string;
 }) {
   const item = cosmeticById(id);
