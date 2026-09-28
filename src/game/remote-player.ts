@@ -541,6 +541,7 @@ export class RemotePlayer {
     // the same implementation bots use.
     this.anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
     this.resolveLook();
+    this.syncEyes();
   }
 
   // Swap the 3rd-person railgun for one with the current finish.
@@ -559,6 +560,7 @@ export class RemotePlayer {
     if (!this.weaponGroup) return;
     applyFinishLook(this.weaponGroup, this.finishLook);
     asV3(this.weaponGroup).setStreak?.(this.streak);
+    this.syncEyes();
   }
 
   // The killer's current streak (Game tracks it from kill events): drives the gun
@@ -567,8 +569,15 @@ export class RemotePlayer {
     if (n === this.streak) return;
     this.streak = n;
     if (this.weaponGroup) asV3(this.weaponGroup).setStreak?.(n);
+    this.syncEyes();
+  }
+
+  // Professional Killstreak eyes: exist while the finish Look has an eye effect, the
+  // streak is 5+ and a body is installed. Re-run whenever any of those change (the
+  // body can arrive after the streak, and the finish Look can change under us).
+  private syncEyes() {
     const ks = this.finishLook?.k;
-    const on = !!ks && n >= 5;
+    const on = !!ks && this.streak >= 5 && !!this.character;
     const key = on ? ks : '';
     if (key !== this.eyesKey) {
       this.eyes?.dispose();
@@ -577,7 +586,7 @@ export class RemotePlayer {
       if (on && this.character) this.eyes = vfxHooks.createKillstreakEyes?.(this.character.sockets.headTop, ks) ?? null;
     }
     this.eyes?.setActive(on);
-    this.eyes?.setStreak?.(n);
+    this.eyes?.setStreak?.(this.streak);
   }
 
   // ── Taunts ──────────────────────────────────────────────────────────────
@@ -605,6 +614,11 @@ export class RemotePlayer {
   // Convenience: the remote's taunt from the server's relayed emote Look.
   playTauntLook(look: Look | undefined, seconds: number) {
     this.playTaunt(emoteKindOfLook(look), look, seconds);
+  }
+
+  // Raise the nameplate (killcam framing: keeps it clear of a hat's unusual).
+  setPlateLift(m: number) {
+    this.nameSprite.position.y = BOT_HEIGHT + 0.35 + m;
   }
 
   get isTaunting(): boolean {

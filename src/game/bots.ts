@@ -1001,6 +1001,11 @@ export class Bot {
     }
   }
 
+  // Raise the nameplate (killcam framing: keeps it clear of a hat's unusual).
+  setPlateLift(m: number) {
+    this.nameSprite.position.y = BOT_HEIGHT + 0.35 + m;
+  }
+
   get isTaunting(): boolean {
     return this.tauntLeft > 0 && this.state.alive;
   }
@@ -1174,7 +1179,7 @@ export class BotManager {
   step(dt: number, map: ArenaMap, enemies: BotTarget[], frozen = false): BotFireIntent[] {
     const intents: BotFireIntent[] = [];
     for (const b of this.bots) {
-      const intent = b.step(dt, map, enemies, frozen || b.isTaunting);
+      const intent = b.step(dt, map, enemies, frozen);
       if (intent) intents.push(intent);
       b.updateHat(dt);
     }

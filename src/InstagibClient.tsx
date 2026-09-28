@@ -479,6 +479,7 @@ const INITIAL_HUD: HudState = {
   killFlash: null,
   damageFlash: 0,
   killcam: null,
+  taunting: false,
   showScoreboard: false,
   matchOver: null,
   netStatus: 'off',
@@ -1679,18 +1680,9 @@ function PlayOfTheMatchOverlay({
             className='absolute inset-x-0 top-[16%] flex flex-col items-center transition-opacity duration-700'
             style={{ opacity: titleVisible ? 1 : 0 }}
           >
-            <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
+            <div className='text-[15px] font-semibold uppercase tracking-[0.5em] text-cyan-300/90 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
               Play of the Match
             </div>
-            <div
-              className='mt-2 text-4xl font-black uppercase tracking-[0.06em] drop-shadow-[0_3px_12px_rgba(0,0,0,0.95)]'
-              style={{ color: pom.kit?.nameColor ?? '#ffffff' }}
-            >
-              {pom.star}
-            </div>
-            {pom.kit?.title ? (
-              <div className='mt-1 text-[12px] font-bold uppercase tracking-[0.4em] text-white/70'>{pom.kit.title}</div>
-            ) : null}
           </div>
 
           {/* Lower third on the star's equipped playercard background. */}
@@ -1706,6 +1698,9 @@ function PlayOfTheMatchOverlay({
               >
                 {pom.star}
               </div>
+              {pom.kit?.title ? (
+                <div className='text-[12px] font-bold uppercase tracking-[0.4em] text-white/70'>{pom.kit.title}</div>
+              ) : null}
               <div
                 className='mt-1 text-lg font-bold uppercase tracking-[0.25em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
                 style={{ color: pom.kit?.cardAccent ?? '#67e8f9' }}
@@ -1714,7 +1709,7 @@ function PlayOfTheMatchOverlay({
                 {pom.subLabel ? <span className='ml-3 text-white/60'>· {pom.subLabel}</span> : null}
               </div>
               {pom.kit ? (
-                <div className='mt-1 text-[12px] uppercase tracking-[0.18em] text-amber-200/90 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]'>
+                <div className='mt-1.5 text-[15px] font-semibold uppercase tracking-[0.1em] text-amber-200 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]'>
                   {pom.kit.weapon}
                   {pom.kit.weaponKills != null ? ` · ${pom.kit.weaponKills.toLocaleString('en-US')} kills` : ''}
                   {pom.kit.finisher ? <span className='text-white/60'>{` · ${pom.kit.finisher}`}</span> : null}
@@ -2162,10 +2157,11 @@ function HudInvuln() {
 
 function HudWarmup() {
   const secs = useHudSlice((s) =>
-    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam
+    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam && !s.taunting
       ? Math.max(1, Math.ceil(s.warmupMsLeft / 1000))
       : 0,
   );
+  const taunting = useHudSlice((s) => s.taunting);
   // The countdown's last word: "Fight!" the moment the gun goes live.
   const [fight, setFight] = useState(false);
   const [prevSecs, setPrevSecs] = useState(secs);
@@ -2174,7 +2170,7 @@ function HudWarmup() {
     if (prevSecs > 0 && secs === 0) setFight(true);
   }
   if (secs > 0) return <WarmupOverlay secs={secs} />;
-  return fight ? <FightCall onDone={() => setFight(false)} /> : null;
+  return fight && !taunting ? <FightCall onDone={() => setFight(false)} /> : null;
 }
 
 function HudScoreboard({ showPing, info }: { showPing: boolean; info: HudMatchInfo }) {
@@ -2280,35 +2276,33 @@ const KillcamCard = memo(function KillcamCard({
             'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
         }}
       />
-      {/* Lower third: the killcam frames the killer at centre with their
-          nameplate above — the print must not sit on either. */}
-      <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
-        {/* A dark band behind the print: rail beams and bright walls cross
-            this part of the frame, and the print must read over all of it. */}
-        <div className='hud-killcam-print'>
+      {/* Lower third, hugging the bottom edge: the killcam frames the killer at
+          centre (legs + gibs reach ~65% down), so the print sits below that. */}
+      <div className='hud-killcam-card absolute inset-x-0 bottom-[3.5%] flex items-end justify-between gap-6 px-[5vw] font-mono'>
+        <div className='hud-killcam-print !px-6 !py-3 text-left'>
           <div className='hud-cprint-sub'>You were fragged by</div>
-          <div className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
+          <div className='font-display text-4xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
             {cam.killerName}
           </div>
           {cam.killerKit && (
-            <div className='mt-2 font-mono text-[12px] uppercase tracking-[0.18em] text-amber-200/90 [text-shadow:0_2px_0_rgba(0,0,0,0.7)]'>
+            <div className='mt-1.5 text-[16px] font-semibold uppercase tracking-[0.08em] text-amber-200 [text-shadow:0_2px_0_rgba(0,0,0,0.8)]'>
               {cam.killerKit.weapon}
               {cam.killerKit.weaponKills != null ? ` · ${cam.killerKit.weaponKills.toLocaleString('en-US')} kills` : ''}
-              {cam.killerKit.finisher ? <span className='text-white/60'>{` · ${cam.killerKit.finisher}`}</span> : null}
+              {cam.killerKit.finisher ? <span className='text-white/75'>{` · ${cam.killerKit.finisher}`}</span> : null}
             </div>
           )}
+          <div className='mt-2 inline-block bg-black/55 px-3 py-1 text-[12px] uppercase tracking-[0.2em] text-white/80'>
+            Respawning in{' '}
+            <span className='text-white'>
+              <KillcamCountdown />s
+            </span>
+          </div>
         </div>
         {cam.killerCard && (
-          <div className='mt-5'>
+          <div className='pb-1'>
             <PlayerCard card={cam.killerCard} reduced={reduced} />
           </div>
         )}
-        <div className='mt-4 bg-black/55 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-white/75'>
-          Respawning in{' '}
-          <span className='text-white'>
-            <KillcamCountdown />s
-          </span>
-        </div>
       </div>
     </div>
   );

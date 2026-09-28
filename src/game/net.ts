@@ -693,8 +693,10 @@ export class NetClient {
   // welcome and on every change. (The legacy per-slot messages above are still
   // sent until the server drops them.)
   setLocalLoadout(tokens: string[] | undefined): void {
-    this.localUids = tokens ?? null;
-    if (this.localUids) this.send({ type: 'loadout', uids: this.localUids });
+    // An empty / undefined set (logout, unequip-all) is still sent, so the server drops
+    // the stale loadout instead of keeping it.
+    this.localUids = tokens ?? [];
+    this.send({ type: 'loadout', uids: this.localUids });
   }
 
   // Play our equipped emote for the room (server rate-limits + relays).

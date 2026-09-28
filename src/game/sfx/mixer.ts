@@ -274,12 +274,12 @@ export class Mixer {
       fp.setTargetAtTime(6800, now, 0.15);
       wp.setTargetAtTime(wet * 1.35, now, 0.2);
     } else {
-      gp.linearRampToValueAtTime(0, now + fade);
-      // Once silent, snap everything back to the transparent live chain.
-      const done = now + fade + 0.05;
-      gp.setValueAtTime(1, done);
-      fp.setValueAtTime(20000, done);
-      wp.setValueAtTime(wet, done);
+      // Ease everything back to the transparent live chain: the replay gain returns to
+      // 1 (never to 0 — live SFX must be audible the instant the replay ends).
+      const t = Math.max(0.05, fade) / 3;
+      gp.setTargetAtTime(1, now, t);
+      fp.setTargetAtTime(20000, now, t);
+      wp.setTargetAtTime(wet, now, t);
     }
   }
 
