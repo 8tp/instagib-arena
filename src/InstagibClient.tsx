@@ -493,6 +493,8 @@ export default function InstagibClient() {
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
+  // The last match's reward payload, for the lobby's last-match banner.
+  const [lastProgression, setLastProgression] = useState<ProgressionResp | null>(null);
   // Bumped on every match start so GameView remounts a fresh Game (also for
   // "Play Again" with the same config).
   const [playId, setPlayId] = useState(0);
@@ -562,6 +564,7 @@ export default function InstagibClient() {
 
   const startMatch = useCallback((cfg: MatchConfig) => {
     setLastResult(null);
+    setLastProgression(null);
     setConfig(cfg);
     setPlayId((n) => n + 1);
     setView('playing');
@@ -569,8 +572,9 @@ export default function InstagibClient() {
 
   // Leave to the lobby. GameView already submitted stats; we only carry the
   // result through for the lobby's "last match" banner (no re-submit here).
-  const exitToLobby = useCallback((result: MatchResult | null) => {
+  const exitToLobby = useCallback((result: MatchResult | null, progression?: ProgressionResp | null) => {
     if (result) setLastResult(result);
+    setLastProgression(progression ?? null);
     setView('lobby');
   }, []);
 
@@ -624,6 +628,7 @@ export default function InstagibClient() {
         onChangeSettings={setSettings}
         onStart={startMatch}
         lastResult={lastResult}
+        lastProgression={lastProgression}
         account={auth.account}
         onOpenLogin={() => setLoginOpen(true)}
         onLogout={auth.logout}
@@ -708,7 +713,7 @@ function GameView({
   config: MatchConfig;
   settings: Settings;
   onChangeSettings: (s: Settings) => void;
-  onExit: (result: MatchResult | null) => void;
+  onExit: (result: MatchResult | null, progression?: ProgressionResp | null) => void;
   onPlayAgain: () => void;
   onLogin: (result: MatchResult | null) => void; // guest → back to the lobby with the login sheet open
 }) {
@@ -909,8 +914,9 @@ function GameView({
     if (!isChallenge && reportsOwnStats && r && game?.hasRecordableStats()) {
       void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
     }
-    onExit(r);
-  }, [onExit, offlineMatch, isChallenge, reportsOwnStats]);
+    // Leaving from the post-match vote still carries this match's rewards.
+    onExit(r, endProgression);
+  }, [onExit, offlineMatch, isChallenge, reportsOwnStats, endProgression]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck
@@ -1130,7 +1136,7 @@ function GameView({
           progression={endProgression}
           onLobby={() => {
             exitFullscreen();
-            onExit(endResult);
+            onExit(endResult, endProgression);
           }}
         />
       )}
@@ -1161,7 +1167,7 @@ function GameView({
           }}
           onLobby={() => {
             exitFullscreen();
-            onExit(endResult);
+            onExit(endResult, endProgression);
           }}
           onLogin={() => {
             exitFullscreen();
