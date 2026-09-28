@@ -97,7 +97,7 @@ const STD_ODDS: Record<Tier, number> = {
 export const CASES: readonly CaseDef[] = [
   { id: 'hat', name: 'Hat Case', blurb: 'Hats — with a shot at an Unusual.', cost: 150, slots: ['hat'], odds: STD_ODDS },
   { id: 'weapon', name: 'Weapon Case', blurb: 'Railgun finishes and rail beams. Strange and Killstreak variants.', cost: 150, slots: ['finish', 'beam'], odds: STD_ODDS },
-  { id: 'accessory', name: 'Accessory Case', blurb: 'Face gear, backpacks, wings and capes.', cost: 150, slots: ['face', 'back'], odds: STD_ODDS },
+  { id: 'accessory', name: 'Accessory Case', blurb: 'Face gear, backpacks, wings, capes and name colours.', cost: 150, slots: ['face', 'back', 'nameColor'], odds: STD_ODDS },
   { id: 'taunt', name: 'Taunt Case', blurb: 'Emotes, finishers and spawn effects. Unusual taunts drop here.', cost: 150, slots: ['emote', 'finisher', 'spawn'], odds: STD_ODDS },
   {
     id: 'vault', name: 'Vault Case', blurb: 'Everything, weighted up — and a whisper of Unobtainable.', cost: 600, premium: true,
