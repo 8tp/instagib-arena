@@ -670,3 +670,71 @@
   padding: 0.9rem 3.5rem 1rem;
   background: radial-gradient(closest-side, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.55) 60%, rgba(0, 0, 0, 0));
 }
+
+/* ── Deck micro-interactions (menu chrome; src/deck.tsx) ──────────────────
+   Lives here because this sheet is global. Components layer, so any Tailwind
+   utility on the same element still wins. Everything motion-y drops out
+   under prefers-reduced-motion; focus rings (.clip-deck-sm:focus-visible)
+   are untouched. */
+@layer components {
+  /* Buttons: quick colour ease, a physical 1px press + a hair of squash,
+     and a brief brighten while held. */
+  .deck-press {
+    transition:
+      background-color 140ms ease-out,
+      border-color 140ms ease-out,
+      color 140ms ease-out,
+      filter 90ms ease-out,
+      transform 90ms ease-out;
+  }
+  .deck-press:active:not(:disabled) {
+    transform: translateY(1px) scale(0.985);
+    filter: brightness(1.12);
+    transition-duration: 40ms;
+  }
+  /* Solid CTAs: a light sheen sweeps across once per hover. */
+  .deck-sheen {
+    position: relative;
+    isolation: isolate;
+  }
+  .deck-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.5) 50%, transparent 62%);
+    transform: translateX(-115%);
+  }
+  .deck-sheen:hover:not(:disabled)::after {
+    transform: translateX(115%);
+    transition: transform 620ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  /* Modal: the tone hairline draws in from the left as the panel settles. */
+  .deck-rule-draw {
+    transform-origin: 0% 50%;
+    animation: deck-rule-draw 440ms cubic-bezier(0.2, 0.7, 0.2, 1) 70ms both;
+  }
+}
+@keyframes deck-rule-draw {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck-press,
+  .deck-press:active:not(:disabled) {
+    transform: none;
+    transition: none;
+  }
+  .deck-sheen::after {
+    display: none;
+  }
+  .deck-rule-draw {
+    animation: none;
+  }
+}
