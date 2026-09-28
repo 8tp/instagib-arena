@@ -19,6 +19,8 @@
     "src/game/types.ts",
     "src/game/cosmetics.ts",
     "src/game/progression.ts",
-    "src/game/challenges.ts"
+    "src/game/challenges.ts",
+    "src/game/items/types.ts",
+    "src/game/items/catalog.ts"
   ]
 }

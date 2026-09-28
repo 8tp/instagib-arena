@@ -25,6 +25,7 @@ export const BACKDROP_MAPS: readonly string[] = ['reactor', 'causeway', 'lounge'
 // The menu runs a calmer bloom than a match: the backdrop is mostly neon trims
 // and glossy floors, and at full strength they glared behind the menu.
 const MENU_BLOOM = 0.5;
+const MENU_BLOOM_THRESHOLD = 2.4; // only real emissives bloom, not specular glints
 const SHOT_SECONDS = 24; // one orbit segment per map before the crossfade
 const CROSSFADE_MS = 1400;
 const FOV = 58; // cinematic, not the 90° gameplay FOV
@@ -464,6 +465,7 @@ export class MenuBackdrop {
     this.shift = opts.shift ?? 0.26;
     this.stage = new Stage(canvas, { shadows: !opts.lowSpec, bloom: true });
     this.stage.postFx.setBloomScale(MENU_BLOOM);
+    this.stage.postFx.setBloomThreshold(MENU_BLOOM_THRESHOLD);
     const want = opts.startMap ?? lastMapId;
     const start = want ? this.maps.indexOf(want) : -1;
     this.mapIndex = start >= 0 ? start : Math.floor(this.rand() * this.maps.length);

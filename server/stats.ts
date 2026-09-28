@@ -7,7 +7,6 @@
 
 import { Router, type Request } from 'express';
 import {
-  buyCosmetic,
   challengeResets,
   claimChallenge,
   findUserById,
@@ -15,9 +14,7 @@ import {
   getProfile,
   getStats,
   logEvent,
-  openCase,
   recordMatch,
-  setEquipped,
 } from './db';
 import { accountId } from './auth';
 
@@ -27,7 +24,7 @@ function playerId(req: Request): string {
 }
 
 // Rate-limit key: the account when logged in, else the client IP.
-function rateKeyFor(req: Request): string {
+export function rateKeyFor(req: Request): string {
   return accountId(req) || req.ip || 'unknown';
 }
 
@@ -58,7 +55,7 @@ const RATE_MAX_POSTS = 30; // at most 30 POSTs per identity per window
 const postHits = new Map<string, number[]>();
 
 // Returns true if this POST is allowed; records the hit when so.
-function allowPost(identity: string, now: number): boolean {
+export function allowPost(identity: string, now: number): boolean {
   const cutoff = now - RATE_WINDOW_MS;
   const recent = (postHits.get(identity) ?? []).filter((ts) => ts > cutoff);
   if (recent.length >= RATE_MAX_POSTS) {
@@ -191,46 +188,17 @@ statsRouter.get('/profile', (req, res) => {
   res.json({ profile: getProfile(id) });
 });
 
-// Equip an owned cosmetic. Rate-limited + server-validated.
-statsRouter.post('/equip', (req, res) => {
-  const rateKey = rateKeyFor(req);
-  if (!allowPost(rateKey, Date.now())) {
-    res.status(429).json({ error: 'rate_limited' });
-    return;
-  }
-  const id = playerId(req);
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const slot = typeof body.slot === 'string' ? body.slot : '';
-  const cosmeticId = typeof body.id === 'string' ? body.id : '';
-  const result = setEquipped(id, slot, cosmeticId);
-  res.status(result.ok ? 200 : 400).json(result);
-});
-
-// Buy a credits-priced cosmetic. Rate-limited + server-validated.
-statsRouter.post('/shop/buy', (req, res) => {
-  const rateKey = rateKeyFor(req);
-  if (!allowPost(rateKey, Date.now())) {
-    res.status(429).json({ error: 'rate_limited' });
-    return;
-  }
-  const id = playerId(req);
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const cosmeticId = typeof body.id === 'string' ? body.id : '';
-  const result = buyCosmetic(id, cosmeticId);
-  res.status(result.ok ? 200 : 400).json(result);
-});
-
-// Open a hat case (a free Career Road key if the player has one, else credits;
-// server-authoritative, never a duplicate — see db.ts openCase). Rate-limited.
-statsRouter.post('/shop/open-case', (req, res) => {
-  const rateKey = rateKeyFor(req);
-  if (!allowPost(rateKey, Date.now())) {
-    res.status(429).json({ error: 'rate_limited' });
-    return;
-  }
-  const id = playerId(req);
-  res.status(200).json(openCase(id));
-});
+// Economy v3: the old per-cosmetic equip / shop / hat-case endpoints moved to the
+// inventory API (server/economy-routes.ts). Kept as 410s so a stale client
+// bundle gets a clear answer instead of a 404.
+//   equip      -> POST /api/inventory/equip {slot, uid|null}
+//   shop/buy   -> gone (no shop; earn credits, open cases, use the market)
+//   open-case  -> POST /api/cases/open {caseId, useRoll}
+for (const route of ['/equip', '/shop/buy', '/shop/open-case']) {
+  statsRouter.post(route, (_req, res) => {
+    res.status(410).json({ error: 'moved' });
+  });
+}
 
 // Current daily/weekly challenges with progress + claim state.
 statsRouter.get('/challenges', (req, res) => {
