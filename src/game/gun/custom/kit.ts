@@ -134,6 +134,13 @@ float cgFill(float z, float z0, float z1) {
   float p = clamp((z - z0) / (z1 - z0), 0.0, 1.0);
   return smoothstep(p - 0.02, p + 0.06, f * 1.06);
 }
+// Bloom-safe cap (fairness): away from the muzzle tip nothing exceeds 1.3
+// linear (under the 1.5 bloom threshold), so no flare or streak glow can
+// bloom toward the crosshair; only right at the tip may a shot blaze.
+vec3 cgCap(vec3 c, vec3 p) {
+  float near = 1.0 - smoothstep(0.05, 0.14, distance(p, vec3(0.0, ${BARREL_Y.toFixed(3)}, ${MUZZLE_Z.toFixed(3)})));
+  return min(c, vec3(mix(1.3, 6.0, near)));
+}
 mat3 cgRotX(float a) { float c = cos(a), s = sin(a); return mat3(1, 0, 0, 0, c, s, 0, -s, c); }
 mat3 cgRotY(float a) { float c = cos(a), s = sin(a); return mat3(c, 0, -s, 0, 1, 0, s, 0, c); }
 mat3 cgRotZ(float a) { float c = cos(a), s = sin(a); return mat3(c, s, 0, -s, c, 0, 0, 0, 1); }
@@ -422,7 +429,7 @@ export function surfaceMaterial(drive: Drive, o: SurfaceOpts): THREE.MeshStandar
           float fres = pow(1.0 - clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0), 2.0);
           vec3 glow = vec3(0.0);
           ${o.frag}
-          totalEmissiveRadiance += glow;
+          totalEmissiveRadiance += cgCap(glow, vOP);
         }`,
       );
   };
@@ -513,7 +520,7 @@ export function motes(drive: Drive, o: MotesOpts): THREE.Mesh {
         float h = max(px, 1.2) * depth / uPx * 0.5;
         mv.xy += corner * h;
         gl_Position = projectionMatrix * mv;
-        vCol = col * max(a, 0.0) * min(1.0, (px * px) / 1.44);
+        vCol = cgCap(col * max(a, 0.0), p) * min(1.0, (px * px) / 1.44);
         vQ = corner;
         if (a <= 0.002 || seed.w > uDensity) gl_Position = vec4(-9.0, -9.0, -9.0, 1.0);
       }
@@ -623,7 +630,7 @@ export function strips(drive: Drive, o: StripsOpts): THREE.Mesh {
         float sc = length(modelViewMatrix[0].xyz);
         v0.xyz += normalize(side + vec3(1e-6)) * arc.z * w * sc;
         gl_Position = projectionMatrix * v0;
-        vCol = c * max(a, 0.0);
+        vCol = cgCap(c * max(a, 0.0), p0);
         vSide = arc.z;
         // Cull whole strips only (per-vertex culling would stretch triangles).
         if (rnd.w > uDensity) gl_Position = vec4(-9.0, -9.0, -9.0, 1.0);
@@ -680,7 +687,7 @@ export type BillboardOpts = {
 
 export function billboard(drive: Drive, o: BillboardOpts): THREE.Mesh {
   const m = new THREE.ShaderMaterial({
-    uniforms: { ...drive, uSize: { value: o.size } },
+    uniforms: { ...drive, uSize: { value: o.size }, uAt: { value: new THREE.Vector3(o.at[0], o.at[1], o.at[2]) } },
     vertexShader: /* glsl */ `
       uniform float uSize;
       varying vec2 vQ;
@@ -695,12 +702,14 @@ export function billboard(drive: Drive, o: BillboardOpts): THREE.Mesh {
     fragmentShader: /* glsl */ `
       ${DRIVE_GLSL}
       ${NOISE_GLSL}
+      uniform vec3 uAt;
       varying vec2 vQ;
       ${o.pars ?? ''}
       void main() {
         vec3 col = vec3(0.0);
         float a = 1.0;
         ${o.frag}
+        col = cgCap(col, uAt);
         gl_FragColor = vec4(col, a);
         #include <colorspace_fragment>
       }
@@ -738,13 +747,17 @@ export type FxMeshOpts = {
 
 // An effect-shaded mesh (discs, flames, hard light, auras) on given geometry.
 export function fxMesh(drive: Drive, geo: THREE.BufferGeometry, o: FxMeshOpts): THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial> {
+  // Mesh-local → gun space (for the bloom cap); refreshed before each draw.
+  const meshToGun = { value: new THREE.Matrix4() };
   const m = new THREE.ShaderMaterial({
-    uniforms: { ...drive },
+    uniforms: { ...drive, uMeshToGun: meshToGun },
     vertexShader: /* glsl */ `
       ${DRIVE_GLSL}
       ${NOISE_GLSL}
+      uniform mat4 uMeshToGun;
       varying vec2 vUv;
       varying vec3 vP;
+      varying vec3 vPd;
       varying vec3 vV;
       varying vec3 vN;
       ${o.pars ?? ''}
@@ -753,6 +766,7 @@ export function fxMesh(drive: Drive, geo: THREE.BufferGeometry, o: FxMeshOpts): 
         vP = position;
         vec3 p = position;
         ${o.vert ?? ''}
+        vPd = (uMeshToGun * vec4(p, 1.0)).xyz;
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vV = normalize(-mv.xyz);
         vN = normalize(normalMatrix * normal);
@@ -764,6 +778,7 @@ export function fxMesh(drive: Drive, geo: THREE.BufferGeometry, o: FxMeshOpts): 
       ${NOISE_GLSL}
       varying vec2 vUv;
       varying vec3 vP;
+      varying vec3 vPd;
       varying vec3 vV;
       varying vec3 vN;
       ${o.pars ?? ''}
@@ -771,6 +786,7 @@ export function fxMesh(drive: Drive, geo: THREE.BufferGeometry, o: FxMeshOpts): 
         vec3 col = vec3(0.0);
         float a = 1.0;
         ${o.frag}
+        col = cgCap(col, vPd);
         gl_FragColor = vec4(col, a);
         #include <colorspace_fragment>
       }
@@ -785,6 +801,9 @@ export function fxMesh(drive: Drive, geo: THREE.BufferGeometry, o: FxMeshOpts): 
   });
   m.name = `customgun-${o.key}-fx`;
   const mesh = new THREE.Mesh(geo, m);
+  // The fx meshes sit directly under the gun group: their local matrix is the
+  // mesh → gun transform (identity for most; the disc is placed/rotated).
+  mesh.onBeforeRender = () => meshToGun.value.copy(mesh.matrix);
   mesh.name = `${o.key}-fx`;
   mesh.frustumCulled = false;
   mesh.renderOrder = 3;

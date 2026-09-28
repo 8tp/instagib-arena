@@ -8,8 +8,9 @@ import { RAILGUN_FINISHES, type RailgunFinish } from '../../cosmetics';
 import { Character, skinColorFor } from '../../character/character';
 import { CharacterAnimator } from '../../character-anim';
 import { GUN_SCALE } from '../../character/gun';
-import { CUSTOM_GUN_BUILDS, CUSTOM_GUN_KEYS } from './index';
-import type { CustomGunInstance, CustomGunState } from './types';
+import { ViewmodelMotion } from '../../viewmodel-motion';
+import { CUSTOM_GUN_KEYS } from './index';
+import type { CustomGunState } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Custom gun lab (dev only). Renders every custom railgun model into a
@@ -61,8 +62,7 @@ type Subject = {
   update(dt: number, s: CustomGunState): void;
   fire(): void;
   dispose(): void;
-  inst?: CustomGunInstance;
-  stock?: RailgunModel;
+  stock: RailgunModel;
 };
 
 export class CustomGunLab {
@@ -82,6 +82,10 @@ export class CustomGunLab {
   private readonly low: boolean;
   private readonly subjects: Subject[] = [];
   private readonly extra: THREE.Object3D[] = [];
+  // The game's viewmodel pose (resting PLACEMENT: lower right, toed in) —
+  // motion intensity 0, so only placement + the fire kick apply.
+  private readonly motion = new ViewmodelMotion();
+  private posed: Subject | null = null;
   readonly stats: LabStats = {};
   caption = '';
 
@@ -125,30 +129,29 @@ export class CustomGunLab {
     return Number.isFinite(n) ? n : def;
   }
 
+  // Every gun goes through the game's own buildRailgun (custom models via the
+  // registry: same group, muzzle flare, killstreak extras and ticker as in a
+  // match). The custom ticker runs on render; the lab calls it per step.
   private make(key: string, lod: 'high' | 'low'): Subject {
     const f = finishFor(key);
-    if (key === 'stock' || !CUSTOM_GUN_BUILDS[key]) {
-      const stock = buildRailgun(f, { lod });
-      return {
-        key,
-        group: stock.group,
-        stock,
-        update: (_dt, s) => stock.setCharge(s.charge),
-        fire: () => stock.notifyFire(),
-        dispose: () => stock.dispose(),
-      };
-    }
-    const inst = CUSTOM_GUN_BUILDS[key]({ lod, finish: f });
+    const rail = buildRailgun(f, { lod });
+    rail.setLowSpec(this.low);
+    const ticker = rail.group.getObjectByName('gun-ticker');
+    const tick = ticker ? (ticker.onBeforeRender as unknown as () => void) : null;
     // &hide=motes,strips: hide VFX parts by name (debugging).
     const hide = (this.params.get('hide') ?? '').split(',').filter(Boolean);
-    if (hide.length) inst.group.traverse((o) => { if (hide.some((h) => o.name.includes(h))) o.visible = false; });
+    if (hide.length) rail.group.traverse((o) => { if (hide.some((h) => o.name.includes(h))) o.visible = false; });
     return {
       key,
-      group: inst.group,
-      inst,
-      update: (dt, s) => inst.update(dt, s),
-      fire: () => {},
-      dispose: () => inst.dispose(),
+      group: rail.group,
+      stock: rail,
+      update: (_dt, s) => {
+        rail.setCharge(s.charge);
+        rail.setStreak(s.streak);
+        tick?.();
+      },
+      fire: () => rail.notifyFire(),
+      dispose: () => rail.dispose(),
     };
   }
 
@@ -161,27 +164,48 @@ export class CustomGunLab {
       this.virtualMs += STEP * 1000;
       sub.update(STEP, s);
       onStep?.(STEP);
+      if (this.posed === sub) this.stepPose(STEP);
     }
     if (state === 'idle' || state === 'streak') return;
     const after = state === 'fired' ? this.num('fire', 0.06) : RAIL_COOLDOWN * this.num('rc', 0.55);
     sub.fire();
+    if (this.posed === sub) this.motion.onFire();
     for (let t = 0; t < after; t += STEP) {
       this.virtualMs += STEP * 1000;
       s.charge = Math.min(1, (t + STEP) / RAIL_COOLDOWN);
       s.firing = Math.max(0, 1 - t / FIRE_LIFE);
       sub.update(STEP, s);
       onStep?.(STEP);
+      if (this.posed === sub) this.stepPose(STEP);
     }
   }
 
   private setViewmodel(sub: Subject | null) {
     const cam = this.post.viewmodel.camera;
     for (const s of this.subjects) if (s.group.parent === cam) cam.remove(s.group);
+    this.posed = sub;
     if (!sub) return;
     sub.group.scale.setScalar(VIEWMODEL_SCALE);
-    sub.group.position.set(VIEWMODEL_BASE.x, VIEWMODEL_BASE.y, VIEWMODEL_BASE.z);
-    sub.group.rotation.set(0, 0, 0);
     cam.add(sub.group);
+    this.motion.setIntensity(0);
+    this.stepPose(0);
+  }
+
+  // Exactly the game's transform: VIEWMODEL_BASE + ViewmodelMotion pose.
+  private stepPose(dt: number) {
+    const sub = this.posed;
+    if (!sub) return;
+    const pose = this.motion.update({
+      dt, yaw: 0, pitch: 0, groundSpeed: 0, lateralSpeed: 0, grounded: true, zoom: 0, reducedEffects: this.reduced,
+    });
+    sub.group.position.set(VIEWMODEL_BASE.x + pose.x, VIEWMODEL_BASE.y + pose.y, VIEWMODEL_BASE.z + pose.z);
+    sub.group.rotation.set(pose.rx, pose.ry, pose.rz);
+    const flare = sub.stock.muzzleFlash;
+    if (flare) {
+      flare.visible = pose.muzzle > 0;
+      flare.material.opacity = pose.muzzle;
+      flare.scale.setScalar(1 + (1 - pose.muzzle) * 0.9);
+    }
   }
 
   // ── Probes ────────────────────────────────────────────────────────────────
@@ -250,7 +274,7 @@ export class CustomGunLab {
     let tris = 0, draws = 0, points = 0;
     sub.group.traverse((o) => {
       if (!o.visible) return;
-      if (!(o as THREE.Mesh).isMesh || o.name === 'railgun-flare') return; // flare: hidden between shots
+      if (!(o as THREE.Mesh).isMesh || o.name === 'railgun-flare' || o.name === 'gun-ticker') return; // flare: hidden between shots; ticker writes nothing
       const g = (o as THREE.Mesh).geometry;
       const t = (g.index ? g.index.count : g.attributes.position.count) / 3;
       if (o.name.endsWith('-motes')) points += g.attributes.position.count / 4;

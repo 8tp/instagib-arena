@@ -50,15 +50,15 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   // Crystal spine along the top.
   p.add(hull([
     [0, 0.086, 0.12], [0.016, 0.098, 0.1], [-0.016, 0.098, 0.1], [0.016, 0.098, -0.18], [-0.016, 0.098, -0.18],
-    [0, 0.112, 0.08], [0, 0.112, -0.16], [0.012, 0.086, 0.1], [-0.012, 0.086, 0.1], [0.012, 0.086, -0.18], [-0.012, 0.086, -0.18],
+    [0, 0.122, 0.07], [0, 0.122, -0.15], [0.012, 0.086, 0.1], [-0.012, 0.086, 0.1], [0.012, 0.086, -0.18], [-0.012, 0.086, -0.18],
     [0, 0.09, -0.22],
   ]), CRYSTAL);
   // Flank charge windows (gauge) with chrome bezels.
   for (const sx of [-1, 1]) {
-    p.add(chamferBox(0.006, 0.03, 0.15, 0.002), { col: 0x05060a, rough: 0.1, metal: 0.1, glow: 1, zone: Z.GAUGE, at: [sx * 0.048, 0.034, -0.065] });
+    p.add(chamferBox(0.008, 0.046, 0.2, 0.003), { col: 0x05060a, rough: 0.1, metal: 0.1, glow: 1, zone: Z.GAUGE, at: [sx * 0.048, 0.03, -0.06], flat: true });
     if (hi) {
-      p.add(chamferBox(0.008, 0.007, 0.17, 0.002), { ...CHROME, at: [sx * 0.05, 0.053, -0.065] });
-      p.add(chamferBox(0.008, 0.007, 0.17, 0.002), { ...CHROME, at: [sx * 0.05, 0.015, -0.065] });
+      p.add(chamferBox(0.01, 0.007, 0.22, 0.002), { ...CHROME, at: [sx * 0.051, 0.057, -0.06] });
+      p.add(chamferBox(0.01, 0.007, 0.22, 0.002), { ...CHROME, at: [sx * 0.051, 0.004, -0.06] });
     }
   }
   addGrip(p, { grip: RUBBER, guard: { ...CHROME, flat: false }, hi });
@@ -138,7 +138,7 @@ const FRAG = /* glsl */ `
   } else if (zone == ${Z.CRYSTAL} || zone == ${Z.SHARD}) {
     vec3 c = cgHue(vOP.z * 3.0 + vOP.y * 5.0 - uTime * 0.3 + fres * 0.8);
     diffuseColor.rgb = vec3(0.03);
-    float k = 0.18 + 0.4 * fres + 0.6 * uStreak + 2.2 * uFire;
+    float k = 0.3 + 0.5 * fres + 0.6 * uStreak + 2.2 * uFire;
     glow += mix(c, vec3(1.0), 0.25) * k * gmask;
   } else if (zone == ${Z.CORE}) {
     float f = cgFill(vOP.z, -0.26, -0.86);
@@ -149,7 +149,9 @@ const FRAG = /* glsl */ `
   } else if (zone == ${Z.GAUGE}) {
     float f = cgFill(vOP.z, 0.01, -0.14);
     diffuseColor.rgb = vec3(0.02);
-    glow += mix(cgHue(vOP.z * 4.0 - uTime * 0.4), vec3(1.0), 0.2) * (0.06 + 0.85 * f + 2.0 * uFire);
+    // Crystal panels: faceted rainbow light, refilling with the charge.
+    vec3 hue = cgHue(vOP.z * 5.0 + vOP.y * 9.0 - uTime * 0.4 + fres);
+    glow += mix(hue, vec3(1.0), 0.15) * (0.08 + 0.95 * f * (0.7 + 0.3 * fres) + 0.4 * uStreak + 2.0 * uFire);
   }
 `;
 

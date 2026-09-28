@@ -210,6 +210,7 @@ const EMBERS = /* glsl */ `
 // tip). A smoulder at rest; a short roaring cone on the shot.
 function breathGeo(): THREE.BufferGeometry {
   return cached('dragon-breath', () => {
+    // Unit-length cone (uv.y 0 → 1); the vertex shader sets the real length.
     const g = new THREE.CylinderGeometry(0.055, 0.016, 1, 12, 8, true);
     g.translate(0, 0.5, 0);
     g.rotateX(-Math.PI / 2);
@@ -220,15 +221,17 @@ function breathGeo(): THREE.BufferGeometry {
 }
 
 const BREATH_VERT = /* glsl */ `
-  float roar = exp(-uShot * 5.0) * step(uShot, 1.2);
-  float len = 0.035 + 0.02 * uStreak + 0.17 * roar * (1.0 - exp(-uShot * 25.0));
+  float roar = exp(-uShot * 7.0) * step(uShot, 0.8);
+  // Short: ≤ ~0.16 model units (~13 cm at viewmodel scale) past the jaws —
+  // never a stream down the aim line.
+  float len = 0.03 + 0.015 * uStreak + 0.11 * roar * (1.0 - exp(-uShot * 25.0));
   float t = uv.y;
   p.z = ${(MOUTH_Z + 0.01).toFixed(3)} - t * len;
   float wob = 1.0 + 0.25 * sin(uTime * 17.0 + t * 9.0) * (1.0 - uCalm);
   p.xy = vec2(0.0, ${BARREL_Y.toFixed(3)}) + (p.xy - vec2(0.0, ${BARREL_Y.toFixed(3)})) * (0.6 + 1.1 * roar) * wob;
 `;
 const BREATH_FRAG = /* glsl */ `
-  float roar = exp(-uShot * 5.0) * step(uShot, 1.2);
+  float roar = exp(-uShot * 7.0) * step(uShot, 0.8);
   float t = vUv.y;
   float n = cgFbm(vec3(vUv.x * 6.0, t * 3.0 - uTime * 4.0, uTime * 0.7));
   float body = smoothstep(1.0, 0.1, t + n * 0.5) * (0.45 + 0.55 * n);
@@ -247,6 +250,6 @@ export const buildDragon: CustomGunBuild = ({ lod, finish }) => {
   // The roar engulfs the skull for its first instants (drawn over it, like
   // the standard discharge flare); the smoulder sits behind the jaws.
   return rig.instance(() => {
-    breath.material.depthTest = d.uShot.value > 0.3;
+    breath.material.depthTest = d.uShot.value > 0.2;
   });
 };
