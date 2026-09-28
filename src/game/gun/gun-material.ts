@@ -31,7 +31,9 @@ export const STOCK_FINISH: RailgunFinish = {
   accentHot: 0x8af2ff,
 };
 
-const PATTERN_ID: Record<FinishPattern, number> = {
+// Keyed by string so the table can run ahead of the FinishPattern union
+// (cosmetics.ts): 'enamel' and 'void' render as soon as a finish uses them.
+const PATTERN_ID: Record<string, number> = {
   plain: 0,
   carbon: 1,
   hex: 2,
@@ -40,6 +42,8 @@ const PATTERN_ID: Record<FinishPattern, number> = {
   spectrum: 5,
   digital: 6,
   ceramic: 7,
+  enamel: 8,
+  void: 9,
 };
 
 // Base-colour slots (uPartCol / uPartRM index): parts 0–4 map to themselves;
@@ -64,6 +68,9 @@ export type GunUniforms = {
   uCore: { value: THREE.Color };
   uFlash: { value: THREE.Color }; // discharge light cast on the gun
   uTime: { value: number };
+  // Not a shader uniform: how far the CoilDriver whitens the coils' colour
+  // (the Ratz hero finish runs white-hot coils).
+  coilWhite: { value: number };
 };
 
 export type GunMaterialOptions = {
@@ -132,14 +139,21 @@ int gunSlot(int part) {
   return ${SLOT_ENERGY};
 }
 
+
 // How strongly the finish pattern covers a part (0 = untouched).
 float gunPatternWeight(int part) {
   #if GUN_PATTERN == 1
-    return part == ${PART.BODY} || part == ${PART.CARBON} ? 1.0 : 0.0;
+    return part == ${PART.BODY} || part == ${PART.CARBON} ? 1.0 : part == ${PART.METAL} ? 0.7 : 0.0;
+  #elif GUN_PATTERN == 3
+    return part == ${PART.BODY} || part == ${PART.METAL} ? 1.0 : 0.0;
   #elif GUN_PATTERN == 5
     return part == ${PART.BODY} ? 1.0 : part == ${PART.METAL} ? 0.8 : part == ${PART.METAL_LT} ? 0.5 : 0.0;
   #elif GUN_PATTERN == 6
-    return part == ${PART.BODY} ? 1.0 : part == ${PART.METAL} ? 0.75 : 0.0;
+    return part == ${PART.BODY} ? 1.0 : part == ${PART.METAL} ? 0.8 : 0.0;
+  #elif GUN_PATTERN == 8
+    return part == ${PART.BODY} ? 1.0 : 0.0;
+  #elif GUN_PATTERN == 9
+    return part == ${PART.BODY} ? 1.0 : part == ${PART.METAL} ? 0.7 : 0.0;
   #else
     return part == ${PART.BODY} ? 1.0 : part == ${PART.METAL} ? 0.45 : 0.0;
   #endif
@@ -159,8 +173,9 @@ float gunLine(float d, float hw) {
   return 1.0 - smoothstep(hw - aa, hw + aa, d);
 }
 
-// 2×2 twill: x = across-tow position 0…1, y = 1 for weft, 0 for warp.
-#define GUN_TOW 0.0055
+// 2×2 twill: x = across-tow position 0…1, y = 1 for weft, 0 for warp. Tows
+// are oversized (real ones are ~3 mm) so the weave reads at arm's length.
+#define GUN_TOW 0.011
 vec2 gunTwill(vec2 uv) {
   vec2 q = uv / GUN_TOW;
   vec2 c = floor(q);
@@ -171,7 +186,7 @@ vec2 gunTwill(vec2 uv) {
 
 // Hex cell: xy = offset from the cell centre, z = distance to the cell edge
 // (metres), w = cell hash.
-#define GUN_HEX 0.026
+#define GUN_HEX 0.05
 vec4 gunHex(vec2 uv) {
   vec2 q = uv / GUN_HEX;
   const vec2 r = vec2(1.0, 1.7320508);
@@ -186,7 +201,7 @@ vec4 gunHex(vec2 uv) {
 
 // Plasma vein field (0 on a vein's centre line).
 float gunVein(vec3 p) {
-  vec3 q = p * 24.0 + vec3(0.0, 0.0, uTime * 0.7);
+  vec3 q = p * 13.0 + vec3(0.0, 0.0, uTime * 0.5);
   return abs(gNoise(q) + 0.5 * gNoise(q * 2.1 + 3.7) - 0.75);
 }
 
@@ -196,27 +211,32 @@ float gunHeight(vec3 p, vec3 n, vec3 g) {
   float w = gunPatternWeight(part);
   vec2 uv = gunUV(p, n, g.z);
   float h = 0.0;
-  #if GUN_PATTERN == 0 || GUN_PATTERN == 7
+  #if GUN_PATTERN == 0 || GUN_PATTERN == 7 || GUN_PATTERN == 8
     // Engraved panel seams across the receiver; ceramic adds plate joints.
     if (part == ${PART.BODY}) {
       h -= 0.0007 * (1.0 - smoothstep(0.0006, 0.0016, abs(p.z - 0.048)));
       h -= 0.0007 * (1.0 - smoothstep(0.0006, 0.0016, abs(p.z + 0.155)));
       #if GUN_PATTERN == 7
-        float pz = abs(fract(uv.x / 0.075) - 0.5) * 0.075;
-        h -= 0.0006 * (1.0 - smoothstep(0.0005, 0.0014, 0.0375 - pz));
+        float pz = abs(fract(uv.x / 0.09) - 0.5) * 0.09;
+        h -= 0.0008 * (1.0 - smoothstep(0.0008, 0.002, 0.045 - pz));
       #endif
     }
   #endif
   #if GUN_PATTERN == 1
-    if (w > 0.0) h += w * 0.00035 * sin(gunTwill(uv).x * 3.14159) * gunFade(GUN_TOW * 2.0);
+    if (w > 0.0) h += w * 0.0005 * sin(gunTwill(uv).x * 3.14159) * gunFade(GUN_TOW * 2.0);
   #elif GUN_PATTERN == 2
-    if (w > 0.0) h -= w * 0.0006 * (1.0 - smoothstep(0.0008, 0.0018, gunHex(uv).z)) * gunFade(GUN_HEX * 0.25);
+    if (w > 0.0) h -= w * 0.0009 * (1.0 - smoothstep(0.0015, 0.003, gunHex(uv).z)) * gunFade(GUN_HEX * 0.25);
   #elif GUN_PATTERN == 4
     if (w > 0.0) h -= w * 0.0005 * (1.0 - smoothstep(0.0, 0.07, gunVein(p)));
+  #elif GUN_PATTERN == 6
+    if (w > 0.0) {
+      vec2 cell = floor(uv / 0.02);
+      h -= w * 0.0004 * step(0.55, gNoise(vec3(cell * 0.3, 0.0))) * gunFade(0.02);
+    }
   #endif
   if (part == ${PART.CARBON}) {
     #if GUN_PATTERN != 1
-      h += 0.00035 * sin(gunTwill(uv).x * 3.14159) * gunFade(GUN_TOW * 2.0);
+      h += 0.0005 * sin(gunTwill(uv).x * 3.14159) * gunFade(GUN_TOW * 2.0);
     #endif
   }
   return h;
@@ -230,15 +250,18 @@ struct GunSurf {
   float glow; // 1 on parts lit by the material's own emissive (the glow knob)
 };
 
-// Carbon weave tinted by base: bright tow crowns, dark valleys, the two
-// directions catch the light differently; fades to its mean when tiny.
-void gunCarbon(inout GunSurf s, vec2 uv, vec3 base, float w) {
+// Carbon weave tinted by base: bright tow crowns, dark valleys, and the two
+// directions catch the light differently (the warp tows turn up the sheen);
+// glossy like a clear coat. Fades to its mean when tiny.
+void gunCarbon(inout GunSurf s, vec2 uv, vec3 base, float w, vec3 vn, vec3 vdir) {
   vec2 tw = gunTwill(uv);
   float tow = sin(tw.x * 3.14159);
   float fade = gunFade(GUN_TOW * 2.0);
-  float k = mix(0.72, (0.35 + 0.9 * tow) * mix(0.72, 1.0, tw.y), fade);
+  float sheen = mix(0.55, 1.0, tw.y) * (0.75 + 0.5 * pow(1.0 - abs(dot(vn, vdir)), 2.0));
+  float k = mix(0.6, (0.2 + 1.25 * tow) * sheen, fade);
   s.albedo = mix(s.albedo, base * k, w);
-  s.rough = mix(s.rough, mix(0.32, 0.22 + 0.2 * (1.0 - tow), fade), w);
+  s.rough = mix(s.rough, mix(0.22, 0.12 + 0.22 * (1.0 - tow), fade), w);
+  s.metal = mix(s.metal, 0.3, w);
 }
 
 GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
@@ -278,43 +301,42 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
 
   // ── Finish patterns ──
   #if GUN_PATTERN == 1
-    if (w > 0.0) {
-      gunCarbon(s, uv, uPatA, w);
-      s.metal = mix(s.metal, 0.25, w);
-    }
+    // Carbon: the whole shell is woven (receiver, stock, housings).
+    if (w > 0.0) gunCarbon(s, uv, uPatA, w, vn, vdir);
   #elif GUN_PATTERN == 2
-    // Hex plating: per-plate tint, dark seams with a faint neon line.
+    // Hex plating on gloss black; every seam carries a neon line in the accent.
     if (w > 0.0) {
       vec4 hx = gunHex(uv);
-      float fade = gunFade(GUN_HEX * 0.25);
-      float seam = gunLine(hx.z, 0.0012) * fade;
-      float neon = gunLine(hx.z, 0.0005) * fade;
-      s.albedo *= mix(1.0, 0.8 + 0.4 * hx.w, w * fade);
-      s.albedo = mix(s.albedo, s.albedo * 0.25, seam * w);
-      s.rough = mix(s.rough, s.rough + 0.12 * (hx.w - 0.5), w * fade);
-      s.emit += mix(uAccent, uAccentHot, 0.3) * neon * w * 0.6;
+      float fade = gunFade(GUN_HEX * 0.2);
+      float seam = gunLine(hx.z, 0.0022) * fade;
+      float neon = gunLine(hx.z, 0.0011) * fade;
+      s.albedo *= mix(1.0, 0.75 + 0.5 * hx.w, w * fade);
+      s.albedo = mix(s.albedo, vec3(0.0), seam * w);
+      s.rough = mix(s.rough, s.rough + 0.1 * (hx.w - 0.5), w * fade);
+      s.emit += uAccent * neon * w * 1.35 + uAccent * 0.12 * seam * w;
     }
   #elif GUN_PATTERN == 3
-    // Hazard chevrons (flanks, pointing at the muzzle) / diagonal stripes.
+    // Hazard: bold black/yellow chevrons down the flanks (pointing at the
+    // muzzle), stripes everywhere else, with chipped paint.
     if (w > 0.0) {
       vec3 a = abs(n);
       float v = (a.x > a.y && a.x > a.z && g.z < ${(NO_AXIS + 1).toFixed(1)})
-        ? (uv.x - abs(uv.y - 0.022)) / 0.04
-        : (uv.x + uv.y) / 0.04;
+        ? (uv.x - abs(uv.y - 0.024)) / 0.075
+        : (uv.x + uv.y) / 0.075;
       float d = abs(fract(v) - 0.5) * 2.0;
-      float aa = max(gPx * 50.0, 1e-4);
-      float stripe = mix(0.5, smoothstep(0.5 - aa, 0.5 + aa, d), gunFade(0.02));
-      float wear = step(0.72, gNoise(p * 260.0)) * 0.6 * gunFade(0.006);
+      float aa = max(gPx * 30.0, 1e-4);
+      float stripe = mix(0.5, smoothstep(0.5 - aa, 0.5 + aa, d), gunFade(0.03));
+      float wear = step(0.74, gNoise(p * 180.0)) * 0.6 * gunFade(0.008);
       vec3 paint = mix(uPatB, uPatA, stripe);
-      s.albedo = mix(s.albedo, mix(paint, uPartCol[${PART.METAL_LT}] * 0.6, wear * 0.5), w);
-      s.rough = mix(s.rough, mix(0.55, 0.35, wear), w);
-      s.metal = mix(s.metal, mix(0.12, 0.8, wear), w);
+      s.albedo = mix(s.albedo, mix(paint, uPartCol[${PART.METAL_LT}] * 0.5, wear * 0.4), w);
+      s.rough = mix(s.rough, mix(0.5, 0.32, wear), w);
+      s.metal = mix(s.metal, mix(0.08, 0.8, wear), w);
     }
   #elif GUN_PATTERN == 4
     // Plasma: living veins of energy flowing toward the muzzle.
     if (w > 0.0) {
       float v = gunVein(p);
-      float aa = max(gPx * 30.0, 1e-4);
+      float aa = max(gPx * 16.0, 1e-4);
       float vein = 1.0 - smoothstep(0.0, 0.05 + aa, v);
       float pulse = 0.75 + 0.25 * sin(uTime * 3.1 + p.z * 26.0);
       s.albedo = mix(s.albedo, uAccent * 0.15, vein * w);
@@ -331,27 +353,58 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
       s.rough = mix(s.rough, 0.17, w);
     }
   #elif GUN_PATTERN == 6
-    // Digital camo in three tones; now and then a band of pixels glitches
-    // sideways and a few flicker in the accent colour.
+    // Glitch: big digital-camo blocks (black / accent / pale); bands of blocks
+    // jump sideways and split into magenta + cyan ghosts, a few pixels flicker.
     if (w > 0.0) {
-      float fade = gunFade(0.009);
-      float tq = floor(uTime * 9.0);
-      vec2 q = floor(uv / 0.009);
-      float band = floor(q.y / 3.0);
-      float glitch = step(0.94, gHash2(vec2(band, tq)));
-      q.x += glitch * floor(gHash2(vec2(band, tq + 7.0)) * 7.0 - 3.0);
-      float tone = gNoise(vec3(q * 0.33, 0.0)) + (gHash2(q) - 0.5) * 0.22;
-      vec3 c = tone < 0.42 ? uPartCol[${PART.BODY}] : tone < 0.62 ? uPatA : uPatB;
-      vec3 mean = (uPartCol[${PART.BODY}] + uPatA + uPatB) / 3.0;
+      float cellM = 0.02;
+      float fade = gunFade(cellM);
+      float tq = floor(uTime * 7.0);
+      vec2 q = floor(uv / cellM);
+      float band = floor(q.y / 2.0);
+      float glitch = step(0.9, gHash2(vec2(band, tq)));
+      q.x += glitch * floor(gHash2(vec2(band, tq + 7.0)) * 5.0 - 2.0);
+      float tone = gNoise(vec3(q * 0.3, 0.0)) + (gHash2(q) - 0.5) * 0.25;
+      vec3 c = tone < 0.45 ? vec3(0.004, 0.006, 0.005) : tone < 0.63 ? uPatA : uPatB;
+      vec3 mean = (uPatA + uPatB) * 0.33;
       s.albedo = mix(s.albedo, mix(mean, c, fade), w);
-      s.rough = mix(s.rough, 0.5, w);
-      float lit = (step(0.992, gHash2(q + tq * 0.37)) + glitch * 0.12) * fade;
-      s.emit += uAccent * lit * 0.9 * w;
+      s.rough = mix(s.rough, 0.45, w);
+      // RGB split on the glitching band: magenta on one edge, cyan on the other.
+      float fx = fract(uv.x / cellM);
+      vec3 split = mix(vec3(1.0, 0.0, 0.8), vec3(0.0, 0.9, 1.0), step(0.5, fx));
+      s.emit += split * glitch * 0.55 * fade * w;
+      float lit = step(0.985, gHash2(q + tq * 0.37)) * fade;
+      s.emit += uAccent * lit * 1.1 * w;
     }
   #elif GUN_PATTERN == 7
     // Ceramic: matte glazed plates (the palette carries the white).
     if (part == ${PART.BODY}) {
       s.albedo *= 0.94 + 0.08 * gNoise(p * 40.0);
+    }
+  #elif GUN_PATTERN == 8
+    // Enamel: gloss white body with gold pinstripes along the panel lines and
+    // the flank (Regalia — the inverse of Midas).
+    if (w > 0.0) {
+      float pin = max(gunLine(abs(p.z - 0.048), 0.0016), gunLine(abs(p.z + 0.155), 0.0016));
+      vec3 a = abs(n);
+      if (a.x > a.y && a.x > a.z) pin = max(pin, gunLine(abs(p.y - 0.004), 0.0018));
+      s.albedo = mix(s.albedo, uPatA, pin * w);
+      s.metal = mix(s.metal, 1.0, pin * w);
+      s.rough = mix(s.rough, 0.2, pin * w);
+    }
+  #elif GUN_PATTERN == 9
+    // Void: a night sky in the plating — deep indigo nebula, twinkling stars.
+    if (w > 0.0) {
+      float neb = gNoise(p * 9.0 + vec3(0.0, 0.0, uTime * 0.05));
+      neb = smoothstep(0.45, 0.95, neb + 0.35 * gNoise(p * 23.0));
+      s.albedo = mix(s.albedo, s.albedo + uAccent * 0.05 * neb, w);
+      s.emit += uAccent * neb * 0.16 * w;
+      vec2 sq = floor(uv / 0.006);
+      float star = step(0.93, gHash2(sq));
+      vec2 sf = fract(uv / 0.006) - 0.5;
+      float spot = exp(-dot(sf, sf) * 60.0) * star;
+      float tw = 0.55 + 0.45 * sin(uTime * (2.0 + 4.0 * gHash2(sq + 3.1)) + gHash2(sq) * 40.0);
+      s.emit += mix(uAccentHot, vec3(1.0), 0.5) * spot * tw * 1.3 * gunFade(0.006) * w;
+      s.rough = mix(s.rough, 0.18, w);
     }
   #endif
 
@@ -365,7 +418,7 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
   #endif
   // Carbon parts always carry the weave (stock + foregrip).
   #if GUN_PATTERN != 1
-    if (part == ${PART.CARBON}) gunCarbon(s, uv, s.albedo * 1.4, 1.0);
+    if (part == ${PART.CARBON}) gunCarbon(s, uv, s.albedo * 1.4, 1.0, vn, vdir);
   #endif
 
   // Machined edge highlight on chamfers: worn to bright metal.
@@ -379,6 +432,7 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
   return s;
 }
 
+
 #ifdef GUN_HI
 // Light the energy parts throw on the metal round them (a cheap bounce: the
 // coils, the core through the rail gaps, and the discharge at the muzzle).
@@ -389,7 +443,7 @@ vec3 gunBounce(vec3 p, vec3 n) {
   float nearBarrel = 1.0 - smoothstep(0.08, 0.12, r);
   if (nearBarrel > 0.0) {
     ${COIL_Z.map((z, i) => `{ float dz = (p.z - (${z.toFixed(4)})) / 0.045; e += uCoil[${i}] * exp(-dz * dz); }`).join('\n    ')}
-    e *= 0.16 * nearBarrel;
+    e *= 0.07 * nearBarrel;
     float inCore = step(${CORE_Z[0].toFixed(3)}, p.z) * step(p.z, ${CORE_Z[1].toFixed(3)});
     float rc = max(length(p.xy - vec2(0.0, ${CORE_Y.toFixed(4)})) - ${CORE_R.toFixed(3)}, 0.0) / 0.022;
     e += uCore * 0.3 * exp(-rc * rc) * inCore;
@@ -444,13 +498,17 @@ const FRAG_BUMP = /* glsl */ `
   #endif
 `;
 
-function lift(c: THREE.Color, minLum: number): THREE.Color {
-  // Scale a (linear) colour up to at least `minLum` luminance, keeping hue:
-  // the finish palettes are "paint chips"; metal F0 needs to be brighter than
-  // the chip or a gunmetal gun reflects almost nothing.
+function lift(c: THREE.Color, minLum: number, keepTint = 1): THREE.Color {
+  // Raise a (linear) colour to at least `minLum` luminance: the finish
+  // palettes are "paint chips"; metal F0 needs to be brighter than the chip or
+  // a gunmetal gun reflects almost nothing. `keepTint` < 1 blends the lifted
+  // colour toward neutral grey, so a dark red chip becomes red-tinged steel
+  // rather than dusty pink.
   const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-  if (l >= minLum || l <= 0) return l <= 0 ? c.setScalar(minLum) : c;
-  return c.multiplyScalar(minLum / l);
+  if (l >= minLum) return c;
+  if (l <= 0) return c.setScalar(minLum);
+  const tinted = c.clone().multiplyScalar(minLum / l);
+  return c.setScalar(minLum).lerp(tinted, keepTint);
 }
 
 // Finish → uniforms. Pure function of the finish, so recolouring is cheap.
@@ -471,9 +529,9 @@ export function applyFinishUniforms(u: GunUniforms, finish: RailgunFinish | unde
   // reads on a near-black gun), a touch lifted so it never crushes to black.
   col[PART.BODY].copy(lift(body.clone(), 0.012));
   rm[PART.BODY].set(0.34, 0.25);
-  col[PART.METAL].copy(lift(metal.clone(), 0.07));
+  col[PART.METAL].copy(lift(metal.clone(), 0.07, 0.45));
   rm[PART.METAL].set(0.36, 0.85);
-  col[PART.METAL_LT].copy(lift(metalLt.clone(), 0.2));
+  col[PART.METAL_LT].copy(lift(metalLt.clone(), 0.2, 0.8));
   rm[PART.METAL_LT].set(0.28, 0.92);
   col[PART.RUBBER].setHex(0x121417);
   rm[PART.RUBBER].set(0.82, 0.0);
@@ -485,20 +543,30 @@ export function applyFinishUniforms(u: GunUniforms, finish: RailgunFinish | unde
   rm[SLOT_CORE].set(0.2, 0.0);
   col[SLOT_GLASS].setRGB(0.01, 0.012, 0.016);
   rm[SLOT_GLASS].set(0.08, 0.0);
-  u.uEdgeCol.value.copy(lift(metalLt.clone(), 0.3));
+  u.uEdgeCol.value.copy(lift(metalLt.clone(), 0.3, 0.7));
   u.uPatA.value.copy(metalLt);
   u.uPatB.value.copy(body);
+  u.coilWhite.value = 0;
 
   switch (pattern) {
     case 'carbon':
-      u.uPatA.value.copy(lift(body.clone().multiplyScalar(2.2), 0.03));
+      // Grey-black weave, clear-coated.
+      u.uPatA.value.setRGB(0.05, 0.052, 0.058);
+      rm[PART.BODY].set(0.18, 0.3);
       break;
     case 'hex':
-      rm[PART.BODY].set(0.3, 0.55);
+      // The hero: gloss-black plates with neon seams, hot-pink anodised
+      // housings, white-hot coils.
+      col[PART.BODY].setRGB(0.004, 0.003, 0.005);
+      rm[PART.BODY].set(0.14, 0.55);
+      col[PART.METAL].copy(lift(accent.clone(), 0.09, 0.95));
+      rm[PART.METAL].set(0.26, 0.9);
+      u.coilWhite.value = 0.45;
       break;
     case 'hazard':
-      u.uPatA.value.copy(metalLt); // hazard yellow
-      u.uPatB.value.copy(body).multiplyScalar(0.6);
+      // Safety yellow on black, whole receiver + barrel housing.
+      u.uPatA.value.copy(lift(metalLt.clone(), 0.36, 1));
+      u.uPatB.value.setRGB(0.008, 0.008, 0.007);
       break;
     case 'plasma':
       rm[PART.BODY].set(0.22, 0.4);
@@ -506,14 +574,29 @@ export function applyFinishUniforms(u: GunUniforms, finish: RailgunFinish | unde
     case 'spectrum':
       break;
     case 'digital':
-      u.uPatA.value.copy(metal);
-      u.uPatB.value.copy(metalLt).multiplyScalar(0.8);
+      // Accent blocks + pale blocks on black.
+      u.uPatA.value.copy(accent).multiplyScalar(0.35);
+      u.uPatB.value.copy(lift(metalLt.clone(), 0.28, 0.4));
       break;
     case 'ceramic':
       // Matte white plates on a darker metal frame.
       col[PART.BODY].copy(body);
       rm[PART.BODY].set(0.42, 0.0);
       u.uEdgeCol.value.copy(body).lerp(new THREE.Color(0xffffff), 0.4);
+      break;
+    case 'enamel' as FinishPattern:
+      // Gloss white enamel, gold trim (the palette's metal / metalLt).
+      col[PART.BODY].copy(body);
+      rm[PART.BODY].set(0.16, 0.0);
+      col[PART.METAL].copy(lift(metal.clone(), 0.16, 1));
+      rm[PART.METAL].set(0.24, 1.0);
+      u.uPatA.value.copy(lift(metalLt.clone(), 0.4, 1));
+      u.uEdgeCol.value.copy(lift(metalLt.clone(), 0.45, 1));
+      break;
+    case 'void' as FinishPattern:
+      // Deep indigo lacquer with a night sky in it.
+      col[PART.BODY].copy(body).lerp(accent, 0.04);
+      rm[PART.BODY].set(0.18, 0.2);
       break;
     default:
       break;
@@ -543,6 +626,7 @@ export class GunMaterial extends THREE.MeshStandardMaterial {
       uCore: { value: new THREE.Color() },
       uFlash: { value: new THREE.Color() },
       uTime: { value: 0 },
+      coilWhite: { value: 0 },
     };
     const hi = (opts.lod ?? 'high') === 'high';
     this.defines = { STANDARD: '', GUN_PATTERN: -1 };
@@ -572,7 +656,7 @@ export class GunMaterial extends THREE.MeshStandardMaterial {
     this.emissive.setHex(f.accentHot);
     const pattern = f.pattern ?? 'plain';
     const defs = (this.defines ??= {});
-    const id = PATTERN_ID[pattern] ?? 0;
+    const id = PATTERN_ID[pattern as string] ?? 0;
     if (defs.GUN_PATTERN !== id) {
       this.pattern = pattern;
       defs.GUN_PATTERN = id;

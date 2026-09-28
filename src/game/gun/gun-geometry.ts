@@ -35,13 +35,13 @@ export const PART = {
   CORE: 6, // the energy core down the barrel
   WINDOW: 7, // side charge windows (a segmented charge gauge)
   CAP: 8, // rear capacitor core
-  COIL0: 9, // coils: COIL0 + i, i = 0 front (muzzle) … COIL_COUNT-1 back
+  COIL0: 9, // coils: COIL0 + i, i = 0 front (muzzle) … COIL_COUNT-1 back (lights first)
 } as const;
 
 export const COIL_COUNT = 4;
 export const BARREL_Y = 0.03;
 export const MUZZLE_Z = -0.9;
-// Coil centres, index 0 = front (fills first on the recharge).
+// Coil centres, index 0 = front (relights last on the recharge).
 export const COIL_Z = [-0.655, -0.56, -0.465, -0.37] as const;
 export const COIL_R = 0.066; // glowing band's outer radius
 export const CORE_R = 0.016;

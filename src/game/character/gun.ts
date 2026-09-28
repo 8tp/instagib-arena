@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { RailgunFinish } from '../cosmetics';
 import { RAIL_COOLDOWN } from '../constants';
 import { nowMs } from '../fx/rail-state';
-import { COIL_COUNT, PART, railgunGeometrySplit } from '../gun/gun-geometry';
+import { BARREL_Y, COIL_COUNT, MUZZLE_Z, PART, railgunGeometrySplit } from '../gun/gun-geometry';
 import { GunMaterial, STOCK_FINISH } from '../gun/gun-material';
 import type { Character } from './character';
 
@@ -61,39 +61,49 @@ function shellMaterial(f: RailgunFinish): GunMaterial {
 
 // ── Per-gun energy material ─────────────────────────────────────────────────
 // Unlit (MeshBasic + fog), coloured per part from the `gun` attribute: coils
-// fill front → back with the charge like the first-person meter.
+// relight back → front with the charge like the first-person meter. A shot's
+// pulse is anchored at the muzzle claw (it fades out toward the receiver) and
+// is in the shooter's rail colour; the rear parts never flash.
 const ENERGY_VERT_PARS = /* glsl */ `
 attribute vec3 gun;
 varying vec3 vGunE;
+varying float vGunZ;
 `;
 const ENERGY_FRAG_PARS = /* glsl */ `
 uniform vec3 uAccent;
 uniform vec3 uHot;
-uniform vec4 uDrive; // x = level, y = hot mix, z = coil fill 0…1, w = flash
+uniform vec3 uRail;
+uniform vec4 uDrive; // x = level, z = coil fill 0…1, w = shot pulse
 varying vec3 vGunE;
+varying float vGunZ;
 `;
 const ENERGY_FRAG = /* glsl */ `
   int part = int(vGunE.x + 0.5);
-  float k = 1.0;
-  float hot = uDrive.y;
+  float k = 0.9;
+  float hot = 0.0;
   if (part >= ${PART.COIL0}) {
-    float p = clamp(uDrive.z * ${COIL_COUNT}.0 - float(part - ${PART.COIL0}), 0.0, 1.0);
-    k = mix(0.08, 1.0, p * p * (3.0 - 2.0 * p)) + uDrive.w * 2.5;
+    float p = clamp(uDrive.z * ${COIL_COUNT}.0 - float(${COIL_COUNT - 1} - (part - ${PART.COIL0})), 0.0, 1.0);
+    k = mix(0.08, 1.0, p * p * (3.0 - 2.0 * p));
   } else if (part == ${PART.CORE}) {
-    k = mix(0.1, 0.95, uDrive.z) + uDrive.w * 3.0;
+    k = mix(0.12, 0.9, uDrive.z);
   } else if (part == ${PART.WINDOW}) {
-    k = 0.8;
+    k = 0.3 + 0.5 * uDrive.z;
   } else if (part == ${PART.CAP}) {
-    k = 0.7;
+    k = 0.25 + 0.45 * uDrive.z;
   } else {
-    hot = min(1.0, hot + 0.55); // status strips + emitter ring
+    hot = 0.25; // status strips + emitter ring
   }
-  vec4 diffuseColor = vec4(mix(uAccent, uHot, hot) * k * uDrive.x, opacity);
+  // 0 at the receiver … 1 at the claw: the pulse lives at the muzzle.
+  float front = smoothstep(-0.5, -0.86, vGunZ);
+  float pulse = uDrive.w * front * (part == ${PART.GLOW} ? 5.0 : 2.2);
+  vec3 c = mix(uAccent, uHot, hot) * k * uDrive.x + uRail * pulse;
+  vec4 diffuseColor = vec4(c, opacity);
 `;
 
 type EnergyUniforms = {
   uAccent: { value: THREE.Color };
   uHot: { value: THREE.Color };
+  uRail: { value: THREE.Color };
   uDrive: { value: THREE.Vector4 };
 };
 
@@ -104,12 +114,12 @@ function energyMaterial(u: EnergyUniforms): THREE.MeshBasicMaterial {
     Object.assign(shader.uniforms, u);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${ENERGY_VERT_PARS}`)
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGunE = gun;');
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGunE = gun;\nvGunZ = position.z;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${ENERGY_FRAG_PARS}`)
       .replace('vec4 diffuseColor = vec4( diffuse, opacity );', ENERGY_FRAG);
   };
-  m.customProgramCacheKey = () => 'railgun-3p-energy-1';
+  m.customProgramCacheKey = () => 'railgun-3p-energy-2';
   return m;
 }
 
@@ -121,8 +131,10 @@ export class AttachedRailgun extends THREE.Group {
   private readonly u: EnergyUniforms = {
     uAccent: { value: new THREE.Color() },
     uHot: { value: new THREE.Color() },
+    uRail: { value: new THREE.Color() },
     uDrive: { value: new THREE.Vector4(IDLE, 0, 1, 0) },
   };
+  private hasRail = false;
   private fireMs = -1e9;
   private charge = 1;
   private chargeMs = -1e9; // last explicit setCharge
@@ -153,12 +165,25 @@ export class AttachedRailgun extends THREE.Group {
     this.shell.material = shellMaterial(f);
     this.u.uAccent.value.setHex(f.accent);
     this.u.uHot.value.setHex(f.accentHot);
+    if (!this.hasRail) this.u.uRail.value.setHex(f.accentHot);
   }
 
-  // A shot: flash, drop dark, refill over the rail cooldown (unless setCharge
-  // drives the refill explicitly).
-  notifyFire() {
+  // A shot: the muzzle claw flashes (in `railColor`, the shooter's rail
+  // colour, when given), the coils drop dark and relight over the rail
+  // cooldown (unless setCharge drives the refill explicitly).
+  notifyFire(railColor?: number) {
     this.fireMs = nowMs();
+    if (railColor !== undefined) {
+      this.hasRail = true;
+      this.u.uRail.value.setHex(railColor);
+    }
+  }
+
+  // World position of the muzzle (the claw tip) into `out` — where a visible
+  // beam / discharge from this gun should start.
+  muzzleWorld(out: THREE.Vector3): THREE.Vector3 {
+    this.updateWorldMatrix(true, false);
+    return this.localToWorld(out.set(0, BARREL_Y, MUZZLE_Z));
   }
 
   // 0 = just fired … 1 = ready.
@@ -169,13 +194,14 @@ export class AttachedRailgun extends THREE.Group {
 
   private drive(now: number) {
     const since = (now - this.fireMs) / 1000;
-    const flash = since >= 0 && since < 0.5 ? Math.exp(-since * 18) : 0;
+    // A short pulse (~100 ms) at the claw.
+    const flash = since >= 0 && since < 0.3 ? Math.exp(-since * 24) : 0;
     const charge =
       now - this.chargeMs < EXTERNAL_LAPSE_MS ? this.charge : Math.max(0, Math.min(1, since / RAIL_COOLDOWN));
     const fill = Math.max(0, Math.min(1, (charge - 0.1) / 0.88));
     const d = this.u.uDrive.value;
-    d.x = IDLE * (1 + FLASH * flash);
-    d.y = Math.min(1, flash * 1.5);
+    d.x = IDLE * (1 + FLASH * flash * 0.5);
+    d.y = 0;
     d.z = fill;
     d.w = flash;
   }
