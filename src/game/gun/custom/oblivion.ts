@@ -163,10 +163,10 @@ const DISC_FRAG = /* glsl */ `
 
 // Lensing halo round the horizon (camera-facing): photon ring, the disc's
 // far side lensed over the top and under the bottom, and the shock ring.
-const HALO_SIZE = 0.1;
+const HALO_SIZE = 0.17;
 const HALO_FRAG = /* glsl */ `
   float r = length(vQ) * ${HALO_SIZE.toFixed(3)};
-  float rh = ${RH.toFixed(4)};
+  float rh = ${RH.toFixed(4)} * (1.0 + 0.35 * exp(-uShot * 4.0) * step(uShot, 1.5) + 0.08 * uStreak);
   if (r < rh * 0.98) discard;
   float ang = atan(vQ.y, vQ.x);
   float fill = clamp((uCharge - 0.1) / 0.88, 0.0, 1.0);
@@ -180,15 +180,21 @@ const HALO_FRAG = /* glsl */ `
   float flow = 0.6 + 0.4 * cgNoise(vec3(ang * 3.0 - uTime * 3.0, r * 200.0, 0.0));
   float lens = band * (top + bot) * flow;
   // Shock ring off the horizon on the shot.
-  float sr = rh + uShot * 0.35;
-  float shock = exp(-pow((r - sr) / 0.006, 2.0)) * exp(-uShot * 6.0) * step(uShot, 0.8);
+  // Two shock rings leave the horizon on the shot (the second lags), their
+  // light bent into a swirl — brightness capped (bloom-safe), size is the
+  // spectacle.
+  float swirl = 0.5 + 0.5 * sin(ang * 3.0 + r * 160.0 - uShot * 30.0);
+  float sr = rh + (1.0 - exp(-uShot * 5.0)) * 0.13;
+  float sr2 = rh + (1.0 - exp(-max(0.0, uShot - 0.08) * 5.0)) * 0.1;
+  float shock = (exp(-pow((r - sr) / 0.007, 2.0)) + 0.6 * exp(-pow((r - sr2) / 0.005, 2.0)) * step(0.08, uShot))
+    * exp(-uShot * 3.5) * step(uShot, 1.0) * (0.55 + 0.45 * swirl);
   // Soft glow falling off outward.
   float glow = exp(-(r - rh) / 0.012) * 0.25;
   vec3 hot = mix(vec3(1.0, 0.95, 1.0), uA, 0.3);
   col = hot * ring * (1.2 + 0.6 * fill + 1.0 * uStreak + 3.0 * flare)
       + mix(hot, uA, 0.4) * lens * (0.7 + 0.4 * fill + 0.8 * uStreak + 2.0 * flare)
       + uA * glow * (0.4 + uStreak + 2.0 * flare)
-      + mix(uB, uA, 0.3) * shock * 2.0 * (1.0 - uCalm * 0.6);
+      + mix(uB, uA, 0.35) * shock * 1.3 * (1.0 - uCalm * 0.6);
   col *= smoothstep(1.0, 0.8, length(vQ));
   a = 1.0;
 `;
@@ -210,10 +216,11 @@ const MOTES = /* glsl */ `
   a = smoothstep(0.0, 0.15, ph) * smoothstep(1.0, 0.85, ph);
   if (seed.y < 0.5 && uShot < 0.9) {
     // Inhale: from a shell (biased low / sideways) straight into the hole.
-    vec3 dir = normalize(vec3(cos(seed.z * 6.283), -abs(sin(seed.z * 6.283)) * 0.8 + 0.25 * seed.x, (seed.x - 0.5) * 1.4));
+    // Shell biased right and low: away from the crosshair side of the gun.
+    vec3 dir = normalize(vec3(0.35 + abs(cos(seed.z * 6.283)), -abs(sin(seed.z * 6.283)) * 0.7 + 0.2 * seed.x, (seed.x - 0.5) * 1.2));
     float k = pow(min(1.0, uShot / 0.8), 2.2);
     float sw = k * 4.0;
-    vec3 off = dir * (0.14 + 0.06 * seed.y) * (1.0 - k);
+    vec3 off = dir * (0.09 + 0.04 * seed.y) * (1.0 - k);
     off.xz = mat2(cos(sw), -sin(sw), sin(sw), cos(sw)) * off.xz;
     p = hc + off;
     col = mix(uA, vec3(1.0), k) * 2.2;
@@ -249,7 +256,15 @@ export const buildOblivion: CustomGunBuild = ({ lod, finish }) => {
   const d = rig.drive;
   const hi = lod === 'high';
   rig.body(cached(`oblivion-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'oblivion', vert: VERT, frag: FRAG }));
-  const horizon = rig.add(fxMesh(d, horizonGeo(), { key: 'oblivion-horizon', frag: 'col = vec3(0.0); a = 1.0;', premultiplied: true, side: THREE.FrontSide, depthWrite: true }));
+  const horizon = rig.add(fxMesh(d, horizonGeo(), {
+    key: 'oblivion-horizon',
+    // The horizon swells as it swallows the shot, then settles.
+    vert: `p = vec3(${HC.map((v) => v.toFixed(3)).join(', ')}) + (position - vec3(${HC.map((v) => v.toFixed(3)).join(', ')})) * (1.0 + 0.35 * exp(-uShot * 4.0) * step(uShot, 1.5) + 0.08 * uStreak);`,
+    frag: 'col = vec3(0.0); a = 1.0;',
+    premultiplied: true,
+    side: THREE.FrontSide,
+    depthWrite: true,
+  }));
   horizon.renderOrder = 2;
   horizon.userData.vfx = false; // solid: part of the silhouette
   const disc = rig.add(fxMesh(d, discGeo(lod), { key: 'oblivion-disc', frag: DISC_FRAG }));

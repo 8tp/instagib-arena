@@ -100,17 +100,17 @@ const FRAG = /* glsl */ `
     vec3 q = vOP * (zone == ${Z.PLANET} ? 26.0 : 11.0) + vec3(uTime * 0.03, 0.0, uTime * 0.06);
     float n1 = cgFbm(q);
     float n2 = cgFbm(q * 1.9 + 7.3);
-    vec3 neb = mix(vec3(0.02, 0.01, 0.07), uA * 0.5, smoothstep(0.38, 0.78, n1));
-    neb = mix(neb, vec3(0.75, 0.18, 0.62) * 0.45, smoothstep(0.55, 0.85, n2) * 0.8);
-    vec3 sp = vOP * 150.0;
+    vec3 neb = mix(vec3(0.03, 0.015, 0.1), uA * 0.6, smoothstep(0.34, 0.74, n1));
+    neb = mix(neb, vec3(0.85, 0.2, 0.7) * 0.55, smoothstep(0.5, 0.82, n2) * 0.85);
+    vec3 sp = vOP * 115.0;
     vec3 ci = floor(sp);
     vec3 h = cgH33(ci);
     float d = length(fract(sp) - (0.25 + 0.5 * h));
     float big = step(0.9, h.x);
-    float star = smoothstep(0.1 + 0.1 * big, 0.0, d) * step(0.55, h.y);
+    float star = smoothstep(0.13 + 0.12 * big, 0.0, d) * step(0.5, h.y);
     float tw = 0.55 + 0.45 * sin(uTime * (2.0 + 4.0 * h.z) + h.x * 40.0) * (1.0 - uCalm * 0.8);
     diffuseColor.rgb = vec3(0.012, 0.012, 0.03);
-    glow += neb * (0.35 + 0.25 * fill + 0.7 * uStreak + 1.6 * uFire) * gmask;
+    glow += neb * (0.7 + 0.35 * fill + 0.7 * uStreak + 1.6 * uFire) * gmask;
     glow += mix(vec3(0.8, 0.9, 1.0), uB, h.z) * star * tw * (0.9 + 0.8 * big + 0.8 * uStreak + 2.0 * uFire);
     if (zone == ${Z.PLANET}) glow *= 0.6 + 0.8 * fres;
   } else if (zone == ${Z.STARMETAL}) {

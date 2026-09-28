@@ -109,7 +109,7 @@ const VERT = /* glsl */ `
     float spread = mix(open, open * 0.4, uCalm) + 0.32 * uStreak + 0.02 * sin(uTime * 1.3 + k) * (1.0 - uCalm);
     cgPivot = vec3(sx * ${ROOT.x.toFixed(3)}, ${ROOT.y.toFixed(3)} - 0.015 * k, ${ROOT.z.toFixed(3)});
     // Sweep out (yaw) + lift (roll), later feathers further: the wing fans.
-    cgR = cgRotY(-sx * spread * (0.22 + 0.08 * k)) * cgRotZ(sx * spread * (0.2 + 0.05 * k));
+    cgR = cgRotY(-sx * spread * (0.16 + 0.05 * k)) * cgRotZ(sx * spread * (0.14 + 0.035 * k));
   }
 `;
 
@@ -143,7 +143,7 @@ const FRAG = /* glsl */ `
     float tip = smoothstep(-0.38, -0.62, vOP.z);
     diffuseColor.rgb = mix(diffuseColor.rgb * (0.9 + 0.1 * barb), uL, tip * 0.8);
     metalnessFactor = mix(0.05, 0.9, tip);
-    glow += mix(uA, uB, 0.5) * (fres * (0.1 + 0.4 * uStreak) + tip * 0.15 * fill + (0.6 + fres) * 1.6 * open * (1.0 - uCalm * 0.5)) * gmask;
+    glow += mix(uA, uB, 0.5) * (fres * (0.1 + 0.4 * uStreak) + tip * 0.15 * fill + (0.3 + fres) * 0.7 * open * (1.0 - uCalm * 0.5)) * gmask;
   }
 `;
 
@@ -166,7 +166,7 @@ const BLADE_FRAG = /* glsl */ `
   float scan = 0.5 + 0.5 * sin(vP.z * 160.0 + uTime * 5.0 * (1.0 - uCalm));
   float edge = pow(1.0 - abs(dot(vN, vV)), 2.0);
   vec3 c = mix(uA, uB, 0.35 + 0.4 * edge);
-  col = c * ((0.05 + 0.4 * lit) * (0.35 + 0.65 * edge) * (0.75 + 0.25 * scan) + 0.25 * uStreak * edge + 2.2 * uFire * (0.4 + edge));
+  col = c * ((0.05 + 0.4 * lit) * (0.35 + 0.65 * edge) * (0.75 + 0.25 * scan) + 0.25 * uStreak * edge + 1.2 * uFire * (0.4 + edge));
   a = 1.0;
 `;
 
