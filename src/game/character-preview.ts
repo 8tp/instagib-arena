@@ -122,6 +122,60 @@ function floorTexture(): THREE.CanvasTexture | null {
   return t;
 }
 
+const BG_BOTTOM = 0x06080b;
+
+// White radial falloff (the rarity tint's shape).
+function radialTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const S = 128;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Faint floor grid (0.5 m cells) fading out radially.
+function gridTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const S = 1024;
+  const cells = 36; // 18 m across the 9 m-radius disc → 0.5 m cells
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return null;
+  ctx.strokeStyle = 'rgba(140,180,230,0.16)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i <= cells; i++) {
+    const p = (i / cells) * S;
+    ctx.beginPath();
+    ctx.moveTo(p, 0);
+    ctx.lineTo(p, S);
+    ctx.moveTo(0, p);
+    ctx.lineTo(S, p);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'destination-in';
+  const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(0,0,0,1)');
+  g.addColorStop(0.55, 'rgba(0,0,0,0.6)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -136,6 +190,19 @@ export class CharacterPreview {
   private subject = new THREE.Group();
   private floor: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial> | null = null;
   private floorTex: THREE.CanvasTexture | null = null;
+  // Backdrop (drawn in WebGL — see the constructor): a gradient + slot
+  // watermark canvas as the scene background, a screen-space rarity tint
+  // that eases between colours, and a receding floor grid.
+  private bgCanvas: HTMLCanvasElement | null = null;
+  private bgTex: THREE.CanvasTexture | null = null;
+  private bgLabel = '';
+  private bgW = 0;
+  private bgH = 0;
+  private tint: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null;
+  private tintTex: THREE.CanvasTexture | null = null;
+  private readonly tintTarget = new THREE.Color(0x9ca3af);
+  private grid: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial> | null = null;
+  private gridTex: THREE.CanvasTexture | null = null;
 
   // The player's combatant.
   private character: Character | null = null;
@@ -199,15 +266,20 @@ export class CharacterPreview {
     this.cam = { ...FRAMES[cos.view] };
     // preserveDrawingBuffer so the canvas reliably shows its first rendered frame
     // the instant it mounts (no transient blank before the rAF loop spins up).
+    // OPAQUE on purpose: the game's FX (additive beams, pooled glow sprites,
+    // unusual particles) write alpha across their whole quads. On a
+    // transparent canvas those dark quad corners composite as opaque black
+    // squares over the page, so the backdrop (gradient, rarity tint, floor
+    // grid, slot watermark) is drawn here in WebGL instead of in CSS.
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: !opts.lowSpec,
-      alpha: true,
+      alpha: false,
       preserveDrawingBuffer: true,
     });
     this.renderer.setPixelRatio(opts.lowSpec ? 1 : Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setClearColor(BG_BOTTOM, 1);
     // The combatant's PBR armour wants tone mapping + an environment to reflect.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.9;
@@ -218,6 +290,8 @@ export class CharacterPreview {
     pmrem.dispose();
 
     this.camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
+    this.scene.add(this.camera); // hosts the screen-space rarity tint
+    this.buildBackdrop();
 
     // Studio lighting: warm key, cool rim from behind, soft front fill.
     this.scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x202028, 1.05));
@@ -256,6 +330,109 @@ export class CharacterPreview {
     this.buildCharacter();
     this.applyView(true);
     this.resize();
+  }
+
+  // ── Backdrop ───────────────────────────────────────────────────────────────
+
+  private buildBackdrop() {
+    if (typeof document === 'undefined') return;
+    this.bgCanvas = document.createElement('canvas');
+    this.bgTex = new THREE.CanvasTexture(this.bgCanvas);
+    this.bgTex.colorSpace = THREE.SRGBColorSpace;
+    this.scene.background = this.bgTex;
+    // Rarity tint: a soft radial pool, camera-attached so it follows the
+    // framing (and the screen offset) — eased colour, no texture uploads.
+    this.tintTex = radialTexture();
+    this.tint = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        map: this.tintTex,
+        color: this.tintTarget.clone(),
+        transparent: true,
+        opacity: 0.22,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    this.tint.renderOrder = -10;
+    this.tint.frustumCulled = false;
+    this.tint.position.z = -40;
+    this.camera.add(this.tint);
+    // Floor grid receding to the horizon (was a CSS perspective fake).
+    this.gridTex = gridTexture();
+    if (this.gridTex) {
+      this.grid = new THREE.Mesh(
+        new THREE.CircleGeometry(9, 64),
+        new THREE.MeshBasicMaterial({ map: this.gridTex, transparent: true, depthWrite: false, toneMapped: false }),
+      );
+      this.grid.rotation.x = -Math.PI / 2;
+      this.grid.renderOrder = -2;
+      this.scene.add(this.grid);
+    }
+    // The watermark font may still be loading; redraw once it lands.
+    try {
+      void document.fonts?.load('700 100px "Chakra Petch"').then(() => this.drawBackdrop(true));
+    } catch {
+      /* no font loading API */
+    }
+  }
+
+  // Rarity tint colour + the giant outlined slot name behind the subject.
+  setBackdrop(opts: { tint?: string; label?: string | null }) {
+    if (opts.tint) this.tintTarget.set(opts.tint);
+    if (opts.label !== undefined && (opts.label ?? '') !== this.bgLabel) {
+      this.bgLabel = opts.label ?? '';
+      this.drawBackdrop(true);
+    }
+  }
+
+  private drawBackdrop(force = false) {
+    const cv = this.bgCanvas;
+    if (!cv || !this.bgTex) return;
+    const dpr = Math.min(2, this.renderer.getPixelRatio());
+    const cw = this.canvas.clientWidth || 320;
+    const ch = this.canvas.clientHeight || 240;
+    const W = Math.max(2, Math.round(cw * dpr));
+    const H = Math.max(2, Math.round(ch * dpr));
+    if (!force && W === this.bgW && H === this.bgH) return;
+    this.bgW = W;
+    this.bgH = H;
+    cv.width = W;
+    cv.height = H;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0c1119');
+    g.addColorStop(0.62, '#080b10');
+    g.addColorStop(1, '#06080b');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // Pool of cool light where the subject stands.
+    const r = ctx.createRadialGradient(W * 0.58, H * 0.88, 0, W * 0.58, H * 0.88, Math.max(W, H) * 0.55);
+    r.addColorStop(0, 'rgba(120,160,210,0.12)');
+    r.addColorStop(1, 'rgba(120,160,210,0)');
+    ctx.fillStyle = r;
+    ctx.fillRect(0, 0, W, H);
+    if (this.bgLabel) {
+      const label = this.bgLabel.toUpperCase();
+      const narrow = cw < 600;
+      const size = Math.min(140, (0.88 * cw) / (Math.max(4, label.length) * 0.66)) * dpr;
+      ctx.font = `700 ${size.toFixed(1)}px "Chakra Petch", "Geist", system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+      ctx.strokeText(label, 18 * dpr, (narrow ? 16 : 44) * dpr);
+    }
+    this.bgTex.needsUpdate = true;
+  }
+
+  private fitTint() {
+    if (!this.tint) return;
+    // Cover ~90% × 100% of the view at the tint's depth.
+    const h = 2 * 40 * Math.tan((this.camera.fov * Math.PI) / 360);
+    this.tint.scale.set(h * (this.camera.aspect || 1) * 0.95, h * 1.05, 1);
+    this.tint.position.y = -h * 0.04;
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -336,6 +513,7 @@ export class CharacterPreview {
     const finisher = v === 'finisher';
     if (this.character) this.character.root.visible = !weapon && !finisher;
     if (this.floor) this.floor.visible = !weapon;
+    if (this.grid) this.grid.visible = !weapon;
     if (finisher) {
       this.ensureDummy();
       this.dummy!.root.visible = true;
@@ -529,9 +707,11 @@ export class CharacterPreview {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.updateProjection();
+    this.drawBackdrop();
   }
 
   private updateProjection() {
+    this.fitTint();
     const w = this.canvas.clientWidth || 320;
     const h = this.canvas.clientHeight || 240;
     if (this.offsetX || this.offsetY) {
@@ -638,6 +818,10 @@ export class CharacterPreview {
 
   private step(dt: number) {
     this.stepCamera(dt);
+    if (this.tint) {
+      const k = this.cos.reducedEffects ? 1 : 1 - Math.exp(-5 * dt);
+      this.tint.material.color.lerp(this.tintTarget, k);
+    }
     this.stepOrbit(dt);
     this.loopT += dt;
     const slow = this.cos.reducedEffects ? 1.6 : 1;
@@ -756,6 +940,14 @@ export class CharacterPreview {
     this.floor?.geometry.dispose();
     this.floor?.material.dispose();
     this.floorTex?.dispose();
+    this.grid?.geometry.dispose();
+    this.grid?.material.dispose();
+    this.gridTex?.dispose();
+    this.tint?.geometry.dispose();
+    this.tint?.material.dispose();
+    this.tintTex?.dispose();
+    this.bgTex?.dispose();
+    this.scene.background = null;
     // The combatant + hat clones share CACHED geometry, so those are not freed
     // here (see Character.dispose / WornHat). renderer.dispose() releases this
     // preview's GPU programs/targets without forcing a context loss.

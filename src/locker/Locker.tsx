@@ -23,6 +23,7 @@ import {
   type Rarity,
 } from '../game/cosmetics';
 import { prefetchThumbnails } from '../game/thumbs';
+import { KeyGlyph } from '../menu/RewardTile';
 import { ItemTile, LevelBadge } from '../ui/item-tile';
 import { CardStatsEditor, PlayerCard } from '../ui/player-card';
 import { buildCardPayload, rankedStandingText } from '../ui/player-card-data';
@@ -71,15 +72,10 @@ type CaseResp = {
   unlocked?: string[];
 };
 
+// The details card is docked in the grid column (never over the model), so the
+// subject is centred; only the Card slot shifts right for its showcase.
 const VIEW_OFFSET: Partial<Record<PreviewCosmetics['view'], number>> = {
-  head: 0.16,
-  crown: 0.16,
-  identity: 0.17,
-  weapon: 0.07,
-  full: 0.2,
-  emote: 0.2,
-  finisher: 0.1,
-  spawn: 0.14,
+  weapon: 0.02,
 };
 
 const FOCUSABLE =
@@ -331,7 +327,7 @@ export function Locker({
   const tint = RARITY_COLOR[shownItem?.rarity ?? 'common'].edge;
   // Desktop: the details panel sits bottom-left over the stage, so the subject
   // shifts right (and the gun up) to clear it.
-  const offsetX = narrow ? 0 : slot === 'card' ? 0.24 : (VIEW_OFFSET[def.view] ?? 0.18);
+  const offsetX = narrow ? 0 : slot === 'card' ? 0.24 : (VIEW_OFFSET[def.view] ?? 0);
   const offsetY = def.view === 'weapon' ? (narrow ? -0.04 : -0.1) : 0;
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -617,8 +613,8 @@ export function Locker({
             <div className='lk-credits' aria-label={`${credits} credits`} title='Credits'>
               <b>{fmtCredits(credits)}</b>
               {profile && profile.caseKeys > 0 && (
-                <span className='lk-chip ml-2' style={{ color: '#ffe7a3', boxShadow: 'inset 0 0 0 1px #ffc23d88' }}>
-                  {profile.caseKeys} case key{profile.caseKeys === 1 ? '' : 's'}
+                <span className='lk-keys ml-2' title={`${profile.caseKeys} hat case key${profile.caseKeys === 1 ? '' : 's'}`}>
+                  <KeyGlyph size={15} /> {profile.caseKeys}
                 </span>
               )}
             </div>
@@ -639,19 +635,9 @@ export function Locker({
           nameplate={nameplate}
           pulseKey={pulseKey}
           replayKey={replayKey}
-          backdrop={
-            // Giant slot name behind the subject — skipped where the nameplate
-            // or the card showcase owns the top of the stage.
-            def.view !== 'identity' && slot !== 'card' ? (
-              <div
-                className='lk-watermark'
-                aria-hidden
-                style={{ fontSize: `min(140px, ${(88 / (Math.max(4, def.label.length) * 0.66)).toFixed(1)}cqw)` }}
-              >
-                {def.label}
-              </div>
-            ) : null
-          }
+          // Giant slot name behind the subject — skipped where the nameplate
+          // or the card showcase owns the top of the stage.
+          watermark={def.view !== 'identity' && slot !== 'card' ? def.label : null}
         >
           {tryingOn && shownItem && (
             <div className='lk-tryon'>
@@ -669,7 +655,6 @@ export function Locker({
               {fx.kind === 'equip' ? <div className='lk-flash' /> : <Celebration name={fxItem?.name ?? ''} />}
             </div>
           )}
-          {!narrow && details}
         </LockerStage>
         {narrow && details}
 
@@ -808,6 +793,7 @@ export function Locker({
               </div>
             )}
           </div>
+          {!narrow && details}
         </section>
       </div>
 
@@ -948,6 +934,7 @@ function ItemDetails({
     );
   return (
     <div className='lk-details' style={{ ['--rc' as string]: rc.edge }} aria-live='polite'>
+      <div className='lk-details-info'>
       <div className='flex flex-wrap items-center gap-2'>
         <span className='lk-chip' style={{ background: rc.edge, color: '#0a0b0e' }}>
           {RARITY_LABEL[rarity]}
@@ -990,7 +977,8 @@ function ItemDetails({
         </div>
       )}
       {reducedNote && <div className='lk-unlock text-white/40'>{reducedNote}</div>}
-      <div className='mt-1 flex items-center gap-3'>{action}</div>
+      </div>
+      <div className='lk-details-action'>{action}</div>
     </div>
   );
 }

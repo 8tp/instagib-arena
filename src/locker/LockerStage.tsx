@@ -13,27 +13,27 @@ export function LockerStage({
   offsetX,
   offsetY,
   tint,
+  watermark,
   nameplate,
   pulseKey,
   replayKey,
-  backdrop,
   children,
 }: {
   cos: PreviewCosmetics;
   lowSpec: boolean;
   offsetX: number;
   offsetY: number;
-  tint: string;
+  tint: string; // rarity colour of the shown item (eased in the 3D backdrop)
+  watermark: string | null; // giant outlined slot name behind the subject
   nameplate: StageNameplate | null;
   pulseKey: number; // bump → celebrate() (spawn ring at the feet)
   replayKey: number; // bump → restart the current loop
-  backdrop?: ReactNode; // drawn behind the 3D canvas
-  children?: ReactNode; // overlays drawn above it
+  children?: ReactNode; // overlays drawn above the canvas
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const plateRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<CharacterPreview | null>(null);
-  const initial = useRef({ cos, lowSpec });
+  const initial = useRef({ cos, lowSpec, tint, watermark });
   const [dragged, setDragged] = useState(false);
 
   useEffect(() => {
@@ -47,6 +47,7 @@ export function LockerStage({
     }
     previewRef.current = preview;
     preview.enableOrbit(canvas);
+    preview.setBackdrop({ tint: initial.current.tint, label: initial.current.watermark });
     preview.setAnchor(plateRef.current);
     preview.start();
     // Track the canvas box itself (layout changes, responsive stacking), rAF-
@@ -68,6 +69,9 @@ export function LockerStage({
   useEffect(() => {
     previewRef.current?.setCosmetics(cos);
   }, [cos]);
+  useEffect(() => {
+    previewRef.current?.setBackdrop({ tint, label: watermark });
+  }, [tint, watermark]);
   useEffect(() => {
     previewRef.current?.setScreenOffset(offsetX, offsetY);
   }, [offsetX, offsetY]);
@@ -93,8 +97,6 @@ export function LockerStage({
 
   return (
     <div className='lk-stage'>
-      <div className='lk-tint' style={{ backgroundColor: tint }} />
-      {backdrop}
       <canvas
         ref={canvasRef}
         className='lk-canvas'
