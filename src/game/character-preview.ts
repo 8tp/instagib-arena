@@ -264,8 +264,6 @@ export class CharacterPreview {
     this.view = cos.view;
     this.lowSpec = !!opts.lowSpec;
     this.cam = { ...FRAMES[cos.view] };
-    // preserveDrawingBuffer so the canvas reliably shows its first rendered frame
-    // the instant it mounts (no transient blank before the rAF loop spins up).
     // OPAQUE on purpose: the game's FX (additive beams, pooled glow sprites,
     // unusual particles) write alpha across their whole quads. On a
     // transparent canvas those dark quad corners composite as opaque black
@@ -275,7 +273,6 @@ export class CharacterPreview {
       canvas,
       antialias: !opts.lowSpec,
       alpha: false,
-      preserveDrawingBuffer: true,
     });
     this.renderer.setPixelRatio(opts.lowSpec ? 1 : Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;

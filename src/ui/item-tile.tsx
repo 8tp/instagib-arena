@@ -88,7 +88,7 @@ export function ItemTile({
       onKeyDown={onKeyDown}
       tabIndex={tabIndex}
       data-rarity={rarity}
-      aria-pressed={interactive ? selected : undefined}
+      aria-pressed={interactive && !rootProps?.role ? selected : undefined}
       aria-label={interactive ? `${item?.name ?? id}, ${rarity}${equipped ? ', equipped' : ''}${locked ? ', locked' : ''}${isNew ? ', new' : ''}` : undefined}
       {...rootProps}
       className={`group relative block shrink-0 text-left outline-none transition-transform duration-150 ease-out motion-reduce:transition-none ${
