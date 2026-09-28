@@ -7,7 +7,7 @@
 // "Rewards coming" placeholder elsewhere — so it degrades to something true.
 
 import { ALL_COSMETICS } from '../game/cosmetics';
-import { CAREER_ROAD, MAX_LEVEL, type RoadReward } from '../game/progression';
+import { CAREER_ROAD, MAX_LEVEL, type RoadReward, type RoadStep } from '../game/progression';
 import type { InstagibProfile } from '../app-types';
 
 export type RoadNode = { level: number; rewards: RoadReward[] };
@@ -52,10 +52,12 @@ export function nextRoadStep(level: number): RoadNode | null {
   return null;
 }
 
-// Fields the progression track is adding to /api/profile; optional until then.
+// Fields the progression track adds to /api/profile; optional so an older
+// server (or a guest) still renders.
 export type MenuProfile = InstagibProfile & {
   caseKeys?: number;
-  road?: unknown;
+  roadLevel?: number; // highest Career Road level granted
+  catchUp?: RoadStep[]; // road steps granted by this fetch (e.g. after a curve change)
 };
 
 export function xpFraction(p: Pick<InstagibProfile, 'xpIntoLevel' | 'xpForNext'> | null): number {
@@ -87,11 +89,9 @@ export type ChallengeLists = {
 };
 
 const DAY_MS = 86_400_000;
-const WEEK_MS = DAY_MS * 7;
 
 // When a period's challenges roll over. Server-provided `resetsAt` wins; the
-// fallback mirrors the server's own period keys (src/game/challenges.ts):
-// daily = next UTC midnight, weekly = the next epoch-week boundary.
+// fallback is next UTC midnight (daily) / next Monday 00:00 UTC (weekly).
 export function resetTime(period: 'daily' | 'weekly', lists: ChallengeLists | null, now: number): number {
   const r = lists?.resetsAt;
   if (typeof r === 'number' && r > now && period === 'daily') return r;
@@ -101,8 +101,22 @@ export function resetTime(period: 'daily' | 'weekly', lists: ChallengeLists | nu
   }
   const row = lists?.[period]?.find((c) => typeof c.resetsAt === 'number' && c.resetsAt > now);
   if (row?.resetsAt) return row.resetsAt;
-  const span = period === 'daily' ? DAY_MS : WEEK_MS;
-  return (Math.floor(now / span) + 1) * span;
+  if (period === 'daily') return (Math.floor(now / DAY_MS) + 1) * DAY_MS;
+  // Epoch day 0 was a Thursday, so Mondays are days ≡ 4 (mod 7).
+  const day = Math.floor(now / DAY_MS);
+  const monday = Math.floor((day - 4) / 7) * 7 + 4;
+  return (monday + 7) * DAY_MS;
+}
+
+// Road steps the server granted on this profile fetch, reported once per
+// session (the menu toasts them).
+const seenCatchUp = new Set<string>();
+export function freshCatchUp(p: MenuProfile): RoadStep[] {
+  const steps = Array.isArray(p.catchUp) ? p.catchUp : [];
+  const key = steps.map((s) => s.level).join(',');
+  if (!key || seenCatchUp.has(key)) return [];
+  seenCatchUp.add(key);
+  return steps;
 }
 
 // "5h 12m", "3d 4h", "42m", "under a minute".

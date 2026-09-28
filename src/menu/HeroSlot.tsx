@@ -10,11 +10,13 @@ export function HeroSlot({
   slotRef,
   onCustomize,
   onHover,
+  hover = false,
   className = '',
 }: {
   slotRef: RefObject<HTMLDivElement | null>;
   onCustomize: () => void;
   onHover: (on: boolean) => void;
+  hover?: boolean;
   className?: string;
 }) {
   return (
@@ -33,6 +35,7 @@ export function HeroSlot({
         onFocus={() => onHover(true)}
         onBlur={() => onHover(false)}
         aria-label='Customize your loadout (opens the Locker)'
+        data-hover={hover ? '1' : '0'}
         className='menu-hero-hit'
       >
         <span className='menu-hero-tag' aria-hidden='true'>

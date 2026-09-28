@@ -35,7 +35,7 @@ import { ChallengesModal, ChallengesStrip } from './menu/Challenges';
 import { CareerRoad } from './menu/CareerRoad';
 import { LastMatchBanner } from './menu/LastMatch';
 import { fetchChallenges } from './menu/menu-hooks';
-import { noteProfile, type ChallengeLists, type MatchGain, type MenuProfile } from './menu/road-data';
+import { freshCatchUp, noteProfile, type ChallengeLists, type MatchGain, type MenuProfile } from './menu/road-data';
 import { MenuItem, MenuLink, MenuPlayButton, MenuWordmark, SocialDock, type DockTabId } from './ui/menu-parts';
 import { LoadingScreen, type LoadStep } from './ui/LoadingScreen';
 import { useLevelshot } from './ui/levelshot';
@@ -4007,6 +4007,16 @@ function Lobby({
       .then((d: { profile?: MenuProfile }) => {
         if (!active || !d.profile) return;
         setLobbyProfile(d.profile);
+        const granted = freshCatchUp(d.profile);
+        if (granted.length > 0) {
+          const top = granted[granted.length - 1].level;
+          toast(
+            granted.length === 1
+              ? `Career Road reward granted · level ${top}`
+              : `Career Road rewards granted · ${granted.length} levels, up to ${top}`,
+            { tone: 'ok' },
+          );
+        }
         const gain = noteProfile(d.profile, afterMatchRef.current);
         afterMatchRef.current = false;
         if (gain) setMatchGain(gain);
@@ -4298,6 +4308,7 @@ function Lobby({
             slotRef={heroSlotRef}
             onCustomize={() => setLockerOpen(true)}
             onHover={setHeroHover}
+            hover={heroHover}
             className='max-lg:hidden'
           />
 

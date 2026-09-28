@@ -341,7 +341,8 @@ button.menu-profile:hover .menu-profile-link {
     transform 0.16s ease-out;
 }
 .menu-hero-hit:hover .menu-hero-tag,
-.menu-hero-hit:focus-visible .menu-hero-tag {
+.menu-hero-hit:focus-visible .menu-hero-tag,
+.menu-hero-hit[data-hover='1'] .menu-hero-tag {
   opacity: 1;
   transform: translate(-50%, 0);
 }
@@ -564,6 +565,9 @@ button.menu-ch-row:focus-visible {
   -webkit-user-select: none;
   user-select: none;
   touch-action: pan-x;
+  /* the track runs off both edges instead of stopping at a hard cut */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
 }
 .road-scroller[data-dragging='1'] {
   cursor: grabbing;
@@ -583,7 +587,8 @@ button.menu-ch-row:focus-visible {
 .road-track {
   position: relative;
   display: flex;
-  padding: 0 var(--road-pad, 2rem);
+  padding-left: var(--road-pad, 2rem);
+  padding-right: var(--road-pad, 2rem);
 }
 .road-rail {
   position: absolute;

@@ -274,7 +274,7 @@ export function ChallengesModal({ guest, onClose }: { guest: boolean; onClose: (
           <p className='font-sans text-[12px] leading-relaxed text-white/40'>
             {guest
               ? 'Challenges track for players with an account. Log in and they count from your next online match.'
-              : 'Challenges count online matches. Finished ones pay out their XP and credits.'}
+              : 'Challenges count online matches and pay out automatically when a match finishes one.'}
           </p>
         </div>
       )}
