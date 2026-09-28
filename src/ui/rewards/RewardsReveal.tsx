@@ -52,6 +52,9 @@ const SLOT_NAME: Record<CosmeticSlot, string> = {
   announcer: 'Announcer',
 };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+// Why +224 XP can pay out eleven levels of rewards (after the curve change).
+const CATCH_UP_REASON = "Includes rewards for levels you'd already reached on the new curve.";
+const levelRange = (a: number, b: number) => (a === b ? `Lv ${a}` : `Lv ${a}–${b}`);
 
 /* ── Shared primitives ──────────────────────────────────────────────────── */
 
@@ -151,8 +154,9 @@ function useRevealClock(times: number[], cues: Cue[], skipped: boolean, freezeAt
 
 // Delay from the takeover's start to its reward tiles flipping in (the sting).
 const TO_TILE_MS = 620;
-// Spotlit card size in the column (catch-up / long runs).
+// Column card sizes: the spotlit hero(es) and the small tiles beside them.
 const SPOT = 110;
+const SMALL = 72;
 
 function cardSting(c: RevealCard): UiSoundName {
   if (c.kind === 'cosmetic') return RARITY_UNLOCK[rarityRank(c.rarity)];
@@ -377,10 +381,11 @@ function LevelTakeover({ m }: { m: RevealModel }) {
             {leveled ? 'Level up' : 'Career Road'}
           </div>
           <div className='rw-to-sub mt-2.5 font-display text-[20px] font-semibold text-white/85'>
-            Lv {m.roadFrom < m.levelBefore ? m.roadFrom : m.levelBefore} → {m.levelAfter}
+            {leveled ? `Lv ${m.levelBefore} → ${m.levelAfter}` : `Lv ${m.levelAfter}`}
             {rewardCount > 0 && <span className='text-white/50'> · {rewardCount} reward{rewardCount === 1 ? '' : 's'}</span>}
           </div>
-          {!m.saved && <div className='rw-to-sub mt-2 text-[14px] text-white/55'>Not saved. Log in to keep it.</div>}
+          {m.catchUp && <div className='rw-to-sub mt-2 max-w-[22rem] text-[14px] text-white/55'>{CATCH_UP_REASON}</div>}
+          {!m.saved && <div className='rw-to-sub mt-2 text-[14px] text-amber-200/80'>Not saved · log in to keep it</div>}
         </div>
         {m.spotlight.length > 0 && (
           <div className='flex flex-col items-center gap-3'>
@@ -477,11 +482,17 @@ export function RewardsReveal({
     last?.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
   }, [t, skipped, reduced]);
 
-  const dense = isDense(m);
-  // Catch-up / long runs spotlight the best 1–2 bigger at the head of the list.
-  const spotInList = dense || m.catchUp ? m.spotlight : [];
-  const listCards = m.cards.filter((c) => !spotInList.includes(c));
-  const cardSize = dense ? 72 : 78;
+  // The best 1–2 rewards lead the list as hero tiles; the rest fill a fixed
+  // grid beside them, capped at two rows with a "+N more" tile so the column
+  // never runs past the fold (catch-up can pay a dozen).
+  const heroes = m.spotlight;
+  const rest = m.cards.filter((c) => !heroes.includes(c));
+  const smallCols = heroes.length > 1 ? 1 : 3;
+  const slots = smallCols * 2;
+  const shownRest = rest.length > slots ? rest.slice(0, slots - 1) : rest;
+  const moreCount = rest.length - shownRest.length;
+  const firstRoadLevel = m.cards.length ? Math.min(...m.cards.map((c) => c.level)) : m.levelAfter;
+  const lastRoadLevel = m.cards.length ? Math.max(...m.cards.map((c) => c.level)) : m.levelAfter;
   const visibleLines = m.lines.filter((_, i) => t >= tl.lineAt[i]);
   const shownTotal = t >= tl.totalAt ? m.xp : visibleLines.length ? visibleLines[visibleLines.length - 1].running : 0;
   const guest = !m.saved;
@@ -529,8 +540,19 @@ export function RewardsReveal({
                 data-beat={on ? 'on' : undefined}
                 className={`grid grid-cols-[minmax(0,1fr)_auto_4.25rem] items-baseline gap-3 border-t border-white/[0.06] py-[2px] ${on ? 'rw-line' : 'invisible'}`}
               >
-                <span className='truncate font-sans text-[13px] text-white/85'>{l.label}</span>
-                <span className='font-mono text-[12px] tabular-nums text-white/40'>{l.detail ?? ''}</span>
+                <span className='flex min-w-0 items-center gap-1.5 font-sans text-[13px] text-white/85'>
+                  {l.key === 'challenge' && (
+                    <span aria-hidden='true' className='grid h-3.5 w-3.5 shrink-0 place-items-center bg-emerald-400 text-[10px] font-bold leading-none text-zinc-950'>
+                      ✓
+                    </span>
+                  )}
+                  <span className='truncate'>{l.label}</span>
+                </span>
+                {l.key === 'challenge' && l.credits ? (
+                  <Credits n={l.credits} gain className='font-mono text-[12px] text-amber-200/80' />
+                ) : (
+                  <span className='font-mono text-[12px] tabular-nums text-white/40'>{l.detail ?? ''}</span>
+                )}
                 <span className={`text-right font-display text-[15px] font-bold tabular-nums ${l.xp < 0 ? 'text-amber-300' : 'text-cyan-200'}`}>
                   {on && <span className='rw-line-xp'>{signed(l.xp)}</span>}
                 </span>
@@ -550,41 +572,44 @@ export function RewardsReveal({
       {/* Career Road rewards. */}
       {m.cards.length > 0 && (
         <div>
-          <div className='mb-2 flex items-baseline justify-between gap-2'>
-            <span className='rw-label'>{guest ? 'Career Road · would unlock' : 'Career Road'}</span>
-            <span className='text-[13px] text-white/50'>
-              {m.catchUp || m.cards.length > 2 ? (
-                <>
-                  Lv {m.roadFrom} → {m.levelAfter} · {m.cards.length} rewards
-                </>
-              ) : null}
-            </span>
+          <div className='mb-2'>
+            <div className='flex items-baseline justify-between gap-2'>
+              <span className='rw-label'>{guest ? 'Career Road · would unlock' : 'Career Road'}</span>
+              <span className='text-[13px] text-white/50'>
+                {m.cards.length} reward{m.cards.length === 1 ? '' : 's'} · {levelRange(firstRoadLevel, lastRoadLevel)}
+              </span>
+            </div>
+            {m.catchUp && <p className='mt-0.5 text-[13px] leading-snug text-white/45'>{CATCH_UP_REASON}</p>}
           </div>
-          {/* One spotlight floats left and the small cards flow beside it (3 per
-              row in the 360 px column), then under it; two spotlights get
-              their own row. */}
-          <div className='flow-root'>
-            {spotInList.map((c) => (
-              <div
-                key={c.key}
-                data-beat={cardOn(c) ? 'on' : undefined}
-                style={{ width: SPOT }}
-                className={`mb-2 mr-2 ${spotInList.length === 1 ? 'float-left' : 'inline-block align-top'} ${cardOn(c) ? '' : 'invisible'}`}
-              >
+          <div
+            className='grid gap-2'
+            style={{ gridTemplateColumns: `repeat(${heroes.length}, ${SPOT}px) repeat(${smallCols}, ${SMALL}px)`, gridAutoRows: 'min-content' }}
+          >
+            {heroes.map((c) => (
+              <div key={c.key} data-beat={cardOn(c) ? 'on' : undefined} className={`row-span-2 ${cardOn(c) ? '' : 'invisible'}`}>
                 {cardOn(c) ? <RewardCardView c={c} size={SPOT} /> : <div style={{ height: SPOT + 36 }} />}
               </div>
             ))}
-            {spotInList.length > 1 && <div />}
-            {listCards.map((c) => (
-              <div
-                key={c.key}
-                data-beat={cardOn(c) ? 'on' : undefined}
-                style={{ width: cardSize }}
-                className={`mb-2 mr-2 inline-block align-top ${cardOn(c) ? '' : 'invisible'}`}
-              >
-                {cardOn(c) ? <RewardCardView c={c} size={cardSize} /> : <div style={{ height: cardSize + (cardSize >= 78 ? 36 : 20) }} />}
+            {shownRest.map((c) => (
+              <div key={c.key} data-beat={cardOn(c) ? 'on' : undefined} className={cardOn(c) ? '' : 'invisible'}>
+                {cardOn(c) ? <RewardCardView c={c} size={SMALL} /> : <div style={{ height: SMALL + 20 }} />}
               </div>
             ))}
+            {moreCount > 0 && (
+              <div className={cardOn(rest[rest.length - 1]) ? 'rw-fade' : 'invisible'}>
+                <div
+                  className='deck-card flex flex-col items-center justify-center'
+                  style={{ width: SMALL, height: SMALL }}
+                  title={rest
+                    .slice(shownRest.length)
+                    .map((c) => `${cardName(c)} (Lv ${c.level})`)
+                    .join(', ')}
+                >
+                  <span className='font-display text-[22px] font-bold leading-none text-white/85'>+{moreCount}</span>
+                  <span className='mt-0.5 text-[12px] text-white/50'>more</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

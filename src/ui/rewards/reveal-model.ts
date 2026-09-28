@@ -20,7 +20,9 @@ import {
   type XpLine,
 } from '../../game/progression';
 
-export type RevealLine = XpLine & { running: number }; // running total after this line
+// running = total after this line; credits = what a challenge line also paid
+// (the ledger is the one place a completed challenge is listed).
+export type RevealLine = XpLine & { running: number; credits?: number };
 
 // One pass of the XP bar within a level: `from`/`to` are 0..1 fills. A segment
 // with `levelUp` ends by wrapping into `level + 1`.
@@ -54,6 +56,8 @@ export type RevealModel = {
   catchUp: boolean;
   // Play the level-up takeover (a level was gained, or a catch-up paid out).
   takeover: boolean;
+  // Completions NOT already itemized as a 'challenge' ledger line (legacy
+  // replies); the ledger lists the rest, so nothing shows twice.
   challenges: ChallengeCompletion[];
   balance: number | null; // credit balance after the match (saved players only)
 };
@@ -142,13 +146,25 @@ export function buildRevealModel(
   const levelAfter = Math.max(levelBefore, levelForXp(totalAfter));
 
   const raw = p.xpLines ?? estimateLines(xp, opts.result ?? null, offline);
+  // Pair each 'challenge' ledger line with its completion (by label, else in
+  // order) so the line can show the credits it paid.
+  const completions = p.challenges ?? [];
+  const used = new Set<number>();
+  let nth = 0;
   let running = 0;
   const lines: RevealLine[] = raw
     .filter((l) => l.xp !== 0)
     .map((l) => {
       running += l.xp;
-      return { ...l, running };
+      if (l.key !== 'challenge') return { ...l, running };
+      let idx = completions.findIndex((c, i) => !used.has(i) && c.label === l.label);
+      if (idx < 0) idx = completions.findIndex((_, i) => !used.has(i) && i >= nth);
+      nth++;
+      if (idx < 0) return { ...l, running };
+      used.add(idx);
+      return { ...l, running, credits: completions[idx].credits };
     });
+  const extraChallenges = completions.filter((_, i) => !used.has(i));
 
   const { segments, skipped } = buildSegments(totalBefore, totalAfter, levelBefore, levelAfter);
 
@@ -194,7 +210,7 @@ export function buildRevealModel(
     roadFrom,
     catchUp,
     takeover: leveled || (catchUp && cards.length > 0),
-    challenges: p.challenges ?? [],
+    challenges: extraChallenges,
     balance: saved ? p.progression.credits : null,
   };
 }

@@ -76,7 +76,7 @@ function buildMatch(spec: LabSpec): LabMatch {
   const challenges = spec.challenges ?? [];
   const lines: XpLine[] = [
     ...match.lines,
-    ...challenges.map((c) => ({ key: 'challenge' as const, label: c.label, xp: c.xp })),
+    ...challenges.map((c) => ({ key: 'challenge' as const, label: c.label, xp: c.xp, detail: `+${c.credits} credits` })),
   ];
   const xp = lines.reduce((n, l) => n + l.xp, 0);
   const before = xpAt(spec.before.level, spec.before.frac);
@@ -254,6 +254,7 @@ function ResultsLab({ q }: { q: URLSearchParams }) {
   const moment = (v: string | null): number | undefined => {
     if (v === null) return undefined;
     if (v === 'takeover') return tl.takeover ? tl.takeover.start + 1500 : tl.seg[0].end;
+    if (v === 'end') return tl.doneAt;
     if (v === 'bar') return Math.round((tl.seg[0].start + tl.seg[0].end) / 2);
     if (v === 'cards') return tl.cardAt.length ? tl.cardAt[tl.cardAt.length - 1] + 500 : tl.creditsAt;
     return Number(v);
@@ -295,9 +296,24 @@ function ResultsLab({ q }: { q: URLSearchParams }) {
 
   useEffect(() => {
     if (hold === undefined) return;
-    const id = window.setTimeout(() => document.getAnimations().forEach((a) => a.pause()), hold);
+    const pauseAll = () => document.getAnimations().forEach((a) => a.pause());
+    // hold=takeover: pause 1.5 s after the takeover ACTUALLY mounts, so a slow
+    // or busy page can't freeze it before its reward card has flipped in.
+    if (q.get('hold') === 'takeover' && tl.takeover) {
+      let pauseId = 0;
+      const poll = window.setInterval(() => {
+        if (!document.querySelector('.rw-takeover')) return;
+        window.clearInterval(poll);
+        pauseId = window.setTimeout(pauseAll, 1500);
+      }, 30);
+      return () => {
+        window.clearInterval(poll);
+        window.clearTimeout(pauseId);
+      };
+    }
+    const id = window.setTimeout(pauseAll, hold);
     return () => window.clearTimeout(id);
-  }, [hold, run]);
+  }, [hold, run, q, tl]);
 
   const restart = () => {
     setProg(!pending && late <= 0 ? c.progression : null);
