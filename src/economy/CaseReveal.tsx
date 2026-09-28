@@ -7,8 +7,9 @@ import { ModalShell } from '../deck';
 import { sfxProps, uiSfx } from '../deck-core';
 import { playUi } from '../game/audio';
 import { casePoolFor, itemDef, vaultUnobtainables, type ItemDef } from '../game/items/catalog';
-import { TIERS, TIER_META, type CaseDef, type ItemInstanceWire, type Tier } from '../game/items/types';
+import { TIERS, TIER_META, type ItemInstanceWire, type Tier } from '../game/items/types';
 import { ItemTile } from '../ui/item-tile';
+import type { CaseInfo } from './api';
 import { TIER_COLOR, TIER_LABEL, isIridescent } from '../ui/rarity';
 import { effectName, fmtCredits, instBaseName, instFullName, instSlot, instTags, instTier, sheenInfo, thumbLook } from './display';
 import { QualityMarks, TagPills } from './parts';
@@ -21,7 +22,7 @@ const STRIDE = CARD + GAP;
 
 // A believable reel: tiers drawn from the case's own odds (so the teasers
 // look like what the case actually holds), the winner fixed at LAND.
-function buildReel(c: CaseDef, won: ItemInstanceWire): { def: ItemDef; tier: Tier }[] {
+function buildReel(c: CaseInfo, won: ItemInstanceWire): { def: ItemDef; tier: Tier }[] {
   const pool = casePoolFor(c.slots);
   const byTier = (t: Tier) => (t === 'unobtainable' ? vaultUnobtainables() : pool.filter((d) => d.tier === t));
   const draw = (): ItemDef => {
@@ -60,7 +61,7 @@ export function CaseReveal({
   onEquip,
   onClose,
 }: {
-  caseDef: CaseDef;
+  caseDef: CaseInfo;
   item: ItemInstanceWire;
   reduced: boolean;
   usedRoll: boolean;

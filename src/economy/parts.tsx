@@ -7,7 +7,8 @@ import { TIER_META, type ItemInstanceWire, type ItemSlot, type Tier } from '../g
 import { TicketGlyph } from '../menu/RewardTile';
 import { ItemTile } from '../ui/item-tile';
 import { TIER_COLOR, TIER_LABEL, isIridescent } from '../ui/rarity';
-import { fmtCredits, instBaseName, instFullName, instTags, instTier, instTileSub, qualityTone, thumbLook, type Tag } from './display';
+import type { TradeGate } from './api';
+import { fmtCredits, gateRows, instBaseName, instFullName, instTags, instTier, instTileSub, qualityTone, thumbLook, type Tag } from './display';
 
 // One thing that can sit on a tile: an owned instance, a virtual default, or a
 // level-unlocked entitlement (cards) — owned or still locked.
@@ -237,4 +238,23 @@ export function Sparkline({
 
 export function EmptyNote({ children }: { children: ReactNode }) {
   return <div className='lk-empty'>{children}</div>;
+}
+
+// "Trading and the market are locked until…" — the three gates as a checklist.
+export function GateBanner({ gate }: { gate: TradeGate | null }) {
+  if (!gate || gate.ok) return null;
+  const rows = gateRows(gate);
+  return (
+    <div className='ec-gatebanner' role='status'>
+      <b>Trading and the market are locked</b>
+      <span>Both need:</span>
+      <ul>
+        {rows.map((g) => (
+          <li key={g.label} className={g.ok === true ? 'is-ok' : g.ok === false ? 'is-no' : 'is-unk'}>
+            <span aria-hidden>{g.ok === true ? '✓' : g.ok === false ? '✕' : '·'}</span> {g.label}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }

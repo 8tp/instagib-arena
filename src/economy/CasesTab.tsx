@@ -1,14 +1,14 @@
 // Cases: five cases, opened with credits or a free roll. Fixed, published
 // rates — the tier odds table AND the quality odds — are shown to everyone
 // (guests too). Opening runs the reel; results land in the inventory.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { sfxProps, toast } from '../deck-core';
-import { CASES, TIERS, TIER_META, type CaseId, type ItemInstanceWire, type Tier } from '../game/items/types';
+import { TIERS, TIER_META, type CaseId, type ItemInstanceWire } from '../game/items/types';
 import { ItemTile } from '../ui/item-tile';
 import { TIER_COLOR, TIER_LABEL, isIridescent } from '../ui/rarity';
-import { econ as api, reasonText, type OpenCaseResp } from './api';
+import { econ as api, reasonText, type CaseInfo, type OpenCaseResp } from './api';
 import { CaseReveal } from './CaseReveal';
-import { pct, poolOf, qualityRows } from './rates';
+import { fallbackCases, pct, poolOf, qualityRows } from './rates';
 import { fmtCredits } from './display';
 import { TicketGlyph } from '../menu/RewardTile';
 import { Balance } from './parts';
@@ -36,7 +36,19 @@ export function CasesTab({
   const [sel, setSel] = useState<CaseId>('hat');
   const [busy, setBusy] = useState(false);
   const [reveal, setReveal] = useState<{ key: number; caseId: CaseId; res: OpenCaseResp; usedRoll: boolean } | null>(null);
-  const c = CASES.find((x) => x.id === sel) ?? CASES[0];
+  // Published rates: the server's effective odds (public call), with the shared
+  // contract as a fallback so guests / offline still see rates.
+  const [cases, setCases] = useState<CaseInfo[]>(() => fallbackCases());
+  useEffect(() => {
+    let live = true;
+    void api.cases().then((r) => {
+      if (live && r.ok && Array.isArray(r.cases) && r.cases.length > 0) setCases(r.cases);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const c = cases.find((x) => x.id === sel) ?? cases[0];
   const hue = CASE_HUE[c.id];
   const pool = useMemo(() => poolOf(c), [c]);
   const ready = econ.status === 'ready';
@@ -56,23 +68,19 @@ export function CasesTab({
     setReveal({ key: Date.now(), caseId, res: r, usedRoll: useRoll });
   };
 
-  const canRoll = ready && econ.freeRolls > 0;
+  const canRoll = ready && econ.freeRolls > 0 && !c.premium;
   const canPay = ready && econ.credits >= c.cost;
   const short = Math.max(0, c.cost - econ.credits);
 
-  const counts = useMemo(() => {
-    const m = {} as Record<Tier, number>;
-    for (const t of TIERS) m[t] = pool.filter((d) => d.tier === t).length;
-    return m;
-  }, [pool]);
-  const q = qualityRows(c);
-  const revealCase = reveal ? (CASES.find((x) => x.id === reveal.caseId) ?? c) : c;
+  const counts = c.pool;
+  const q = qualityRows(c.qualityOdds);
+  const revealCase = reveal ? (cases.find((x) => x.id === reveal.caseId) ?? c) : c;
 
   return (
     <div className='ec-page deck-scroll'>
       <div className='ec-page-in'>
         <div className='ec-cases' role='tablist' aria-label='Cases'>
-          {CASES.map((k) => {
+          {cases.map((k) => {
             const h = CASE_HUE[k.id];
             return (
               <button
@@ -120,12 +128,12 @@ export function CasesTab({
                   onClick={() => void open(c.id, true)}
                   {...sfxProps('uiConfirm')}
                 >
-                  <TicketGlyph size={18} /> Free roll · {econ.freeRolls}
+                  <TicketGlyph size={18} /> {c.premium ? 'Credits only' : `Free roll · ${econ.freeRolls}`}
                 </button>
                 {loggedIn && <Balance credits={ready ? econ.credits : null} freeRolls={null} />}
               </div>
               <p className='mt-3 font-sans text-[12.5px] text-white/50'>
-                Rolls are decided by the server. Duplicates are possible — salvage them or sell them on the market. Credits are earned in play, never bought.
+                Rolls are decided by the server. Free rolls open standard cases only. Duplicates are possible — salvage them or sell them on the market. Credits are earned in play, never bought.
               </p>
             </div>
           </div>
@@ -207,10 +215,10 @@ export function CasesTab({
           usedRoll={reveal.usedRoll}
           credits={econ.credits}
           freeRolls={econ.freeRolls}
-          canAgain={econ.freeRolls > 0 || econ.credits >= revealCase.cost}
+          canAgain={(!revealCase.premium && econ.freeRolls > 0) || econ.credits >= revealCase.cost}
           onAgain={() => {
             const id = reveal.caseId;
-            const roll = econ.freeRolls > 0;
+            const roll = econ.freeRolls > 0 && !revealCase.premium;
             setReveal(null);
             void open(id, roll);
           }}

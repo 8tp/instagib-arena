@@ -224,11 +224,16 @@ export function reasonText(r: { status: number; reason?: string; error?: string;
     case 'too_many_pending':
       return 'Too many pending offers — cancel one first.';
     case 'level':
-      return 'Trading needs a higher level.';
+    case 'gate_level':
+      return `Trading and the market unlock at Level ${r.need ?? 5}.`;
     case 'matches':
-      return 'Trading needs more recorded matches.';
+    case 'gate_matches':
+      return `Trading and the market need ${r.need ?? 10} recorded matches.`;
     case 'age':
-      return 'Trading unlocks 24 h after account creation.';
+    case 'gate_age':
+      return 'Trading and the market unlock 24 h after account creation.';
+    case 'gate_guest':
+      return 'Log in to trade.';
     case 'guest':
       return 'Log in first.';
     case 'rate_limited':

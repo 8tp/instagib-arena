@@ -22,7 +22,8 @@ import {
   saleTax,
   timeAgo,
 } from './display';
-import { InstTile, Sparkline, TagPills, TierChip } from './parts';
+import { GateBanner, InstTile, Sparkline, TagPills, TierChip } from './parts';
+import { useTradeGate } from './useTradeGate';
 import type { Econ } from './useEconomy';
 
 type Sub = 'browse' | 'sell' | 'mine';
@@ -43,6 +44,8 @@ export function MarketTab({
   const [sub, setSub] = useState<Sub>(sellUid ? 'sell' : 'browse');
   const [sellItem, setSellItem] = useState<ItemInstanceWire | null>(null);
   const [mineTick, setMineTick] = useState(0);
+  const gate = useTradeGate(loggedIn);
+  const locked = !!gate && !gate.ok;
 
   // Arriving from an inventory item's "List on market".
   useEffect(() => {
@@ -69,7 +72,8 @@ export function MarketTab({
             Listing fee {MARKET.listingFeePct * 100}% · sale tax {MARKET.saleTaxPct * 100}% · escrowed while listed
           </span>
         </div>
-        {sub === 'browse' && <Browse econ={econ} loggedIn={loggedIn} myName={myName} />}
+        <GateBanner gate={gate} />
+        {sub === 'browse' && <Browse econ={econ} loggedIn={loggedIn} myName={myName} locked={locked} />}
         {sub === 'sell' && <SellPicker econ={econ} loggedIn={loggedIn} onPick={setSellItem} />}
         {sub === 'mine' && <MyListings key={mineTick} econ={econ} />}
       </div>
@@ -77,6 +81,7 @@ export function MarketTab({
         <SellDialog
           inst={sellItem}
           econ={econ}
+          locked={locked}
           onClose={() => setSellItem(null)}
           onListed={() => {
             setSellItem(null);
@@ -99,7 +104,7 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: 'festive', label: 'Festive' },
 ];
 
-function Browse({ econ, loggedIn, myName }: { econ: Econ; loggedIn: boolean; myName: string }) {
+function Browse({ econ, loggedIn, myName, locked }: { econ: Econ; loggedIn: boolean; myName: string; locked: boolean }) {
   const [f, setF] = useState<MarketQuery>({ sort: 'newest', page: 0 });
   const [text, setText] = useState('');
   const [data, setData] = useState<MarketResp | null>(null);
@@ -172,6 +177,7 @@ function Browse({ econ, loggedIn, myName }: { econ: Econ; loggedIn: boolean; myN
           econ={econ}
           loggedIn={loggedIn}
           myName={myName}
+          locked={locked}
           onClose={() => setOpen(null)}
           onBought={() => {
             setOpen(null);
@@ -229,7 +235,7 @@ function useHistory(def: string): HistoryResp | null | 'err' {
   return h;
 }
 
-function ListingDialog({ l, econ, loggedIn, myName, onClose, onBought }: { l: Listing; econ: Econ; loggedIn: boolean; myName: string; onClose: () => void; onBought: () => void }) {
+function ListingDialog({ l, econ, loggedIn, myName, locked, onClose, onBought }: { l: Listing; econ: Econ; loggedIn: boolean; myName: string; locked: boolean; onClose: () => void; onBought: () => void }) {
   const it = l.item;
   const mine = !!myName && l.seller.toLowerCase() === myName.toLowerCase();
   const [confirm, setConfirm] = useState(false);
@@ -282,8 +288,8 @@ function ListingDialog({ l, econ, loggedIn, myName, onClose, onBought }: { l: Li
           {loggedIn && <div className={`font-sans text-[12.5px] ${after < 0 ? 'text-rose-300' : 'text-white/50'}`}>{after < 0 ? `Need ${fmtCredits(-after)} more` : `Balance after: ${fmtCredits(after)}`}</div>}
         </div>
         {!confirm ? (
-          <button type='button' className={`lk-action ${loggedIn && after >= 0 && !mine ? 'lk-action-buy' : 'lk-action-muted'}`} data-action='buy' disabled={!loggedIn || after < 0 || mine} onClick={() => setConfirm(true)} {...sfxProps('uiConfirm')}>
-            {!loggedIn ? 'Log in to buy' : mine ? 'Your listing' : 'Buy'}
+          <button type='button' className={`lk-action ${loggedIn && after >= 0 && !mine && !locked ? 'lk-action-buy' : 'lk-action-muted'}`} data-action='buy' disabled={!loggedIn || after < 0 || mine || locked} onClick={() => setConfirm(true)} {...sfxProps('uiConfirm')}>
+            {!loggedIn ? 'Log in to buy' : mine ? 'Your listing' : locked ? 'Locked' : 'Buy'}
           </button>
         ) : (
           <div className='ec-confirm'>
@@ -319,7 +325,7 @@ function SellPicker({ econ, loggedIn, onPick }: { econ: Econ; loggedIn: boolean;
   );
 }
 
-function SellDialog({ inst, econ, onClose, onListed }: { inst: ItemInstanceWire; econ: Econ; onClose: () => void; onListed: () => void }) {
+function SellDialog({ inst, econ, locked, onClose, onListed }: { inst: ItemInstanceWire; econ: Econ; locked: boolean; onClose: () => void; onListed: () => void }) {
   const tier = instTier(inst);
   const floor = marketFloor(tier);
   const hist = useHistory(inst.def);
@@ -334,7 +340,7 @@ function SellDialog({ inst, econ, onClose, onListed }: { inst: ItemInstanceWire;
   const fee = valid ? listingFee(n) : 0;
   const tax = valid ? saleTax(n) : 0;
   const net = valid ? saleNet(n) : 0;
-  const can = valid && econ.credits >= fee;
+  const can = valid && econ.credits >= fee && !locked;
   const submit = async () => {
     setBusy(true);
     const r = await api.list(inst.uid, n);
@@ -385,7 +391,7 @@ function SellDialog({ inst, econ, onClose, onListed }: { inst: ItemInstanceWire;
       <div className='ec-dialog-foot'>
         <div className='font-sans text-[12.5px] text-white/50'>Balance {fmtCredits(econ.credits)}{valid ? ` → ${fmtCredits(econ.credits - fee)} after the fee` : ''}. The item is escrowed until it sells or you unlist it.</div>
         <button type='button' className={`lk-action ${can ? 'lk-action-buy' : 'lk-action-muted'}`} data-action='list' disabled={!can || busy} onClick={() => void submit()} {...sfxProps('uiConfirm')}>
-          {busy ? 'Listing…' : valid && econ.credits < fee ? 'Can’t afford the fee' : 'List for sale'}
+          {busy ? 'Listing…' : locked ? 'Locked' : valid && econ.credits < fee ? 'Can’t afford the fee' : 'List for sale'}
         </button>
       </div>
     </ModalShell>
