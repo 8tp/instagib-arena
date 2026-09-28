@@ -26,17 +26,17 @@ export type ChallengeDef = {
 };
 
 export const DAILY_CHALLENGES: readonly ChallengeDef[] = [
-  { id: 'daily:headshots', period: 'daily', metric: 'headshots', track: 'add', goal: 10, title: 'Land 10 headshots',      rewardXp: 80,  rewardCredits: 25 },
-  { id: 'daily:wins',      period: 'daily', metric: 'wins',      track: 'add', goal: 2,  title: 'Win 2 matches',          rewardXp: 100, rewardCredits: 30 },
-  { id: 'daily:kills',     period: 'daily', metric: 'kills',     track: 'add', goal: 30, title: 'Frag 30 enemies',        rewardXp: 80,  rewardCredits: 25 },
-  { id: 'daily:streak',    period: 'daily', metric: 'streak',    track: 'max', goal: 6,  title: 'Reach a 6 kill-streak',  rewardXp: 90,  rewardCredits: 25 },
-  { id: 'daily:games',     period: 'daily', metric: 'games',     track: 'add', goal: 3,  title: 'Play 3 matches',         rewardXp: 60,  rewardCredits: 20 },
+  { id: 'daily:headshots', period: 'daily', metric: 'headshots', track: 'add', goal: 10, title: 'Land 10 headshots',      rewardXp: 90,  rewardCredits: 45 },
+  { id: 'daily:wins',      period: 'daily', metric: 'wins',      track: 'add', goal: 2,  title: 'Win 2 matches',          rewardXp: 110, rewardCredits: 60 },
+  { id: 'daily:kills',     period: 'daily', metric: 'kills',     track: 'add', goal: 30, title: 'Frag 30 enemies',        rewardXp: 90,  rewardCredits: 45 },
+  { id: 'daily:streak',    period: 'daily', metric: 'streak',    track: 'max', goal: 6,  title: 'Reach a 6 kill-streak',  rewardXp: 100, rewardCredits: 50 },
+  { id: 'daily:games',     period: 'daily', metric: 'games',     track: 'add', goal: 3,  title: 'Play 3 matches',         rewardXp: 70,  rewardCredits: 40 },
 ];
 
 export const WEEKLY_CHALLENGES: readonly ChallengeDef[] = [
-  { id: 'weekly:headshots', period: 'weekly', metric: 'headshots', track: 'add', goal: 50,  title: 'Land 50 headshots',  rewardXp: 300, rewardCredits: 120 },
-  { id: 'weekly:wins',      period: 'weekly', metric: 'wins',      track: 'add', goal: 10,  title: 'Win 10 matches',     rewardXp: 400, rewardCredits: 150 },
-  { id: 'weekly:kills',     period: 'weekly', metric: 'kills',     track: 'add', goal: 200, title: 'Frag 200 enemies',   rewardXp: 300, rewardCredits: 120 },
+  { id: 'weekly:headshots', period: 'weekly', metric: 'headshots', track: 'add', goal: 50,  title: 'Land 50 headshots',  rewardXp: 320, rewardCredits: 220 },
+  { id: 'weekly:wins',      period: 'weekly', metric: 'wins',      track: 'add', goal: 10,  title: 'Win 10 matches',     rewardXp: 420, rewardCredits: 300 },
+  { id: 'weekly:kills',     period: 'weekly', metric: 'kills',     track: 'add', goal: 200, title: 'Frag 200 enemies',   rewardXp: 320, rewardCredits: 240 },
 ];
 
 export const DAILY_COUNT = 3; // active daily challenges per player

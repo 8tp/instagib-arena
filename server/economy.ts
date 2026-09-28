@@ -768,6 +768,19 @@ export function openCase(playerId: string, caseId: string, useRoll: boolean): Ca
   })();
 }
 
+// The odds a player actually experiences: a tier with no defs in the pool
+// falls to the nearest lower tier that has some (then higher) — see defsForTier.
+export function effectiveOdds(c: CaseDef): Record<Tier, number> {
+  const pool = poolFor(c);
+  const out = Object.fromEntries(TIERS.map((t) => [t, 0])) as Record<Tier, number>;
+  for (const t of TIERS) {
+    if (c.odds[t] <= 0) continue;
+    const landed = defsForTier(c, t, pool);
+    if (landed.defs.length) out[landed.tier] += c.odds[t];
+  }
+  return out;
+}
+
 export type CaseInfo = {
   id: CaseId;
   name: string;
@@ -775,7 +788,8 @@ export type CaseInfo = {
   cost: number;
   premium: boolean;
   slots: readonly ItemSlot[];
-  odds: Record<Tier, number>; // tier probabilities (sum 1)
+  odds: Record<Tier, number>; // EFFECTIVE tier probabilities (sum 1) — what a roll really does
+  nominalOdds: Record<Tier, number>; // the case's configured odds before empty-tier fallback
   pool: Record<Tier, number>; // how many defs can drop at each tier
   qualityOdds: Record<string, number>; // the quality chances that apply to this case's pool
 };
@@ -809,7 +823,8 @@ export function casesInfo(): { cases: CaseInfo[]; qualityOdds: typeof QUALITY_OD
       cost: c.cost,
       premium: !!c.premium,
       slots: c.slots,
-      odds: c.odds,
+      odds: effectiveOdds(c),
+      nominalOdds: c.odds,
       pool: count,
       qualityOdds: qo,
     };
@@ -861,6 +876,7 @@ function cleanAdminAttrs(raw: unknown, tier: unknown): { attrs: StoredAttrs; err
     if (typeof a.tint !== 'string' || !HEX.test(a.tint)) return { attrs: out, error: 'bad_tint' };
     out.tint = a.tint.toLowerCase();
   }
+  tier = tier ?? a.tier;
   if (tier != null) {
     if (typeof tier !== 'string' || !(TIERS as readonly string[]).includes(tier)) return { attrs: out, error: 'bad_tier' };
     out.tier = tier as Tier;

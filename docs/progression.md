@@ -171,51 +171,38 @@ Totals: 36 cosmetics, 10 keys, 20,230 credits.
 
 **Payout.** `instagib_stats.road_level` is the highest road level already paid.
 Whenever XP moves (a match, a challenge claim) or on `GET /api/profile`, the
-server pays every step in `(road_level, level]` — credits, keys, cosmetics
-(persisted) — and sets `road_level = level`. That makes each step pay exactly
-once and gives existing players a one-time **catch-up** for every level their
-XP now reaches. Level cosmetics are *also* owned live from the XP level, so a
-newly added one is owned at once by everyone past it; previously persisted
-unlocks are never taken away (e.g. Kuon, formerly L5, stays owned).
+server pays every step in `(road_level, level]` — credits, free rolls, items —
+and sets `road_level = level`. That makes each step pay exactly once and gives
+players a one-time **catch-up** for every level their XP now reaches.
 
-## 5. Credits, shop and rarity
+**Economy v3 (docs/economy.md).** The road no longer writes `unlocked`:
+- a level-sourced **item** cosmetic (hat / gun / beam / finisher / spawn / emote /
+  name colour) is minted as a **bound item instance** (untradable, origin
+  `road`) — see `roadRewardKind()` in `progression.ts`;
+- **cards, titles and announcer packs are entitlements**, owned live from the
+  level / achievements (`entitlementsFor` in `server/economy.ts`), nothing minted;
+- the old case "key" is now a **free roll** (`{ type: 'case', count? }`), and the
+  removed per-slot `unusual.*` road items (L62/71/80/100) pay **2 free rolls**
+  (+ filler credits) each so those levels still reward.
 
-Shop (`source: credits`) — 30 items, 53,000 credits in total. Rarity ↔ value
-bands, which new items should stay inside:
+## 5. Credits and rarity
 
-| Rarity | Shop price | Road levels |
-|---|---|---|
-| common | 300–500 | ~2–15 |
-| rare | 600–1,000 | ~5–45 |
-| epic | 1,200–2,200 | ~25–70 |
-| legendary | 2,800–5,000 | 50, 62, 71, 75, 80, 90, 100, or the case jackpot |
+There is no shop any more (v3): credits come from matches, challenges, the
+Career Road and salvage, and are spent on **cases** and the **market**
+(docs/economy.md). Rarity is now a 7-tier ladder (`TIER_META` in
+`src/game/items/types.ts`).
 
-Income to L100 at ~200 XP/match ≈ 24k match credits + 20k road credits (+
-challenge credits) — most of the shop, not all of it; the case consolation is
-the long-term sink. Admin items are outside the economy.
+## 6. Cases
 
-## 6. Hat case
-
-`POST /api/shop/open-case` — server-authoritative, **never a duplicate**:
-
-1. Costs a **key** if the player has one (keys are spent first), else
-   **500 credits**.
-2. **5 % jackpot**: an un-owned case-exclusive unusual (Prismatic, Galaxy).
-3. Otherwise an un-owned **case hat** (Hard Hat, Top Hat, Wizard Hat — case is
-   their only source), weighted by rarity (common 100 / rare 40 / epic 12 /
-   legendary 4).
-4. Once every case hat is owned (jackpots still missing), a jackpot miss pays
-   **250 credits** back (`consolation`) — so a jackpot stays a long shot
-   (~5,000 credits expected) instead of a guaranteed drop.
-5. Everything owned → `{ ok: false, reason: 'complete' }` and nothing is spent.
-
-Adding a hat with `source: { type: 'case' }` grows the pool automatically.
+Replaced by the case system in docs/economy.md §2 (`POST /api/cases/open`).
+`POST /api/shop/open-case`, `/api/shop/buy` and `/api/equip` return
+`410 { error: 'moved' }`.
 
 ## 7. Challenges
 
 - Pools in `challenges.ts`: 3 of 5 dailies, 2 of 3 weeklies, picked per player
-  by hashing `(player, period)`. Rewards: dailies 60–100 XP + 20–30 credits,
-  weeklies 300–400 XP + 120–150 credits.
+  by hashing `(player, period)`. Rewards (v3): dailies 70–110 XP + **40–60
+  credits**, weeklies 320–420 XP + **220–300 credits**.
 - Progress comes **only from online matches** recorded by the game server.
 - **Auto-payout**: the match that completes a challenge pays it (XP + credits),
   adds a `challenge` XP line and a `challenges` entry to the reply. Any
@@ -245,8 +232,7 @@ Adding a hat with `source: { type: 'case' }` grows the pool automatically.
 - Accuracy bonus and the best-accuracy stat (Sharpshooter) need ≥ 20 shots.
 - The existing aimbot heuristic drops throttled frags before they count.
 - Per-match XP cap 1,500. Case, buy, claim and match writes run in single
-  SQLite transactions; claims are guarded by `claimed = 0`. An unreadable
-  `unlocked` JSON is never written back (logged; buy/case refuse to charge).
+  SQLite transactions; claims are guarded by `claimed = 0`.
 - Known gap: two *distinct* colluding accounts can still trade kills (~10 XP
   per frag, rate-bounded by the killcam respawn; FFA/TDM decays after 5 frags
   per victim, duels don't).
@@ -260,11 +246,12 @@ Adding a hat with `source: { type: 'case' }` grows the pool automatically.
 | `total_xp` | lifetime XP — the source of truth for level |
 | `level` | cache of `levelForXp(total_xp)` (admin table only) |
 | `credits` | spendable balance |
-| `unlocked` | JSON array: bought / dropped / road / title unlocks (never admin items) |
-| `equipped` | JSON map slot → id |
+| `unlocked` | legacy (v2) — cleared by the v3 reset; never read or written again |
+| `equipped` | legacy (v2) — cleared; equipment is `equipped_items` (economy.md §9) |
 | `first_win_day` | YYYYMMDD of the last first-win bonus |
 | `road_level` | highest Career Road level paid out (default 1) |
-| `case_keys` | unspent free hat-case opens |
+| `case_keys` | legacy — cleared by the v3 reset (replaced by `free_rolls`) |
+| `free_rolls`, `econ_v3`, `legacy_unlocked`, `equipped_items` | economy v3 (docs/economy.md §9) |
 | `offline_day`, `offline_xp` | offline XP earned on that UTC day (daily cap) |
 
 `instagib_challenges (player_id, challenge, period, progress, goal, claimed)` —
@@ -281,8 +268,10 @@ share it:
   xpGained: number;        // total XP added (match + challenges)
   creditsGained: number;   // total credits added (match + challenges + road)
   leveledUp: boolean;
-  newUnlocks: string[];    // cosmetic ids newly owned
-  progression: { totalXp, level, credits, unlocked, equipped, caseKeys, roadLevel };
+  newUnlocks: string[];    // def ids newly owned / entitled (titles, cards, road items)
+  newItems: ItemInstanceWire[]; // v3: bound instances minted by this call (road rewards)
+  progression: { totalXp, level, credits, unlocked, equipped, caseKeys, freeRolls, roadLevel };
+  // caseKeys is a back-compat alias of freeRolls; unlocked/equipped are derived (def ids)
   // RewardExtras (progression.ts)
   saved: boolean;          // false = guest preview, nothing persisted
   offline: boolean;
@@ -301,17 +290,15 @@ mid-match leave (`partial: true`). A player who is mid-reconnect gets it on
 resume.
 
 - `GET /api/profile` → `{ profile: { level, totalXp, xpIntoLevel, xpForNext,
-  credits, unlocked, equipped, stats, ranked, caseKeys, roadLevel, catchUp } }`.
-  `catchUp` lists road steps this request just paid (usually `[]`); `equipped`
-  omits items the player no longer owns.
+  credits, unlocked, equipped, equippedUids, looks, stats, ranked, freeRolls,
+  caseKeys, roadLevel, catchUp } }`. `catchUp` lists road steps this request
+  just paid (usually `[]`); `equipped` / `unlocked` are back-compat def-id views —
+  v3 clients use `GET /api/inventory`.
 - `POST /api/stats` (offline only) → the reward payload, or `400 { error:
   'offline_only' | 'training' }`, or `429 { error: 'rate_limited' }`.
-- `POST /api/shop/open-case` → `{ ok: true, won: id | null, jackpot, consolation,
-  usedKey, credits, caseKeys, unlocked }` or `{ ok: false, reason:
-  'insufficient' | 'complete' | 'error', credits, caseKeys }`.
 - WS `join` / `resume` (fallback join) can now fail with `{ type: 'join-failed',
   reason: 'duplicate' }` — this account already holds a live slot in that room.
 - `GET /api/challenges` → `{ challenges: { daily, weekly }, resetsAt: { daily, weekly } }`.
 - `POST /api/challenges/claim { id }` → `{ ok: true, ...reward payload }` or
   `{ ok: false, reason }`.
-- `POST /api/equip`, `POST /api/shop/buy` — unchanged shapes.
+- `POST /api/equip`, `POST /api/shop/buy`, `POST /api/shop/open-case` — **410 `{ error: 'moved' }`** (economy v3).
