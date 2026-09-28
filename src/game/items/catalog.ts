@@ -63,6 +63,12 @@ const HATS_V3: W[] = [
   ['hat.halo.relic', 'Seraph Circlet', 'relic', 'A floating band of hard light.'],
   ['hat.void', 'Voidcrown', 'unobtainable', 'A crown carved from a starless night.'],
 ];
+// Staff set (bound, admin-granted, never in cases) — the "Sovereign" set.
+const STAFF_WEARABLES: [ItemSlot, string, string, string][] = [
+  ['hat', 'hat.sovereign', 'Sovereign Crown', 'A floating hard-light crown with orbiting jewels — staff only.'],
+  ['back', 'back.sovereign', 'Sovereign Mantle', 'A royal cloak with a hard-light halo ring — staff only.'],
+  ['face', 'face.sovereign', 'Sovereign Visor', 'A gilded crowned faceplate — staff only.'],
+];
 const FACES_V3: W[] = [
   ['face.aviators', 'Aviators', 'common', 'Mirror-finish shades.'],
   ['face.moustache', 'Handlebar', 'uncommon', 'Distinguished facial hardware.'],
@@ -107,7 +113,9 @@ const LEGACY_TIER: Record<string, Tier> = {
   // finishes
   'gun.crimson': 'uncommon', 'gun.toxic': 'uncommon', 'gun.carbon': 'rare', 'gun.arctic': 'rare',
   'gun.hazard': 'rare', 'gun.gold': 'epic', 'gun.void': 'epic', 'gun.glitch': 'epic',
-  'gun.ratz': 'legendary', 'gun.plasma': 'legendary', 'gun.spectrum': 'relic', 'gun.admin': 'unobtainable',
+  'gun.ratz': 'epic', 'gun.plasma': 'epic', 'gun.spectrum': 'legendary', 'gun.admin': 'unobtainable',
+  'gun.dragon': 'legendary', 'gun.tesla': 'legendary', 'gun.reaper': 'relic', 'gun.seraph': 'relic',
+  'gun.oblivion': 'unobtainable', 'gun.celestial': 'unobtainable',
   // beams
   'rail.plasma': 'uncommon', 'rail.toxic': 'uncommon', 'rail.ember': 'uncommon', 'rail.void': 'rare',
   'rail.ratz': 'epic', 'rail.gold': 'epic', 'rail.spectrum': 'legendary', 'rail.admin': 'unobtainable',
@@ -159,12 +167,14 @@ export const ITEM_DEFS: readonly ItemDef[] = [
   ...wearables('face', FACES_V3),
   { id: 'back.none', slot: 'back', name: 'No Back Item', blurb: 'Travel light.', tier: 'common', art: 'back.none', default: true, tradable: false, inCases: false },
   ...wearables('back', BACKS_V3),
+  ...STAFF_WEARABLES.map(([slot, id, name, blurb]): ItemDef => ({ id, slot, name, blurb, tier: 'unobtainable', art: id, tradable: false, inCases: false })),
   ...legacy('finish', RAILGUN_FINISHES),
   ...legacy('beam', RAIL_COLORS),
   ...legacy('finisher', KILL_EFFECTS),
   ...legacy('spawn', SPAWN_EFFECTS),
   ...legacy('emote', EMOTES),
-  ...legacy('card', CARD_STYLES),
+  // Cards stay UNLOCKABLE (level-gated entitlements, like titles) — never case items / tradable.
+  ...legacy('card', CARD_STYLES).map((d) => ({ ...d, tradable: false, inCases: false })),
   ...legacy('nameColor', NAME_COLORS),
   ...titles,
 ];

@@ -468,6 +468,9 @@ export class PostFxPipeline {
   readonly viewmodel: ViewmodelLayer;
   private composer: EffectComposer | null = null;
   private bloomPass: ArenaBloomPass | null = null;
+  // Multiplier on BLOOM_TUNING.strength (the "Bloom intensity" setting; the
+  // menu backdrop also runs calmer than a match).
+  private bloomScale = 1;
   private vignettePass: ShaderPass | null = null;
   private smaaPass: SMAAPass | null = null;
   private opts: PostFxOptions = { bloom: false, shadows: false, aa: false, vignette: false };
@@ -509,13 +512,18 @@ export class PostFxPipeline {
     }
   }
 
+  setBloomScale(k: number) {
+    this.bloomScale = Math.max(0, Math.min(1.5, k));
+    if (this.bloomPass) this.bloomPass.strength = BLOOM_TUNING.strength * this.bloomScale;
+  }
+
   private buildComposer() {
     const composer = new EffectComposer(this.renderer);
     composer.addPass(new RenderPass(this.scene, this.camera));
     composer.addPass(new ViewmodelPass(this.viewmodel));
     const bloom = new ArenaBloomPass(
       new THREE.Vector2(this.width * this.pixelRatio, this.height * this.pixelRatio),
-      BLOOM_TUNING.strength,
+      BLOOM_TUNING.strength * this.bloomScale,
       BLOOM_TUNING.radius,
       BLOOM_TUNING.threshold,
       BLOOM_TUNING.knee,

@@ -149,6 +149,9 @@ export type RailgunFinish = {
   accent: number; // energy rail base color
   accentHot: number; // bright energy color
   pattern?: FinishPattern;
+  // Economy v3: high-tier finishes swap in a CUSTOM gun model (geometry +
+  // VFX; src/game/gun/custom/). Absent = the standard railgun.
+  model?: string;
 };
 
 export type RailgunFinishCosmetic = {
@@ -167,14 +170,21 @@ export const RAILGUN_FINISHES: readonly RailgunFinishCosmetic[] = [
   { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1000 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff, pattern: 'carbon' } },
   { id: 'gun.gold',    name: 'Midas',          blurb: 'A gilded receiver fit for a champ.',  rarity: 'epic',   source: { type: 'credits', price: 2200 },  data: { body: 0x241a08, metal: 0x6e5520, metalLt: 0xb0902f, accent: 0xffd24a, accentHot: 0xfff4c0 } },
   { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 1800 },  data: { body: 0x0b0718, metal: 0x1a1233, metalLt: 0x5a3cff, accent: 0x6a4cff, accentHot: 0xd6ccff, pattern: 'void' } },
-  { id: 'gun.admin',   name: 'Regalia',        blurb: 'Gilded staff rail — admin only.',     rarity: 'epic',   source: { type: 'admin' },                 data: { body: 0xf1ece0, metal: 0xb88a22, metalLt: 0xf0c95a, accent: 0xffd24a, accentHot: 0xfff4d0, pattern: 'enamel' } },
+  { id: 'gun.admin',   name: 'Sovereign Regalia', blurb: 'The staff railgun: gilded, crowned, humming with power — staff only.', rarity: 'epic', source: { type: 'admin' }, data: { body: 0xf1ece0, metal: 0xb88a22, metalLt: 0xf0c95a, accent: 0xffd24a, accentHot: 0xfff4d0, pattern: 'enamel', model: 'sovereign' } },
   // Finish wave 2 — patterned / animated treatments.
   { id: 'gun.arctic',  name: 'Arctic',         blurb: 'White ceramic plates, ice-blue rails.', rarity: 'rare',     source: { type: 'level', level: 41 },      data: { body: 0xc9d3dc, metal: 0x8b98a6, metalLt: 0xeef3f7, accent: 0x6fd6ff, accentHot: 0xe0f7ff, pattern: 'ceramic' } },
   { id: 'gun.hazard',  name: 'Hazard',         blurb: 'Industrial chevrons. Handle with care.', rarity: 'rare',    source: { type: 'credits', price: 900 },  data: { body: 0x1a1a14, metal: 0x3a3a30, metalLt: 0xd9b400, accent: 0xffc400, accentHot: 0xfff0a0, pattern: 'hazard' } },
   { id: 'gun.ratz',    name: 'Ratz',           blurb: 'Hex-plated neon, pink and cyan.',        rarity: 'epic',    source: { type: 'credits', price: 2000 },  data: { body: 0x15101c, metal: 0x2a1f38, metalLt: 0xff5fcf, accent: 0xff3ec8, accentHot: 0x9ff8ff, pattern: 'hex' } },
   { id: 'gun.glitch',  name: 'Glitch',         blurb: 'Digital camo that won\'t sit still.',    rarity: 'epic',    source: { type: 'level', level: 68 },      data: { body: 0x0d1410, metal: 0x1d2a22, metalLt: 0x3f5a48, accent: 0x3bff8a, accentHot: 0xd4ffe6, pattern: 'digital' } },
   { id: 'gun.plasma',  name: 'Plasma Core',    blurb: 'Black frame, veins of living energy.',   rarity: 'legendary', source: { type: 'credits', price: 3200 },  data: { body: 0x0a0710, metal: 0x1b1426, metalLt: 0x3b2a55, accent: 0xc23bff, accentHot: 0xffc2ff, pattern: 'plasma' } },
-  { id: 'gun.spectrum', name: 'Spectrum',      blurb: 'Iridescent chrome that shifts with the light.', rarity: 'legendary', source: { type: 'level', level: 90 }, data: { body: 0x1a1d24, metal: 0x9aa3b2, metalLt: 0xe6ebf2, accent: 0xff4fd8, accentHot: 0xffffff, pattern: 'spectrum' } },
+  { id: 'gun.spectrum', name: 'Spectrum',      blurb: 'Iridescent chrome that shifts with the light.', rarity: 'legendary', source: { type: 'level', level: 90 }, data: { body: 0x1a1d24, metal: 0x9aa3b2, metalLt: 0xe6ebf2, accent: 0xff4fd8, accentHot: 0xffffff, pattern: 'spectrum', model: 'prism' } },
+  // v3 custom-model guns (Legendary → Unobtainable). Tiers set in items/catalog.ts.
+  { id: 'gun.dragon',    name: 'Wyrmfang',       blurb: 'A scaled dragon-bone rail that breathes embers.',          rarity: 'legendary', source: { type: 'case' }, data: { body: 0x1a0c08, metal: 0x4a2414, metalLt: 0xc2572a, accent: 0xff5a1f, accentHot: 0xffd08a, model: 'dragon' } },
+  { id: 'gun.tesla',     name: 'Tesla Coilgun',  blurb: 'Exposed copper coils arcing with live current.',            rarity: 'legendary', source: { type: 'case' }, data: { body: 0x14161c, metal: 0x7a4a24, metalLt: 0xd08a4a, accent: 0x6fd6ff, accentHot: 0xe8faff, model: 'tesla' } },
+  { id: 'gun.reaper',    name: 'Reaper',         blurb: 'A scythe-bladed rail wreathed in cold soulfire.',           rarity: 'legendary', source: { type: 'case' }, data: { body: 0x0c0d10, metal: 0x2a2e36, metalLt: 0x8a94a6, accent: 0x3bffb0, accentHot: 0xd4ffe6, model: 'reaper' } },
+  { id: 'gun.seraph',    name: 'Seraph',         blurb: 'White-gold wings fold along a hard-light barrel.',          rarity: 'legendary', source: { type: 'case' }, data: { body: 0xece6d8, metal: 0xc9a44a, metalLt: 0xfff1c4, accent: 0xffe08a, accentHot: 0xffffff, model: 'seraph' } },
+  { id: 'gun.oblivion',  name: 'Oblivion',       blurb: 'A rail forged around a captive black hole.',               rarity: 'legendary', source: { type: 'case' }, data: { body: 0x07060c, metal: 0x1a1426, metalLt: 0x6a4cff, accent: 0x9b6bff, accentHot: 0xf0e4ff, model: 'oblivion' } },
+  { id: 'gun.celestial', name: 'Celestial',      blurb: 'A living starfield in the shape of a railgun.',            rarity: 'legendary', source: { type: 'case' }, data: { body: 0x05060f, metal: 0x1c2240, metalLt: 0x8fb2ff, accent: 0x7fd4ff, accentHot: 0xffffff, model: 'celestial' } },
 ];
 
 export function railgunFinishById(id: string): RailgunFinishCosmetic {

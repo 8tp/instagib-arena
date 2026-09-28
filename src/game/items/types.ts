@@ -106,7 +106,7 @@ export const CASES: readonly CaseDef[] = [
   },
 ];
 
-export const PITY = { rareEvery: 10, epicEvery: 40 } as const;
+// No pity (by design, like TF2/Krunker): fixed, published rates only.
 
 // Quality roll chances per case roll (docs/economy.md §1).
 export const QUALITY_ODDS = {

@@ -23,6 +23,7 @@ per-tier odds each ~4–5× rarer). Research notes: see the PR description.
   `owner_id`, `state` (`owned | listed | traded-away | salvaged | revoked`).
 - **Defaults** (bare head, stock finish, cyan beam, pulse finisher, cheer emote, slate card…) are
   *virtual*: everyone has them, they're not instances, not tradable.
+- **Player cards** stay **unlockable by level** (entitlements, not instances, not tradable, not in cases) — like titles.
 - **Titles** stay achievement/level-earned and **bound** (untradable instances minted on grant).
   Announcer packs stay level-gated entitlements (not items).
 
@@ -43,8 +44,8 @@ head bone's front; back = backpacks, jetpacks, wings, quivers, **capes** (spring
 | Relic | `#ef4444` red | 0.3% | 1,500 |
 | Unobtainable | `#ff4fd8` pink→iridescent | 0 (Vault case 0.02%) | 10,000 |
 
-Pity: every 10th open without a Rare+ is forced to ≥ Rare; every 40th without Epic+ → ≥ Epic
-(per account, per case family, server-tracked).
+**No pity** — fixed rates, like TF2/Krunker. Every case's tier odds AND quality odds
+(unusual / strange / killstreak / professional) are published in-game to all players.
 
 ### Qualities & attributes (rolled per instance at mint)
 - **Unusual** (hats, emotes): an `effect` id from `UNUSUAL_EFFECTS`. Hat case: 1.5% per hat roll
@@ -78,9 +79,19 @@ Vault 600 ⛁. Families:
 | Accessory Case | face + back |
 | Taunt Case | emotes + finishers + spawn effects |
 | Vault Case (premium) | everything; tier odds shifted up; Unobtainable 0.02% |
-Roll = tier (odds + pity) → def uniformly among that tier in the pool → qualities → mint. RNG:
+Roll = tier (fixed odds) → def uniformly among that tier in the pool → qualities → mint. RNG:
 `crypto.randomInt`. Every open is logged (`item_events` + audit).
 Duplicates are allowed (it's an economy now); salvage or sell them.
+
+### Custom gun models
+High-tier finishes carry `data.model` (cosmetics.ts) → a CUSTOM railgun model + signature VFX
+(src/game/gun/custom/): Legendary (Spectrum, Wyrmfang, Tesla Coilgun), Relic (Reaper, Seraph),
+Unobtainable (Oblivion, Celestial — the most extreme VFX; Vault 0.02% or admin mint) and the staff
+**Sovereign Regalia**. Same screen footprint/fairness as the standard gun.
+
+### Staff "Sovereign" set (bound, admin-only, Unobtainable)
+Sovereign Crown (hat), Sovereign Mantle (back), Sovereign Visor (face), Sovereign Regalia (gun),
+Sovereign beam (gilded), Sovereign card, name colour, title. Granted to staff as bound instances.
 
 ## 3. Credits in / out
 In: matches (existing formula), **daily challenges** (raised: 40–60 ⛁ + XP each), weekly
@@ -133,7 +144,7 @@ cancel by jumping), the server relays a `taunt` event to the room so everyone se
 - `instagib_market(id PK, uid, seller_id, price, created_at, state, buyer_id, sold_at)`.
 - `instagib_trades(id PK, from_id, to_id, give TEXT, get TEXT, give_credits, get_credits, note,
   state, created_at, resolved_at)`.
-- `instagib_stats` new cols: `free_rolls INT`, `pity TEXT(json)`, `econ_v3 INT`,
+- `instagib_stats` new cols: `free_rolls INT`, `econ_v3 INT`,
   `legacy_unlocked TEXT`, `equipped_items TEXT(json slot→uid)`.
 
 ## 10. API (REST, cookie auth; all writes rate-limited + transactional)
