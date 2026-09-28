@@ -47,7 +47,7 @@ export default function GunLab() {
         </div>
       ))}
       {caption && (
-        <div style={{ position: 'absolute', bottom: 10, left: 12, color: '#8fa0b8', fontFamily: 'monospace', fontSize: 12 }}>
+        <div style={{ position: 'absolute', top: 8, right: 12, color: '#8fa0b8', fontFamily: 'monospace', fontSize: 12 }}>
           {caption}
         </div>
       )}
