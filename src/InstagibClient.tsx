@@ -1019,6 +1019,12 @@ function GameView({
     shallowEqual,
   );
   const [interDoneId, setInterDoneId] = useState(0);
+  // A new online match (the vote resolved → map switch): the previous match's
+  // rewards no longer belong to what a later leave carries to the lobby.
+  const switchId = nextMap?.id ?? 0;
+  useEffect(() => {
+    if (switchId > 0) setEndProgression(null);
+  }, [switchId]);
   // The map on the Tab scoreboard: the latest join / next-map announcement
   // online, else the configured map.
   const [latestNext, setLatestNext] = useState<string | null>(null);
