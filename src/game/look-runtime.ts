@@ -10,6 +10,7 @@
 //   • vfxHooks        seams for the VFX track (TauntAura / KillstreakEyes)
 import * as THREE from 'three';
 import { WornHat } from './hats';
+import { unusualKindOf } from './wearables';
 import {
   DEFAULT_CARD,
   DEFAULT_EMOTE,
@@ -38,7 +39,7 @@ import {
 } from './cosmetics';
 import { ITEM_DEFS } from './items/catalog';
 import { ITEM_SLOTS, KS_EFFECTS, KS_SHEENS, UNUSUAL_EFFECTS, strangeRank, type ItemSlot, type Loadout, type Look } from './items/types';
-import { UnusualEffect, unusualKindForEffect, type EffectKind } from './fx/unusuals';
+import { UnusualEffect, unusualKindForEffect } from './fx/unusuals';
 import { TauntAura } from './fx/taunt-aura';
 import { KillstreakEyes } from './fx/killstreak-eyes';
 import type { Settings } from '../app-types';
@@ -238,39 +239,22 @@ export function randomBotLoadout(): Loadout {
 // src/game/wearables: setLook(slot, look), setUnusual(kind), update, dispose)
 // only this class's internals change — every caller already goes through it.
 export class BodyGear {
+  // WornHat wraps T3's WornGear (hat + face + back + unusual, capes, festive,
+  // tint); the legacy id path (setLegacy) still goes through WornHat.
   private hat: WornHat;
-  // A v3 Unusual (any effect kind — the legacy WornHat only knows the old set),
-  // seated on the hat's unusual anchor so it crowns whatever hat is worn.
-  private fx: UnusualEffect | null = null;
-  private fxKind: EffectKind | null = null;
   constructor(headTop: THREE.Object3D) {
     this.hat = new WornHat(headTop);
   }
-  // STUB(T3): face/back gear render nothing until WornGear exists.
   setLook(slot: 'hat' | 'face' | 'back', look: Look | undefined): void {
-    if (slot !== 'hat') return;
-    void this.hat.setHat(look && isHat(look.d) ? look.d : 'hat.none');
-    const kind = unusualKindForEffect(look?.e);
-    if (kind) {
-      this.hat.setUnusual('unusual.none');
-      this.setFx(kind);
-    } else {
-      this.setFx(null);
-      this.hat.setUnusual(effectToLegacyUnusual(look?.e));
+    const gear = this.hat.gear;
+    if (!gear) {
+      if (slot === 'hat') void this.hat.setHat(look && isHat(look.d) ? look.d : 'hat.none');
+      return;
     }
-  }
-  private setFx(kind: EffectKind | null): void {
-    if (kind === this.fxKind) return;
-    this.fxKind = kind;
-    this.fx?.group.removeFromParent();
-    this.fx?.dispose();
-    this.fx = null;
-    if (!kind) return;
-    this.fx = new UnusualEffect(kind);
-    (this.hat as unknown as { unusualAnchor: THREE.Group }).unusualAnchor.add(this.fx.group);
+    gear.setLook(slot, look ?? null);
+    if (slot === 'hat') gear.setUnusual(unusualKindForEffect(look?.e) ?? unusualKindOf(look ?? null));
   }
   setLegacy(hatId: string, unusualId: string): void {
-    this.setFx(null);
     void this.hat.setHat(hatId);
     this.hat.setUnusual(unusualId);
   }
@@ -281,10 +265,8 @@ export class BodyGear {
   }
   update(dt: number): void {
     this.hat.update(dt);
-    this.fx?.update(dt);
   }
   dispose(): void {
-    this.setFx(null);
     this.hat.dispose();
   }
 }

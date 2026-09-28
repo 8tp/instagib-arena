@@ -267,7 +267,8 @@ export function isSpawnEffect(id: string): boolean {
 // a path under public/; null = bare-headed (the free default). Models are
 // CC-BY 3.0 from Poly Pizza — see public/models/instagib/hats/ATTRIBUTION.md.
 export const DEFAULT_HAT = 'hat.none';
-const HAT_DIR = '/models/instagib/hats';
+// Hats are code-built now (src/game/wearables/); `model` is only a truthy "is a
+// real hat" marker for the legacy consumers.
 
 export type HatCosmetic = {
   id: string;
@@ -295,14 +296,14 @@ export type HatCosmetic = {
 
 export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.none',       name: 'Bare Head',      blurb: 'No hat — classic.',                      rarity: 'common', source: { type: 'default' },             model: null },
-  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: `${HAT_DIR}/cap.glb`, fit: 0.92, sink: -0.03, yaw: Math.PI / 2 },
-  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb`, fit: 1.05, sink: -0.04, yaw: Math.PI },
-  { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'case' }, model: `${HAT_DIR}/hard-hat.glb`, fit: 0.94, sink: -0.04 },
-  { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 19 },     model: `${HAT_DIR}/graduation-cap.glb`, fit: 0.86, sink: -0.02 },
-  { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'case' }, model: `${HAT_DIR}/top-hat.glb`, fit: 0.86, sink: 0.0, stretch: 1.45 },
-  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 35 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 0.92, sink: -0.05 },
-  { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'case' }, model: `${HAT_DIR}/wizard-hat.glb`, fit: 0.84, sink: -0.02, stretch: 1.08 },
-  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: `${HAT_DIR}/crown.glb`, fit: 0.78, sink: 0.0 },
+  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: 'wearable', fit: 0.92, sink: -0.03, yaw: Math.PI / 2 },
+  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: 'wearable', fit: 1.05, sink: -0.04, yaw: Math.PI },
+  { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'case' }, model: 'wearable', fit: 0.94, sink: -0.04 },
+  { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 19 },     model: 'wearable', fit: 0.86, sink: -0.02 },
+  { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'case' }, model: 'wearable', fit: 0.86, sink: 0.0, stretch: 1.45 },
+  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 35 },    model: 'wearable', fit: 0.92, sink: -0.05 },
+  { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'case' }, model: 'wearable', fit: 0.84, sink: -0.02, stretch: 1.08 },
+  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: 'wearable', fit: 0.78, sink: 0.0 },
 ];
 
 export function hatById(id: string): HatCosmetic {

@@ -23,6 +23,8 @@ import { emoteById, railgunFinishById } from '../game/cosmetics';
 import { emoteClip } from '../game/emotes';
 import { WornHat } from '../game/hats';
 import { B } from '../game/character/rig';
+import { unusualKindOf } from '../game/wearables';
+import type { Loadout } from '../game/items/types';
 
 export type HeroLoadout = {
   seed: string; // player name → armour colour (same pick every other view makes)
@@ -30,6 +32,7 @@ export type HeroLoadout = {
   unusual: string;
   railgunFinish: string;
   emote: string;
+  looks?: Loadout; // v3: hat/face/back + unusual + tint/festive (overrides hat/unusual)
 };
 
 // Where the hero stands: a rect in canvas CSS pixels plus the canvas size.
@@ -43,7 +46,8 @@ export function sameLoadout(a: HeroLoadout | null, b: HeroLoadout | null): boole
     a.hat === b.hat &&
     a.unusual === b.unusual &&
     a.railgunFinish === b.railgunFinish &&
-    a.emote === b.emote
+    a.emote === b.emote &&
+    JSON.stringify(a.looks ?? null) === JSON.stringify(b.looks ?? null)
   );
 }
 
@@ -227,8 +231,10 @@ export class MenuHero {
     scene.add(this.holder);
     this.anim = new CharacterAnimator(this.character, { driveYaw: false, holdGun: true });
     this.hat = new WornHat(this.character.sockets.headTop);
-    void this.hat.setHat(loadout.hat).then(() => this.onDirty?.());
-    this.hat.setUnusual(loadout.unusual);
+    if (!this.applyLooks(loadout.looks)) {
+      void this.hat.setHat(loadout.hat).then(() => this.onDirty?.());
+      this.hat.setUnusual(loadout.unusual);
+    }
     this.gun = attachRailgun(this.character, railgunFinishById(loadout.railgunFinish).data);
     this.applyColor();
 
@@ -247,6 +253,17 @@ export class MenuHero {
     return !!f && f.w > 1 && f.h > 1;
   }
 
+  // v3 looks → the gear (hat + face + back + unusual). False = no looks/gear.
+  private applyLooks(looks: Loadout | undefined): boolean {
+    const gear = this.hat.gear;
+    if (!looks || !gear) return false;
+    gear.setLook('hat', looks.hat ?? null);
+    gear.setLook('face', looks.face ?? null);
+    gear.setLook('back', looks.back ?? null);
+    gear.setUnusual(unusualKindOf(looks.hat ?? null));
+    return true;
+  }
+
   setLoadout(l: HeroLoadout) {
     if (this.disposed || sameLoadout(this.loadout, l)) return;
     const prev = this.loadout;
@@ -256,8 +273,15 @@ export class MenuHero {
       this.character.setLook(this.color);
       this.applyColor();
     }
-    if (l.hat !== prev.hat) void this.hat.setHat(l.hat).then(() => this.onDirty?.());
-    if (l.unusual !== prev.unusual) this.hat.setUnusual(l.unusual);
+    if (l.looks) {
+      if (JSON.stringify(l.looks) !== JSON.stringify(prev.looks ?? null)) {
+        this.applyLooks(l.looks);
+        this.onDirty?.();
+      }
+    } else {
+      if (l.hat !== prev.hat) void this.hat.setHat(l.hat).then(() => this.onDirty?.());
+      if (l.unusual !== prev.unusual) this.hat.setUnusual(l.unusual);
+    }
     if (l.railgunFinish !== prev.railgunFinish) {
       const vis = this.gun?.visible ?? true;
       disposeRailgun(this.gun);

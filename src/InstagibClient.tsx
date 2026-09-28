@@ -4241,8 +4241,9 @@ function Lobby({
       unusual: settings.unusual,
       railgunFinish: settings.railgunFinish,
       emote: settings.emote,
+      looks: settings.looks,
     }),
-    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote],
+    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote, settings.looks],
   );
   // Career Road try-on: your loadout, with the previewed reward swapped in.
   const roadLoadout = useMemo(
