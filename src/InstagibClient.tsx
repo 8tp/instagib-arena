@@ -4296,7 +4296,6 @@ function Lobby({
                   lists={challenges}
                   guest={!account}
                   onOpen={() => setChallengesOpen(true)}
-                  onLogin={onOpenLogin}
                   onClaimed={refreshMeta}
                 />
               </div>
@@ -4319,7 +4318,6 @@ function Lobby({
                 lists={challenges}
                 guest={!account}
                 onOpen={() => setChallengesOpen(true)}
-                onLogin={onOpenLogin}
                 onClaimed={refreshMeta}
               />
             </div>

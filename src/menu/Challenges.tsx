@@ -67,13 +67,11 @@ export function ChallengesStrip({
   lists,
   guest,
   onOpen,
-  onLogin,
   onClaimed,
 }: {
   lists: ChallengeLists | null;
   guest: boolean;
   onOpen: () => void;
-  onLogin: () => void;
   onClaimed: () => void;
 }) {
   const now = useNow();
@@ -102,7 +100,11 @@ export function ChallengesStrip({
           View all
         </button>
       </div>
-      {lists ? (
+      {guest ? (
+        <p className='menu-ch-foot pt-0'>
+          Daily and weekly challenges pay XP and credits once you have an account.
+        </p>
+      ) : lists ? (
         <div className='pb-1.5'>
           {group('daily', lists.daily)}
           {group('weekly', lists.weekly)}
@@ -116,14 +118,6 @@ export function ChallengesStrip({
             </div>
           ))}
         </div>
-      )}
-      {guest && (
-        <p className='menu-ch-foot'>
-          Challenges track for players with an account.{' '}
-          <button type='button' onClick={onLogin} {...sfxProps('uiClick')}>
-            Log in
-          </button>
-        </p>
       )}
     </section>
   );
@@ -274,7 +268,7 @@ export function ChallengesModal({ guest, onClose }: { guest: boolean; onClose: (
           <p className='font-sans text-[12px] leading-relaxed text-white/40'>
             {guest
               ? 'Challenges track for players with an account. Log in and they count from your next online match.'
-              : 'Challenges count online matches and pay out automatically when a match finishes one.'}
+              : 'Challenges count online matches and pay out the moment a match completes one. A Claim button only shows for a reward still waiting.'}
           </p>
         </div>
       )}

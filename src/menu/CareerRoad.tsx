@@ -4,7 +4,7 @@ import { prefersReducedMotion } from '../deck-core';
 import { cosmeticById } from '../game/cosmetics';
 import { MAX_LEVEL } from '../game/progression';
 import { RewardTile } from './RewardTile';
-import { careerRoad, rewardText, xpFraction, type MenuProfile, type RoadNode } from './road-data';
+import { careerRoad, nextRoadStep, rewardText, xpFraction, type MenuProfile, type RoadNode } from './road-data';
 import './menu.css';
 
 // The Career Road: a battle-pass track of levels 1–100. Each node shows what
@@ -13,10 +13,10 @@ import './menu.css';
 // to your level; drag, wheel, arrow keys or the scrollbar move along it.
 // Reward tiles only mount near the viewport (thumbnails are rendered stills).
 
-const NODE_W = 128;
-const PAD = 40;
-const TILE = 92;
-const TILE_2 = 70; // two rewards on one level stack smaller
+const NODE_W = 150;
+const PAD = 48;
+const TILE = 116;
+const TILE_2 = 84; // two rewards on one level stack smaller
 const MOUNT_MARGIN = 4; // nodes beyond the viewport that still mount tiles
 
 function CheckGlyph() {
@@ -61,6 +61,7 @@ export function CareerRoad({
   const trackW = PAD * 2 + road.length * NODE_W;
   const noRoad = road.every((n) => n.rewards.length === 0);
   const toNext = profile && !maxed ? Math.max(0, profile.xpForNext - profile.xpIntoLevel) : 0;
+  const upNext = nextRoadStep(level);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [range, setRange] = useState<[number, number]>([0, 12]);
@@ -212,7 +213,7 @@ export function CareerRoad({
   return (
     <ModalShell
       title='Career Road'
-      width='w-[min(1240px,96vw)]'
+      width='w-[min(1440px,96vw)]'
       tone='cyan'
       onClose={onClose}
       header={header}
@@ -226,6 +227,23 @@ export function CareerRoad({
         </p>
       }
     >
+      <div className='flex min-w-0'>
+      {upNext && (
+        <aside className='road-next max-md:hidden' aria-label='Next reward'>
+          <span className='font-mono text-[11px] text-white/45'>{guest ? 'First unlock' : 'Up next'}</span>
+          <RewardTile reward={upNext.rewards[0]} size={160} />
+          <span className='font-display text-[15px] font-bold uppercase leading-tight tracking-[0.06em] text-white/90'>
+            {rewardText(upNext.rewards[0], (id) => cosmeticById(id)?.name)}
+          </span>
+          <span className='font-mono text-[11px] tabular-nums text-cyan-200/80'>
+            Level {upNext.level}
+            {!guest && upNext.level === level + 1 && toNext > 0 ? ` · ${toNext.toLocaleString()} XP away` : ''}
+          </span>
+          {upNext.rewards.length > 1 && (
+            <span className='font-mono text-[10.5px] text-white/40'>+{upNext.rewards.length - 1} more at this level</span>
+          )}
+        </aside>
+      )}
       <div
         ref={scrollerRef}
         role='region'
@@ -245,7 +263,7 @@ export function CareerRoad({
           }
         }}
         onKeyDown={onKeyDown}
-        className='road-scroller'
+        className='road-scroller min-w-0 flex-1'
       >
         <div
           className='road-track pb-5 pt-[1.9rem]'
@@ -308,6 +326,7 @@ export function CareerRoad({
             );
           })}
         </div>
+      </div>
       </div>
     </ModalShell>
   );

@@ -293,16 +293,18 @@ export class MenuHero {
     this.t += dt;
     const k = (hz: number) => 1 - Math.exp(-hz * dt);
 
+    // Hover: square up to the camera, rim + pad brighten, seams glow.
+    this.hover += (this.hoverTarget - this.hover) * k(HOVER_HZ);
+
     // Materialise: hot seams in your colour cooling off, a small rise.
+    let glow = 0.4 * this.hover;
     if (this.spawn < 1) {
       this.spawn = Math.min(1, this.spawn + dt / SPAWN_SECONDS);
       const e = 1 - this.spawn;
-      this.character.setGlow(1.4 * e * e, this.color);
+      glow = Math.max(glow, 1.4 * e * e);
       this.holder.position.y = -0.07 * e * e * e;
     }
-
-    // Hover: square up to the camera, rim + pad brighten.
-    this.hover += (this.hoverTarget - this.hover) * k(HOVER_HZ);
+    this.character.setGlow(glow, this.color);
     this.holder.rotation.y = FACE_CAMERA + REST_YAW * (1 - 0.8 * this.hover) + Math.sin(this.t * 0.19) * 0.035;
     this.rim.intensity = RIM * (1 + 0.6 * this.hover);
     const pulse = 0.5 + 0.5 * Math.sin(this.t * 1.7);

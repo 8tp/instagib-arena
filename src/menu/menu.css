@@ -204,7 +204,17 @@ button.menu-profile:hover {
   font-weight: 600;
   font-size: 0.78rem;
   letter-spacing: 0.08em;
-  color: #fcd34d;
+  color: rgba(255, 255, 255, 0.55);
+}
+/* In the lobby the hero is the loud element: the wordmark steps down a size
+   (the landing page keeps its own, bigger, override). */
+.menu-root .menu-wordmark-main {
+  font-size: clamp(3rem, 5vw, 5.2rem);
+}
+.menu-root .menu-tagline {
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.55);
 }
 .menu-xp {
   position: relative;
@@ -325,17 +335,16 @@ button.menu-profile:hover .menu-profile-link {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.4rem 0.85rem;
+  padding: 0.5rem 1.1rem;
   clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-  background: rgba(6, 8, 11, 0.86);
-  border: 1px solid rgba(103, 232, 249, 0.4);
+  background: #67e8f9;
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: #e6fbff;
+  color: #021216;
   opacity: 0;
   transform: translate(-50%, 6px);
   transition:
@@ -349,7 +358,7 @@ button.menu-profile:hover .menu-profile-link {
   transform: translate(-50%, 0);
 }
 .menu-hero-hit:focus-visible .menu-hero-tag {
-  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.9);
+  box-shadow: inset 0 0 0 2px #ffffff;
 }
 .menu-hero-tag kbd {
   font-family: var(--font-mono);
@@ -549,7 +558,8 @@ button.menu-ch-row:focus-visible {
   gap: 0.2rem;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 1.7rem;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   color: #67e8f9;
   animation: menu-in-y 0.4s cubic-bezier(0.16, 0.8, 0.24, 1) 0.5s both;
@@ -687,7 +697,16 @@ button.menu-ch-row:focus-visible {
   align-items: center;
   gap: 0.4rem;
   margin-top: 0.55rem;
-  min-height: 7.5rem;
+}
+.road-next {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 12.5rem;
+  padding: 1.1rem 1.25rem 1.25rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.07), rgba(34, 211, 238, 0) 70%);
 }
 .road-node[data-state='locked'] .road-rewards {
   filter: saturate(0.55) brightness(0.8);

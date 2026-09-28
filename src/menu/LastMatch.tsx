@@ -17,7 +17,7 @@ export function LastMatchBanner({ result, gain }: { result: MatchResult; gain: M
     <div className='menu-last menu-panel' data-won={result.won ? '1' : '0'}>
       <div className='flex items-baseline justify-between gap-3'>
         <span
-          className={`font-display text-[15px] font-bold uppercase tracking-[0.1em] ${
+          className={`font-display text-[22px] font-bold uppercase leading-none tracking-[0.1em] ${
             result.won ? 'text-emerald-300' : 'text-white/75'
           }`}
         >
