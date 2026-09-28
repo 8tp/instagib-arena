@@ -1,4 +1,5 @@
 import type { GameMode } from './constants';
+import type { ProgressionResp } from '../app-types';
 import type { CardPayload, NetDebugStats } from './types';
 import { decodeState, encodePos, encodePosTick, toView } from './netcodec';
 
@@ -191,7 +192,12 @@ type BeamMessage = {
   ox: number; oy: number; oz: number;
   ex: number; ey: number; ez: number;
 };
+// The server's authoritative end-of-match reward for an online match (the same
+// shape as the offline POST /api/stats reply — ProgressionResp in app-types).
+type ProgressionMessage = { type: 'progression' } & ProgressionResp;
+
 type ServerMessage =
+  | ProgressionMessage
   | WelcomeMessage
   | StateMessage
   | MetaMessage
@@ -236,6 +242,8 @@ export type NetEvents = {
   }) => void;
   // Ranked match resolved (frag limit or forfeit): rating deltas for the overlay.
   onRankedResult?: (r: RankedResult) => void;
+  // Server-recorded XP / credits / Career Road rewards for this match.
+  onProgression?: (p: ProgressionResp) => void;
   onJoinFailed?: (reason: string) => void;
   // Spectating confirmed: adopt the watched room's map/mode (no spawn — read-only).
   onSpectating?: (info: { mapId: string; mode: GameMode; state: 'active' | 'voting' }) => void;
@@ -1079,6 +1087,12 @@ export class NetClient {
         ranked: this.ranked,
         team: this.localTeam,
       });
+      return;
+    }
+    if (msg.type === 'progression') {
+      const { type: _type, ...p } = msg;
+      void _type;
+      if (typeof p.xpGained === 'number' && p.progression) this.events.onProgression?.(p);
       return;
     }
     if (msg.type === 'ranked-result') {

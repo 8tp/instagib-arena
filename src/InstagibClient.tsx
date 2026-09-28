@@ -737,6 +737,10 @@ function GameView({
   const [onlineResults, setOnlineResults] = useState(false);
   const [podiumScores, setPodiumScores] = useState<PlayerScore[]>([]);
   const offlineMatch = config.mode !== 'multiplayer';
+  // Only offline (vs-bots) matches are self-reported via POST /api/stats — the
+  // server records online matches itself and pushes the rewards over the socket.
+  // The training range and spectating never count as a match.
+  const reportsOwnStats = config.mode === 'local' && !config.training;
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
   // weekly board, NOT career K/D. The engine owns the authoritative run time.
   const isChallenge = config.mode === 'local' && config.challenge === true;
@@ -765,7 +769,7 @@ function GameView({
             if (me) setChallengeResult(me);
           });
         }
-      } else {
+      } else if (reportsOwnStats) {
         void submitMatchStats(result, offlineMatch, game.getMatchModeTag()).then((p) => {
           if (p) setEndProgression(p);
         });
@@ -796,6 +800,8 @@ function GameView({
         );
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);
+      } else if (ev.type === 'progression') {
+        setEndProgression(ev.progression);
       }
     });
     applySettingsToGame(game, settings);
@@ -885,11 +891,11 @@ function GameView({
     const r = game?.getStats() ?? null;
     // A weekly-challenge run only counts when it FINISHES (match-end); leaving
     // mid-run abandons it. Other matches submit the partial run to career stats.
-    if (!isChallenge && r && game?.hasRecordableStats()) {
+    if (!isChallenge && reportsOwnStats && r && game?.hasRecordableStats()) {
       void submitMatchStats(r, offlineMatch, game.getMatchModeTag());
     }
     onExit(r);
-  }, [onExit, offlineMatch, isChallenge]);
+  }, [onExit, offlineMatch, isChallenge, reportsOwnStats]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
   // buttons (copy invite / leave) are clickable, and so the player isn't stuck

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { ProgressionResp } from '../app-types';
 import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
 import {
   BotManager,
@@ -168,7 +169,8 @@ export type MatchEndListener = (result: MatchResult) => void;
 export type NetMatchEvent =
   | { type: 'join-failed'; reason: string }
   | { type: 'spectate-ended' } // the watched match ended / room reaped → leave to lobby
-  | { type: 'ranked-result'; result: RankedResult; won: boolean }; // ranked match over → show overlay
+  | { type: 'ranked-result'; result: RankedResult; won: boolean } // ranked match over → show overlay
+  | { type: 'progression'; progression: ProgressionResp }; // server-recorded rewards for this online match
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
@@ -1273,6 +1275,7 @@ export class Game {
           onVoteUpdate: (counts) => this.handleVoteUpdate(counts),
           onVoteResult: (r) => this.handleVoteResult(r),
           onRankedResult: (r) => this.handleNetRankedResult(r),
+          onProgression: (p) => this.onNetEvent({ type: 'progression', progression: p }),
           onChat: (m) => this.handleNetChat(m),
           onBeam: (b) => this.handleNetBeam(b),
         },
