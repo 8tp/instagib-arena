@@ -20,7 +20,7 @@ const MAX_STEP = 1 / 60;
 const DRAG = 1.15; // air drag (1/s)
 const DAMP60 = 0.988; // velocity kept per 1/60 s
 const PLEATS = 3;
-const PLEAT_AMP = 0.011;
+const PLEAT_AMP = 0.016;
 
 export type Wind = { x: number; y: number; z: number };
 

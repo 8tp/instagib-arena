@@ -114,7 +114,7 @@ export const FACE_SPECS: Record<string, WearSpec> = {
       const cy = 1.654;
       const phi = visorPhi(cx);
       const cz = visorZ(cx) - 0.017;
-      k.add(faceOut(extrude(lens, 0.004, 0, 4), phi, [cx, cy, cz]), LENS());
+      k.add(faceOut(extrude(lens, 0.004, 0, 4), phi, [cx, cy, cz]), LENS(0x7d8a99, 0.3));
       const rim = lens.getPoints(5).map((p) => [p.x, p.y, -0.0025] as V3);
       const rg = sweep(rim, 0.0022, 4, { caps: false });
       k.add(faceOut(rg, phi, [cx, cy, cz]), GOLD);
@@ -154,7 +154,7 @@ export const FACE_SPECS: Record<string, WearSpec> = {
         [0.09, 1.634, -0.137],
         [0.08, 1.643, -0.141],
       ];
-      k.add(sweep(path, (t) => 0.0035 + 0.0115 * (1 - t) ** 1.3, k.seg(8, 6), { smooth: k.low ? 2 : 3, sy: 0.6, up: [0, 1, 0] }), paint(0x3a2417, 0.85, 0.05));
+      k.add(sweep(path, (t) => 0.005 + 0.016 * (1 - t) ** 1.2, k.seg(8, 6), { smooth: k.low ? 2 : 3, sy: 0.6, up: [0, 1, 0] }), paint(0x3a2417, 0.85, 0.05));
       k.mirrorFrom(m0);
     },
   },
@@ -231,7 +231,7 @@ export const FACE_SPECS: Record<string, WearSpec> = {
   // Bandit Mask — a kerchief over the lower face, knotted behind.
   'face.bandit': {
     build(k) {
-      const cloth = paint(0x24262d, 0.9, 0.02);
+      const cloth = paint(0x9e1b25, 0.9, 0.02);
       const off = 0.01;
       const A = 1.2; // half-angle of the cloth round the face
       k.add(
@@ -429,6 +429,15 @@ export const FACE_SPECS: Record<string, WearSpec> = {
         c.closePath();
         k.add(bendMask(new THREE.ExtrudeGeometry(c, { depth: 0.002, bevelEnabled: false }), 1.63, -0.006), red);
       };
+      // Eye holes rimmed in hard light (your colour) — the visor read survives the mask.
+      for (const ex of [0.045, -0.045]) {
+        const rim: V3[] = [];
+        for (let i = 0; i <= 14; i++) {
+          const a = (i / 14) * PI * 2;
+          rim.push([ex + Math.cos(a) * 0.031, 0.026 + Math.sin(a) * 0.0175, 0]);
+        }
+        k.add(bendMask(sweep(rim, 0.0022, 4, { caps: false }), 1.63, -0.0055), hardLight(0xffffff, 1.8, 1));
+      }
       chev(0.034, 0.058, 1);
       chev(-0.034, 0.058, 1);
       chev(0.066, -0.04, -1);

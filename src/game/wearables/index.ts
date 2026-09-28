@@ -406,8 +406,8 @@ export class WornGear {
       bones[ft].updateWorldMatrix(false, false);
       _v.setFromMatrixPosition(bones[th].matrixWorld);
       _v2.setFromMatrixPosition(bones[sh].matrixWorld);
-      n = this.sphere(n, (_v.x + _v2.x) / 2, (_v.y + _v2.y) / 2, (_v.z + _v2.z) / 2, 0.11);
-      n = this.sphere(n, _v2.x, _v2.y, _v2.z, 0.09);
+      n = this.sphere(n, (_v.x + _v2.x) / 2, (_v.y + _v2.y) / 2, (_v.z + _v2.z) / 2, 0.13);
+      n = this.sphere(n, _v2.x, _v2.y, _v2.z, 0.105);
       _v.setFromMatrixPosition(bones[ft].matrixWorld);
       n = this.sphere(n, (_v.x + _v2.x) / 2, (_v.y + _v2.y) / 2, (_v.z + _v2.z) / 2, 0.075);
       n = this.sphere(n, _v.x, _v.y + 0.05, _v.z, 0.07);

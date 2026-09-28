@@ -473,7 +473,7 @@ export const BACK_SPECS: Record<string, WearSpec> = {
           const q = r0.clone().addScaledVector(dir, L * f).addScaledVector(side, s * (w0 * (1 - f * 0.8) + 0.004));
           return [q.x, q.y, q.z + z + i * 0.006];
         };
-        k.add(hull([pt(0, -1, 0), pt(0, 1, 0), pt(1, -0.2, 0), pt(0, -1, 0.004), pt(0, 1, 0.004), pt(1, -0.2, 0.004), pt(0.6, 1, 0.002)]), hardLight(0xffffff, 0.6, 1));
+        k.add(hull([pt(0, -1, 0), pt(0, 1, 0), pt(1, -0.2, 0), pt(0, -1, 0.004), pt(0, 1, 0.004), pt(1, -0.2, 0.004), pt(0.6, 1, 0.002)]), hardLight(0xffffff, 1.1, 1));
         k.add(sweep([pt(0, 1, 0.006), pt(0.6, 1, 0.006), pt(1, -0.2, 0.006)], 0.0032, 4), hardLight(0xffffff, 2.4, 1));
       });
       k.mirrorFrom(m0);
@@ -500,10 +500,10 @@ export const BACK_SPECS: Record<string, WearSpec> = {
     }),
     subs: [
       {
-        pivot: [0, 1.6, 0.31],
+        pivot: [0, 1.6, 0.27],
         anim: { kind: 'spin', axis: [0, 0, 1], rate: 0.35 },
         build(k) {
-          const c: V3 = [0, 1.6, 0.31];
+          const c: V3 = [0, 1.6, 0.27];
           const seg = k.seg(40, 24);
           const ring = revolve([[0.19, -0.005], [0.206, -0.005], [0.206, 0.005], [0.19, 0.005], [0.19, -0.005]], seg);
           ring.rotateX(PI / 2);

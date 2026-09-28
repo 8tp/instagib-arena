@@ -283,7 +283,6 @@ export const HAT_SPECS: Record<string, WearSpec> = {
           bands[i % 2],
         );
       }
-      k.add(revolve([[0.001, 0], [R, 0]], seg), bands[0]);
       // Ruffle.
       k.add(
         revolve(
@@ -870,7 +869,7 @@ export const HAT_SPECS: Record<string, WearSpec> = {
   // Captain's Tricorn — brim turned up into three walls, gold trim, skull.
   'hat.pirate': {
     build(k) {
-      const felt = paint(0x1b1a1f, 0.7, 0.05);
+      const felt = paint(0x2a2830, 0.7, 0.05);
       k.add(skullcap(0.014, 1.684, k.seg(14), 1.06), felt);
       const tri = (phi: number) => {
         const d = (((phi - PI + PI / 3) % ((2 * PI) / 3)) + (2 * PI) / 3) % ((2 * PI) / 3) - PI / 3;
@@ -897,21 +896,24 @@ export const HAT_SPECS: Record<string, WearSpec> = {
         rmul: (phi: number, t: number) => (t > 0.1 && t < 0.95 ? tri(phi) : 1),
         ydel: (phi: number, t: number, r: number) => (t > 0.2 && t < 0.9 && r > 0.2 ? -0.045 * cornerDip(phi) ** 2 * clamp01((r - 0.2) / 0.02) : 0),
       };
+      const mb = k.mark();
       k.add(revolve(wall, seg, opts), felt);
       // Gold trim along the wall's top edge.
       k.add(
         revolve(
           [
-            [0.2195, 1.781],
-            [0.2195, 1.792],
-            [0.2045, 1.792],
-            [0.2045, 1.781],
+            [0.2215, 1.779],
+            [0.2215, 1.794],
+            [0.2035, 1.794],
+            [0.2035, 1.779],
           ],
           seg,
           { zs: 1.05, z0: HELM_Z0, rmul: (phi) => tri(phi), ydel: (phi) => -0.045 * cornerDip(phi) ** 2 },
         ),
         GOLD,
       );
+      // Tilted back ~7° and lifted so the front corner never shades the visor.
+      k.xf(mb, new THREE.Matrix4().makeTranslation(0, 1.69, HELM_Z0).multiply(new THREE.Matrix4().makeRotationX(-0.12)).multiply(new THREE.Matrix4().makeTranslation(0, -1.69 + 0.008, -HELM_Z0)));
       // Skull & crossbones on the front crown.
       const bone = surf(0xeee8d8, 0.6, 0.05);
       const z = -0.142;
@@ -962,7 +964,22 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       const lac = surf(0x3a0d12, 0.32, 0.12);
       const lame = surf(0x16141a, 0.36, 0.2);
       const lace = accent(0xd0d0d0, 0.7, 0.02);
-      k.add(skullcap(0.022, 1.684, k.seg(32, 16), 1.04, { rmul: (phi, t) => (t > 0.05 ? 1 + 0.02 * Math.abs(Math.cos(8 * phi)) * (1 - t) : 1) }), lac);
+      k.add(skullcap(0.022, 1.684, k.seg(16, 12), 1.04), lac);
+      // Suji-bachi ribs: raised lines running up the bowl to the crown knob.
+      const rib = ridgePath(skullProfile(0.022, 1.684, 1.04), 0, 0.003);
+      const half = rib.slice(0, Math.ceil(rib.length / 2));
+      const nRib = k.low ? 6 : 10;
+      for (let i = 0; i < nRib; i++) {
+        const a = (i / nRib) * PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        // Rotate the front half-path about the helmet axis (ellipse-aware).
+        const pts = half.slice(0, -1).map(([, y, z]) => {
+          const d = (HELM_Z0 - z) / HELM_ZS;
+          return [d * sa, y, HELM_Z0 - d * ca * HELM_ZS] as V3;
+        });
+        k.add(sweep(pts, 0.0035, 3, { smooth: 2, caps: false }), surf(0x5a1a20, 0.3, 0.2));
+      }
       const top = capTop(0.022, 1.684, 1.04);
       k.add(cyl([0, top - 0.006, HELM_Z0], [0, top + 0.01, HELM_Z0], 0.024, 0.018, 10), GOLD);
       brim(k, 1.692, helmR(1.692) + 0.02, 0.05, 1.05, 0.004, 0.018, lac, lame, 0.006);
@@ -1249,10 +1266,10 @@ export const HAT_SPECS: Record<string, WearSpec> = {
             const a = (i / n) * PI * 2;
             const r = 0.205;
             const y = 1.86 + [0.02, -0.03, 0.035, -0.015][i];
-            const g = octa(0, 0, 0, 0.016, 2.2);
+            const g = octa(0, 0, 0, 0.026, 2.0);
             rot(g, 0.3 * i, a, 0.25);
             g.translate(Math.sin(a) * r, y, HELM_Z0 + Math.cos(a) * r);
-            k.add(g, { c: 0x2a1044, r: 0.2, m: 0.5, e: 0.9, fx: 2 });
+            k.add(g, { c: 0x5a22a0, r: 0.2, m: 0.4, e: 1.6, fx: 2 });
           }
         },
       },
@@ -1279,6 +1296,18 @@ export const HAT_SPECS: Record<string, WearSpec> = {
           k.add(revolve([[R, 1.728], [R + 0.007, 1.73], [R + 0.008, 1.764], [R + 0.001, 1.766], [R, 1.728]], seg, zo), GOLD);
           k.add(revolve([[R + 0.0085, 1.737], [R + 0.0085, 1.757]], seg, zo), hardLight(0xfff4d6, 2.0));
           k.add(revolve([[R + 0.009, 1.727], [R + 0.013, 1.729], [R + 0.013, 1.733], [R + 0.009, 1.735]], seg, zo), GOLD_DARK);
+          // Hard-light arches meeting over the crown, with a white orb.
+          for (const side of [0, 1]) {
+            const pts: V3[] = [];
+            for (let i = 0; i <= 10; i++) {
+              const a = -PI / 2 + (PI * i) / 10;
+              const r = (R + 0.004) * Math.sin(a);
+              const y = 1.764 + 0.078 * Math.cos(a);
+              pts.push(side ? [r, y, HELM_Z0] : [0, y, HELM_Z0 + r * HELM_ZS]);
+            }
+            k.add(sweep(pts, 0.0045, 5, { smooth: 2 }), hardLight(0xffe7a8, 1.8));
+          }
+          k.add(octa(0, 1.858, HELM_Z0, 0.016, 1.3), hardLight(0xffffff, 2.8));
           // Front jewel on the band.
           k.add(faceOut(octa(0, 0, 0, 0.013, 1.3), PI, [0, 1.747, HELM_Z0 - HELM_ZS * (R + 0.013)]), hardLight(0xffffff, 2.8));
           const N = 5;
