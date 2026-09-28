@@ -199,6 +199,10 @@ class Field {
     this.col[i * 4 + 3] = 0;
   }
 
+  hideAll() {
+    for (let i = 0; i < this.n; i++) this.col[i * 4 + 3] = 0;
+  }
+
   setBounds(x: number, y: number, z: number, r: number) {
     const s = this.geom.boundingSphere!;
     s.center.set(x, y, z);
@@ -245,7 +249,7 @@ const LAYOUTS: Record<Exclude<UnusualKind, 'none'>, Layout> = {
   plasma: { count: 0, roles: [[0, 2], [1, 3], [2, 24]], ribbons: [3, 10] }, // core, arc ends, sparks
   prism: { count: 0, roles: [[0, 16], [1, 8], [2, 2]], ribbons: [2, 28] }, // beads, glints, apex; helix ribbons
   galaxy: { count: 0, roles: [[0, 3], [1, 48], [2, 10]] }, // core, arm stars, dust
-  ghostfire: { count: 0, roles: [[0, 2], [1, 22], [2, 10], [3, 8]] }, // cold core, wisps, veils, soul lights
+  ghostfire: { count: 0, roles: [[0, 2], [1, 10]], ribbons: [5, 16] }, // cold core, soul lights; curling tendrils
   hearts: { count: 0, roles: [[0, 8], [1, 28], [2, 6]] }, // hearts, pop sparkles, motes
   binary: { count: 0, roles: [[0, 42], [1, 6]] }, // glyphs (6 columns × 7), crown motes
 };
@@ -299,6 +303,7 @@ export class UnusualEffect {
   private evy = 0;
   private evz = 0;
   private hasPrev = false;
+  private stale = false; // parked while not rendered
   private lastSeen = 0;
   private ppm = 300; // projected px per metre at the last render (closest view)
   private ppmFrame = 0;
@@ -452,9 +457,25 @@ export class UnusualEffect {
     this.f.setBounds(nx, ny + 0.15, nz, 1.2);
     this.cloud?.setBounds(nx, ny + 0.15, nz, 1.2);
     // Not rendered lately (culled, hidden, gibbed) → no simulation at all.
+    // Park everything, so nothing stale (free particles left metres behind,
+    // half-aged) can flash when it comes back; resuming re-emits like a
+    // teleport.
     if (now() - this.lastSeen > 250) {
-      if (this.rib) this.rib.mesh.visible = false;
+      if (!this.stale) {
+        this.stale = true;
+        this.f.hideAll();
+        this.f.commit();
+        if (this.cloud) {
+          this.cloud.hideAll();
+          this.cloud.commit();
+        }
+        if (this.rib) this.rib.mesh.visible = false;
+      }
       return;
+    }
+    if (this.stale) {
+      this.stale = false;
+      for (const p of this.ps) p.on = false;
     }
     // LOD: particle fraction from projected size, trimmed by the quality tier.
     const ppm = this.ppm;
@@ -1049,63 +1070,48 @@ export class UnusualEffect {
     }
   }
 
-  // ── Ghostfire: spectral, not fire — pale translucent wisps well up out of
-  // a cold teal core and CURL OVER and down around the crown like a ghostly
-  // fountain, with a cold, uneven flicker and a few drifting soul lights.
-  // Low velocity inheritance: they stream behind a running wearer. ──
+  // ── Ghostfire: spectral tendrils — five pale-teal ribbons well up out of a
+  // cold core, curl OVER and down around the crown (an inverted, curling cold
+  // flame), light pulses flowing up them, a cold stepped flicker, and a few
+  // soul lights that stream behind a running wearer. ──
   private ghostfire(dt: number, frac: number) {
     const t = this.t;
     const f = this.f;
+    const rib = this.rib!;
+    const P = rib.points;
     // Cold flicker: a stepped random dimming (not fire's warm shimmer).
     if (t >= this.ghostNext) {
       this.ghostNext = t + 0.05 + rnd() * 0.12;
-      this.ghostFlick = rnd() < 0.18 ? 0.45 + rnd() * 0.2 : 0.85 + rnd() * 0.15;
+      this.ghostFlick = rnd() < 0.18 ? 0.5 + rnd() * 0.2 : 0.85 + rnd() * 0.15;
     }
     const fl = this.ghostFlick;
+    const tendrils = Math.max(3, Math.round(rib.strips * Math.min(1, frac + 0.3)));
+    for (let k = 0; k < tendrils; k++) {
+      const th0 = (k / rib.strips) * TAU + t * 0.35 + Math.sin(t * 0.7 + k * 2.1) * 0.25;
+      const reach = 0.85 + 0.15 * Math.sin(t * 0.9 + k * 1.3);
+      for (let j = 0; j < P; j++) {
+        const s = j / (P - 1);
+        const ang = th0 + s * 1.7;
+        const r = 0.025 + 0.19 * s * reach;
+        // Rises to ~0.26 m, then curls over and down.
+        const h = 0.3 * Math.sin(Math.PI * 0.9 * s) * reach - 0.04 * s * s;
+        const wob = 0.018 * Math.sin(t * 2.3 + s * 6 + k * 1.7);
+        this.lw(Math.cos(ang) * (r + wob), h, Math.sin(ang) * (r + wob));
+        const flow = 0.55 + 0.45 * Math.sin(s * 9 - t * 4.5 + k);
+        const fade = Math.pow(1 - s, 0.8) * fl * flow;
+        rib.push(k, this.wx, this.wy, this.wz, 0.35 * fade * 1.9, 1.35 * fade * 1.9, 1.2 * fade * 1.9, 0.004 + 0.02 * Math.pow(1 - s, 0.7));
+      }
+    }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
         this.lw(0, 0.0 + p.a * 0.03, 0);
-        f.put(i, this.wx, this.wy, this.wz, 0.05 * fl, 0.5 * fl, 0.46 * fl, 1, 0.16 - p.a * 0.07, CELL.glow, 0);
-      } else if (p.k === 1 || p.k === 2) {
-        // Wisps (1) and their faint trailing veils (2).
-        if (p.age < 0 || p.age >= p.life) {
-          const stagger = p.age < 0;
-          const a = rnd() * TAU;
-          const r = 0.03 + rnd() * 0.04;
-          this.lw(0, 0.0, 0);
-          p.x = this.wx + Math.cos(a) * r; p.y = this.wy; p.z = this.wz + Math.sin(a) * r;
-          const out = 0.1 + rnd() * 0.08;
-          p.vx = Math.cos(a) * out + this.evx * 0.25;
-          p.vz = Math.sin(a) * out + this.evz * 0.25;
-          p.vy = 0.42 + rnd() * 0.16;
-          p.life = 1.2 + rnd() * 0.5;
-          p.seed = rnd();
-          p.b = a;
-          p.age = stagger ? rnd() * p.life * 0.9 : 0;
-          if (stagger) {
-            // Fast-forward the curl so the fountain is full at once.
-            let tt = 0;
-            while (tt < p.age) {
-              const h = Math.min(0.05, p.age - tt);
-              this.curl(p, h);
-              tt += h;
-            }
-          }
-        }
-        p.age += dt;
-        this.curl(p, dt);
-        const fr = p.age / p.life;
-        // Fade out before it sinks below the crown (never veils the face).
-        const low = smooth(-0.1, 0.0, p.y - this.oy);
-        const al = Math.min(1, fr * 5) * (1 - fr) * low * (p.k === 1 ? 0.6 : 0.3) * fl;
-        const sz = p.k === 1 ? mix(0.06, 0.12, fr) : mix(0.1, 0.16, fr);
-        f.put(i, p.x, p.y, p.z, p.k === 1 ? 0.55 : 0.1, p.k === 1 ? 1.25 : 0.8, p.k === 1 ? 1.15 : 0.75, al, sz, p.k === 1 ? CELL.wisp : CELL.glow, Math.sin(p.b + p.age * 1.5) * 0.5);
+        f.put(i, this.wx, this.wy, this.wz, 0.05 * fl, 0.55 * fl, 0.5 * fl, 1, 0.15 - p.a * 0.07, CELL.glow, 0);
       } else {
-        if (p.age < 0) this.emit(p, 0.1, 0.02, 0.12, 0.1, 0.9, 0.6, 0.25, true);
+        if (p.age < 0) this.emit(p, 0.1, 0.05, 0.14, 0.1, 0.8, 0.5, 0.25, true);
         p.age += dt;
-        if (p.age >= p.life) this.emit(p, 0.1, 0.02, 0.12, 0.1, 0.9, 0.6, 0.25, false);
+        if (p.age >= p.life) this.emit(p, 0.1, 0.05, 0.14, 0.1, 0.8, 0.5, 0.25, false);
         p.x += (p.vx + Math.sin(t * 3 + p.seed * 60) * 0.05) * dt;
         p.z += (p.vz + Math.cos(t * 2.6 + p.seed * 50) * 0.05) * dt;
         p.y += p.vy * dt;
@@ -1113,19 +1119,6 @@ export class UnusualEffect {
         f.put(i, p.x, p.y, p.z, 0.8 * fl, 1.8 * fl, 1.6 * fl, Math.min(1, fr * 6) * (1 - fr), 0.022, CELL.dot, 0);
       }
     }
-  }
-
-  // Ghostfire wisp motion: rises, is pushed outward and pulled back down —
-  // a slow fountain that curls over the crown.
-  private curl(p: P, dt: number) {
-    const ox = p.x - this.ox, oz = p.z - this.oz;
-    const ol = Math.hypot(ox, oz) || 1;
-    p.vx += (ox / ol) * 0.22 * dt;
-    p.vz += (oz / ol) * 0.22 * dt;
-    p.vy -= 0.75 * dt;
-    const d = Math.exp(-0.6 * dt);
-    p.vx *= d; p.vz *= d;
-    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
   }
 
   // ── Lovestruck: neon hearts float up, wobble, beat — and pop into little
@@ -1202,6 +1195,7 @@ export class UnusualEffect {
   private binary(frac: number) {
     const t = this.t;
     const f = this.f;
+    const far = this.ppm < 70;
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
@@ -1217,10 +1211,12 @@ export class UnusualEffect {
         const r = 0.19;
         this.lw(Math.cos(th) * r, y, Math.sin(th) * r);
         const bit = hash(Math.floor(t * 3 + p.seed * 10) + p.a * 7.1) > 0.5;
-        if (k === 0) f.put(i, this.wx, this.wy, this.wz, 1.6, 2.2, 1.75, vis, 0.052, bit ? CELL.one : CELL.zero, 0);
+        const cell = far ? CELL.dot : bit ? CELL.one : CELL.zero;
+        const sz = far ? 0.05 : 0.05;
+        if (k === 0) f.put(i, this.wx, this.wy, this.wz, 1.6, 2.2, 1.75, vis, sz + 0.002, cell, 0);
         else {
-          const br = 1.7 * (1 - k / 7.5);
-          f.put(i, this.wx, this.wy, this.wz, 0.12 * br, 1.0 * br, 0.36 * br, vis, 0.05, bit ? CELL.one : CELL.zero, 0);
+          const br = (far ? 3.0 : 2.1) * (1 - k / 8.5);
+          f.put(i, this.wx, this.wy, this.wz, 0.14 * br, 1.0 * br, 0.38 * br, vis, sz, cell, 0);
         }
       } else {
         const a = (p.a / 6) * TAU - t * 0.5;

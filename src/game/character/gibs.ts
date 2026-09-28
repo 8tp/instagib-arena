@@ -90,7 +90,7 @@ type Motion = {
 
 const BASE: Motion = {
   speed: 2.8, speedR: 3.6, up: 2.0, upR: 2.8, vert: 0.6, spin: 5, spinR: 11, gravity: 22, drag: 0.5,
-  shrinkAt: 0.5, shrinkAtR: 0.35, shrinkDur: 0.42, bounce: 0.3, hold: 0, duration: 1.3,
+  shrinkAt: 0.75, shrinkAtR: 0.25, shrinkDur: 0.42, bounce: 0.3, hold: 0, duration: 1.7,
 };
 const M = (o: Partial<Motion>): Motion => ({ ...BASE, ...o });
 
@@ -98,14 +98,14 @@ const MOTION: Record<KillEffectStyle, Motion> = {
   // A floor shockwave: chunks skim out low along the ground.
   pulse: M({ speed: 3.2, speedR: 3, up: 0.6, upR: 1.2, vert: 0.15, drag: 0.9, gravity: 20 }),
   // A pillar: chunks thrown straight up.
-  nova: M({ speed: 0.5, speedR: 0.8, up: 5, upR: 3, vert: 0.2, spin: 3, spinR: 6, gravity: 16, drag: 0.4, shrinkAt: 0.4, shrinkAtR: 0.2 }),
+  nova: M({ speed: 0.6, speedR: 0.8, up: 3.0, upR: 1.0, vert: 0.2, spin: 3, spinR: 6, gravity: 30, drag: 0.4, shrinkAt: 0.75, shrinkAtR: 0.25, duration: 1.7 }),
   // Spikes: fired straight out, no tumble, stopping hard.
-  starburst: M({ speed: 6.5, speedR: 3, up: 0.4, upR: 1.0, vert: 0.45, spin: 0, spinR: 0, gravity: 4, drag: 3.6, shrinkAt: 0.28, shrinkAtR: 0.22, shrinkDur: 0.3 }),
-  gibstorm: M({ speed: 3.8, speedR: 4.2, up: 2.6, upR: 3, spin: 10, spinR: 14, gravity: 26, drag: 0.3, shrinkAt: 0.62, shrinkAtR: 0.35, bounce: 0.38 }),
+  starburst: M({ speed: 6.5, speedR: 3, up: 0.4, upR: 1.0, vert: 0.45, spin: 0, spinR: 0, gravity: 10, drag: 3.6, shrinkAt: 0.75, shrinkAtR: 0.25, shrinkDur: 0.3 }),
+  gibstorm: M({ speed: 3.8, speedR: 4.2, up: 2.2, upR: 2.4, spin: 10, spinR: 14, gravity: 28, drag: 0.3, shrinkAt: 0.75, shrinkAtR: 0.255, bounce: 0.38 }),
   // The body IS the voxels: it hands over to the cubes at once.
   voxel: M({ speed: 1.2, speedR: 1.2, up: 0.8, upR: 0.8, shrinkAt: 0.0, shrinkAtR: 0.015, shrinkDur: 0.03, duration: 0.4 }),
   // Buckles and burns where it fell, then crumbles.
-  ember: M({ hold: 0.24, speed: 0.3, speedR: 0.9, up: 0, upR: 0.7, vert: 0.2, spin: 1, spinR: 3, gravity: 12, drag: 0.8, shrinkAt: 0.62, shrinkAtR: 0.3, shrinkDur: 0.45, bounce: 0 }),
+  ember: M({ hold: 0.22, speed: 0.3, speedR: 0.9, up: 0, upR: 0.5, vert: 0.2, spin: 1, spinR: 3, gravity: 18, drag: 0.8, shrinkAt: 0.8, shrinkAtR: 0.3, shrinkDur: 0.45, bounce: 0, duration: 1.6 }),
   // Custom motion (see update): spiral in, then the release.
   singularity: M({ speed: 6, speedR: 3, up: 1.5, upR: 1.5, spin: 8, spinR: 8, gravity: 12, drag: 0.6, shrinkAt: 0.45, shrinkAtR: 0.2, shrinkDur: 0.3 }),
   // Glass: freezes, cracks, then the pieces break into falling shards.
@@ -115,8 +115,8 @@ const MOTION: Record<KillEffectStyle, Motion> = {
   derez: M({ hold: Infinity, duration: 0.7 }),
   vaporize: M({ hold: Infinity, duration: 0.7 }),
   // Arcs over a collapsing body, then the blast drops the pieces (no launch).
-  overload: M({ hold: FINISHER_TIMING.overloadBlast, speed: 3, speedR: 3, up: 0.2, upR: 1.0, vert: 0.3, spin: 6, spinR: 8, gravity: 24, shrinkAt: 0.55, shrinkAtR: 0.3, bounce: 0.25 }),
-  prism: M({ speed: 3.5, speedR: 3, up: 2, upR: 2.5, spin: 6, spinR: 8, gravity: 18, shrinkAt: 0.45, shrinkAtR: 0.3 }),
+  overload: M({ hold: FINISHER_TIMING.overloadBlast, speed: 3, speedR: 3, up: 0.2, upR: 1.0, vert: 0.3, spin: 6, spinR: 8, gravity: 24, shrinkAt: 0.75, shrinkAtR: 0.25, bounce: 0.25 }),
+  prism: M({ speed: 3.5, speedR: 3, up: 1.6, upR: 2, spin: 6, spinR: 8, gravity: 24, shrinkAt: 0.75, shrinkAtR: 0.25 }),
 };
 
 // Chunk leads for the reduced set (7 chunks): limbs stay whole.
@@ -280,6 +280,13 @@ export class GibBurst {
   private readonly bandDone = new Uint8Array(DEREZ_BANDS);
   private readonly wind = new THREE.Vector3();
   private castShadow0 = true;
+  private readonly jit = new Float32Array(BONE_COUNT * 3); // overload twitch
+  private jitT = 0;
+  private flick = 1; // overload arc crackle
+  private flickT = 0;
+  private readonly landT = new Float32Array(BONE_COUNT); // touchdown time per chunk (-1 = airborne)
+  private readonly killT = new Float32Array(BONE_COUNT); // forced-shrink start (-1 = none)
+  private kneeP = 0.5; // the victim's knee height, parent space
   private readonly side = new THREE.Vector3(1, 0, 0); // the body's side axis, parent space
   private readonly back = new THREE.Vector3(0, 0, 1); // the body's back axis, parent space
   private rollSign = 1; // which way a buckling body keels over
@@ -359,6 +366,9 @@ export class GibBurst {
       this.parentM.identity();
     }
     this.floorY = floor ? floor.y - _pp.y : null;
+    this.kneeP = (this.floorY !== null ? this.floorY : feetY) + 0.5;
+    this.landT.fill(-1);
+    this.killT.fill(-1);
     this.floorWorld = floor ? floor.y : -Infinity;
     const inv = _q2.copy(_pq).invert();
     _v2.set(vx, vy, vz).applyQuaternion(inv).multiplyScalar(0.35);
@@ -434,6 +444,8 @@ export class GibBurst {
     this.back.set(backX, 0, backZ).normalize();
     this.rollSign = rnd() < 0.5 ? -1 : 1;
     this.launched = false;
+    this.jitT = 0;
+    this.flickT = 0;
     this.glowCol.copy(this.energy).lerp(WHITE, 0.15);
     ch.resetDeathLook();
     const u = ch.uniforms;
@@ -477,13 +489,18 @@ export class GibBurst {
       u.uBandDir.value.set(sideX, 0, sideZ).normalize();
     }
     if (this.style === 'vaporize') {
-      // Wind: away from the viewer (the killer — "in the shot direction").
-      let wx = feetWX - viewPos.x, wz = feetWZ - viewPos.z;
-      let wl = Math.hypot(wx, wz);
-      if (!viewPos.set || wl < 0.3) {
+      // Wind: SIDEWAYS across the viewer's line of sight (never straight
+      // away along it, where the ash would veil whoever stands behind).
+      let vx = feetWX - viewPos.x, vz = feetWZ - viewPos.z;
+      let vl = Math.hypot(vx, vz);
+      if (!viewPos.set || vl < 0.3) {
         const a = rnd() * TAU;
-        wx = Math.cos(a); wz = Math.sin(a); wl = 1;
+        vx = Math.cos(a); vz = Math.sin(a); vl = 1;
       }
+      vx /= vl; vz /= vl;
+      const side = rnd() < 0.5 ? -1 : 1;
+      let wx = -vz * side + vx * 0.25, wz = vx * side + vz * 0.25;
+      const wl = Math.hypot(wx, wz) || 1;
       wx /= wl; wz /= wl;
       this.wind.set(wx, 0, wz);
       // The same wind in the body's rest model space drives the shader's
@@ -555,16 +572,20 @@ export class GibBurst {
     this.t += dt;
     const t = this.t;
     const mo = this.mo;
-    // Held bodies buckle within 80 ms (never a standing, lit "live" player).
+    // Held bodies buckle within 80 ms (never a standing, lit "live" player);
+    // pyre and vaporize collapse all the way to a kneel by 0.1 s.
     const buckle = Math.min(1, t / 0.08) * 0.75 + 0.25 * smooth(0.08, 0.3, t);
+    const drop = smooth(0, 0.1, t);
     if (this.style === 'vaporize') {
-      this.crumple(buckle, false);
+      this.crumple(drop, false, true);
     } else if (t >= mo.hold) {
       if (!this.launched) this.relaunch();
       if (this.style === 'singularity') this.singularity(dt);
       else this.integrate(dt, mo);
-    } else if (this.style === 'ember' || this.style === 'overload' || this.style === 'shatter') {
-      this.crumple(this.style === 'shatter' ? buckle * 0.4 : buckle, this.style === 'overload' && !this.calm && dt > 0);
+    } else if (this.style === 'ember') {
+      this.crumple(drop, false, true);
+    } else if (this.style === 'overload' || this.style === 'shatter') {
+      this.crumple(this.style === 'shatter' ? buckle * 0.4 : buckle, this.style === 'overload' && !this.calm && dt > 0, false);
     }
     this.look(dt);
     if (this.fx) this.particles(dt);
@@ -588,13 +609,20 @@ export class GibBurst {
     const body = getBodyGeometry();
     const drag = Math.exp(-mo.drag * dt);
     const floorBounce = this.calm ? 0 : mo.bounce;
+    // Fairness: from 0.3 s, anything still above the knee is pulled down
+    // hard (and can't rise), so nothing hangs on the crosshair line at 0.5 s.
+    const late = smooth(0.28, 0.4, t);
+    const knee = this.kneeP;
     for (let i = 0; i < BONE_COUNT; i++) {
       if (this.lead[i] !== i || (!body.hasGeo[i] && i !== B.chest)) continue;
       const o3 = i * 3;
-      this.vel[o3 + 1] -= mo.gravity * dt;
+      const high = this.pos[o3 + 1] > knee;
+      const g = mo.gravity * (high ? 1 + 3 * late : 1);
+      this.vel[o3 + 1] -= g * dt;
+      if (high && late > 0 && this.vel[o3 + 1] > 0) this.vel[o3 + 1] *= Math.exp(-12 * late * dt);
       this.vel[o3] *= drag;
       this.vel[o3 + 2] *= drag;
-      if (this.style === 'starburst' || this.style === 'nova') this.vel[o3 + 1] *= drag;
+      if (this.style === 'starburst' && late < 0.5) this.vel[o3 + 1] *= drag;
       this.pos[o3] += this.vel[o3] * dt;
       this.pos[o3 + 1] += this.vel[o3 + 1] * dt;
       this.pos[o3 + 2] += this.vel[o3 + 2] * dt;
@@ -608,14 +636,27 @@ export class GibBurst {
         this.quat[i * 4 + 2] = _q.z;
         this.quat[i * 4 + 3] = _q.w;
       }
-      const u = (t - this.shrinkAt[i]) / mo.shrinkDur;
+      // Gibs LAND and fade on the floor: shrinking starts a beat after
+      // touchdown (time-based only when there's no floor under the body).
+      // (Styles whose body hands over to particles at once — voxel, confetti,
+      // glass — keep their quick time-based vanish.)
+      let sT: number;
+      if (mo.shrinkAt < 0.2) sT = this.shrinkAt[i];
+      else if (this.landT[i] >= 0) sT = Math.max(this.shrinkAt[i], this.landT[i] + 0.45);
+      else if (this.floorY === null) sT = this.shrinkAt[i];
+      else sT = Infinity;
+      const u = (t - sT) / mo.shrinkDur;
       let s = this.baseS[i] * (u <= 0 ? 1 : u >= 1 ? 0.0001 : 1 - u * u * (3 - 2 * u));
-      // Nova swells for a beat before it lets go.
-      if (this.style === 'nova' && t < 0.1) s *= 1 + 0.14 * Math.sin((t / 0.1) * Math.PI);
+      // Anything still above the knee at 0.46 s shrinks away at once.
+      if (t >= 0.42 && this.landT[i] < 0 && this.pos[o3 + 1] > knee) {
+        if (this.killT[i] < 0) this.killT[i] = t;
+      }
+      if (this.killT[i] >= 0) s *= Math.max(0.0001, 1 - (t - this.killT[i]) / 0.06);
       if (this.floorY !== null) {
         const r = body.radius[i] * 0.45 * s;
         if (this.pos[o3 + 1] - r < this.floorY) {
           this.pos[o3 + 1] = this.floorY + r;
+          if (this.landT[i] < 0) this.landT[i] = t;
           if (this.vel[o3 + 1] < 0) {
             if (floorBounce > 0) {
               this.vel[o3 + 1] *= -floorBounce;
@@ -627,12 +668,18 @@ export class GibBurst {
               this.spinRate[i] = 0;
             }
           }
+          // Resting on the floor: friction settles it.
+          const f = Math.exp(-5 * dt);
+          this.vel[o3] *= f;
+          this.vel[o3 + 2] *= f;
+          this.spinRate[i] *= f;
         }
       }
       this.writeBone(i, s);
     }
     this.writeFollowers();
   }
+
 
   // Singularity: chunks spiral into a point (accelerating, shrinking), then
   // pop outward white-hot as small shards.
@@ -683,7 +730,7 @@ export class GibBurst {
         this.vel[o3] = (dx / dl) * v;
         this.vel[o3 + 1] = (dy / dl) * v + 1.5 * sp;
         this.vel[o3 + 2] = (dz / dl) * v;
-        this.baseS[i] = 0.3;
+        this.baseS[i] = 0.45;
         this.shrinkAt[i] = POP + 0.1 + rnd() * 0.2;
         this.spinRate[i] *= 2;
       }
@@ -694,15 +741,17 @@ export class GibBurst {
   // A held body buckles (k 0..1): knees swing forward, the pelvis drops and
   // the torso folds forward over them; the shins pivot at the ankles to keep
   // the knees joined; feet stay planted. Overload also twitches.
-  private crumple(k: number, twitch: boolean) {
+  private crumple(k: number, twitch: boolean, full: boolean) {
     const rig = this.ch.rig;
     const sAx = this.side;
-    const d = 0.46 * k;
+    const d = (full ? 0.72 : 0.46) * k;
+    const leanA = (full ? 1.2 : 0.85) * k;
+    const kneeA = (full ? 1.75 : 1.25) * k;
     _H.setFromMatrixPosition(this.startM[B.hips]);
     // Upper body: fold forward about the hips and keel over to one side,
     // dropping with the pelvis.
     _cA.makeTranslation(-_H.x, -_H.y, -_H.z);
-    _cB.makeRotationAxis(sAx, -0.85 * k).multiply(_cA);
+    _cB.makeRotationAxis(sAx, -leanA).multiply(_cA);
     _cA.makeRotationAxis(this.back, 0.35 * k * this.rollSign);
     _cB.premultiply(_cA);
     _cA.makeTranslation(_H.x, _H.y - d, _H.z);
@@ -719,7 +768,7 @@ export class GibBurst {
       _K.setFromMatrixPosition(this.startM[sh]);
       _A.setFromMatrixPosition(this.startM[ft]);
       _cA.makeTranslation(-_H.x, -_H.y, -_H.z);
-      _cB.makeRotationAxis(sAx, 1.25 * k).multiply(_cA);
+      _cB.makeRotationAxis(sAx, kneeA).multiply(_cA);
       _cA.makeTranslation(_H.x, _H.y - d, _H.z);
       _cU.multiplyMatrices(_cA, _cB);
       rig.bones[th].matrix.multiplyMatrices(_cU, this.startM[th]);
@@ -739,12 +788,17 @@ export class GibBurst {
       rig.bones[ft].matrixWorldNeedsUpdate = true;
     }
     if (twitch) {
+      // New jitter at a fixed 20 Hz (not per frame — frame-rate independent).
+      if (this.t >= this.jitT) {
+        this.jitT = this.t + 0.05;
+        for (let i = 0; i < BONE_COUNT * 3; i++) this.jit[i] = rnd() - 0.5;
+      }
       for (let i = 0; i < BONE_COUNT; i++) {
         const e = rig.bones[i].matrix.elements;
         const j = i === B.hips ? 0.008 : 0.018;
-        e[12] += (rnd() - 0.5) * j;
-        e[13] += (rnd() - 0.5) * j;
-        e[14] += (rnd() - 0.5) * j;
+        e[12] += this.jit[i * 3] * j;
+        e[13] += this.jit[i * 3 + 1] * j;
+        e[14] += this.jit[i * 3 + 2] * j;
       }
     }
   }
@@ -851,10 +905,10 @@ export class GibBurst {
       case 'shatter': {
         // t0: the armour flash-freezes to glass and white crack lines race
         // over it; then it breaks.
-        ch.setBurn(char0 * 0.6);
+        ch.setBurn(char0);
         u.uCrystal.value = Math.min(1, t / 0.03);
         u.uCrystalCol.value.copy(E).lerp(_c.setRGB(0.72, 0.88, 1.0), 0.6).multiplyScalar(0.55 * (0.6 + 0.4 * gain));
-        u.uArc.value = t < 0.1 ? 1 - t / 0.1 : 0;
+        u.uArc.value = t < 0.1 ? 2.2 * (1 - t / 0.1) : 0;
         u.uArcCol.value.setRGB(3.2 * gain, 3.3 * gain, 3.5 * gain);
         ch.setGlow(0);
         break;
@@ -882,7 +936,12 @@ export class GibBurst {
         const blast = this.mo.hold;
         ch.setBurn(char0);
         if (t < blast) {
-          const fl = calm ? 0.55 : 0.7 + 0.3 * rnd();
+          // Crackle flicker at a fixed 30 Hz (not per frame).
+          if (t >= this.flickT) {
+            this.flickT = t + 1 / 30;
+            this.flick = 0.7 + 0.3 * rnd();
+          }
+          const fl = calm ? 0.55 : this.flick;
           u.uArc.value = fl;
           u.uArcCol.value.setRGB(1.3, 1.9, 3.0);
           _c.setRGB(0.4, 0.62, 1.0);
@@ -896,7 +955,7 @@ export class GibBurst {
         break;
       }
       case 'prism': {
-        ch.setBurn(Math.min(0.6, t / 0.05));
+        ch.setBurn(char0);
         u.uRainbow.value = 1;
         ch.setGlow(gain * (0.3 + 0.4 * Math.exp(-t * 3)), E);
         break;
@@ -1040,6 +1099,7 @@ export class GibBurst {
           p.scaleFade = true;
           p.setRGB(1.8, 0.6, 0.12);
           p.setRamp(0.05, 0.05, 0.06);
+          p.rampT = 0.45; // cooled by 0.5 s
         }
         break;
       }
@@ -1047,11 +1107,11 @@ export class GibBurst {
         if (!this.once(1)) break;
         // The body becomes its own volume of cubes (grid-aligned at t0, so
         // the first frame is a voxel statue), which drop, bounce and pile.
-        const n = this.n(96);
+        const n = this.n(120);
         for (let k = 0; k < n; k++) {
           const p = this.alloc('cube');
           if (!p) break;
-          const i = (k * 5 + 3) % SAMPLE_N;
+          const i = (k * 5 + 3 + Math.floor(k / SAMPLE_N)) % SAMPLE_N;
           this.sampleW(i, _w);
           p.x = _w.x; p.y = _w.y; p.z = _w.z;
           let dx = _w.x - cw.x, dz = _w.z - cw.z;
@@ -1071,9 +1131,10 @@ export class GibBurst {
           p.scaleFade = true;
           const kind = smp.kind[i];
           const v = 0.8 + rnd() * 0.4;
-          if (kind === SAMPLE_ARMOR) { p.setRGB(E.r * v, E.g * v, E.b * v); p.setRamp(E.r * 0.3, E.g * 0.3, E.b * 0.3); }
-          else if (kind === SAMPLE_GLOW) { p.setRGB(E.r * 1.6, E.g * 1.6, E.b * 1.6); p.setRamp(E.r * 0.3, E.g * 0.3, E.b * 0.3); }
+          if (kind === SAMPLE_ARMOR) { p.setRGB(E.r * v, E.g * v, E.b * v); p.setRamp(E.r * 0.45, E.g * 0.45, E.b * 0.45); }
+          else if (kind === SAMPLE_GLOW) { p.setRGB(E.r * 1.6, E.g * 1.6, E.b * 1.6); p.setRamp(E.r * 0.45, E.g * 0.45, E.b * 0.45); }
           else p.setRGB(0.05 * v, 0.055 * v, 0.07 * v);
+          p.rampT = 0.5; // edge glow down below the bloom threshold by 0.5 s
         }
         break;
       }
@@ -1176,11 +1237,11 @@ export class GibBurst {
           p.setScale(sz, sz * (0.9 + rnd() * 0.6), sz);
           p.randomOrientation();
           p.randomSpin(4 + rnd() * 8);
-          p.life = 0.5;
+          // They land by ~0.45 s (below the knee) and lie there glinting.
+          p.life = 0.95;
           p.fadePow = 1.5;
           const v = 1.6 + rnd() * 0.6;
           p.setRGB(ice.r * v, ice.g * v, ice.b * v);
-          this.cap(p);
         }
         // They break on the floor: glints right at floor level.
         const g = this.n(10);
@@ -1208,11 +1269,12 @@ export class GibBurst {
           const p = this.alloc('flake');
           if (!p) break;
           p.x = cw.x + (rnd() - 0.5) * 0.25; p.y = cw.y + (rnd() - 0.3) * 0.3; p.z = cw.z + (rnd() - 0.5) * 0.25;
-          const uu = -0.25 + rnd() * 1.15, a = rnd() * TAU, sq = Math.sqrt(Math.max(0, 1 - Math.min(1, uu) ** 2));
+          // A flat, hard blast (low arc) so the paper is down by ~0.5 s.
+          const uu = -0.3 + rnd() * 0.8, a = rnd() * TAU, sq = Math.sqrt(Math.max(0, 1 - uu * uu));
           const sp = 5 + rnd() * 6;
-          p.vx = Math.cos(a) * sq * sp; p.vy = Math.min(1, uu) * sp; p.vz = Math.sin(a) * sq * sp;
-          p.drag = 3.4;
-          p.gravity = 12;
+          p.vx = Math.cos(a) * sq * sp; p.vy = Math.min(4, uu * sp); p.vz = Math.sin(a) * sq * sp;
+          p.drag = 2.4;
+          p.gravity = 24;
           p.floor = this.floorBase();
           p.setScale(0.07 + rnd() * 0.02, 0.045 + rnd() * 0.015, 1);
           p.randomOrientation();
@@ -1277,7 +1339,7 @@ export class GibBurst {
         // streaming away from the viewer on the wind.
         const d = this.ch.uniforms.uDissolve.value;
         if (d <= 0) break;
-        const n = Math.min(SAMPLE_N, Math.round(180 * this.q));
+        const n = Math.min(SAMPLE_N, Math.round(220 * this.q));
         const w = this.wind;
         for (let i = 0; i < n; i++) {
           if (this.spawned[i] || this.keys[i] >= d) continue;
@@ -1301,14 +1363,15 @@ export class GibBurst {
             p.setRamp(0.5, 0.06, 0.0);
             this.cap(p);
           } else {
-            p.life = 0.7 + rnd() * 0.35;
-            const sz = 0.05 + rnd() * 0.035;
+            p.life = 0.8 + rnd() * 0.35;
+            const sz = 0.06 + rnd() * 0.04;
             p.setScale(sz, sz * (0.6 + rnd() * 0.5), 1);
             p.randomOrientation();
             p.randomSpin(3 + rnd() * 7);
             p.scaleFade = true;
-            p.setRGB(0.2, 0.19, 0.18);
-            p.setRamp(0.09, 0.085, 0.08);
+            // Hot at the edge it peeled from, cooling to pale ash.
+            p.setRGB(0.75, 0.32, 0.1);
+            p.setRamp(0.32, 0.31, 0.3);
           }
         }
         break;

@@ -8,7 +8,7 @@ import { BLOOM_TUNING, createRenderer, createScene, getArenaLighting } from '../
 import { CharacterAnimator } from '../character-anim';
 import { Character, SKIN_PALETTE } from '../character/character';
 import { setCharacterFxQuality } from '../character/gibs';
-import { EffectsManager } from '../effects';
+import { EffectsManager, prewarmFx } from '../effects';
 import { WornHat } from '../hats';
 
 // ── FX lab (dev only) ────────────────────────────────────────────────────────
@@ -160,6 +160,8 @@ export class FxLab {
     if (this.mode === 'finishers') this.buildFinishers();
     else this.buildUnusuals();
     this.resize();
+    // Smoke-test the shader prewarm the game calls at match load.
+    if (this.tiles[0]) void prewarmFx(this.renderer, this.scene, this.tiles[0].cam);
     const t = params.get('t');
     if (t !== null && this.mode === 'finishers') this.freeze(Number(t));
     (window as unknown as { __fxlab?: FxLab }).__fxlab = this;

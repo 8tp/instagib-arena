@@ -923,8 +923,10 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'if (uArc > 0.0) {',
         '  float igA = igNoise(vRest * 7.0 + vec3(0.0, uFxTime * 6.0, uFxTime * 2.0));',
         '  float igA2 = igNoise(vRest * 13.0 - vec3(uFxTime * 5.0, 0.0, 0.0));',
-        '  float igVein = (1.0 - smoothstep(0.0, 0.045, abs(igA - 0.5))) + 0.6 * (1.0 - smoothstep(0.0, 0.03, abs(igA2 - 0.5)));',
-        '  igFinEm += uArcCol * igVein * uArc;',
+        // uArc > 1 widens the lines (glass cracks), intensity caps at 1.
+        '  float igVw = max(1.0, uArc);',
+        '  float igVein = (1.0 - smoothstep(0.0, 0.045 * igVw, abs(igA - 0.5))) + 0.6 * (1.0 - smoothstep(0.0, 0.03 * igVw, abs(igA2 - 0.5)));',
+        '  igFinEm += uArcCol * igVein * min(uArc, 1.0);',
         '}',
         'if (uFxTime > 0.0) {',
         '  float igLate = smoothstep(0.34, 0.5, uFxTime);',
