@@ -22,6 +22,7 @@ import { attachRailgun, disposeRailgun } from '../game/character/gun';
 import { emoteById, railgunFinishById } from '../game/cosmetics';
 import { emoteClip } from '../game/emotes';
 import { WornHat } from '../game/hats';
+import { B } from '../game/character/rig';
 
 export type HeroLoadout = {
   seed: string; // player name → armour colour (same pick every other view makes)
@@ -56,7 +57,10 @@ const SPAWN_SECONDS = 1.1; // materialise-in on first show
 const FIRST_EMOTE_S = 5.5;
 const EMOTE_GAP_MIN = 20;
 const EMOTE_GAP_MAX = 30;
-const RIM = 2.2;
+const RIM = 4.2;
+const HERO_HEIGHT = 0.7; // the combatant stands ~70% of the viewport tall
+const BODY_M = 1.9; // helmet-crown height in metres (what HERO_HEIGHT measures)
+const FOOT_REST_Y = 0.095; // planted ankle height (rig rest)
 const HOVER_HZ = 7;
 
 const ORIGIN = new THREE.Vector3();
@@ -94,6 +98,9 @@ export class MenuHero {
   private loadout: HeroLoadout;
   private readonly color = new THREE.Color();
   private readonly rim: THREE.DirectionalLight;
+  private readonly back: THREE.DirectionalLight;
+  private readonly shadow: THREE.Mesh;
+  private readonly shadowMat: THREE.MeshBasicMaterial;
   private readonly ringMat: THREE.MeshBasicMaterial;
   private readonly poolMat: THREE.MeshBasicMaterial;
   private readonly haloMat: THREE.MeshBasicMaterial;
@@ -119,23 +126,23 @@ export class MenuHero {
     this.color.set(skinColorFor(loadout.seed || 'you'));
     const scene = this.scene;
     scene.environment = env; // the arena's PMREM room (owned + freed by the stage)
-    scene.environmentIntensity = 0.22;
+    scene.environmentIntensity = 0.16;
 
     // Lighting: a warm key from camera-left, a cool fill, and a hard rim in
     // YOUR colour from behind — the silhouette reads against any arena.
-    scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x15171c, 0.3));
-    const key = new THREE.DirectionalLight(0xfff0dc, 1.35);
-    key.position.set(-4.6, 3.6, 2.4);
+    scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x15171c, 0.22));
+    const key = new THREE.DirectionalLight(0xfff0dc, 1.25);
+    key.position.set(-4.6, 3.8, 2.6);
     scene.add(key);
-    const fill = new THREE.DirectionalLight(0x8fb0ff, 0.22);
+    const fill = new THREE.DirectionalLight(0x8fb0ff, 0.14);
     fill.position.set(3.5, 1.2, 3);
     scene.add(fill);
     this.rim = new THREE.DirectionalLight(this.color, RIM);
-    this.rim.position.set(3.4, 2.8, -4.2);
+    this.rim.position.set(2.4, 2.2, -5);
     scene.add(this.rim);
-    const rim2 = new THREE.DirectionalLight(0xbfd4ff, 1.1);
-    rim2.position.set(-3.6, 3.2, -3.4);
-    scene.add(rim2);
+    this.back = new THREE.DirectionalLight(this.color, RIM * 0.6);
+    this.back.position.set(-2.6, 2.8, -5);
+    scene.add(this.back);
 
     // Soft halo behind the body (separation from a busy arena) — camera-facing,
     // so it lives in the scene, not the turning holder.
@@ -195,15 +202,15 @@ export class MenuHero {
       [0.5, 0.4],
       [1, 0],
     ]);
-    const shadowMat = new THREE.MeshBasicMaterial({
+    const shadowMat = (this.shadowMat = new THREE.MeshBasicMaterial({
       color: 0x000000,
       map: shadowTex,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.85,
       depthWrite: false,
-    });
-    const shadowGeo = new THREE.CircleGeometry(0.42, 48);
-    const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+    }));
+    const shadowGeo = new THREE.CircleGeometry(0.46, 48);
+    const shadow = (this.shadow = new THREE.Mesh(shadowGeo, shadowMat));
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.004;
     scene.add(shadow);
@@ -262,20 +269,23 @@ export class MenuHero {
   setFrame(frame: HeroFrame | null) {
     this.frame = frame;
     if (!frame || frame.w < 2 || frame.h < 2) return;
-    // On tall screens the slot runs the full height; cap the framed height
-    // (feet stay put, bottom-aligned) so the hero doesn't swamp the menu.
-    const h = Math.min(frame.h, Math.max(360, frame.vh * 0.72));
-    const f = { ...frame, y: frame.y + frame.h - h, h };
-    const cam = this.camera;
+    // Scale: the body stands HERO_HEIGHT of the viewport tall (never wider
+    // than its slot allows); centred in the slot, the pad's lip on its floor.
+    const ppm = Math.min((frame.vh * HERO_HEIGHT) / BODY_M, frame.w / 1.15, frame.h / (BODY_M + 0.45));
     const span = SPAN_TOP - SPAN_BOTTOM;
+    const h = span * ppm;
+    const w = h * 0.8;
+    const floor = frame.y + frame.h; // pad lip (SPAN_BOTTOM) sits here
+    const f = { x: frame.x + frame.w / 2 - w / 2, y: floor - h, w, h };
+    const cam = this.camera;
     const dist = span / 2 / Math.tan(THREE.MathUtils.degToRad(FOV / 2));
     const midY = (SPAN_TOP + SPAN_BOTTOM) / 2;
     cam.fov = FOV;
     cam.aspect = f.w / f.h;
     cam.position.set(0, midY, dist);
     cam.lookAt(0, midY, 0);
-    // The slot is the camera's "full" image; the canvas is a window onto it.
-    cam.setViewOffset(f.w, f.h, -f.x, -f.y, Math.max(1, f.vw), Math.max(1, f.vh));
+    // The frame is the camera's "full" image; the canvas is a window onto it.
+    cam.setViewOffset(f.w, f.h, -f.x, -f.y, Math.max(1, frame.vw), Math.max(1, frame.vh));
     cam.updateMatrixWorld();
   }
 
@@ -306,7 +316,8 @@ export class MenuHero {
     }
     this.character.setGlow(glow, this.color);
     this.holder.rotation.y = FACE_CAMERA + REST_YAW * (1 - 0.8 * this.hover) + Math.sin(this.t * 0.19) * 0.035;
-    this.rim.intensity = RIM * (1 + 0.6 * this.hover);
+    this.rim.intensity = RIM * (1 + 0.5 * this.hover);
+    this.back.intensity = RIM * 0.6 * (1 + 0.5 * this.hover);
     const pulse = 0.5 + 0.5 * Math.sin(this.t * 1.7);
     this.ringMat.color.copy(this.color).multiplyScalar(2.1 + 0.35 * pulse + 1.4 * this.hover);
     this.poolMat.opacity = 0.5 + 0.1 * pulse + 0.25 * this.hover;
@@ -330,6 +341,15 @@ export class MenuHero {
 
     this.anim.update({ dt, yaw: 0, pitch: AIM_PITCH, pos: ORIGIN });
     this.hat.update(dt);
+    this.trackShadow();
+  }
+
+  private trackShadow() {
+    const mp = this.character.rig.mp;
+    const lift = Math.max(0, Math.min(mp[B.footL * 3 + 1], mp[B.footR * 3 + 1]) - FOOT_REST_Y + this.holder.position.y);
+    const k = Math.min(1, lift / 0.4);
+    this.shadow.scale.setScalar(1 - 0.35 * k);
+    this.shadowMat.opacity = 0.85 * (1 - 0.45 * k);
   }
 
   // Second pass: composite over whatever the renderer just drew (the arena),
@@ -379,6 +399,7 @@ export class MenuHero {
 
   private applyColor() {
     this.rim.color.copy(this.color).lerp(WHITE, 0.08);
+    this.back.color.copy(this.color).lerp(WHITE, 0.25);
     this.haloMat.color.copy(this.color);
     this.poolMat.color.copy(this.color);
     this.ringMat.color.copy(this.color).multiplyScalar(2.1);

@@ -1,16 +1,82 @@
 import { useCallback, useEffect, useState } from 'react';
 import { sfxProps } from '../deck-core';
-import { DeckButton, ModalShell, Skeleton } from '../deck';
+import { ModalShell, Skeleton } from '../deck';
 import { claimChallengeReward, fetchChallenges, useNow } from './menu-hooks';
 import { challengeState, fmtCountdown, resetTime, type ChallengeLists, type ChallengeView } from './road-data';
 import './menu.css';
 
-// Daily + weekly challenges: a compact strip on the menu (right column) and
-// the full dialog. Rows share one look: name, reward, a thin progress bar
-// with the count. Completed-and-granted rows read as done; a Claim button
-// only appears when a reward is actually waiting.
+// Daily + weekly challenges: a compact widget on the menu (one line per
+// challenge) and the full dialog built around progress (icon, a full-width
+// bar, reward chips, the count under them). Rewards pay out automatically at
+// match end; a Claim button only appears for a reward still waiting. Guests
+// see the real challenges, locked, with one "Log in to earn".
 
-function CheckGlyph({ size = 12 }: { size?: number }) {
+/* ── Icons (one per metric) ─────────────────────────────────────────────── */
+
+export function ChallengeIcon({ metric, size = 16 }: { metric?: string; size?: number }) {
+  const p = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'square' as const };
+  let body;
+  switch (metric) {
+    case 'wins':
+      body = (
+        <>
+          <path {...p} d='M7 4h10v5a5 5 0 0 1-10 0V4z' />
+          <path {...p} d='M7 6H4v2a3 3 0 0 0 3 3M17 6h3v2a3 3 0 0 1-3 3M12 14v4M8 20h8' />
+        </>
+      );
+      break;
+    case 'headshots':
+      body = (
+        <>
+          <circle {...p} cx='12' cy='10' r='6' />
+          <path {...p} d='M9 20h6M12 16v4' />
+          <circle cx='12' cy='10' r='1.8' fill='currentColor' />
+        </>
+      );
+      break;
+    case 'kills':
+      body = (
+        <>
+          <circle {...p} cx='12' cy='12' r='7' />
+          <path {...p} d='M12 2v5M12 17v5M2 12h5M17 12h5' />
+        </>
+      );
+      break;
+    case 'streak':
+      body = <path {...p} d='M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3-1-3 0-6 1-9z' />;
+      break;
+    case 'accuracy':
+      body = (
+        <>
+          <circle {...p} cx='12' cy='12' r='8' />
+          <circle {...p} cx='12' cy='12' r='4' />
+          <circle cx='12' cy='12' r='1.5' fill='currentColor' />
+        </>
+      );
+      break;
+    case 'games':
+      body = <path {...p} d='M5 21V4M5 4h11l-2 4 2 4H5' />;
+      break;
+    default:
+      body = <path {...p} d='M12 3l7 9-7 9-7-9z' />;
+  }
+  return (
+    <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' className='shrink-0'>
+      {body}
+    </svg>
+  );
+}
+
+function LockGlyph({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' className='shrink-0'>
+      <rect x='5' y='10' width='14' height='11' fill='currentColor' />
+      <path d='M8 10V7a4 4 0 0 1 8 0v3' fill='none' stroke='currentColor' strokeWidth='2.4' />
+    </svg>
+  );
+}
+
+export function CheckGlyph({ size = 13 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox='0 0 16 16' aria-hidden='true' className='shrink-0'>
       <path d='M2.5 8.5l3.5 3.5 7.5-8' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='square' />
@@ -18,23 +84,31 @@ function CheckGlyph({ size = 12 }: { size?: number }) {
   );
 }
 
+function pctOf(c: ChallengeView): number {
+  return c.goal > 0 ? Math.min(100, (Math.min(c.progress, c.goal) / c.goal) * 100) : 0;
+}
+
+/* ── Menu widget ────────────────────────────────────────────────────────── */
+
 function StripRow({
   c,
+  guest,
   claiming,
   onClaim,
 }: {
   c: ChallengeView;
+  guest: boolean;
   claiming: boolean;
-  onClaim?: (id: string) => void;
+  onClaim: (id: string) => void;
 }) {
-  const state = challengeState(c);
-  const pct = c.goal > 0 ? Math.min(100, (Math.min(c.progress, c.goal) / c.goal) * 100) : 0;
+  const state = guest ? 'locked' : challengeState(c);
   return (
     <div className='menu-ch-row' data-state={state} data-challenge={c.id}>
+      <span className='menu-ch-icon'>{guest ? <LockGlyph /> : <ChallengeIcon metric={c.metric} />}</span>
       <span className='menu-ch-name' title={c.title}>
         {c.title}
       </span>
-      {state === 'claimable' && onClaim ? (
+      {state === 'claimable' ? (
         <button
           type='button'
           disabled={claiming}
@@ -45,20 +119,19 @@ function StripRow({
           {claiming ? 'Claiming' : 'Claim'}
         </button>
       ) : state === 'done' ? (
-        <span className='menu-ch-reward inline-flex items-center gap-1'>
+        <span className='menu-ch-done'>
           <CheckGlyph /> Done
         </span>
       ) : (
-        <span className='menu-ch-reward'>+{c.rewardXp} XP</span>
+        <span className='menu-ch-mini'>
+          <span className='menu-ch-mini-bar'>
+            <span style={{ width: `${pctOf(c)}%` }} />
+          </span>
+          <span className='menu-ch-count'>
+            {Math.min(c.progress, c.goal)}/{c.goal}
+          </span>
+        </span>
       )}
-      <span className='menu-ch-bar'>
-        <span className='menu-ch-track'>
-          <span style={{ width: `${pct}%` }} />
-        </span>
-        <span className='menu-ch-count'>
-          {Math.min(c.progress, c.goal)}/{c.goal}
-        </span>
-      </span>
     </div>
   );
 }
@@ -67,11 +140,13 @@ export function ChallengesStrip({
   lists,
   guest,
   onOpen,
+  onLogin,
   onClaimed,
 }: {
   lists: ChallengeLists | null;
   guest: boolean;
   onOpen: () => void;
+  onLogin: () => void;
   onClaimed: () => void;
 }) {
   const now = useNow();
@@ -88,7 +163,7 @@ export function ChallengesStrip({
         <span>Resets in {fmtCountdown(resetTime(period, lists, now) - now)}</span>
       </div>
       {rows.map((c) => (
-        <StripRow key={c.id} c={c} claiming={claiming === c.id} onClaim={guest ? undefined : claim} />
+        <StripRow key={c.id} c={c} guest={guest} claiming={claiming === c.id} onClaim={claim} />
       ))}
     </div>
   );
@@ -96,26 +171,25 @@ export function ChallengesStrip({
     <section aria-label='Challenges' className={`menu-panel ${guest ? 'menu-ch-guest' : ''}`}>
       <div className='menu-panel-head'>
         <h2 className='menu-panel-title'>Challenges</h2>
-        <button type='button' onClick={onOpen} {...sfxProps('uiClick')} className='menu-panel-action'>
-          View all
-        </button>
+        {guest ? (
+          <button type='button' onClick={onLogin} {...sfxProps('uiConfirm')} className='menu-chip-btn'>
+            Log in to earn
+          </button>
+        ) : (
+          <button type='button' onClick={onOpen} {...sfxProps('uiClick')} className='menu-panel-action'>
+            View all
+          </button>
+        )}
       </div>
-      {guest ? (
-        <p className='menu-ch-foot pt-0'>
-          Daily and weekly challenges pay XP and credits once you have an account.
-        </p>
-      ) : lists ? (
-        <div className='pb-1.5'>
+      {lists ? (
+        <div className='pb-2'>
           {group('daily', lists.daily)}
           {group('weekly', lists.weekly)}
         </div>
       ) : (
         <div className='flex flex-col gap-3 px-[0.9rem] pb-3 pt-1' aria-busy='true' aria-label='Loading challenges'>
           {[0, 1, 2].map((i) => (
-            <div key={i}>
-              <Skeleton className='h-3 w-3/4' />
-              <Skeleton className='mt-2 h-[3px] w-full' />
-            </div>
+            <Skeleton key={i} className='h-4 w-full' />
           ))}
         </div>
       )}
@@ -124,6 +198,19 @@ export function ChallengesStrip({
 }
 
 /* ── Dialog ─────────────────────────────────────────────────────────────── */
+
+function RewardChips({ xp, credits }: { xp: number; credits: number }) {
+  return (
+    <span className='flex items-center gap-1.5'>
+      <span className='menu-chip menu-chip-xp'>+{xp} XP</span>
+      {credits > 0 && (
+        <span className='menu-chip menu-chip-cr'>
+          <span aria-hidden='true'>⛁</span> {credits}
+        </span>
+      )}
+    </span>
+  );
+}
 
 function ModalRow({
   c,
@@ -136,59 +223,50 @@ function ModalRow({
   claiming: boolean;
   onClaim: (id: string) => void;
 }) {
-  const state = challengeState(c);
-  const pct = c.goal > 0 ? Math.min(100, (Math.min(c.progress, c.goal) / c.goal) * 100) : 0;
-  const tone =
-    state === 'claimable' ? 'border-emerald-400/45 bg-emerald-400/[0.06]' : state === 'done' ? 'deck-card-muted' : '';
+  const state = guest ? 'locked' : challengeState(c);
   return (
     <div
       data-challenge={c.id}
       data-complete={c.complete ? '1' : '0'}
       data-claimed={c.claimed ? '1' : '0'}
-      className={`deck-card px-4 py-3 ${tone}`}
+      data-state={state}
+      className='menu-chm-row'
     >
-      <div className='flex items-baseline justify-between gap-3'>
-        <span className={`font-sans text-[14px] ${state === 'done' ? 'text-white/50' : 'text-white/90'}`}>{c.title}</span>
-        <span className='shrink-0 font-mono text-[11px] tabular-nums text-amber-300/90'>
-          {c.rewardXp} XP · {c.rewardCredits} cr
-        </span>
-      </div>
-      <div className='mt-2.5 flex items-center gap-3'>
-        <div className='deck-bar h-1.5 flex-1'>
-          <div
-            className={state === 'active' ? 'bg-cyan-400' : 'bg-emerald-400'}
-            style={{ width: `${pct}%`, opacity: state === 'done' ? 0.6 : 1 }}
-          />
+      <span className='menu-chm-icon'>{state === 'locked' ? <LockGlyph size={18} /> : <ChallengeIcon metric={c.metric} size={22} />}</span>
+      <div className='min-w-0 flex-1'>
+        <div className='menu-chm-title'>{c.title}</div>
+        <div className='menu-chm-bar'>
+          <span style={{ width: `${pctOf(c)}%` }} />
         </div>
-        <span className='w-14 shrink-0 text-right font-mono text-[11px] tabular-nums text-white/55'>
-          {Math.min(c.progress, c.goal)}/{c.goal}
-        </span>
-        <span className='flex w-[5.5rem] shrink-0 justify-end'>
-          {state === 'claimable' && !guest ? (
-            <DeckButton
-              data-action='claim'
-              disabled={claiming}
-              onClick={() => onClaim(c.id)}
-              accent='emerald'
-              solid
-              size='xs'
-              center
-              className='w-full'
-            >
-              {claiming ? 'Claiming' : 'Claim'}
-            </DeckButton>
-          ) : state === 'done' ? (
-            <span className='inline-flex items-center gap-1 font-display text-[12px] font-semibold uppercase tracking-[0.1em] text-emerald-300/80'>
-              <CheckGlyph /> Done
-            </span>
-          ) : null}
-        </span>
+      </div>
+      <div className='flex shrink-0 flex-col items-end gap-1.5'>
+        <RewardChips xp={c.rewardXp} credits={c.rewardCredits} />
+        {state === 'claimable' ? (
+          <button
+            type='button'
+            data-action='claim'
+            disabled={claiming}
+            onClick={() => onClaim(c.id)}
+            {...sfxProps('uiConfirm')}
+            className='menu-ch-claim'
+          >
+            {claiming ? 'Claiming' : 'Claim reward'}
+          </button>
+        ) : state === 'done' ? (
+          <span className='menu-ch-done'>
+            <CheckGlyph /> Done
+          </span>
+        ) : (
+          <span className='menu-chm-count'>
+            {Math.min(c.progress, c.goal)} / {c.goal}
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
-export function ChallengesModal({ guest, onClose }: { guest: boolean; onClose: () => void }) {
+export function ChallengesModal({ guest, onClose, onLogin }: { guest: boolean; onClose: () => void; onLogin: () => void }) {
   const [data, setData] = useState<ChallengeLists | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [claiming, setClaiming] = useState<string | null>(null);
@@ -212,64 +290,60 @@ export function ChallengesModal({ guest, onClose }: { guest: boolean; onClose: (
     setClaiming(null);
   };
 
-  const heading = (period: 'daily' | 'weekly') => (
-    <div className='mb-2 flex items-baseline justify-between gap-3'>
-      <h3 className='font-display text-[15px] font-bold uppercase tracking-[0.08em] text-white/90'>
-        {period === 'daily' ? 'Daily' : 'Weekly'}
-      </h3>
-      <span className='font-mono text-[11px] tabular-nums text-white/45'>
-        Resets in {fmtCountdown(resetTime(period, data, now) - now)}
-      </span>
-    </div>
-  );
-
-  const RowSkeleton = (i: number) => (
-    <div key={i} className='deck-card px-4 py-3'>
-      <div className='flex items-center justify-between gap-2'>
-        <Skeleton className='h-3.5 w-44' />
-        <Skeleton className='h-2.5 w-20' />
-      </div>
-      <div className='mt-3 flex items-center gap-3'>
-        <Skeleton className='h-1.5 flex-1' />
-        <Skeleton className='h-3 w-14' />
-      </div>
-    </div>
-  );
+  const section = (period: 'daily' | 'weekly', rows: ChallengeView[]) => {
+    const done = rows.filter((c) => c.complete).length;
+    return (
+      <section>
+        <div className='mb-2.5 flex items-baseline justify-between gap-3'>
+          <h3 className='font-display text-[17px] font-bold uppercase tracking-[0.06em] text-white/90'>
+            {period === 'daily' ? 'Daily' : 'Weekly'}
+            <span className='ml-2.5 font-sans text-[13px] font-medium normal-case tracking-normal text-white/50'>
+              {done} of {rows.length} done
+            </span>
+          </h3>
+          <span className='font-sans text-[13px] tabular-nums text-white/50'>
+            Resets in {fmtCountdown(resetTime(period, data, now) - now)}
+          </span>
+        </div>
+        <div className='flex flex-col gap-2'>
+          {rows.map((c) => (
+            <ModalRow key={c.id} c={c} guest={guest} claiming={claiming === c.id} onClaim={claim} />
+          ))}
+        </div>
+      </section>
+    );
+  };
 
   return (
-    <ModalShell title='Challenges' size='lg' onClose={onClose} scroll>
+    <ModalShell
+      title='Challenges'
+      size='lg'
+      width='w-[640px]'
+      onClose={onClose}
+      closeLabel='✕ ESC'
+      scroll
+      actions={
+        guest ? (
+          <button type='button' onClick={onLogin} {...sfxProps('uiConfirm')} className='menu-chip-btn normal-case tracking-normal'>
+            Log in to earn
+          </button>
+        ) : undefined
+      }
+    >
       {state === 'loading' && (
-        <div className='flex flex-col gap-5' aria-busy='true' aria-label='Loading challenges'>
-          <div className='flex flex-col gap-2'>{[0, 1, 2].map(RowSkeleton)}</div>
-          <div className='flex flex-col gap-2'>{[3, 4].map(RowSkeleton)}</div>
+        <div className='flex flex-col gap-2' aria-busy='true' aria-label='Loading challenges'>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} className='h-[72px] w-full' />
+          ))}
         </div>
       )}
       {state === 'error' && (
         <div className='font-sans text-sm text-white/55'>Couldn&apos;t load challenges. Try again in a moment.</div>
       )}
       {state === 'ready' && data && (
-        <div className='flex flex-col gap-5'>
-          <section>
-            {heading('daily')}
-            <div className='flex flex-col gap-2'>
-              {data.daily.map((c) => (
-                <ModalRow key={c.id} c={c} guest={guest} claiming={claiming === c.id} onClaim={claim} />
-              ))}
-            </div>
-          </section>
-          <section>
-            {heading('weekly')}
-            <div className='flex flex-col gap-2'>
-              {data.weekly.map((c) => (
-                <ModalRow key={c.id} c={c} guest={guest} claiming={claiming === c.id} onClaim={claim} />
-              ))}
-            </div>
-          </section>
-          <p className='font-sans text-[12px] leading-relaxed text-white/40'>
-            {guest
-              ? 'Challenges track for players with an account. Log in and they count from your next online match.'
-              : 'Challenges count online matches and pay out the moment a match completes one. A Claim button only shows for a reward still waiting.'}
-          </p>
+        <div className='flex flex-col gap-6'>
+          {section('daily', data.daily)}
+          {section('weekly', data.weekly)}
         </div>
       )}
     </ModalShell>

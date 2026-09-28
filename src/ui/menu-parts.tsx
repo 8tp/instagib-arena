@@ -180,7 +180,7 @@ export function SocialDock({
           onClick={onToggle}
           aria-expanded={open}
           {...sfxProps('uiBack')}
-          className='font-mono text-[10px] uppercase tracking-[0.16em] text-white/40 transition hover:text-white/80'
+          className='font-display text-[12px] font-semibold uppercase tracking-[0.08em] text-white/50 transition hover:text-white/85'
         >
           Hide
         </button>

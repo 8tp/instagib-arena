@@ -1,5 +1,6 @@
 import type { MatchResult } from '../game/game';
 import type { MatchGain } from './road-data';
+import { Credits } from './Progress';
 import './menu.css';
 
 // "Last match" card under the ways to play: the outcome, four numbers, and
@@ -26,21 +27,17 @@ export function LastMatchBanner({ result, gain }: { result: MatchResult; gain: M
         {gain && (
           <span className='flex items-baseline gap-3'>
             <span className='menu-last-gain'>+{gain.xp.toLocaleString()} XP</span>
-            {gain.credits > 0 && (
-              <span className='font-mono text-[12px] tabular-nums text-amber-200/90'>+{gain.credits.toLocaleString()} cr</span>
-            )}
+            {gain.credits > 0 && <Credits amount={gain.credits} sign className='font-display text-[15px] font-bold' />}
           </span>
         )}
       </div>
       {leveled && (
-        <div className='mt-1 font-display text-[13px] font-semibold uppercase tracking-[0.1em] text-cyan-200'>
-          Level up · now level {gain.levelAfter}
-        </div>
+        <div className='mt-1.5 font-sans text-[14px] font-semibold text-cyan-200'>Level up · now level {gain.levelAfter}</div>
       )}
       <div className='mt-2.5 grid grid-cols-4 gap-2'>
         {stats.map(([label, value]) => (
           <div key={label}>
-            <div className='font-mono text-[10px] text-white/40'>{label}</div>
+            <div className='font-sans text-[12px] text-white/50'>{label}</div>
             <div className='font-display text-xl font-bold tabular-nums leading-tight text-white/90'>{value}</div>
           </div>
         ))}

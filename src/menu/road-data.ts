@@ -6,7 +6,7 @@
 // already unlock at a level (catalog `source: { type: 'level' }`) and a
 // "Rewards coming" placeholder elsewhere — so it degrades to something true.
 
-import { ALL_COSMETICS } from '../game/cosmetics';
+import { ALL_COSMETICS, cosmeticById, type CosmeticSlot } from '../game/cosmetics';
 import { CAREER_ROAD, MAX_LEVEL, type RoadReward, type RoadStep } from '../game/progression';
 import type { InstagibProfile } from '../app-types';
 
@@ -37,6 +37,31 @@ export function careerRoad(): RoadNode[] {
   cachedRoad = out;
   cachedFrom = CAREER_ROAD;
   return out;
+}
+
+const SLOT_NOUN: Record<CosmeticSlot, string> = {
+  killEffect: 'finisher',
+  railColor: 'rail beam',
+  railgunFinish: 'railgun finish',
+  hat: 'hat',
+  unusual: 'unusual effect',
+  card: 'playercard',
+  emote: 'emote',
+  nameColor: 'name colour',
+  spawnEffect: 'spawn effect',
+  title: 'title',
+  announcer: 'announcer pack',
+};
+
+// "Epic railgun finish" / "Credits" / "Hat case key" — the kind line under a
+// reward's name.
+export function rewardKind(r: RoadReward): string {
+  if (r.type === 'credits') return 'Credits';
+  if (r.type === 'case') return 'Hat case key';
+  const c = cosmeticById(r.id);
+  if (!c) return 'Cosmetic';
+  const rarity = c.rarity.charAt(0).toUpperCase() + c.rarity.slice(1);
+  return `${rarity} ${SLOT_NOUN[c.slot] ?? 'cosmetic'}`;
 }
 
 // Short text for a reward (tooltips, the profile block's next-reward line).
@@ -71,6 +96,7 @@ export function xpFraction(p: Pick<InstagibProfile, 'xpIntoLevel' | 'xpForNext'>
 export type ChallengeView = {
   id: string;
   title: string;
+  metric?: string; // wins / kills / headshots / games / streak / accuracy (icon)
   period: 'daily' | 'weekly';
   goal: number;
   progress: number;
