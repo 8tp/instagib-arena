@@ -1010,3 +1010,51 @@
 .ec-gatebanner .is-unk {
   color: rgba(255, 255, 255, 0.55);
 }
+
+/* Crate art (SVG) replaces the old letter cube. */
+.ec-crate {
+  background: none;
+  clip-path: none;
+  box-shadow: none;
+  width: auto;
+  height: auto;
+}
+.ec-crate::before {
+  display: none;
+}
+.ec-crate-svg {
+  display: block;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5));
+}
+.ec-case-premium .ec-crate {
+  background: none;
+}
+.ec-crate-lg {
+  width: auto;
+  height: auto;
+}
+@media (max-width: 900px) {
+  .ec-crate-lg .ec-crate-svg {
+    width: 104px;
+    height: 104px;
+  }
+  .ec-inv .lk-stage {
+    height: min(38vh, 320px);
+    min-height: 240px;
+  }
+}
+
+.ec-reel-ph {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  padding: 8px;
+  background: radial-gradient(115% 85% at 50% 22%, var(--a), var(--b) 78%);
+  box-shadow: inset 0 -3px 0 var(--e), inset 0 0 0 1px color-mix(in srgb, var(--e) 35%, transparent);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: rgba(255, 255, 255, 0.8);
+}

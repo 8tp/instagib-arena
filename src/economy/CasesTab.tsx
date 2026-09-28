@@ -1,13 +1,14 @@
 // Cases: five cases, opened with credits or a free roll. Fixed, published
 // rates — the tier odds table AND the quality odds — are shown to everyone
 // (guests too). Opening runs the reel; results land in the inventory.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { sfxProps, toast } from '../deck-core';
 import { TIERS, TIER_META, type CaseId, type ItemInstanceWire } from '../game/items/types';
 import { ItemTile } from '../ui/item-tile';
 import { TIER_COLOR, TIER_LABEL, isIridescent } from '../ui/rarity';
 import { econ as api, reasonText, type CaseInfo, type OpenCaseResp } from './api';
 import { CaseReveal } from './CaseReveal';
+import { CrateArt } from './CrateArt';
 import { fallbackCases, pct, poolOf, qualityRows } from './rates';
 import { fmtCredits } from './display';
 import { TicketGlyph } from '../menu/RewardTile';
@@ -26,11 +27,13 @@ export function CasesTab({
   econ,
   loggedIn,
   reduced,
+  lowSpec = false,
   onEquipItem,
 }: {
   econ: Econ;
   loggedIn: boolean;
   reduced: boolean;
+  lowSpec?: boolean;
   onEquipItem: (item: ItemInstanceWire) => void;
 }) {
   const [sel, setSel] = useState<CaseId>('hat');
@@ -53,18 +56,35 @@ export function CasesTab({
   const pool = useMemo(() => poolOf(c), [c]);
   const ready = econ.status === 'ready';
 
+  // The balance and the new item are applied when the reel LANDS (or the
+  // reveal is dismissed / unmounted), so the counters never move mid-spin.
+  const pending = useRef<OpenCaseResp | null>(null);
+  const applyPending = () => {
+    const r = pending.current;
+    if (!r) return;
+    pending.current = null;
+    econ.setBalance({ credits: r.credits, freeRolls: r.freeRolls });
+    econ.addItem(r.item);
+  };
+  const applyRef = useRef(applyPending);
+  applyRef.current = applyPending;
+  useEffect(() => () => applyRef.current(), []);
+
+  const opening = useRef(false);
   const open = async (caseId: CaseId, useRoll: boolean) => {
-    if (busy) return;
+    if (opening.current) return;
+    opening.current = true;
+    applyPending();
     setBusy(true);
     const r = await api.openCase(caseId, useRoll);
     setBusy(false);
+    opening.current = false;
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });
-      if (r.reason === 'insufficient' || r.reason === 'no-rolls') econ.reload();
+      if (r.reason === 'insufficient' || r.reason === 'no_rolls') econ.reload();
       return;
     }
-    econ.setBalance({ credits: r.credits, freeRolls: r.freeRolls });
-    econ.addItem(r.item);
+    pending.current = r;
     setReveal({ key: Date.now(), caseId, res: r, usedRoll: useRoll });
   };
 
@@ -94,7 +114,7 @@ export function CasesTab({
                 onClick={() => setSel(k.id)}
                 {...sfxProps('tabSwitch')}
               >
-                <span className='ec-crate' aria-hidden><b>{h.glyph}</b></span>
+                <span className='ec-crate' aria-hidden><CrateArt id={k.id} a={h.a} b={h.b} size={96} /></span>
                 <span className='ec-case-name'>{k.name}</span>
                 <span className='ec-case-cost'>{fmtCredits(k.cost)}</span>
               </button>
@@ -104,7 +124,7 @@ export function CasesTab({
 
         <section className='ec-case-panel' style={{ ['--ca' as string]: hue.a, ['--cb' as string]: hue.b }} aria-label={`${c.name} details`}>
           <div className='ec-case-head'>
-            <div className='ec-crate ec-crate-lg' aria-hidden><b>{hue.glyph}</b></div>
+            <div className='ec-crate ec-crate-lg' aria-hidden><CrateArt id={c.id} a={hue.a} b={hue.b} size={150} /></div>
             <div className='min-w-0 flex-1'>
               <h3 className='ec-h1'>{c.name}</h3>
               <p className='lk-blurb mt-1'>{c.blurb}</p>
@@ -137,6 +157,24 @@ export function CasesTab({
               </p>
             </div>
           </div>
+
+          <details className='ec-contents' open>
+            <summary>What’s inside · {pool.length} items</summary>
+            <div className='ec-contents-grid'>
+              {TIERS.filter((t) => counts[t] > 0)
+                .reverse()
+                .map((t) => (
+                  <div key={t} className='ec-tier-row'>
+                    <div className='ec-tier-label' style={{ color: TIER_COLOR[t].edge }}>{TIER_LABEL[t]}</div>
+                    <div className='flex flex-wrap gap-1.5'>
+                      {pool.filter((d) => d.tier === t).map((d) => (
+                        <ItemTile key={d.id} id={d.id} size={72} label={false} tier={d.tier} rootProps={{ title: d.name }} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </details>
 
           <div className='ec-rates'>
             <div>
@@ -186,23 +224,6 @@ export function CasesTab({
             </div>
           </div>
 
-          <details className='ec-contents'>
-            <summary>What’s inside · {pool.length} items</summary>
-            <div className='ec-contents-grid'>
-              {TIERS.filter((t) => counts[t] > 0)
-                .reverse()
-                .map((t) => (
-                  <div key={t} className='ec-tier-row'>
-                    <div className='ec-tier-label' style={{ color: TIER_COLOR[t].edge }}>{TIER_LABEL[t]}</div>
-                    <div className='flex flex-wrap gap-1.5'>
-                      {pool.filter((d) => d.tier === t).map((d) => (
-                        <ItemTile key={d.id} id={d.id} size={56} label={false} tier={d.tier} rootProps={{ title: d.name }} />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </details>
         </section>
       </div>
 
@@ -212,18 +233,27 @@ export function CasesTab({
           caseDef={revealCase}
           item={reveal.res.item}
           reduced={reduced}
+          lowSpec={lowSpec}
           usedRoll={reveal.usedRoll}
           credits={econ.credits}
           freeRolls={econ.freeRolls}
           canAgain={(!revealCase.premium && econ.freeRolls > 0) || econ.credits >= revealCase.cost}
           onAgain={() => {
+            applyPending();
             const id = reveal.caseId;
             const roll = econ.freeRolls > 0 && !revealCase.premium;
             setReveal(null);
             void open(id, roll);
           }}
-          onEquip={onEquipItem}
-          onClose={() => setReveal(null)}
+          onLanded={applyPending}
+          onEquip={(it) => {
+            applyPending();
+            onEquipItem(it);
+          }}
+          onClose={() => {
+            applyPending();
+            setReveal(null);
+          }}
         />
       )}
     </div>

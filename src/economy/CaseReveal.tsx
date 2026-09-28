@@ -24,7 +24,7 @@ const STRIDE = CARD + GAP;
 // look like what the case actually holds), the winner fixed at LAND.
 function buildReel(c: CaseInfo, won: ItemInstanceWire): { def: ItemDef; tier: Tier }[] {
   const pool = casePoolFor(c.slots);
-  const byTier = (t: Tier) => (t === 'unobtainable' ? vaultUnobtainables() : pool.filter((d) => d.tier === t));
+  const byTier = (t: Tier) => (t === 'unobtainable' ? vaultUnobtainables().filter((d) => c.slots.includes(d.slot)) : pool.filter((d) => d.tier === t));
   const draw = (): ItemDef => {
     let r = Math.random();
     for (const t of TIERS) {
@@ -42,7 +42,7 @@ function buildReel(c: CaseInfo, won: ItemInstanceWire): { def: ItemDef; tier: Ti
     if (i === LAND) out.push({ def: wonDef, tier: instTier(won) });
     else {
       // A rare-tier tease right next to the winner sells the near miss.
-      const d = i === LAND + 1 || i === LAND - 1 ? (pool.filter((x) => TIER_META[x.tier].rank >= 3)[0] ?? draw()) : draw();
+      const d = i === LAND + 1 || i === LAND - 1 ? (pool.filter((x) => TIER_META[x.tier].rank >= 3 && x.tier !== 'unobtainable')[0] ?? draw()) : draw();
       out.push({ def: d, tier: d.tier });
     }
   }
@@ -53,23 +53,27 @@ export function CaseReveal({
   caseDef,
   item,
   reduced,
+  lowSpec = false,
   usedRoll,
   credits,
   freeRolls,
   canAgain,
   onAgain,
   onEquip,
+  onLanded,
   onClose,
 }: {
   caseDef: CaseInfo;
   item: ItemInstanceWire;
   reduced: boolean;
+  lowSpec?: boolean;
   usedRoll: boolean;
   credits: number;
   freeRolls: number;
   canAgain: boolean;
   onAgain: () => void;
   onEquip: (item: ItemInstanceWire) => void;
+  onLanded: () => void;
   onClose: () => void;
 }) {
   const reel = useMemo(() => buildReel(caseDef, item), [caseDef, item]);
@@ -87,14 +91,17 @@ export function CaseReveal({
     const jitter = reduced ? 0 : (Math.random() - 0.5) * (CARD * 0.55);
     const target = LAND * STRIDE + CARD / 2 - vp / 2 + jitter;
     const a = requestAnimationFrame(() => requestAnimationFrame(() => setOffset(-target)));
+    let t2 = 0;
     const t = window.setTimeout(() => {
       setRevealed(true);
+      onLanded();
       uiSfx('caseReveal');
-      window.setTimeout(() => playUi('unlock', TIER_META[tier].rank), 140);
+      t2 = window.setTimeout(() => playUi('unlock', TIER_META[tier].rank), 140);
     }, SPIN_MS + 120);
     return () => {
       cancelAnimationFrame(a);
       window.clearTimeout(t);
+      window.clearTimeout(t2);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -112,7 +119,7 @@ export function CaseReveal({
   );
 
   return (
-    <ModalShell label={`${caseDef.name} result`} tone='amber' fixed z='z-[70]' size='xl' backdrop='heavy' onClose={revealed ? onClose : undefined}>
+    <ModalShell label={`${caseDef.name} result`} tone='amber' fixed z='z-[70]' size='xl' width='w-[min(1240px,96vw)]' backdrop='heavy' onClose={revealed ? onClose : undefined}>
       {({ close }) => (
         <div className={`ec-reveal-wrap ${revealed && big && !reduced ? 'ec-big' : ''}`} style={{ ['--rc' as string]: c.edge }}>
           {revealed && big && !reduced && <div className='ec-flash' aria-hidden />}
@@ -129,16 +136,18 @@ export function CaseReveal({
               className='absolute top-1/2 flex -translate-y-1/2'
               style={{ gap: GAP, transform: `translateX(${offset}px)`, transition: offset !== 0 ? `transform ${SPIN_MS}ms cubic-bezier(0.12,0.85,0.18,1)` : 'none' }}
             >
-              {reel.map((r, i) => (
-                <ItemTile
-                  key={i}
-                  id={r.def.id}
-                  size={CARD}
-                  tier={r.tier}
-                  look={i === LAND ? thumbLook(item) : undefined}
-                  selected={revealed && i === LAND}
-                />
-              ))}
+              {reel.map((r, i) =>
+                // Thumbnails only where the eye can rest: the first screen, the
+                // approach to the landing cell and the landing cell itself (on
+                // lowSpec just the last few). The rest are tier-colour cells.
+                (lowSpec ? Math.abs(i - LAND) <= 4 : i < 10 || Math.abs(i - LAND) <= 7) ? (
+                  <ItemTile key={i} id={r.def.id} size={CARD} tier={r.tier} look={i === LAND ? thumbLook(item) : undefined} selected={revealed && i === LAND} />
+                ) : (
+                  <div key={i} className='ec-reel-ph' style={{ width: CARD, height: CARD, ['--a' as string]: TIER_COLOR[r.tier].from, ['--b' as string]: TIER_COLOR[r.tier].to, ['--e' as string]: TIER_COLOR[r.tier].edge }}>
+                    <span>{r.def.name}</span>
+                  </div>
+                ),
+              )}
             </div>
           </div>
           {revealed && (

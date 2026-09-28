@@ -230,6 +230,10 @@ export function reasonText(r: { status: number; reason?: string; error?: string;
     case 'no_player':
     case 'not_found':
       return 'Player not found.';
+    case 'same_network':
+      return 'You can’t trade with an account on your own network.';
+    case 'seller_daily_cap':
+      return 'This seller has hit today’s sales limit — try again later.';
     case 'self_trade':
       return 'You can’t trade with yourself.';
     case 'too_many_pending':
