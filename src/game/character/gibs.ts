@@ -100,11 +100,11 @@ const MOTION: Record<KillEffectStyle, Motion> = {
   nova: M({ speed: 2.2, speedR: 2.0, up: 0.9, upR: 1.1, vert: 0.25, spin: 2, spinR: 4, gravity: 8, drag: 1.5, shrinkAt: 0.42, shrinkAtR: 0.3 }),
   // Spikes: fired straight out, no tumble, stopping hard.
   starburst: M({ speed: 6.5, speedR: 3, up: 0.4, upR: 1.0, vert: 0.45, spin: 0, spinR: 0, gravity: 4, drag: 3.6, shrinkAt: 0.28, shrinkAtR: 0.22, shrinkDur: 0.3 }),
-  gibstorm: M({ speed: 4.5, speedR: 5, up: 3, upR: 3.5, spin: 10, spinR: 14, gravity: 26, drag: 0.3, shrinkAt: 0.62, shrinkAtR: 0.35, bounce: 0.38 }),
+  gibstorm: M({ speed: 3.8, speedR: 4.2, up: 2.6, upR: 3, spin: 10, spinR: 14, gravity: 26, drag: 0.3, shrinkAt: 0.62, shrinkAtR: 0.35, bounce: 0.38 }),
   // The body is replaced by voxels almost at once.
   voxel: M({ speed: 1.2, speedR: 1.2, up: 0.8, upR: 0.8, shrinkAt: 0.035, shrinkAtR: 0.02, shrinkDur: 0.06, duration: 0.5 }),
   // Burns standing, then crumbles where it stood.
-  ember: M({ hold: 0.3, speed: 0.3, speedR: 0.9, up: 0, upR: 0.7, vert: 0.2, spin: 1, spinR: 3, gravity: 12, drag: 0.8, shrinkAt: 0.62, shrinkAtR: 0.3, shrinkDur: 0.45, bounce: 0 }),
+  ember: M({ hold: 0.24, speed: 0.3, speedR: 0.9, up: 0, upR: 0.7, vert: 0.2, spin: 1, spinR: 3, gravity: 12, drag: 0.8, shrinkAt: 0.62, shrinkAtR: 0.3, shrinkDur: 0.45, bounce: 0 }),
   // Custom motion (see update): spiral in, pop out.
   singularity: M({ speed: 6, speedR: 3, up: 1.5, upR: 1.5, spin: 8, spinR: 8, gravity: 12, drag: 0.6, shrinkAt: 0.45, shrinkAtR: 0.2, shrinkDur: 0.3 }),
   // Freezes to glass for a beat, then shatters (chunks break up fast).
@@ -215,6 +215,8 @@ function sceneOf(o: THREE.Object3D): THREE.Scene | null {
 }
 
 const SAMPLE_N = 256;
+// Derez: a few thick slabs (the shader's band arrays hold up to DEREZ_BANDS).
+const DEREZ_SLABS = 7;
 
 export class GibBurst {
   active = false;
@@ -242,7 +244,8 @@ export class GibBurst {
   private readonly startM: THREE.Matrix4[] = [];
   private flash: THREE.Sprite | null = null;
   private flashDelay = 0;
-  private flashSize = 2.3;
+  private flashSize = 1.2;
+  private flashBase = 0.5; // current flash size before proximity scaling
   private readonly flashAt = new THREE.Vector3();
   private readonly glowCol = new THREE.Color(); // victim energy (flash tint)
   private readonly energy = new THREE.Color(); // the victim's colour, linear
@@ -404,37 +407,38 @@ export class GibBurst {
     // Tell a pending kill burst where this body really is, and its colour.
     _w.set(feetX, feetY, feetZ).applyMatrix4(this.parentM);
     noteDeath(_w.x, _w.y + 0.9, _w.z, this.energy.r, this.energy.g, this.energy.b);
-    this.glowCol.copy(this.energy).lerp(WHITE, 0.3);
+    this.glowCol.copy(this.energy).lerp(WHITE, 0.15);
     ch.resetDeathLook();
     const u = ch.uniforms;
     u.uFxCalm.value = this.calm ? 1 : 0;
 
     // Style set-up.
     this.flashDelay = 0;
-    this.flashSize = 1.6;
+    this.flashSize = 1.2;
     switch (this.style) {
       case 'singularity':
         this.flashDelay = FINISHER_TIMING.singularityPop;
-        this.glowCol.setRGB(0.9, 0.85, 1.0);
+        this.glowCol.setRGB(0.75, 0.62, 1.0);
+        this.flashSize = 0.9;
         break;
       case 'overload':
         this.flashDelay = FINISHER_TIMING.overloadBlast;
-        this.glowCol.setRGB(0.65, 0.82, 1.0);
-        this.flashSize = 1.8;
+        this.glowCol.setRGB(0.6, 0.8, 1.0);
+        this.flashSize = 1.3;
         break;
       case 'vaporize':
-        this.glowCol.setRGB(1, 0.95, 0.85);
-        this.flashSize = 1.9;
+        this.glowCol.setRGB(1, 0.85, 0.6);
+        this.flashSize = 1.3;
         break;
       case 'derez':
-        this.flashSize = 1.4;
+        this.flashSize = 1.0;
         break;
       case 'shatter':
         this.glowCol.copy(this.energy).lerp(WHITE, 0.75);
         break;
       case 'confetti':
         this.glowCol.setRGB(1, 0.95, 0.9);
-        this.flashSize = 1.8;
+        this.flashSize = 1.3;
         break;
       default:
         break;
@@ -444,8 +448,15 @@ export class GibBurst {
       const bt = u.uBandT.value;
       const bo = u.uBandO.value;
       for (let b = 0; b < DEREZ_BANDS; b++) {
-        bt[b] = this.bandT[b] = 0.3 + rnd() * (this.calm ? 0.4 : 0.55);
-        bo[b] = (b % 2 === 0 ? 1 : -1) * (0.18 + rnd() * 0.5);
+        if (b >= DEREZ_SLABS) {
+          bt[b] = this.bandT[b] = 9;
+          bo[b] = 0;
+          continue;
+        }
+        // Top slab first, then down the body.
+        const order = DEREZ_SLABS - 1 - b;
+        bt[b] = this.bandT[b] = (this.calm ? 0.36 : 0.3) + order * (this.calm ? 0.09 : 0.07) + rnd() * 0.04;
+        bo[b] = (b % 2 === 0 ? 1 : -1) * (0.3 + rnd() * 0.2);
       }
       u.uBandDir.value.set(sideX, 0, sideZ).normalize();
     }
@@ -483,11 +494,23 @@ export class GibBurst {
       this.flash = new THREE.Sprite(mat);
       this.flash.name = 'gib-flash';
       this.flash.renderOrder = 5;
+      // Close to the camera the flash shrinks and dims (it must never swamp
+      // the view on a point-blank frag).
+      const f0 = this.flash;
+      f0.onBeforeRender = (_r, _s, cam) => {
+        f0.getWorldPosition(_pp);
+        const d = _pp.distanceTo(_v2.setFromMatrixPosition(cam.matrixWorld));
+        const k = Math.max(0.35, Math.min(1, (d - 0.6) / 3.4));
+        f0.scale.set(this.flashBase * k, this.flashBase * k, 1);
+        f0.updateMatrixWorld();
+        mat.color.copy(this.glowCol).multiplyScalar(1.6 * Math.sqrt(k));
+      };
     }
     const f = this.flash;
     f.position.copy(this.style === 'singularity' ? this.pullP : this.flashAt);
-    f.material.color.copy(this.glowCol).multiplyScalar(1.8);
+    f.material.color.copy(this.glowCol).multiplyScalar(1.6);
     f.visible = this.flashDelay <= 0;
+    this.flashBase = 0.5;
     f.scale.set(0.5, 0.5, 0.5);
     f.material.opacity = 1;
     this.ch.root.add(f);
@@ -498,22 +521,26 @@ export class GibBurst {
     this.t += dt;
     const t = this.t;
     const mo = this.mo;
-    if (t >= mo.hold) {
+    if (this.style === 'vaporize') {
+      // The ash statue sags as it blows away.
+      this.slump(smooth(0, 0.45, t), false);
+    } else if (t >= mo.hold) {
       if (this.style === 'singularity') this.singularity(dt);
       else this.integrate(dt, mo);
-    } else if (this.style === 'overload' && !this.calm && dt > 0) {
-      this.twitch();
+    } else if (this.style === 'ember' || this.style === 'overload') {
+      // A standing corpse must read as dead at once: it sags at the knees.
+      this.slump(smooth(0, mo.hold, t) * (this.style === 'ember' ? 0.8 : 0.45), this.style === 'overload' && !this.calm && dt > 0);
     }
     this.look(dt);
     if (this.fx) this.particles(dt);
     if (this.flash && this.flash.parent) {
-      const k = (t - this.flashDelay) / 0.2;
+      const k = (t - this.flashDelay) / 0.14;
       if (k < 0) this.flash.visible = false;
       else if (k >= 1) this.flash.visible = false;
       else {
         this.flash.visible = true;
-        const sz = 0.5 + this.flashSize * Math.sqrt(k);
-        this.flash.scale.set(sz, sz, sz);
+        this.flashBase = 0.4 + this.flashSize * Math.sqrt(k);
+        this.flash.scale.set(this.flashBase, this.flashBase, 1);
         this.flash.material.opacity = (1 - k) * (1 - k);
       }
     }
@@ -580,9 +607,9 @@ export class GibBurst {
     if (t < POP) {
       const body = getBodyGeometry();
       const u = t / POP;
-      const e = u * u;
+      const e = Math.pow(u, 1.25);
       const px = this.pullP.x, py = this.pullP.y, pz = this.pullP.z;
-      const ang = 4.2 * e;
+      const ang = 5.5 * e;
       const ca = Math.cos(ang), sa = Math.sin(ang);
       for (let i = 0; i < BONE_COUNT; i++) {
         if (this.lead[i] !== i || (!body.hasGeo[i] && i !== B.chest)) continue;
@@ -599,7 +626,7 @@ export class GibBurst {
           _q.premultiply(_q2);
           this.quat[i * 4] = _q.x; this.quat[i * 4 + 1] = _q.y; this.quat[i * 4 + 2] = _q.z; this.quat[i * 4 + 3] = _q.w;
         }
-        this.writeBone(i, 1 - 0.7 * e);
+        this.writeBone(i, 1 - 0.75 * e);
       }
       this.writeFollowers();
       return;
@@ -629,17 +656,22 @@ export class GibBurst {
     this.integrate(dt, this.mo);
   }
 
-  // Overload: the posed body twitches as the current runs through it.
-  private twitch() {
+  // A held body sags: every bone drops in proportion to its height (knees
+  // buckle, head sinks ~16 cm at k = 1). Overload also twitches as the
+  // current runs through it.
+  private slump(k: number, twitch: boolean) {
     const rig = this.ch.rig;
     for (let i = 0; i < BONE_COUNT; i++) {
       const b = rig.bones[i];
       b.matrix.copy(this.startM[i]);
       const e = b.matrix.elements;
-      const k = i === B.hips ? 0.008 : 0.018;
-      e[12] += (rnd() - 0.5) * k;
-      e[13] += (rnd() - 0.5) * k;
-      e[14] += (rnd() - 0.5) * k;
+      e[13] -= k * 0.16 * (REST_ABS[i][1] / 1.8);
+      if (twitch) {
+        const j = i === B.hips ? 0.008 : 0.018;
+        e[12] += (rnd() - 0.5) * j;
+        e[13] += (rnd() - 0.5) * j;
+        e[14] += (rnd() - 0.5) * j;
+      }
       b.matrixWorldNeedsUpdate = true;
     }
   }
@@ -688,6 +720,7 @@ export class GibBurst {
       case 'ember': {
         const hold = this.mo.hold;
         const k = Math.min(1, t / hold);
+        ch.setBurn(Math.min(0.8, t / 0.15));
         u.uCharLine.value = -0.12 + k * 2.05;
         const cool = t < hold ? 1 : Math.exp(-(t - hold) * 2.2);
         u.uEdgeCol.value.setRGB(2.2 * cool * gain, 0.72 * cool * gain, 0.12 * cool * gain);
@@ -701,15 +734,14 @@ export class GibBurst {
         const POP = FINISHER_TIMING.singularityPop;
         if (t < POP) {
           const k = t / POP;
-          ch.setBurn(0.3 * k);
-          _c.setRGB(0.45 + 0.55 * k, 0.35 + 0.6 * k, 1.0).multiplyScalar(1 + 2.5 * k);
-          ch.setGlow(gain * (0.5 + 0.8 * k), _c);
+          ch.setBurn(Math.min(1, k * 2));
+          _c.setRGB(0.55, 0.4, 1.0).multiplyScalar(1 + 1.2 * k);
+          ch.setGlow(gain * (0.6 + 0.6 * k), _c);
         } else {
           const k = t - POP;
           ch.setBurn(1);
-          _c.setRGB(3, 3, 3.2);
-          ch.setGlow(gain * Math.exp(-k * 5), _c);
-          if (k < 0.05 && !calm) u.uFlash.value.setRGB(1.5, 1.5, 1.7);
+          _c.setRGB(2.2, 1.9, 3.0);
+          ch.setGlow(gain * Math.exp(-k * 6), _c);
         }
         break;
       }
@@ -721,21 +753,21 @@ export class GibBurst {
         break;
       }
       case 'derez': {
-        u.uBands.value.set(1.9 / DEREZ_BANDS, smooth(0.04, calm ? 0.8 : 0.5, t));
-        u.uEdgeCol.value.copy(E).lerp(WHITE, 0.15).multiplyScalar(1.3 * (0.6 + 0.4 * gain));
-        ch.setGlow(gain * Math.exp(-t * 5), E);
+        u.uBands.value.set(1.9 / DEREZ_SLABS, smooth(0.02, calm ? 0.5 : 0.3, t));
+        u.uEdgeCol.value.copy(E).lerp(WHITE, 0.2).multiplyScalar(1.15 * (0.6 + 0.4 * gain));
+        ch.setGlow(gain * 0.4 * Math.exp(-t * 8), E);
         break;
       }
       case 'vaporize': {
         // White-hot flash → ash statue with glowing cracks → blows away.
-        const flashK = 1 - smooth(0.0, 0.09, t);
-        if (!calm) u.uFlash.value.setRGB(2.6 * flashK, 2.4 * flashK, 2.1 * flashK);
-        u.uAsh.value = smooth(0.04, 0.2, t);
-        const cool = Math.exp(-Math.max(0, t - 0.1) * 4.5);
-        u.uEdgeCol.value.setRGB(2.6 * cool * gain, 0.85 * cool * gain, 0.16 * cool * gain);
-        _c.setRGB(3, 2.8, 2.5);
+        const flashK = 1 - smooth(0.0, 0.07, t);
+        if (!calm) u.uFlash.value.setRGB(1.5 * flashK, 1.35 * flashK, 1.1 * flashK);
+        u.uAsh.value = smooth(0.02, 0.12, t);
+        const cool = Math.exp(-Math.max(0, t - 0.06) * 6);
+        u.uEdgeCol.value.setRGB(1.9 * cool * gain, 0.55 * cool * gain, 0.1 * cool * gain);
+        _c.setRGB(2.4, 2.1, 1.7);
         ch.setGlow(gain * flashK, _c);
-        u.uDissolve.value = t < 0.2 ? 0 : Math.min(1.03, (t - 0.2) / 0.75);
+        u.uDissolve.value = t < 0.14 ? 0 : Math.min(1.03, (t - 0.14) / 0.62);
         u.uDissolveH.value = 0.6;
         break;
       }
@@ -743,6 +775,7 @@ export class GibBurst {
         const blast = this.mo.hold;
         if (t < blast) {
           const fl = calm ? 0.55 : 0.65 + 0.35 * rnd();
+          ch.setBurn(Math.min(0.6, t / 0.15));
           u.uArc.value = fl;
           u.uArcCol.value.setRGB(1.6, 2.2, 3.2);
           _c.setRGB(0.5, 0.72, 1.0);
@@ -750,10 +783,10 @@ export class GibBurst {
         } else {
           const k = t - blast;
           u.uArc.value = Math.max(0, 1 - k / 0.25);
-          ch.setBurn(Math.min(1, k / 0.07));
-          _c.setRGB(1.2, 1.6, 2.5);
-          ch.setGlow(gain * Math.exp(-k * 4), _c);
-          if (k < 0.05 && !calm) u.uFlash.value.setRGB(0.9, 1.2, 1.8);
+          ch.setBurn(0.8);
+          _c.setRGB(0.9, 1.3, 2.3);
+          ch.setGlow(gain * (0.25 + 0.75 * Math.exp(-k * 5)), _c);
+          if (k < 0.04 && !calm) u.uFlash.value.setRGB(0.6, 0.8, 1.2);
         }
         break;
       }
@@ -765,7 +798,7 @@ export class GibBurst {
       }
       case 'nova': {
         ch.setBurn(Math.min(0.6, t / 0.1));
-        _c.copy(E).lerp(WHITE, Math.max(0, 1 - t / 0.06)).multiplyScalar(2.4);
+        _c.copy(E).lerp(WHITE, Math.max(0, 1 - t / 0.04)).multiplyScalar(2.2);
         ch.setGlow(gain * Math.exp(-t * 1.1), _c);
         break;
       }
@@ -780,10 +813,10 @@ export class GibBurst {
         // pulse / starburst: plates char, seams flare white-hot then settle
         // into the victim's energy colour.
         ch.setBurn(Math.min(1, t / 0.07));
-        const w = Math.max(0, 1 - t / 0.06);
-        _c.copy(E).lerp(WHITE, w).multiplyScalar(this.style === 'starburst' ? 2.8 : 2.4);
+        const w = Math.max(0, 1 - t / 0.04);
+        _c.copy(E).lerp(WHITE, w).multiplyScalar(this.style === 'starburst' ? 2.5 : 2.2);
         ch.setGlow(gain * Math.exp(-t * (this.style === 'starburst' ? 2.0 : 1.5)), _c);
-        if (t < 0.04 && !calm) u.uFlash.value.copy(E).multiplyScalar(0.5);
+        if (t < 0.03 && !calm) u.uFlash.value.copy(E).multiplyScalar(0.35);
         break;
       }
     }
@@ -1102,21 +1135,21 @@ export class GibBurst {
       }
       case 'derez': {
         // Digital debris where each band blinks out.
-        const bh = 1.9 / DEREZ_BANDS;
+        const bh = 1.9 / DEREZ_SLABS;
         const bo = this.ch.uniforms.uBandO.value;
         const prog = this.ch.uniforms.uBands.value.y;
         const dir = this.ch.uniforms.uBandDir.value;
-        for (let b = 0; b < DEREZ_BANDS; b++) {
+        for (let b = 0; b < DEREZ_SLABS; b++) {
           if (this.bandDone[b] || t < this.bandT[b]) continue;
           this.bandDone[b] = 1;
           if (rnd() > this.q + 0.15) continue;
-          const n = this.calm ? 1 : 3;
+          const n = this.calm ? 2 : 7;
           for (let k = 0; k < n; k++) {
             const p = this.alloc('box');
             if (!p) break;
             const off = bo[b] * prog;
-            _w.set(this.flashAt.x + dir.x * off, (b + 0.5) * bh, this.flashAt.z + dir.z * off).applyMatrix4(this.parentM);
-            p.x = _w.x + (rnd() - 0.5) * 0.35; p.y = _w.y; p.z = _w.z + (rnd() - 0.5) * 0.35;
+            _w.set(this.flashAt.x + dir.x * off, (b + 0.2 + rnd() * 0.6) * bh, this.flashAt.z + dir.z * off).applyMatrix4(this.parentM);
+            p.x = _w.x + (rnd() - 0.5) * 0.4; p.y = _w.y; p.z = _w.z + (rnd() - 0.5) * 0.4;
             p.vx = (rnd() - 0.5) * 0.4; p.vy = 0.4 + rnd() * 0.6; p.vz = (rnd() - 0.5) * 0.4;
             p.drag = 1.5;
             p.setScale(0.028 + rnd() * 0.02);
@@ -1141,9 +1174,9 @@ export class GibBurst {
           const p = this.alloc(ember ? 'mote' : 'flake');
           if (!p) continue;
           p.x = _w.x; p.y = _w.y; p.z = _w.z;
-          const gust = 0.6 + rnd() * 0.9;
+          const gust = 1.0 + rnd() * 1.1;
           p.vx = w.x * gust + (rnd() - 0.5) * 0.4;
-          p.vy = 0.3 + rnd() * 0.7;
+          p.vy = 0.15 + rnd() * 0.5;
           p.vz = w.z * gust + (rnd() - 0.5) * 0.4;
           p.drag = 1.1;
           p.gravity = -0.35;
@@ -1159,10 +1192,10 @@ export class GibBurst {
             p.randomOrientation();
             p.randomSpin(3 + rnd() * 7);
             p.scaleFade = true;
-            const hot = rnd() < 0.35;
-            if (hot) p.setRGB(2.2, 0.7, 0.14);
-            else p.setRGB(0.09, 0.085, 0.08);
-            p.setRamp(0.045, 0.042, 0.04);
+            const hot = rnd() < 0.15;
+            if (hot) p.setRGB(1.6, 0.5, 0.1);
+            else p.setRGB(0.24, 0.23, 0.22);
+            p.setRamp(0.1, 0.095, 0.09);
           }
         }
         break;

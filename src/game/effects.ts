@@ -11,6 +11,7 @@ import {
   setFxQuality,
   type FxContext,
   type FxPool,
+  type SpriteSlot,
 } from './fx-pool';
 import { liveViewmodelMuzzle } from './fx/rail-state';
 import { FINISHER_TIMING, findDeath } from './fx/fx-settings';
@@ -144,16 +145,16 @@ function sprite(
   ctx: FxContext, map: THREE.Texture, x: number, y: number, z: number,
   size: number, shrink: number, life: number, fadePow: number,
   color: number, gain: number, flicker: boolean,
-) {
+): SpriteSlot {
   tmpColor.setHex(color);
-  spriteC(ctx, map, x, y, z, size, shrink, life, fadePow, tmpColor, gain, flicker);
+  return spriteC(ctx, map, x, y, z, size, shrink, life, fadePow, tmpColor, gain, flicker);
 }
 
 function spriteC(
   ctx: FxContext, map: THREE.Texture, x: number, y: number, z: number,
   size: number, shrink: number, life: number, fadePow: number,
   c: THREE.Color, gain: number, flicker = false, delay = 0,
-) {
+): SpriteSlot {
   const s = ctx.sprites.alloc(map);
   s.sprite.position.set(x, y, z);
   s.base = size;
@@ -166,6 +167,7 @@ function spriteC(
   s.g = c.g * gain;
   s.b = c.b * gain;
   ctx.sprites.finish(s);
+  return s;
 }
 
 // Flat expanding ring (a torus in the horizontal plane). Seen from eye level
@@ -259,8 +261,8 @@ function killPulse(ctx: FxContext, at: THREE.Vector3) {
   const cy = at.y + 0.1;
   // Sized like the paid styles (fairness: the free default must not hide the
   // kill spot longer or wider than a cosmetic one).
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.1, -0.25, 0.13, 1.6, kHot, 1.9);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.25, 0.09, 1.5, kHot, 2.3, true);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.25, 0.12, 1.6, kTint, 1.8);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.7, 0.25, 0.08, 1.5, kHot, 2.2, true);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -3.4, 0.28, 1.4, kAcc, 2.0);
   ringC(pool, at.x, at.y - 0.85, at.z, kAcc, RING_GAIN, 0.3, true, 0.36, 6.5, 1.3);
   streaks(pool, at.x, cy, at.z, 24, 5.5, 6.5, 0.2, 14, 0, 0.3, 0.42, kHot, kAcc, 2.0);
@@ -272,8 +274,10 @@ function killPulse(ctx: FxContext, at: THREE.Vector3) {
 function killNova(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.3;
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.3, -0.55, 0.2, 1.5, kTint, 1.7);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.7, 0.3, 0.08, 1.5, kHot, 2.2, true);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.55, 0.18, 1.5, kTint, 1.6);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.6, 0.3, 0.07, 1.5, kHot, 2.1, true);
+  // The nova's planetary ring: a flat band racing out at chest height.
+  ringC(ctx.pool, at.x, cy, at.z, kAcc, 1.9, 0.3, true, 0.38, 5.2, 1.3);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -5.5, 0.32, 1.3, kAcc, 1.9);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -4.5, 0.36, 1.5, kHot, 1.3, false, 0.06);
   glints(pool, at.x, cy, at.z, 6, 1.1, 0.18, kHot, 2.4, 0.04);
@@ -375,8 +379,8 @@ function killEmber(ctx: FxContext, at: THREE.Vector3) {
 function killGibstorm(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.35;
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.3, -0.3, 0.14, 1.6, kHot, 2.0);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.9, 0.25, 0.09, 1.5, kHot, 2.4, true);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.05, -0.3, 0.13, 1.6, kTint, 1.9);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.25, 0.08, 1.5, kHot, 2.3, true);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -4.0, 0.3, 1.3, kAcc, 2.0);
   const n = Math.max(8, Math.round(26 * getFxQuality()));
   for (let i = 0; i < n; i++) {
@@ -408,10 +412,10 @@ function killSingularity(ctx: FxContext, at: THREE.Vector3) {
   spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.2, -2.5, POP, 0.3, halo, 1.4);
   // The pop.
   const white = kTmp2.setRGB(1, 0.97, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.0, -0.35, 0.12, 1.7, white, 2.0, false, POP);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 1.0, 0.25, 0.09, 1.5, white, 2.5, true, POP);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.75, -0.35, 0.08, 1.7, white, 1.9, false, POP);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.85, 0.25, 0.07, 1.5, white, 2.4, true, POP);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -5.5, 0.3, 1.3, white, 1.8, false, POP);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -4.2, 0.34, 1.5, halo, 1.8, false, POP + 0.04);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.25, -4.6, 0.36, 1.2, halo, 2.4, false, POP + 0.03);
   motes(pool, at.x, cy, at.z, 10, 2.4, 1.6, 1.5, 2.5, 6, 0, 0.1, 0.4, white, 2.0, POP);
 }
 
@@ -421,11 +425,11 @@ function killPrism(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.35;
   const white = kTmp.setRGB(1, 1, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.1, -0.3, 0.12, 1.7, white, 1.9);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.9, 0.25, 0.08, 1.5, white, 2.4, true);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.34, -3.6, 0.3, 1.4, kTmp2.setRGB(1, 0.12, 0.2), 2.2);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.38, -3.35, 0.3, 1.4, kTmp2.setRGB(0.15, 1, 0.25), 2.0, false, 0.02);
-  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.42, -3.1, 0.3, 1.4, kTmp2.setRGB(0.2, 0.35, 1), 2.4, false, 0.04);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.9, -0.3, 0.11, 1.7, white, 1.8);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.25, 0.08, 1.5, white, 2.3, true);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -4.4, 0.3, 1.4, kTmp2.setRGB(1, 0.1, 0.18), 2.3);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.5, 0.3, 1.4, kTmp2.setRGB(0.12, 1, 0.22), 2.0, false, 0.035);
+  spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -2.7, 0.3, 1.4, kTmp2.setRGB(0.18, 0.32, 1), 2.5, false, 0.07);
   const n = Math.max(6, Math.round(14 * getFxQuality()));
   for (let i = 0; i < n; i++) {
     const p = pool.alloc('box');
@@ -530,8 +534,8 @@ function killOverload(ctx: FxContext, at: THREE.Vector3) {
     );
   }
   const white = kTmp2.setRGB(0.85, 0.93, 1);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.1, -0.3, 0.13, 1.6, white, 1.9, false, T);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 1.0, 0.25, 0.09, 1.5, white, 2.5, true, T);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.3, 0.11, 1.6, white, 1.8, false, T);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.9, 0.25, 0.08, 1.5, white, 2.4, true, T);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.4, -4.4, 0.3, 1.3, blue, 2.2, false, T);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.3, -3.4, 0.34, 1.5, white, 1.4, false, T + 0.05);
 }
@@ -542,12 +546,21 @@ function killVaporize(ctx: FxContext, at: THREE.Vector3) {
   const pool = ctx.pool;
   const cy = at.y + 0.3;
   const warm = kTmp.setRGB(1, 0.92, 0.78);
-  spriteC(ctx, glowTexture(), at.x, cy, at.z, 1.3, -0.3, 0.12, 1.7, warm, 2.1);
-  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.9, 0.3, 0.08, 1.5, warm, 2.4, true);
+  spriteC(ctx, glowTexture(), at.x, cy, at.z, 0.95, -0.3, 0.1, 1.7, warm, 1.9);
+  spriteC(ctx, flashTexture(), at.x, cy, at.z, 0.8, 0.3, 0.07, 1.5, warm, 2.3, true);
   const heat = kTmp2.setRGB(1, 0.42, 0.1);
   spriteC(ctx, ringTexture(), at.x, cy, at.z, 0.35, -3.6, 0.3, 1.4, kIsHs ? AMBER : heat, 1.8, false, 0.03);
   motes(pool, at.x, cy, at.z, 10, 0.3, 0.9, 0.8, 1.6, -0.5, 1.2, 0.08, 0.7, heat, 2.0, 0.05);
   killLight(ctx, at, warm, 9);
+}
+
+// Headshot: one consistent amber beat at head height on every style — a
+// crisp ring, a star and a few amber sparks leaving the head.
+function headshotPop(ctx: FxContext, at: THREE.Vector3) {
+  const hy = at.y + 0.72;
+  spriteC(ctx, ringTexture(), at.x, hy, at.z, 0.22, -3.8, 0.24, 1.4, AMBER, 2.4);
+  spriteC(ctx, flashTexture(), at.x, hy, at.z, 0.45, 0.3, 0.07, 1.5, kTmp2.setRGB(1, 0.85, 0.5), 2.4, true);
+  streaks(ctx.pool, at.x, hy, at.z, 8, 4, 3, 0.5, 10, 0, 0.18, 0.3, AMBER, kTmp2.setRGB(1, 0.9, 0.6), 2.2);
 }
 
 // Amber on a headshot, else `c`.
@@ -672,7 +685,8 @@ function muzzleFlash(ctx: FxContext, at: THREE.Vector3, color: number, dir: THRE
   if (own) {
     x = tmpMuzzle.x; y = tmpMuzzle.y; z = tmpMuzzle.z;
   }
-  sprite(ctx, flashTexture(), x, y, z, own ? 0.14 : 0.3, 0.35, 0.075, 1.6, color, 2.0, true);
+  const star = sprite(ctx, flashTexture(), x, y, z, own ? 0.14 : 0.3, 0.35, 0.075, 1.6, color, 2.0, true);
+  star.noProx = own; // the viewmodel's own muzzle sits right at the eye
   const hasDir = !!dir && dir.lengthSq() > 1e-6;
   if (hasDir) {
     tmpN.copy(dir!).normalize();
@@ -862,7 +876,10 @@ export class EffectsManager {
     if (tint === undefined || tint === null) {
       // No victim colour given: resolve next step() against the body that
       // bursts this frame (its colour + rendered position — fx-settings).
-      const q = this.pending.find((b) => !b.busy);
+      let q: (typeof this.pending)[number] | null = null;
+      for (const b of this.pending) {
+        if (!b.busy) { q = b; break; }
+      }
       if (q) {
         q.busy = true;
         q.scene = scene;
@@ -878,6 +895,7 @@ export class EffectsManager {
   private burstNow(scene: THREE.Scene, at: THREE.Vector3, headshot: boolean, style: KillEffectStyle, tint?: THREE.Color | number | null) {
     const ctx = getFxContext(scene);
     setKillPalette(style, headshot, tint);
+    if (headshot) headshotPop(ctx, at);
     switch (style) {
       case 'nova': return killNova(ctx, at);
       case 'starburst': return killStarburst(ctx, at);

@@ -821,8 +821,8 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         '  if (igTt > 0.1) discard;',
         '  if (igTt > 0.0 && uFxCalm < 0.5 && fract(igTt * 30.0) < 0.5) discard;',
         '  float igBy = fract(vRest.y / uBands.x);',
-        '  igBandGlow = 1.0 - smoothstep(0.0, 0.08, min(igBy, 1.0 - igBy));',
-        '  if (igTt > 0.0) igBandGlow += 1.0;',
+        '  igBandGlow = 1.0 - smoothstep(0.0, 0.035, min(igBy, 1.0 - igBy));',
+        '  if (igTt > 0.0) igBandGlow += 0.4;',
         '}',
         // Pyre char front / vaporize ash → one local "ash" amount.
         'float igAsh = uAsh;',
@@ -876,7 +876,7 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'float igCore = 1.0 - smoothstep(0.08, 0.6, igVy);',
         'vec3 igVisor = mix(uVisorEdge * (1.0 - 0.45 * igVy * igVy), uVisorCore, igCore);',
         'float igIsVisor = step(0.95, vMat.w);',
-        'float igAlive = (1.0 - igAsh) * (1.0 - 0.7 * uCrystal);',
+        'float igAlive = (1.0 - igAsh) * (1.0 - 0.7 * uCrystal) * (1.0 - 0.85 * uBurn);',
         'totalEmissiveRadiance += (igIsVisor * igVisor + (1.0 - igIsVisor) * uVisorEdge * vMat.w * 0.8) * igAlive;',
         'totalEmissiveRadiance += uPlayer * (vMat.x * uLift) * igAlive;',
         'float igFres = 1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);',
@@ -901,8 +901,11 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'if (uCrystal > 0.0) totalEmissiveRadiance += uCrystalCol * uCrystal * (igFres * igFres * 1.9 + igEdgeRaw * 1.7 + 0.05);',
         'if (uBands.x > 0.0) {',
         '  float igScan = pow(0.5 + 0.5 * sin(vRest.y * 190.0), 14.0);',
-        '  totalEmissiveRadiance += uEdgeCol * (igEdgeRaw * 1.0 + igBandGlow * 1.2 + igScan * 0.3 + igFres * 0.4);',
+        '  totalEmissiveRadiance += uEdgeCol * (igEdgeRaw * 0.6 + igBandGlow * 1.6 + igScan * 0.15 + igFres * 0.3 + 0.06);',
         '}',
+        // A dying body close to the camera: its glow backs off (a point-blank
+        // frag must never swamp the view).
+        'if (uFxTime > 0.0) totalEmissiveRadiance *= 0.3 + 0.7 * smoothstep(0.5, 2.2, length(vViewPosition));',
         'if (uArc > 0.0) {',
         '  float igA = igNoise(vRest * 7.0 + vec3(0.0, uFxTime * 6.0, uFxTime * 2.0));',
         '  float igA2 = igNoise(vRest * 13.0 - vec3(uFxTime * 5.0, 0.0, 0.0));',

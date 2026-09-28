@@ -82,7 +82,7 @@ function buildShapeGeometry(shape: FxShape): THREE.BufferGeometry {
     case 'cube': return new THREE.BoxGeometry(1, 1, 1);
     case 'flake': return new THREE.PlaneGeometry(1, 1);
     // A faceted crystal: a stretched octahedron (flat normals at detail 0).
-    case 'shard': return new THREE.OctahedronGeometry(0.5, 0).scale(0.55, 1.5, 0.32);
+    case 'shard': return new THREE.OctahedronGeometry(0.5, 0).scale(0.6, 1.5, 0.14);
     case 'mote':
     case 'glint': return new THREE.PlaneGeometry(1, 1);
   }
@@ -169,7 +169,8 @@ void main() {
   float rim = pow(1.0 - facing, 2.0);
   float glint = pow(facing, 28.0);
   float peak = max(vColor.r, max(vColor.g, vColor.b));
-  vec3 col = vColor * (0.16 + rim * 1.15) + vec3(glint * peak * 0.9);
+  vec3 col = vColor * (0.06 + rim * 1.3) + vec3(glint * peak * 0.9);
+  col *= smoothstep(0.15, 0.6, length(vView)); // never swamp the camera
   gl_FragColor = vec4(col, 1.0);
   #include <colorspace_fragment>
 }
@@ -201,6 +202,7 @@ void main() {
   #endif
   vec4 c = viewMatrix * (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0));
   c.xy += mat2(instanceMatrix[0].xy, instanceMatrix[1].xy) * position.xy;
+  vColor *= smoothstep(0.15, 0.6, -c.z); // never swamp the camera
   gl_Position = projectionMatrix * c;
 }
 `;
@@ -228,8 +230,20 @@ function billboardMaterial(map: THREE.Texture): THREE.ShaderMaterial {
   });
 }
 
+// Additive FX fade out within ~0.6 m of the camera (a spark or ring passing
+// through the eye must not white-out the view). Module scope so every
+// instance shares one program.
+const injectNearFade = (shader: THREE.WebGLProgramParametersWithUniforms) => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying float vIgDepth;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvIgDepth = -mvPosition.z;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying float vIgDepth;')
+    .replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb *= smoothstep(0.15, 0.6, vIgDepth);');
+};
+
 function additiveMaterial(map: THREE.Texture | null, doubleSided: boolean): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({
+  const m = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     map,
     transparent: true,
@@ -238,6 +252,8 @@ function additiveMaterial(map: THREE.Texture | null, doubleSided: boolean): THRE
     toneMapped: false,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
   });
+  m.onBeforeCompile = injectNearFade;
+  return m;
 }
 
 // Energy shell for the light columns / cones (spawn-in beams, the pyre): a
@@ -277,6 +293,7 @@ void main() {
   float v = vUv.y; // 0 at the base, 1 at the top
   float height = smoothstep(0.0, 0.06, v) * pow(1.0 - v, 1.4);
   float a = (rim * 0.85 + streak * 0.3 * (1.0 - facing * 0.5)) * height;
+  a *= smoothstep(0.15, 0.6, length(vView)); // never swamp the camera
   gl_FragColor = vec4(vColor * a, 1.0);
   #include <colorspace_fragment>
 }
@@ -726,7 +743,12 @@ export type SpriteSlot = {
   flicker: boolean; // alternate-frame 0.78× for the first 2 frames
   delay: number; // seconds before it appears (the life starts after it)
   r: number; g: number; b: number;
+  size: number; // this frame's size before proximity scaling
+  fade: number; // this frame's brightness factor
+  noProx: boolean; // exempt from proximity scaling (the local viewmodel muzzle)
 };
+
+const tmpCam = new THREE.Vector3();
 
 class SpritePool {
   readonly slots: SpriteSlot[] = [];
@@ -745,9 +767,21 @@ class SpritePool {
       sprite.visible = false;
       sprite.userData.shared = true;
       parent.add(sprite);
-      this.slots.push({
+      const slot: SpriteSlot = {
         sprite, mat, busy: false, age: 0, life: 0.1, fadePow: 1, base: 0.2, shrink: 0, flicker: false, delay: 0, r: 1, g: 1, b: 1,
-      });
+        size: 0.2, fade: 1, noProx: false,
+      };
+      // Close to the camera a flash shrinks and dims (a point-blank frag or
+      // an impact on a wall at your face must never white-out the view).
+      sprite.onBeforeRender = (_r, _s, cam) => {
+        const d = sprite.position.distanceTo(tmpCam.setFromMatrixPosition(cam.matrixWorld));
+        const k = slot.noProx ? 1 : Math.max(0.3, Math.min(1, (d - 0.5) / 3.5));
+        sprite.scale.set(slot.size * k, slot.size * k, 1);
+        sprite.updateMatrixWorld();
+        const f = slot.fade * Math.sqrt(k);
+        mat.color.setRGB(slot.r * f, slot.g * f, slot.b * f);
+      };
+      this.slots.push(slot);
     }
   }
 
@@ -768,6 +802,7 @@ class SpritePool {
     s.shrink = 0;
     s.flicker = false;
     s.delay = 0;
+    s.noProx = false;
     s.r = s.g = s.b = 1;
     s.mat.map = map;
     s.mat.rotation = Math.random() * Math.PI * 2;
@@ -778,6 +813,8 @@ class SpritePool {
   // Apply the caller's size / colour right away so the sprite is correct on
   // the very first frame it's drawn (before the first step()).
   finish(s: SpriteSlot) {
+    s.size = s.base;
+    s.fade = 1;
     s.sprite.scale.set(s.base, s.base, 1);
     s.mat.color.setRGB(s.r, s.g, s.b);
     s.sprite.visible = s.delay <= 0;
@@ -799,6 +836,8 @@ class SpritePool {
       const fade = s.fadePow === 1 ? f : Math.pow(f, s.fadePow);
       let size = s.base * (1 - s.shrink * (t / s.life));
       if (s.flicker && t < 0.034 && (frame & 1) === 1) size *= 0.78;
+      s.size = size;
+      s.fade = fade;
       s.sprite.scale.set(size, size, 1);
       s.mat.color.setRGB(s.r * fade, s.g * fade, s.b * fade);
     }
@@ -864,7 +903,10 @@ export class ArcPool {
     ax: number, ay: number, az: number, bx: number, by: number, bz: number,
     r: number, g: number, b: number, width: number, life: number, jag: number, delay = 0, rate = 30,
   ): void {
-    const s = this.slots.find((q) => !q.busy);
+    let s: ArcSlot | null = null;
+    for (const q of this.slots) {
+      if (!q.busy) { s = q; break; }
+    }
     if (!s) return;
     s.busy = true;
     s.age = 0;

@@ -95,6 +95,7 @@ void main() {
 
 const POINT_FRAG = /* glsl */ `
 uniform sampler2D uAtlas;
+uniform float uOcclude;
 varying vec4 vColor;
 varying vec2 vCell;
 varying vec2 vRot;
@@ -114,7 +115,10 @@ void main() {
     #endif
   #endif
   if (a < 0.004) discard;
-  gl_FragColor = vec4(vColor.rgb * t.rgb, a);
+  // Premultiplied: rgb adds light, alpha (× uOcclude) dims what's behind — so
+  // a flame stays saturated against a bright sky yet reads as pure glow on
+  // dark walls. The storm cloud (uOcclude 1) is plain alpha blending.
+  gl_FragColor = vec4(vColor.rgb * t.rgb * a, a * uOcclude);
   #include <colorspace_fragment>
 }
 `;
@@ -125,16 +129,22 @@ type SharedUniforms = {
   uMinPx: { value: number };
   uGain: { value: number };
   uHdrCap: { value: number };
+  uOcclude: { value: number };
 };
 
-function pointMaterial(u: SharedUniforms & Record<string, THREE.IUniform>, additive: boolean): THREE.ShaderMaterial {
+function pointMaterial(u: SharedUniforms & Record<string, THREE.IUniform>): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: u,
     vertexShader: POINT_VERT,
     fragmentShader: POINT_FRAG,
     transparent: true,
     depthWrite: false,
-    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
     fog: true,
     toneMapped: false,
   });
@@ -168,7 +178,7 @@ class Field {
     this.geom.setAttribute('aSize', dyn(this.siz, 1));
     this.geom.setAttribute('aSprite', dyn(this.spr, 2));
     this.geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1);
-    this.mat = pointMaterial(u, additive);
+    this.mat = pointMaterial(u);
     this.points = new THREE.Points(this.geom, this.mat);
     this.points.matrixAutoUpdate = false;
     this.points.matrixWorldAutoUpdate = false;
@@ -225,23 +235,29 @@ type Layout = { count: number; roles: [role: number, n: number][]; cloud?: numbe
 // Particle budgets per kind (role → count). Roles index the recipe's parts.
 const LAYOUTS: Record<Exclude<UnusualKind, 'none'>, Layout> = {
   embers: { count: 0, roles: [[0, 2], [1, 24], [2, 6], [3, 22]] }, // heat glow, fire blobs, tongues, sparks
-  aura: { count: 0, roles: [[0, 24], [1, 20], [2, 8]] }, // ring motes, rising motes, glints
+  aura: { count: 0, roles: [[0, 16], [1, 16], [2, 5], [3, 15]] }, // crown ring, rising motes, tine stars, tines
   orbit: { count: 0, roles: [[0, 36], [1, 32]] }, // comets (2 rings × 3 × 6), dim ring motes
   halo: { count: 0, roles: [[0, 24], [1, 4], [2, 12]], ribbons: [1, 41] }, // band glow, glints, dust
   storm: { count: 0, roles: [[0, 18], [1, 3]], cloud: 13, ribbons: [2, 9] }, // rain, inner glow
   plasma: { count: 0, roles: [[0, 2], [1, 3], [2, 24]], ribbons: [3, 10] }, // core, arc ends, sparks
   prism: { count: 0, roles: [[0, 16], [1, 8], [2, 2]], ribbons: [2, 28] }, // beads, glints, apex; helix ribbons
   galaxy: { count: 0, roles: [[0, 3], [1, 48], [2, 10]] }, // core, arm stars, dust
-  ghostfire: { count: 0, roles: [[0, 2], [1, 22], [2, 7], [3, 10], [4, 10]] }, // glow, blobs, tongues, wisps, souls
+  ghostfire: { count: 0, roles: [[0, 2], [1, 12], [2, 13], [3, 10], [4, 10]] }, // glow, blobs, tongues, wisps, souls
   hearts: { count: 0, roles: [[0, 8], [1, 28], [2, 6]] }, // hearts, pop sparkles, motes
   binary: { count: 0, roles: [[0, 42], [1, 6]] }, // glyphs (6 columns × 7), crown motes
 };
 for (const l of Object.values(LAYOUTS)) l.count = l.roles.reduce((s, [, n]) => s + n, 0);
 
-type FirePalette = { c: readonly number[]; scale: number; waveK: number };
+type FirePalette = { c: readonly number[]; scale: number; tongue: number; waveK: number };
 // hot (rgb), mid, cool — linear HDR.
-const FIRE_EMBERS: FirePalette = { c: [2.1, 1.55, 0.6, 1.7, 0.55, 0.07, 0.5, 0.06, 0.0], scale: 1, waveK: 6 };
-const FIRE_GHOST: FirePalette = { c: [1.1, 2.0, 1.7, 0.12, 1.55, 0.95, 0.0, 0.32, 0.3], scale: 1.12, waveK: 16 };
+const FIRE_EMBERS: FirePalette = { c: [2.1, 1.55, 0.6, 1.7, 0.55, 0.07, 0.5, 0.06, 0.0], scale: 1, tongue: 1, waveK: 6 };
+const FIRE_GHOST: FirePalette = { c: [1.0, 2.0, 1.6, 0.1, 1.5, 0.9, 0.0, 0.3, 0.28], scale: 0.95, tongue: 1.45, waveK: 16 };
+
+// How much each kind's particles dim what's behind them (0 = pure additive).
+const OCCLUDE: Record<Exclude<UnusualKind, 'none'>, number> = {
+  embers: 0.5, aura: 0.3, orbit: 0.4, halo: 0.2, storm: 0.25, plasma: 0.2,
+  prism: 0.2, galaxy: 0.45, ghostfire: 0.5, hearts: 0.7, binary: 0.45,
+};
 
 const HEART_COLS: readonly (readonly [number, number, number])[] = [
   [1.0, 0.26, 0.52],
@@ -316,6 +332,7 @@ export class UnusualEffect {
     this.u.uMinPx = { value: 1.5 };
     this.u.uGain = { value: 1 };
     this.u.uHdrCap = { value: 2.4 };
+    this.u.uOcclude = { value: OCCLUDE[kind] };
     const layout = LAYOUTS[kind];
     this.f = new Field(layout.count, this.u, true);
     let i = 0;
@@ -329,7 +346,8 @@ export class UnusualEffect {
     }
     this.assignRanks();
     if (layout.cloud) {
-      this.cloud = new Field(layout.cloud, this.u, false);
+      // Same shared uniforms, but the cloud body fully occludes.
+      this.cloud = new Field(layout.cloud, { ...this.u, uOcclude: { value: 1 } }, false);
       for (let j = 0; j < layout.cloud; j++) {
         this.cps.push({
           x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, age: 0, life: 1, seed: hash(j + 3.1),
@@ -387,6 +405,10 @@ export class UnusualEffect {
       for (const p of ps) if (p.k === 0) p.rank = ((Math.floor(p.a / 7) + 0.3) * GOLDEN) % 1;
     } else if (this.kind === 'prism') {
       for (const p of ps) if (p.k === 0) p.rank = ((p.a % 22) * GOLDEN + 0.1) % 1;
+    }
+    if (this.kind === 'aura') {
+      for (const p of ps) if (p.k === 3) p.rank = ((Math.floor(p.a / 3) + 0.2) * GOLDEN) % 1;
+      for (const p of ps) if (p.k === 2) p.rank = ((p.a + 0.2) * GOLDEN) % 1;
     }
     // Cores / apexes are always on.
     for (const p of ps) {
@@ -539,7 +561,7 @@ export class UnusualEffect {
   private fire(p: P, i: number, dt: number, pal: FirePalette, tongue: boolean, inherit: number, radius: number, sway: number) {
     const t = this.t;
     const vy = tongue ? 0.36 : 0.3;
-    const life = tongue ? 0.26 : 0.32;
+    const life = tongue ? 0.26 * pal.tongue : 0.32;
     const rad = radius * (tongue ? 0.7 : 1);
     if (p.age < 0) this.emit(p, rad, -0.035, vy, 0.16, life, 0.2, inherit, true);
     p.age += dt;
@@ -557,60 +579,84 @@ export class UnusualEffect {
     else { const k = (fr - 0.4) / 0.6; r = mix(c[3], c[6], k); g = mix(c[4], c[7], k); b = mix(c[5], c[8], k); }
     const flick = 0.85 + 0.15 * Math.sin(t * 29 + p.seed * 50);
     const al = Math.min(1, fr * 6) * Math.pow(1 - fr, 1.3) * flick * (tongue ? 0.9 : 0.72);
-    if (tongue) this.f.put(i, p.x, p.y, p.z, r, g, b, al, mix(0.14, 0.08, fr) * pal.scale, CELL.flame, wave * 0.18);
+    if (tongue) this.f.put(i, p.x, p.y, p.z, r, g, b, al, mix(0.14, 0.08, fr) * pal.tongue, CELL.flame, wave * 0.18);
     else this.f.put(i, p.x, p.y, p.z, r, g, b, al, mix(0.09, 0.028, fr) * pal.scale, CELL.glow, 0);
   }
 
-  // ── Sovereign Aura: a regal golden ring, motes spiralling up off it,
-  // and star glints. ──
+  // ── Sovereign Aura: a golden CROWN — a ring of motes with five tines
+  // rising off it, star glints on the tine tips and motes spiralling up
+  // (a halo is a flat band; this has points). ──
   private aura(dt: number, frac: number) {
     const t = this.t;
     const f = this.f;
-    const R = 0.19;
+    const R = 0.18;
+    const spin = t * 0.5;
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
-        const a = (p.a / 24) * TAU + t * 0.6;
-        this.lw(Math.cos(a) * R, -0.05 + 0.012 * Math.sin(a * 3 + t * 2), Math.sin(a) * R);
+        const a = (p.a / 16) * TAU + spin;
+        this.lw(Math.cos(a) * R, -0.05, Math.sin(a) * R);
         const pulse = 0.5 + 0.5 * Math.sin(t * 3 + a * 2);
-        f.put(i, this.wx, this.wy, this.wz, 1.0 * (1.1 + 0.7 * pulse), 0.74 * (1.1 + 0.7 * pulse), 0.28 * (1.1 + 0.7 * pulse), 0.9, 0.045, CELL.glow, 0);
-      } else if (p.k === 1) {
-        const spawn = (stagger: boolean) => {
-          const a = rnd() * TAU;
-          this.lw(Math.cos(a) * R, -0.05, Math.sin(a) * R);
-          p.x = this.wx; p.y = this.wy; p.z = this.wz;
-          p.vx = -Math.sin(a) * 0.12 + this.evx * 0.7;
-          p.vz = Math.cos(a) * 0.12 + this.evz * 0.7;
-          p.vy = 0.2 + rnd() * 0.1 + this.evy * 0.35;
-          p.life = 1.0 + rnd() * 0.5;
-          p.seed = rnd();
-          p.age = stagger ? rnd() * p.life : 0;
-          if (stagger) { p.x += p.vx * p.age; p.y += p.vy * p.age; p.z += p.vz * p.age; }
-        };
-        if (p.age < 0) spawn(true);
+        const k = 1.1 + 0.6 * pulse;
+        f.put(i, this.wx, this.wy, this.wz, 1.0 * k, 0.74 * k, 0.28 * k, 0.9, 0.045, CELL.glow, 0);
+      } else if (p.k === 3) {
+        // Tines: five columns of three motes, tapering up.
+        const j = Math.floor(p.a / 3);
+        const l = p.a % 3;
+        const a = (j / 5) * TAU + spin;
+        const r = R * (1 - 0.07 * (l + 1));
+        this.lw(Math.cos(a) * r, -0.05 + 0.036 * (l + 1), Math.sin(a) * r);
+        f.put(i, this.wx, this.wy, this.wz, 1.9, 1.45, 0.6, 0.95, 0.042 * (1 - l * 0.2), CELL.dot, 0);
+      } else if (p.k === 2) {
+        const a = (p.a / 5) * TAU + spin;
+        const r = R * 0.76;
+        this.lw(Math.cos(a) * r, -0.05 + 0.15, Math.sin(a) * r);
+        const fl = 0.45 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 2.6 + p.a * 1.9)), 6);
+        f.put(i, this.wx, this.wy, this.wz, 2.4, 2.2, 1.6, fl, 0.085 * fl, CELL.star, t * 1.2 + p.a);
+      } else {
+        if (p.age < 0) this.emitRing(p, R, -0.05, 0.12, 0.2, 0.1, 1.0, 0.5, 0.7, true);
         p.age += dt;
-        if (p.age >= p.life) spawn(false);
+        if (p.age >= p.life) this.emitRing(p, R, -0.05, 0.12, 0.2, 0.1, 1.0, 0.5, 0.7, false);
         // Spiral: swing the horizontal velocity around world up.
-        const c = Math.cos(1.3 * dt), s = Math.sin(1.3 * dt);
-        const vx = p.vx * c - p.vz * s;
-        p.vz = p.vx * s + p.vz * c;
+        const c = Math.cos(1.3 * dt), sn = Math.sin(1.3 * dt);
+        const vx = p.vx * c - p.vz * sn;
+        p.vz = p.vx * sn + p.vz * c;
         p.vx = vx;
         p.vy += 0.05 * dt;
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
         const fr = p.age / p.life;
         const al = Math.min(1, fr * 6) * (1 - fr);
-        f.put(i, p.x, p.y, p.z, 1.9, 1.65, 1.0, al, mix(0.032, 0.012, fr), CELL.dot, 0);
-      } else {
-        const ph = t * 2.3 + p.seed * TAU * 3;
-        const sn = Math.sin(ph);
-        if (sn <= 0) { p.b = -1; f.hide(i); continue; }
-        if (p.b < 0) { p.b = rnd() * TAU; p.vy = rnd() * 0.12 - 0.07; }
-        const fl = Math.pow(sn, 10);
-        this.lw(Math.cos(p.b) * R, p.vy, Math.sin(p.b) * R);
-        f.put(i, this.wx, this.wy, this.wz, 2.4, 2.25, 1.7, fl, 0.1 * (0.3 + 0.7 * fl), CELL.star, t * 1.2 + p.seed * 6);
+        f.put(i, p.x, p.y, p.z, 1.9, 1.65, 1.0, al, mix(0.03, 0.012, fr), CELL.dot, 0);
       }
     }
+  }
+
+  // Emit a free particle from a point on a crown ring of radius R (local y
+  // `ly`): a tangential swirl `swirl`, rising at `vy` (+ random `vyR`) —
+  // negative for falling dust.
+  private emitRing(p: P, R: number, ly: number, swirl: number, vy: number, vyR: number, life: number, lifeR: number, inherit: number, stagger: boolean) {
+    const a = rnd() * TAU;
+    this.lw(Math.cos(a) * R, ly, Math.sin(a) * R);
+    p.x = this.wx; p.y = this.wy; p.z = this.wz;
+    p.vx = -Math.sin(a) * swirl + this.evx * inherit;
+    p.vz = Math.cos(a) * swirl + this.evz * inherit;
+    p.vy = vy + rnd() * vyR + this.evy * inherit * 0.5;
+    p.life = life + rnd() * lifeR;
+    p.seed = rnd();
+    p.age = stagger ? rnd() * p.life : 0;
+    if (stagger) { p.x += p.vx * p.age; p.y += p.vy * p.age; p.z += p.vz * p.age; }
+  }
+
+  // Storm rain: a streak from under the cloud, falling with the cloud.
+  private emitRain(p: P, stagger: boolean) {
+    this.lw((rnd() - 0.5) * 0.19, 0.11, (rnd() - 0.5) * 0.14);
+    p.x = this.wx; p.y = this.wy; p.z = this.wz;
+    p.vx = this.evx * 0.9; p.vz = this.evz * 0.9;
+    p.vy = -1.3 - rnd() * 0.3 + this.evy * 0.9;
+    p.life = 0.16 + rnd() * 0.12;
+    p.age = stagger ? rnd() * p.life : 0;
+    if (stagger) { p.x += p.vx * p.age; p.y += p.vy * p.age; p.z += p.vz * p.age; }
   }
 
   // ── Orbiting Energy: two tilted, counter-rotating rings of comets with
@@ -679,21 +725,9 @@ export class UnusualEffect {
         this.lw(Math.cos(a) * R, 0, Math.sin(a) * R);
         f.put(i, this.wx, this.wy, this.wz, 2.4, 2.2, 1.8, fl, 0.1 * (0.3 + 0.7 * fl), CELL.star, t + p.seed * 5);
       } else {
-        const spawn = (stagger: boolean) => {
-          const a = rnd() * TAU;
-          this.lw(Math.cos(a) * R, 0, Math.sin(a) * R);
-          p.x = this.wx; p.y = this.wy; p.z = this.wz;
-          p.vx = Math.cos(a) * 0.02 + this.evx * 0.8;
-          p.vz = Math.sin(a) * 0.02 + this.evz * 0.8;
-          p.vy = -0.05 - rnd() * 0.05;
-          p.life = 1.0 + rnd() * 0.6;
-          p.seed = rnd();
-          p.age = stagger ? rnd() * p.life : 0;
-          if (stagger) { p.x += p.vx * p.age; p.y += p.vy * p.age; p.z += p.vz * p.age; }
-        };
-        if (p.age < 0) spawn(true);
+        if (p.age < 0) this.emitRing(p, R, 0, 0.02, -0.05, 0.05, 1.0, 0.6, 0.8, true);
         p.age += dt;
-        if (p.age >= p.life) spawn(false);
+        if (p.age >= p.life) this.emitRing(p, R, 0, 0.02, -0.05, 0.05, 1.0, 0.6, 0.8, false);
         const d = Math.exp(-1.5 * dt);
         p.vx *= d; p.vz *= d;
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
@@ -746,27 +780,19 @@ export class UnusualEffect {
       this.lw(lx, ly, lz);
       const shade = 0.55 + 0.45 * top; // tops catch more light
       const lit = glowK * (0.55 + 0.45 * (1 - top));
-      const r = mix(0.12 * shade + 0.04, 0.72, lit);
-      const g = mix(0.13 * shade + 0.045, 0.78, lit);
-      const b = mix(0.17 * shade + 0.06, 1.0, lit);
+      const l = lit * 0.7;
+      const r = mix(0.12 * shade + 0.04, 0.55, l);
+      const g = mix(0.13 * shade + 0.045, 0.62, l);
+      const b = mix(0.17 * shade + 0.06, 0.88, l);
       cloud.put(j, this.wx, this.wy, this.wz, r, g, b, 0.94, 0.1 + 0.04 * hash(j + 1.3), CELL.puff, s * TAU + t * 0.12);
     }
     for (let i = 0; i < this.ps.length; i++) {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
-        const spawn = (stagger: boolean) => {
-          this.lw((rnd() - 0.5) * 0.19, 0.11, (rnd() - 0.5) * 0.14);
-          p.x = this.wx; p.y = this.wy; p.z = this.wz;
-          p.vx = this.evx * 0.9; p.vz = this.evz * 0.9;
-          p.vy = -1.3 - rnd() * 0.3 + this.evy * 0.9;
-          p.life = 0.16 + rnd() * 0.12;
-          p.age = stagger ? rnd() * p.life : 0;
-          if (stagger) { p.x += p.vx * p.age; p.y += p.vy * p.age; p.z += p.vz * p.age; }
-        };
-        if (p.age < 0) spawn(true);
+        if (p.age < 0) this.emitRain(p, true);
         p.age += dt;
-        if (p.age >= p.life) spawn(false);
+        if (p.age >= p.life) this.emitRain(p, false);
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
         const fr = p.age / p.life;
         f.put(i, p.x, p.y, p.z, 0.55, 0.75, 1.1, 0.8 * (1 - fr), 0.07, CELL.streak, 0);
@@ -896,7 +922,7 @@ export class UnusualEffect {
         const u = j / (P - 1);
         const ang = u * 10 + t * 1.7 + s * Math.PI;
         const r = 0.2 * (1 - u * 0.62);
-        this.lw(Math.cos(ang) * r, -0.05 + u * 0.36, Math.sin(ang) * r);
+        this.lw(Math.cos(ang) * r, -0.05 + u * 0.3, Math.sin(ang) * r);
         const env = Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.08)), 0.8);
         const c = hsv((u * 1.1 + t * 0.2 + s * 0.5) % 1, 0.9, 1.7 * env);
         rib.push(s, this.wx, this.wy, this.wz, c[0], c[1], c[2], 0.014 * (1 - 0.45 * u));
@@ -910,7 +936,7 @@ export class UnusualEffect {
         const u = ((p.a % 8) / 8 + t * 0.3) % 1;
         const ang = u * 10 + t * 1.7 + strand * Math.PI;
         const r = 0.2 * (1 - u * 0.62);
-        this.lw(Math.cos(ang) * r, -0.05 + u * 0.36, Math.sin(ang) * r);
+        this.lw(Math.cos(ang) * r, -0.05 + u * 0.3, Math.sin(ang) * r);
         const c = hsv((u * 1.1 + t * 0.2 + strand * 0.5) % 1, 0.35, 2.3);
         f.put(i, this.wx, this.wy, this.wz, c[0], c[1], c[2], Math.pow(Math.sin(Math.PI * u), 0.6), 0.036 * (1 - 0.35 * u), CELL.dot, 0);
       } else if (p.k === 1) {
@@ -920,12 +946,12 @@ export class UnusualEffect {
         const u = (p.b + t * 0.3) % 1;
         const ang = u * 10 + t * 1.7 + (p.a % 2) * Math.PI;
         const r = 0.2 * (1 - u * 0.62);
-        this.lw(Math.cos(ang) * r, -0.05 + u * 0.36, Math.sin(ang) * r);
+        this.lw(Math.cos(ang) * r, -0.05 + u * 0.3, Math.sin(ang) * r);
         const fl = Math.pow(sn, 10);
         const c = hsv((p.seed + t * 0.2) % 1, 0.45, 2.6);
         f.put(i, this.wx, this.wy, this.wz, c[0], c[1], c[2], fl, 0.1 * (0.3 + 0.7 * fl), CELL.star, t * 2 + p.seed * 6);
       } else {
-        this.lw(0, 0.33, 0);
+        this.lw(0, 0.27, 0);
         const pulse = 0.75 + 0.25 * Math.sin(t * 5);
         if (p.a === 0) f.put(i, this.wx, this.wy, this.wz, 2.3, 2.3, 2.3, pulse, 0.08, CELL.star, t * 1.5);
         else f.put(i, this.wx, this.wy, this.wz, 0.5, 0.5, 0.6, pulse, 0.13, CELL.glow, 0);
@@ -962,9 +988,9 @@ export class UnusualEffect {
       const p = this.ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
-        if (p.a === 0) f.put(i, gx, gy, gz, 1.0, 0.85, 0.62, 1, 0.16, CELL.glow, 0);
-        else if (p.a === 1) f.put(i, gx, gy, gz, 2.4, 2.25, 2.0, 1, 0.06, CELL.dot, 0);
-        else f.put(i, gx, gy, gz, 0.28, 0.2, 0.62, 1, 0.34, CELL.glow, 0);
+        if (p.a === 0) f.put(i, gx, gy, gz, 0.8, 0.66, 0.48, 1, 0.11, CELL.glow, 0);
+        else if (p.a === 1) f.put(i, gx, gy, gz, 2.0, 1.85, 1.6, 1, 0.042, CELL.dot, 0);
+        else f.put(i, gx, gy, gz, 0.22, 0.16, 0.5, 1, 0.26, CELL.glow, 0);
         continue;
       }
       let s: number, arm: number, spread: number;
@@ -1048,11 +1074,11 @@ export class UnusualEffect {
       const p = ps[i];
       if (!this.gate(p, i, frac)) continue;
       if (p.k === 0) {
-        if (p.age < 0) { this.emit(p, 0.1, 0.0, 0.2, 0.1, 1.2, 0.5, 0.75, true); p.b = Math.floor(rnd() * 3); }
+        if (p.age < 0) { this.emit(p, 0.1, 0.0, 0.17, 0.08, 0.95, 0.35, 0.95, true); p.b = Math.floor(rnd() * 3); }
         p.age += dt;
         if (p.age >= p.life) {
           if (!calm) this.popHeart(p.x, p.y, p.z, p.b);
-          this.emit(p, 0.1, 0.0, 0.2, 0.1, 1.2, 0.5, 0.75, false);
+          this.emit(p, 0.1, 0.0, 0.17, 0.08, 0.95, 0.35, 0.95, false);
           p.b = Math.floor(rnd() * 3);
         }
         p.x += (p.vx + Math.sin(p.age * 3 + p.seed * 6) * 0.06) * dt;
@@ -1078,9 +1104,9 @@ export class UnusualEffect {
         const fr = p.age / p.life;
         f.put(i, p.x, p.y, p.z, 2.3, 1.4, 1.9, 1 - fr, 0.05 * (1 - 0.6 * fr), CELL.star, p.seed * 6 + t * 3);
       } else {
-        if (p.age < 0) this.emit(p, 0.12, 0.02, 0.1, 0.08, 1.2, 0.6, 0.75, true);
+        if (p.age < 0) this.emit(p, 0.12, 0.02, 0.1, 0.08, 1.0, 0.5, 0.95, true);
         p.age += dt;
-        if (p.age >= p.life) this.emit(p, 0.12, 0.02, 0.1, 0.08, 1.2, 0.6, 0.75, false);
+        if (p.age >= p.life) this.emit(p, 0.12, 0.02, 0.1, 0.08, 1.0, 0.5, 0.95, false);
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
         const fr = p.age / p.life;
         f.put(i, p.x, p.y, p.z, 1.2, 0.35, 0.7, Math.min(1, fr * 5) * (1 - fr) * 0.8, 0.04, CELL.glow, 0);
@@ -1120,9 +1146,9 @@ export class UnusualEffect {
         const k = p.a % 7;
         const th = (c / 6) * TAU + (c % 2) * 0.3 + t * 0.22;
         const speed = 0.42 + 0.14 * hash(c + 1.7);
-        const yh = 0.34 - ((t * speed) / 0.86 + hash(c + 7.3)) % 1 * 0.86;
+        const yh = 0.28 - ((t * speed) / 0.8 + hash(c + 7.3)) % 1 * 0.8;
         const y = yh + k * 0.052;
-        const vis = smooth(-0.13, -0.05, y) * (1 - smooth(0.28, 0.35, y));
+        const vis = smooth(-0.13, -0.05, y) * (1 - smooth(0.22, 0.29, y));
         if (vis <= 0.01) { f.hide(i); continue; }
         const r = 0.19;
         this.lw(Math.cos(th) * r, y, Math.sin(th) * r);
