@@ -760,6 +760,10 @@ function GameView({
   // server records online matches itself and pushes the rewards over the socket.
   // The training range and spectating never count as a match.
   const reportsOwnStats = config.mode === 'local' && !config.training;
+  // The results headline: FFA shows a Q3 placement, TDM/duel Victory/Defeat.
+  const modeTag = gameRef.current?.getMatchModeTag();
+  const resultsMode: 'ffa' | 'tdm' | 'duel' =
+    modeTag === 'ranked' || modeTag === 'duel' ? 'duel' : modeTag === 'tdm' ? 'tdm' : 'ffa';
   // Weekly-challenge run: submits the speedrun (time/kills) + full replay to the
   // weekly board, NOT career K/D. The engine owns the authoritative run time.
   const isChallenge = config.mode === 'local' && config.challenge === true;
@@ -1092,6 +1096,7 @@ function GameView({
           settings={settings}
           result={endResult}
           progression={endProgression}
+          mode={resultsMode}
           voteEndsAt={hud.vote?.endsAtClient}
           onLogin={() => {
             exitFullscreen();
@@ -1175,6 +1180,7 @@ function GameView({
           }}
           // Training never reports stats; the weekly challenge goes to its own board.
           expectRewards={!isChallenge && reportsOwnStats}
+          mode={resultsMode}
         />
       )}
       {settingsOpen && (
