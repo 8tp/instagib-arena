@@ -331,7 +331,9 @@ export function openCase(caseId: CaseId, useRoll: boolean): Promise<Res<OpenCase
   if (useRoll) {
     if (S.freeRolls <= 0) return delay(fail(400, 'no-rolls'));
   } else if (S.credits < c.cost) return delay(fail(400, 'insufficient'));
-  let tier = rollTier(c.odds);
+  // ?mockTier=relic|unobtainable|… forces the roll (screenshots / QA of the reveals).
+  const forced = new URLSearchParams(window.location.search).get('mockTier') as Tier | null;
+  let tier = forced && TIERS.includes(forced) ? forced : rollTier(c.odds);
   const pool = tier === 'unobtainable' ? vaultUnobtainables() : casePoolFor(c.slots).filter((d) => d.tier === tier);
   let list = pool;
   // Fall back to the nearest lower tier that has items.
@@ -342,7 +344,7 @@ export function openCase(caseId: CaseId, useRoll: boolean): Promise<Res<OpenCase
     list = casePoolFor(c.slots).filter((d) => d.tier === tier);
   }
   const def = list[Math.floor(Math.random() * list.length)];
-  const { quality, attrs } = rollQualities(def);
+  const { quality, attrs } = rollQualities(def, new URLSearchParams(window.location.search).get('mockLucky') ? () => 0.001 : Math.random);
   if (useRoll) S.freeRolls--;
   else S.credits -= c.cost;
   const it = make(def.id, { quality, attrs, origin: 'case', createdAt: Date.now() });

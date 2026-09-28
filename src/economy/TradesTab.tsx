@@ -138,7 +138,7 @@ function Side({ items, credits, label }: { items: ItemInstanceWire[]; credits: n
       <div className='ec-side-label'>{label}</div>
       <div className='flex flex-wrap items-center gap-1.5'>
         {items.map((i) => (
-          <InstTile key={i.uid} inst={i} size={52} fluid={false} />
+          <InstTile key={i.uid} inst={i} size={76} fluid={false} />
         ))}
         {credits > 0 && <span className='ec-creditchip'>{fmtCredits(credits)}</span>}
         {items.length === 0 && credits === 0 && <span className='font-sans text-[12.5px] text-white/40'>nothing</span>}

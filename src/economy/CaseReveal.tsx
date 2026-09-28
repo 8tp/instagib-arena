@@ -144,13 +144,16 @@ export function CaseReveal({
             <div ref={revealRef} className='lk-reveal relative mt-4 flex flex-col items-center gap-1.5 text-center'>
               {big && !reduced && (
                 <div className='ec-burst' aria-hidden>
-                  <div className={`lk-rays ${isIridescent(tier) ? 'ec-iri-bg' : ''}`} />
+                  <div className={`ec-rays ${isIridescent(tier) ? 'ec-rays-iri' : ''}`} />
                   {sparks.map((s, i) => (
                     <span key={i} className='lk-spark' style={{ ['--a' as string]: s.a, ['--d' as string]: s.d, ['--dl' as string]: s.dl }} />
                   ))}
                 </div>
               )}
               <div className='relative z-[1] flex flex-col items-center gap-1.5'>
+                <div className='ec-hero' style={{ ['--rc' as string]: c.edge }}>
+                  <ItemTile id={item.def} size={140} tier={tier} look={thumbLook(item)} label={false} />
+                </div>
                 <div className='flex items-center gap-2'>
                   <span className={`lk-chip ${isIridescent(tier) ? 'ec-iri-chip' : ''}`} style={isIridescent(tier) ? undefined : { background: c.edge, color: tier === 'common' || tier === 'legendary' || tier === 'uncommon' ? '#0a0b0e' : '#fff' }}>
                     {TIER_LABEL[tier]}
