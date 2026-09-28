@@ -4,7 +4,7 @@
 import type { AnnouncerPackId } from './game/audio';
 import type { BotDifficulty, KeybindAction } from './game/constants';
 import type { KillEffectStyle } from './game/cosmetics';
-import type { RewardExtras } from './game/progression';
+import type { RewardExtras, RoadStep } from './game/progression';
 
 export type CrosshairConfig = {
   style: 'cross' | 'cross-dot' | 'dot' | 'circle';
@@ -86,17 +86,23 @@ export type InstagibStats = {
 
 // Progression delta returned by POST /api/stats — drives the end-of-match XP
 // moment. Mirrors the server `MatchRecordResult` (minus the legacy `stats`).
+// Extras are always sent by the current server; kept optional so the results
+// screen degrades gracefully against an older one.
 export type ProgressionResp = Partial<RewardExtras> & {
-  xpGained: number;
-  creditsGained: number;
+  xpGained: number; // total, incl. challenge + Career Road credits' XP lines
+  creditsGained: number; // total, incl. challenge + road credits
   leveledUp: boolean;
   newUnlocks: string[];
+  mode?: 'ffa' | 'duel' | 'tdm' | 'ranked';
+  partial?: boolean; // a mid-match leave, pushed after you're back in the lobby
   progression: {
     totalXp: number;
     level: number;
     credits: number;
     unlocked: string[];
     equipped: Record<string, string>;
+    caseKeys?: number;
+    roadLevel?: number;
   };
 };
 
@@ -110,4 +116,7 @@ export type InstagibProfile = {
   equipped: Record<string, string>;
   stats: InstagibStats;
   ranked: { rating: number; rank: number; provisional: boolean } | null;
+  caseKeys?: number; // free hat-case openings from the Career Road
+  roadLevel?: number; // highest Career Road level granted
+  catchUp?: RoadStep[]; // road rewards granted by this fetch (e.g. after a curve change)
 };

@@ -801,7 +801,8 @@ function GameView({
       } else if (ev.type === 'ranked-result') {
         setRankedResult(ev.result);
       } else if (ev.type === 'progression') {
-        setEndProgression(ev.progression);
+        // A partial (mid-match leave) push never opens the results screen.
+        if (!ev.progression.partial) setEndProgression(ev.progression);
       }
     });
     applySettingsToGame(game, settings);
