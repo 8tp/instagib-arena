@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { applyHighlight, type BotModel } from './bots';
 import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
-import { attachRailgun, disposeRailgun } from './character/gun';
+import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { probeGibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
 import { WornHat } from './hats';
@@ -136,7 +136,7 @@ export class RemotePlayer {
   private character: Character | null = null;
   // Look inputs: TDM team colour > the viewer's enemy highlight > own skin.
   private highlight: THREE.Color | null = null;
-  private weaponGroup: THREE.Group | null = null; // the attached 3rd-person railgun (rebuilt on finish change)
+  private weaponGroup: AttachedRailgun | null = null; // the attached 3rd-person railgun (recoloured on finish change)
   private railgunFinishId = DEFAULT_RAILGUN_FINISH;
   private hat: WornHat | null = null;
   private hatId = 'hat.none';
@@ -503,9 +503,15 @@ export class RemotePlayer {
   // Swap the 3rd-person railgun for one with the current finish.
   private rebuildWeapon() {
     if (!this.character) return; // fallback capsule has no gun
-    this.disposeWeaponGroup();
     const finishId = isRailgunFinish(this.railgunFinishId) ? this.railgunFinishId : DEFAULT_RAILGUN_FINISH;
-    this.weaponGroup = attachRailgun(this.character, railgunFinishById(finishId).data);
+    const finish = railgunFinishById(finishId).data;
+    if (this.weaponGroup) this.weaponGroup.setFinish(finish); // shared geometry: recolour only
+    else this.weaponGroup = attachRailgun(this.character, finish);
+  }
+
+  // Their shot: the 3rd-person gun flashes and its glow refills over the recharge.
+  notifyFire() {
+    this.weaponGroup?.notifyFire();
   }
 
   private disposeWeaponGroup() {

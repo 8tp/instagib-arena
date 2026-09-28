@@ -11,6 +11,7 @@ const InstagibClient = lazy(() => import('./InstagibClient'));
 const PodiumLab = lazy(() => import('./PodiumLab'));
 const LockerLab = lazy(() => import('./LockerLab'));
 const RewardsLab = lazy(() => import('./ui/RewardsLab'));
+const GunLab = lazy(() => import('./game/gun/GunLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
 
 // Full-screen fallback while a route chunk downloads. Same deck ground as the
@@ -75,6 +76,14 @@ createRoot(document.getElementById('root')!).render(
         element={
           <Suspense fallback={<Loading />}>
             <RewardsLab />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/gunlab"
+        element={
+          <Suspense fallback={<Loading />}>
+            <GunLab />
           </Suspense>
         }
       />
