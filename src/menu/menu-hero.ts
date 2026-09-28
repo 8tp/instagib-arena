@@ -57,7 +57,7 @@ const SPAWN_SECONDS = 1.1; // materialise-in on first show
 const FIRST_EMOTE_S = 5.5;
 const EMOTE_GAP_MIN = 20;
 const EMOTE_GAP_MAX = 30;
-const RIM = 3.6;
+const RIM = 2.4;
 const HERO_HEIGHT = 0.7; // the combatant stands ~70% of the viewport tall
 const BODY_M = 1.9; // helmet-crown height in metres (what HERO_HEIGHT measures)
 const FOOT_REST_Y = 0.095; // planted ankle height (rig rest)
@@ -131,7 +131,7 @@ export class MenuHero {
     // Lighting: a warm key from camera-left, a cool fill, and a hard rim in
     // YOUR colour from behind — the silhouette reads against any arena.
     scene.add(new THREE.HemisphereLight(0xcfe2f2, 0x15171c, 0.22));
-    const key = new THREE.DirectionalLight(0xfff0dc, 1.25);
+    const key = new THREE.DirectionalLight(0xfff0dc, 1.0);
     key.position.set(-4.6, 3.8, 2.6);
     scene.add(key);
     const fill = new THREE.DirectionalLight(0x8fb0ff, 0.14);
@@ -170,7 +170,7 @@ export class MenuHero {
     // The spawn pad: a dark machined disc, a glowing lip in your colour, and a
     // light pool + contact shadow under the boots.
     const padGeo = new THREE.CylinderGeometry(0.66, 0.72, 0.08, 72, 1);
-    const padMat = new THREE.MeshStandardMaterial({ color: 0x0c0f15, metalness: 0.75, roughness: 0.36 });
+    const padMat = new THREE.MeshStandardMaterial({ color: 0x0c0f15, metalness: 0.6, roughness: 0.55 });
     const pad = new THREE.Mesh(padGeo, padMat);
     pad.position.y = -0.04;
     scene.add(pad);

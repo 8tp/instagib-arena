@@ -512,6 +512,14 @@ export class PostFxPipeline {
     }
   }
 
+  // Raise the bloom cut-off (the menu uses a higher one so specular glints on
+  // polished trims don't bloom into blobs). null = the default tuning.
+  private bloomThreshold: number | null = null;
+  setBloomThreshold(t: number | null) {
+    this.bloomThreshold = t;
+    if (this.bloomPass) this.bloomPass.threshold = t ?? BLOOM_TUNING.threshold;
+  }
+
   setBloomScale(k: number) {
     this.bloomScale = Math.max(0, Math.min(1.5, k));
     if (this.bloomPass) this.bloomPass.strength = BLOOM_TUNING.strength * this.bloomScale;
@@ -525,7 +533,7 @@ export class PostFxPipeline {
       new THREE.Vector2(this.width * this.pixelRatio, this.height * this.pixelRatio),
       BLOOM_TUNING.strength * this.bloomScale,
       BLOOM_TUNING.radius,
-      BLOOM_TUNING.threshold,
+      this.bloomThreshold ?? BLOOM_TUNING.threshold,
       BLOOM_TUNING.knee,
     );
     composer.addPass(bloom);
