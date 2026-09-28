@@ -3,7 +3,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { WornHat } from './hats';
 import { CharacterAnimator } from './character-anim';
 import { Character, SKIN_PALETTE, skinColorFor } from './character/character';
-import { attachRailgun, disposeRailgun } from './character/gun';
+import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { RAIL_COOLDOWN } from './constants';
 import { EffectsManager } from './effects';
 import { getFxContext } from './fx-pool';
@@ -138,7 +138,7 @@ export class CharacterPreview {
   private character: Character | null = null;
   private anim: CharacterAnimator | null = null;
   private hat: WornHat | null = null;
-  private emoteGun: THREE.Group | null = null;
+  private emoteGun: AttachedRailgun | null = null;
   private emoteGunFinish = '';
   // Finisher dummy (lazy).
   private dummy: Character | null = null;
@@ -152,6 +152,7 @@ export class CharacterPreview {
   private last = 0;
   private t = 0;
   private disposed = false;
+  private readonly lowSpec: boolean;
   private cos: PreviewCosmetics;
   private view: PreviewView;
 
@@ -189,6 +190,7 @@ export class CharacterPreview {
   ) {
     this.cos = cos;
     this.view = cos.view;
+    this.lowSpec = !!opts.lowSpec;
     this.cam = { ...FRAMES[cos.view] };
     // preserveDrawingBuffer so the canvas reliably shows its first rendered frame
     // the instant it mounts (no transient blank before the rAF loop spins up).
@@ -276,11 +278,18 @@ export class CharacterPreview {
   }
 
   private ensureGun() {
-    if (this.gun && this.gunFinish === this.cos.railgunFinish) return;
-    this.disposeGun();
+    if (this.gun) {
+      // A finish change recolours in place (uniforms) — no remount.
+      if (this.gunFinish !== this.cos.railgunFinish) {
+        this.gun.setFinish(railgunFinishById(this.cos.railgunFinish).data);
+        this.gunFinish = this.cos.railgunFinish;
+      }
+      return;
+    }
     const g = buildRailgun(railgunFinishById(this.cos.railgunFinish).data);
     this.gun = g;
     this.gunFinish = this.cos.railgunFinish;
+    g.setLowSpec(this.lowSpec);
     // Centre the ~1.33 m gun on the pivot (grip origin sits ~0.23 m behind centre).
     g.group.position.set(0, 0, 0.23);
     this.gunPivot.add(g.group);
@@ -289,17 +298,10 @@ export class CharacterPreview {
 
   private disposeGun() {
     if (!this.gun) return;
+    // The gun's geometry is a shared cache: dispose() frees only its own
+    // materials — never traverse-and-dispose it.
+    this.gun.dispose();
     this.gun.group.removeFromParent();
-    const mats = new Set<THREE.Material>();
-    this.gun.group.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (!m.isMesh) return;
-      m.geometry?.dispose();
-      const mat = m.material;
-      if (Array.isArray(mat)) mat.forEach((x) => mats.add(x));
-      else if (mat) mats.add(mat);
-    });
-    mats.forEach((m) => m.dispose());
     this.gun = null;
     this.gunFinish = '';
   }
@@ -308,9 +310,11 @@ export class CharacterPreview {
   private syncEmoteGun(kind: EmoteKind | null) {
     if (!this.character) return;
     const wants = kind === 'flourish';
-    if (wants && (!this.emoteGun || this.emoteGunFinish !== this.cos.railgunFinish)) {
-      disposeRailgun(this.emoteGun);
+    if (wants && !this.emoteGun) {
       this.emoteGun = attachRailgun(this.character, railgunFinishById(this.cos.railgunFinish).data);
+      this.emoteGunFinish = this.cos.railgunFinish;
+    } else if (wants && this.emoteGun && this.emoteGunFinish !== this.cos.railgunFinish) {
+      this.emoteGun.setFinish(railgunFinishById(this.cos.railgunFinish).data);
       this.emoteGunFinish = this.cos.railgunFinish;
     } else if (!wants && this.emoteGun) {
       disposeRailgun(this.emoteGun);
@@ -384,11 +388,8 @@ export class CharacterPreview {
     }
     if (cos.railgunFinish !== prev.railgunFinish) {
       // The bug this fixes: a finish change used to leave the old gun on show.
-      if (this.view === 'weapon') {
-        this.ensureGun();
-        this.fireTimer = Math.min(this.fireTimer, 0.35); // show it off right away
-      }
-      else if (this.gun) this.disposeGun();
+      if (this.gun) this.ensureGun(); // recolour in place (kept while hidden)
+      if (this.view === 'weapon') this.fireTimer = Math.min(this.fireTimer, 0.35); // show it off right away
       if (this.view === 'emote') this.syncEmoteGun(emoteById(cos.emoteId).kind);
     }
     if (this.view === 'finisher' && cos.killEffect !== prev.killEffect) {
@@ -612,7 +613,7 @@ export class CharacterPreview {
       const rc = railColorById(this.cos.railColor).data;
       const start = _v.set(-9, 1.3, 0.6);
       const hit = _v2.set(0, 1.22, 0);
-      getFxContext(this.scene).beams.spawn(start, hit, rc.core, rc.helix, false);
+      getFxContext(this.scene).beams.spawn(start, hit, rc.core, rc.helix, false, { mode: railColorById(this.cos.railColor).mode });
       this.dummyAnim.die({ y: 0 }, this.cos.killEffect);
       if (this.cos.reducedEffects) this.effects.spawnHitFlash(this.scene, CHEST, 0x9be8ff);
       else this.effects.spawnKillBurst(this.scene, CHEST, false, this.cos.killEffect);
@@ -661,7 +662,7 @@ export class CharacterPreview {
       const muzzle = g.muzzle.getWorldPosition(new THREE.Vector3());
       const dir = _v.set(0, 0, -1).applyQuaternion(g.muzzle.getWorldQuaternion(_q)).normalize();
       const end = _v2.copy(muzzle).addScaledVector(dir, 16);
-      getFxContext(this.scene).beams.spawn(muzzle, end, rc.core, rc.helix, false);
+      getFxContext(this.scene).beams.spawn(muzzle, end, rc.core, rc.helix, false, { mode: railColorById(this.cos.railColor).mode });
       this.effects.spawnMuzzleFlash(this.scene, muzzle, rc.core, dir);
       g.glow.emissiveIntensity = 4;
     }

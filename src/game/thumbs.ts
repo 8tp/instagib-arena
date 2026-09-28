@@ -39,7 +39,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v7:';
+const STORE_PREFIX = 'ig-thumb:v8:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 const FACE_CAMERA = Math.PI;
@@ -387,16 +387,9 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
         dist: 2.25,
         elev: 0.12,
         dispose: () => {
-          const mats = new Set<THREE.Material>();
-          gun.group.traverse((o) => {
-            const m = o as THREE.Mesh;
-            if (!m.isMesh) return;
-            m.geometry?.dispose();
-            const mat = m.material;
-            if (Array.isArray(mat)) mat.forEach((x) => mats.add(x));
-            else if (mat) mats.add(mat);
-          });
-          mats.forEach((m) => m.dispose());
+          // Shared geometry cache: free only this gun's materials.
+          gun.dispose();
+          gun.group.removeFromParent();
         },
       };
     }
@@ -411,7 +404,7 @@ async function buildSubject(s: Studio, entry: CatalogEntry): Promise<Subject | n
         settle: () => {
           const a = new THREE.Vector3(-2.3, -1.25, 0.6);
           const b = new THREE.Vector3(2.3, 1.25, -0.6);
-          getFxContext(s.scene).beams.spawn(a, b, rc.core, rc.helix, false);
+          getFxContext(s.scene).beams.spawn(a, b, rc.core, rc.helix, false, { mode: railColorById(entry.id).mode });
           s.effects.spawnHitFlash(s.scene, b.clone().multiplyScalar(0.62), rc.helix);
           stepEffects(s, 0.09);
         },
