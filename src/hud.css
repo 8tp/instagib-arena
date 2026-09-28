@@ -263,11 +263,11 @@
   color: rgba(165, 243, 252, 0.75);
 }
 .hud-xp-tag {
-  margin-top: 0.1rem;
+  margin-top: 0.15rem;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #fcd34d;
 }

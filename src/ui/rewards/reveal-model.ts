@@ -45,6 +45,15 @@ export type RevealModel = {
   segments: BarSegment[];
   skippedLevels: number; // wraps folded out of a very long level run
   cards: RevealCard[];
+  // The 1–2 best road rewards (highest rarity, then highest level), presented
+  // large in the level-up takeover and spotlit at the head of the road list.
+  spotlight: RevealCard[];
+  // Career Road range this reply paid out: "Lv {roadFrom} → {levelAfter}".
+  // Below levelBefore when it includes catch-up steps (after a curve change).
+  roadFrom: number;
+  catchUp: boolean;
+  // Play the level-up takeover (a level was gained, or a catch-up paid out).
+  takeover: boolean;
   challenges: ChallengeCompletion[];
   balance: number | null; // credit balance after the match (saved players only)
 };
@@ -162,6 +171,11 @@ export function buildRevealModel(
     });
   }
 
+  const minRoad = cards.length ? Math.min(...cards.map((c) => c.level)) : levelAfter + 1;
+  const catchUp = cards.some((c) => c.level <= levelBefore);
+  const roadFrom = Math.min(levelBefore, minRoad - 1);
+  const leveled = levelAfter > levelBefore;
+
   return {
     saved,
     offline,
@@ -176,9 +190,33 @@ export function buildRevealModel(
     segments,
     skippedLevels: skipped,
     cards,
+    spotlight: pickSpotlight(cards),
+    roadFrom,
+    catchUp,
+    takeover: leveled || (catchUp && cards.length > 0),
     challenges: p.challenges ?? [],
     balance: saved ? p.progression.credits : null,
   };
+}
+
+// Best 1–2 rewards: cosmetics by rarity (then level); a case key when there
+// is no cosmetic; the biggest credit drop as a last resort. Two only when the
+// second is as exciting as epic, so a common never shares the stage.
+export function pickSpotlight(cards: RevealCard[]): RevealCard[] {
+  const cos = cards
+    .filter((c): c is Extract<RevealCard, { kind: 'cosmetic' }> => c.kind === 'cosmetic')
+    .sort((a, b) => rarityRank(b.rarity) - rarityRank(a.rarity) || b.level - a.level);
+  if (cos.length) {
+    const out: RevealCard[] = [cos[0]];
+    if (cos[1] && rarityRank(cos[1].rarity) >= 2) out.push(cos[1]);
+    return out;
+  }
+  const key = cards.find((c) => c.kind === 'case');
+  if (key) return [key];
+  const credits = cards
+    .filter((c): c is Extract<RevealCard, { kind: 'credits' }> => c.kind === 'credits')
+    .sort((a, b) => b.amount - a.amount);
+  return credits.length ? [credits[0]] : [];
 }
 
 /* ── Timeline ───────────────────────────────────────────────────────────── */
@@ -188,11 +226,15 @@ export function isDense(m: RevealModel): boolean {
   return m.cards.length > 8;
 }
 
+// How long the level-up takeover holds the screen (its CSS runs this long).
+export const TAKEOVER_MS = 2900;
+
 export type RevealTimeline = {
   start: number;
   lineAt: number[];
   totalAt: number;
   seg: { start: number; end: number }[]; // fill runs start → end; a level-up lands at end
+  takeover: { start: number; end: number } | null; // the one level-up beat
   cardAt: number[];
   challengeAt: number[];
   creditsAt: number;
@@ -209,26 +251,45 @@ export function buildTimeline(m: RevealModel, startMs = 750): RevealTimeline {
   const totalAt = t;
   t += 320;
 
+  // Wraps before the last one only flash (a short hold); the LAST wrap opens
+  // the takeover, then the bar finishes filling into the new level. A catch-up
+  // with no level gained takes over once the bar has filled.
   const seg: RevealTimeline['seg'] = [];
   const speed = m.segments.length > 3 ? 0.6 : 1;
-  for (const s of m.segments) {
+  let lastWrap = -1;
+  m.segments.forEach((s, i) => {
+    if (s.levelUp) lastWrap = i;
+  });
+  let takeover: RevealTimeline['takeover'] = null;
+  m.segments.forEach((s, i) => {
     const dist = Math.max(0, s.to - s.from);
     const dur = Math.round(Math.max(260, 900 * dist) * speed);
     seg.push({ start: t, end: t + dur });
-    t += dur + (s.levelUp ? 720 : 0);
+    t += dur;
+    if (s.levelUp && i === lastWrap && m.takeover) {
+      takeover = { start: t + 140, end: t + 140 + TAKEOVER_MS };
+      t = takeover.end + 160;
+    } else if (s.levelUp) {
+      t += 380;
+    }
+  });
+  if (m.takeover && !takeover) {
+    takeover = { start: t + 200, end: t + 200 + TAKEOVER_MS };
+    t = takeover.end + 160;
   }
   t += 260;
 
-  // Many cards (catch-up road steps after a curve change) deal out quickly;
-  // only the rare drops keep their full beat.
+  // Road cards: after a takeover they were already presented, so they deal
+  // in briskly; otherwise the rarer drops keep their beat. Many cards
+  // (catch-up steps) deal out quickly either way.
   const dense = isDense(m);
+  const brisk = dense || !!takeover;
   const cardAt: number[] = [];
   for (const c of m.cards) {
     const rank = c.kind === 'cosmetic' ? rarityRank(c.rarity) : -1;
-    // A beat of anticipation before the rarer drops.
-    if (rank === 3) t += 260;
+    if (rank === 3 && !brisk) t += 260; // a beat of anticipation before a legendary
     cardAt.push(t);
-    t += rank === 3 ? 900 : rank === 2 ? (dense ? 420 : 620) : dense ? 150 : c.kind === 'cosmetic' ? 420 : 360;
+    t += brisk ? (dense ? 130 : 220) : rank === 3 ? 900 : rank === 2 ? 620 : c.kind === 'cosmetic' ? 420 : 360;
   }
   if (m.cards.length) t += 160;
 
@@ -240,5 +301,5 @@ export function buildTimeline(m: RevealModel, startMs = 750): RevealTimeline {
   t += m.credits > 0 ? 820 : 300;
   const ctaAt = t;
   const doneAt = t + 200;
-  return { start: startMs, lineAt, totalAt, seg, cardAt, challengeAt, creditsAt, ctaAt, doneAt };
+  return { start: startMs, lineAt, totalAt, seg, takeover, cardAt, challengeAt, creditsAt, ctaAt, doneAt };
 }

@@ -9,6 +9,7 @@ import { prefersReducedMotion } from '../deck-core';
 import { playUi } from '../game/audio';
 import { PodiumScene, type PodiumWinner } from '../game/podium';
 import { DEFAULT_EMOTE, DEFAULT_HAT, EMOTES, HATS } from '../game/cosmetics';
+import { TEAM_NAMES } from '../game/constants';
 import { ordinal } from './match-info';
 import { RewardsPending, RewardsReveal } from './rewards/RewardsReveal';
 
@@ -60,8 +61,13 @@ function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
   return <canvas ref={ref} className='block h-full w-full' />;
 }
 
+export type ResultsMode = 'ffa' | 'tdm' | 'duel';
+
 // Reward props shared by both results variants.
 type RewardProps = {
+  // The match's mode (FFA gets a placement headline, TDM / duel Victory /
+  // Defeat). Inferred from the scoreboard + the reward reply when absent.
+  mode?: ResultsMode;
   // Guests: "Log in to keep your progress" calls this (the button is hidden
   // when absent — a quiet "log in from the menu" line shows instead).
   onLogin?: () => void;
@@ -75,11 +81,45 @@ type RewardProps = {
 // How long to wait for the server's reward reply before showing "no rewards".
 const REWARDS_WAIT_MS = 6000;
 
-function placementLine(scores: PlayerScore[]): string {
+// What the header says. FFA gets a Q3 centre-print ("3rd place" / "18 frags ·
+// 3rd of 8"); team deathmatch and duels keep Victory / Defeat.
+type Headline = { title: string; sub: string; tone: 'win' | 'loss' | 'place'; stamp: number };
+
+function resultMode(scores: PlayerScore[], explicit?: ResultsMode, fromServer?: string): ResultsMode {
+  if (explicit) return explicit;
+  if (fromServer === 'tdm' || fromServer === 'duel' || fromServer === 'ffa') return fromServer;
+  if (fromServer === 'ranked') return 'duel';
+  if (scores.some((s) => s.team === 0 || s.team === 1)) return 'tdm';
+  return scores.length === 2 ? 'duel' : 'ffa';
+}
+
+function headlineFor(won: boolean, scores: PlayerScore[], mode: ResultsMode): Headline {
   const me = scores.find((s) => s.isLocal);
-  if (!me) return 'Final standings';
-  const rank = scores.filter((o) => o.frags > me.frags).length + 1;
-  return `Final standings · ${ordinal(rank)} of ${scores.length} · ${me.frags} frag${me.frags === 1 ? '' : 's'}`;
+  const frags = (n: number) => `${n} frag${n === 1 ? '' : 's'}`;
+  if (mode === 'ffa' && me) {
+    const rank = scores.filter((o) => o.frags > me.frags).length + 1;
+    const tied = scores.some((o) => o !== me && o.frags === me.frags);
+    return {
+      title: `${tied ? 'Tied for ' : ''}${ordinal(rank)} place`,
+      sub: `${frags(me.frags)} · ${ordinal(rank)} of ${scores.length}`,
+      tone: rank === 1 ? 'win' : 'place',
+      stamp: rank === 1 ? 1 : 0,
+    };
+  }
+  let sub = 'Final standings';
+  if (mode === 'tdm') {
+    const total = (t: number) => scores.filter((s) => s.team === t).reduce((n, s) => n + s.frags, 0);
+    sub = `${TEAM_NAMES[0]} ${total(0)} – ${total(1)} ${TEAM_NAMES[1]}`;
+  } else if (me) {
+    const opp = scores.find((s) => !s.isLocal);
+    if (opp) sub = `${me.frags} – ${opp.frags} against ${opp.name}`;
+  }
+  return { title: won ? 'Victory' : 'Defeat', sub, tone: won ? 'win' : 'loss', stamp: won ? 1 : -1 };
+}
+
+// "You" is already the name for an unnamed local player; otherwise a tag.
+function isPlainYou(name: string): boolean {
+  return name.trim().toLowerCase() === 'you';
 }
 
 // Shared results panel: the Victory/Defeat slam, the 3D top-3 podium, the full
@@ -97,6 +137,7 @@ function ResultsPanel({
   expectRewards = true,
   revealFreezeAt,
   onHoverChange,
+  mode: modeProp,
 }: {
   won: boolean;
   scores: PlayerScore[];
@@ -126,11 +167,15 @@ function ResultsPanel({
   }, [progression, gaveUp]);
   const revealing = !!progression && !revealDone && !skipped;
 
+  const mode = resultMode(scores, modeProp, progression?.mode);
+  const head = headlineFor(won, scores, mode);
+
   // The slam's sound, on its impact frame.
+  const stampRef = useRef(head.stamp);
   useEffect(() => {
-    const id = window.setTimeout(() => playUi('stamp', won ? 1 : -1), 170);
+    const id = window.setTimeout(() => playUi('stamp', stampRef.current), 170);
     return () => window.clearTimeout(id);
-  }, [won]);
+  }, []);
 
   // Space skips the reveal to its end state (and only that, while it runs: the
   // matching keyup is swallowed too so a focused button isn't activated).
@@ -160,14 +205,17 @@ function ResultsPanel({
     };
   }, [revealing]);
 
-  const tone = won
-    ? { text: 'text-emerald-300', glow: 'rgba(52,211,153,0.6)', line: '#6ee7b7', wash: 'rgba(16,185,129,0.16)' }
-    : { text: 'text-rose-300', glow: 'rgba(244,63,94,0.6)', line: '#fda4af', wash: 'rgba(225,29,72,0.16)' };
+  const tone =
+    head.tone === 'win'
+      ? { text: 'text-emerald-300', glow: 'rgba(52,211,153,0.6)', line: '#6ee7b7', wash: 'rgba(16,185,129,0.16)' }
+      : head.tone === 'loss'
+        ? { text: 'text-rose-300', glow: 'rgba(244,63,94,0.6)', line: '#fda4af', wash: 'rgba(225,29,72,0.16)' }
+        : { text: 'text-cyan-100', glow: 'rgba(34,211,238,0.45)', line: '#a5f3fc', wash: 'rgba(34,211,238,0.12)' };
 
   return (
     <ModalShell
-      label={won ? 'Victory — final standings' : 'Defeat — final standings'}
-      tone={won ? 'emerald' : 'rose'}
+      label={`${head.title} — final standings`}
+      tone={head.tone === 'win' ? 'emerald' : head.tone === 'loss' ? 'rose' : 'cyan'}
       width='w-[1120px]'
       z='z-30'
       backdrop='heavy'
@@ -202,11 +250,9 @@ function ResultsPanel({
             className={`rw-slam font-display text-[2.75rem] font-bold uppercase leading-none tracking-[0.22em] ${tone.text}`}
             style={{ textShadow: `0 3px 0 rgba(0,0,0,0.55), 0 0 28px ${tone.glow}` }}
           >
-            {won ? 'Victory' : 'Defeat'}
+            {head.title}
           </div>
-          <div className='rw-sub-in mt-2 font-mono text-[10px] uppercase tracking-[0.26em] text-white/45'>
-            {placementLine(scores)}
-          </div>
+          <div className='rw-sub-in mt-2 font-sans text-[14px] text-white/60'>{head.sub}</div>
         </div>
 
         <div className='grid [grid-template-areas:"podium"_"rewards"_"board"] lg:grid-cols-[minmax(0,1fr)_400px] lg:grid-rows-[auto_1fr] lg:[grid-template-areas:"podium_rewards"_"board_rewards"]'>
@@ -240,23 +286,23 @@ function ResultsPanel({
           {/* Full scoreboard (all players, compact) + your match stats. */}
           <div className='p-5 pt-3.5 [grid-area:board]'>
             <div className='overflow-hidden border border-white/10'>
-              <div className='grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 bg-white/5 px-3 py-1.5 text-[10px] uppercase tracking-[0.16em] text-white/45'>
+              <div className='grid grid-cols-[2rem_1fr_3.5rem_3.5rem] gap-2 bg-white/5 px-3 py-1.5 text-[12px] text-white/50'>
                 <span>#</span>
                 <span>Player</span>
-                <span className='text-right'>K</span>
-                <span className='text-right'>D</span>
+                <span className='text-right'>Frags</span>
+                <span className='text-right'>Deaths</span>
               </div>
               {scores.map((s, i) => (
                 <div
                   key={s.id}
-                  className={`deck-tr grid grid-cols-[2rem_1fr_3rem_3rem] gap-2 px-3 py-[5px] text-sm ${
+                  className={`deck-tr grid grid-cols-[2rem_1fr_3.5rem_3.5rem] gap-2 px-3 py-[5px] text-sm ${
                     s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
                   }`}
                 >
                   <span className='tabular-nums text-white/45'>{i + 1}</span>
-                  <span className='truncate'>
-                    {s.name}
-                    {s.isLocal && ' (you)'}
+                  <span className='flex min-w-0 items-center gap-2'>
+                    <span className='truncate'>{s.name}</span>
+                    {s.isLocal && !isPlainYou(s.name) && <span className='rw-chip rw-chip-cyan shrink-0'>You</span>}
                   </span>
                   <span className='text-right tabular-nums'>{s.frags}</span>
                   <span className='text-right tabular-nums'>{s.deaths}</span>
@@ -268,8 +314,8 @@ function ResultsPanel({
               <div className='mt-3 grid grid-cols-4 gap-2 text-center'>
                 <MiniStat label='Kills' value={result.kills} />
                 <MiniStat label='Deaths' value={result.deaths} />
-                <MiniStat label='Streak' value={result.bestStreak} />
-                <MiniStat label='Acc' value={`${acc}%`} />
+                <MiniStat label='Best streak' value={result.bestStreak} />
+                <MiniStat label='Accuracy' value={`${acc}%`} />
               </div>
             )}
           </div>
@@ -404,7 +450,7 @@ export function OnlineMatchResults({
             <div className='rw-countdown h-full bg-cyan-300' data-paused={hovered} style={barStyle} />
           </div>
           {hovered && (
-            <div className='absolute -top-5 right-0 font-mono text-[9px] uppercase tracking-[0.18em] text-white/40'>Paused</div>
+            <div className='absolute -top-6 right-0 text-[12px] text-white/50'>Paused</div>
           )}
         </div>
       }
@@ -415,7 +461,7 @@ export function OnlineMatchResults({
 export function MiniStat({ label, value }: { label: string; value: string | number }) {
   return (
     <div>
-      <div className='text-[9px] uppercase tracking-[0.2em] text-white/40'>{label}</div>
+      <div className='text-[12px] text-white/50'>{label}</div>
       <div className='text-lg font-bold tabular-nums'>{value}</div>
     </div>
   );

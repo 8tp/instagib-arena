@@ -1,22 +1,26 @@
 // End-of-match rewards reveal: XP lines tick in with a rolling total → the XP
-// bar fills (a flash + LEVEL stamp + fanfare per level gained) → Career Road
-// reward cards flip in with a rarity sting → challenges → the credits count.
+// bar fills (a flash per wrap) → ONE level-up takeover presents the new level
+// and the best reward large → Career Road cards deal into the column →
+// challenges → the credits count.
 //
 // Motion model: React state changes only at the timeline's event times (a few
-// dozen over ~8 s, scheduled with setTimeout); everything that moves between
+// dozen over ~10 s, scheduled with setTimeout); everything that moves between
 // them is a CSS animation that starts when its element's class/key appears
-// (rewards.css). The two count-ups write textContent from rAF for their few
+// (rewards.css). The count-ups write textContent from rAF for their few
 // hundred ms — never React state per frame. Layout is reserved up front (rows
 // render invisible until their beat), so nothing below jumps as lines land.
+//
+// Type rule (critic round 1): caps only for surface titles, buttons and short
+// state chips; section labels are sentence case at 13–14 px; nothing < 12 px.
 import './rewards.css';
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ProgressionResp } from '../../app-types';
 import type { MatchResult } from '../../game/game';
 import { playUi, type UiSoundName } from '../../game/audio';
 import { RARITY_UNLOCK } from '../../game/sfx/ui-sounds';
 import { OFFLINE_XP_SCALE } from '../../game/progression';
+import { cosmeticById, type CosmeticSlot } from '../../game/cosmetics';
 import { DeckButton, Skeleton } from '../../deck';
-import { cosmeticById } from '../../game/cosmetics';
 import { ItemTile } from '../item-tile';
 import { RARITY_COLOR } from '../rarity';
 import {
@@ -30,9 +34,64 @@ import {
   type RevealTimeline,
 } from './reveal-model';
 
-const cosmeticName = (id: string) => cosmeticById(id)?.name ?? id;
 const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
 const signed = (n: number) => `${n < 0 ? '−' : '+'}${fmt(Math.abs(n))}`;
+const cosmeticName = (id: string) => cosmeticById(id)?.name ?? id;
+
+const SLOT_NAME: Record<CosmeticSlot, string> = {
+  killEffect: 'Finisher',
+  railColor: 'Rail beam',
+  railgunFinish: 'Railgun finish',
+  hat: 'Hat',
+  unusual: 'Unusual',
+  card: 'Player card',
+  emote: 'Emote',
+  nameColor: 'Name colour',
+  spawnEffect: 'Spawn effect',
+  title: 'Title',
+  announcer: 'Announcer',
+};
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/* ── Shared primitives ──────────────────────────────────────────────────── */
+
+// Currency is always "⛁ 1,234" (a gain: "+⛁ 1,234").
+export function Credits({ n, gain = false, className = '' }: { n: number; gain?: boolean; className?: string }) {
+  return (
+    <span className={`whitespace-nowrap tabular-nums ${className}`}>
+      {gain && '+'}
+      <span aria-hidden='true'>⛁</span>
+      <span className='sr-only'>credits</span> {fmt(n)}
+    </span>
+  );
+}
+
+// The level emblem: the menu's filled, corner-cut badge (number over "LV").
+// `xl` is the takeover's hero numeral.
+export function LevelEmblem({
+  level,
+  size = 'sm',
+  guest = false,
+  className = '',
+}: {
+  level: number;
+  size?: 'sm' | 'xl';
+  guest?: boolean;
+  className?: string;
+}) {
+  return (
+    <span className={`rw-level rw-level-${size} ${guest ? 'rw-level-guest' : ''} ${className}`} aria-label={`Level ${level}`}>
+      <span className='rw-level-num'>{level}</span>
+      <span className='rw-level-cap' aria-hidden='true'>
+        LV
+      </span>
+    </span>
+  );
+}
+
+function Chip({ tone, children }: { tone: 'cyan' | 'amber' | 'emerald' | 'plain'; children: ReactNode }) {
+  return <span className={`rw-chip rw-chip-${tone}`}>{children}</span>;
+}
 
 /* ── Count-up ───────────────────────────────────────────────────────────── */
 
@@ -90,23 +149,35 @@ function useRevealClock(times: number[], cues: Cue[], skipped: boolean, freezeAt
   return skipped ? Number.POSITIVE_INFINITY : t;
 }
 
+// Delay from the takeover's start to its reward tiles flipping in (the sting).
+const TO_TILE_MS = 620;
+// Spotlit card size in the column (catch-up / long runs).
+const SPOT = 110;
+
+function cardSting(c: RevealCard): UiSoundName {
+  if (c.kind === 'cosmetic') return RARITY_UNLOCK[rarityRank(c.rarity)];
+  return c.kind === 'credits' ? 'purchase' : 'caseReveal';
+}
+
 function buildCues(m: RevealModel, tl: RevealTimeline): { times: number[]; cues: Cue[] } {
   const cues: Cue[] = [];
   const cue = (at: number, name: UiSoundName, detail?: number) => cues.push({ at, run: () => playUi(name, detail) });
   m.lines.forEach((l, i) => cue(tl.lineAt[i], l.xp < 0 ? 'uiBack' : 'xpTick', i));
+  // Early wraps get a bright tick; the last one's fanfare belongs to the takeover.
   m.segments.forEach((s, k) => {
-    if (s.levelUp) cue(tl.seg[k].end, 'levelUp');
+    if (s.levelUp && !(tl.takeover && tl.takeover.start - tl.seg[k].end < 400)) cue(tl.seg[k].end, 'xpTick', 10);
   });
-  // A dense deal (catch-up road) ticks up the XP ladder for the everyday
-  // drops and saves the stings for epic + legendary.
-  const dense = isDense(m);
+  if (tl.takeover) {
+    cue(tl.takeover.start, 'levelUp');
+    if (m.spotlight[0]) cue(tl.takeover.start + TO_TILE_MS, cardSting(m.spotlight[0]));
+  }
+  // Cards already presented by the takeover (or a dense catch-up deal) tick up
+  // the ladder; otherwise each gets its rarity sting.
+  const brisk = !!tl.takeover || isDense(m);
   let tick = 0;
   m.cards.forEach((c, i) => {
-    const rank = c.kind === 'cosmetic' ? rarityRank(c.rarity) : -1;
-    if (dense && rank < 2) cue(tl.cardAt[i], 'xpTick', tick++);
-    else if (c.kind === 'cosmetic') cue(tl.cardAt[i], RARITY_UNLOCK[rank]);
-    else if (c.kind === 'credits') cue(tl.cardAt[i], 'purchase');
-    else cue(tl.cardAt[i], 'caseReveal');
+    if (brisk) cue(tl.cardAt[i], 'xpTick', Math.min(12, tick++));
+    else cue(tl.cardAt[i], cardSting(c));
   });
   m.challenges.forEach((_, i) => cue(tl.challengeAt[i], 'uiConfirm'));
   if (m.credits > 0) cue(tl.creditsAt + 560, 'purchase');
@@ -114,6 +185,7 @@ function buildCues(m: RevealModel, tl: RevealTimeline): { times: number[]; cues:
     ...tl.lineAt,
     tl.totalAt,
     ...tl.seg.flatMap((s) => [s.start, s.end]),
+    ...(tl.takeover ? [tl.takeover.start, tl.takeover.end] : []),
     ...tl.cardAt,
     ...tl.challengeAt,
     tl.creditsAt,
@@ -125,19 +197,7 @@ function buildCues(m: RevealModel, tl: RevealTimeline): { times: number[]; cues:
   return { times, cues };
 }
 
-/* ── Pieces ─────────────────────────────────────────────────────────────── */
-
-function Chip({ tone, children }: { tone: 'cyan' | 'amber' | 'emerald' | 'plain'; children: React.ReactNode }) {
-  const cls =
-    tone === 'amber'
-      ? 'border-amber-300/40 text-amber-200'
-      : tone === 'emerald'
-        ? 'border-emerald-300/50 bg-emerald-300/10 text-emerald-200'
-        : tone === 'cyan'
-          ? 'border-cyan-300/40 text-cyan-200'
-          : 'border-white/15 text-white/55';
-  return <span className={`deck-chip ${cls}`}>{children}</span>;
-}
+/* ── XP bar ─────────────────────────────────────────────────────────────── */
 
 function XpBar({ m, tl, t }: { m: RevealModel; tl: RevealTimeline; t: number }) {
   // The segment currently shown: the last one whose fill has started.
@@ -146,43 +206,30 @@ function XpBar({ m, tl, t }: { m: RevealModel; tl: RevealTimeline; t: number }) 
   const seg = k >= 0 ? m.segments[k] : m.segments[0];
   const segT = k >= 0 ? tl.seg[k] : null;
   const barDone = k === m.segments.length - 1 && segT !== null && t >= segT.end;
-  // Level shown on the badge: bumps the moment a wrap lands.
+  // Level shown on the emblem: bumps the moment a wrap lands.
   let level = m.levelBefore;
+  let latestWrap = -1;
   m.segments.forEach((s, i) => {
-    if (s.levelUp && t >= tl.seg[i].end) level = s.level + 1;
+    if (s.levelUp && t >= tl.seg[i].end) {
+      level = s.level + 1;
+      latestWrap = i;
+    }
   });
   const holdingWrap = !!segT && seg.levelUp && t >= segT.end; // between a wrap and the next fill
   const dur = segT ? segT.end - segT.start : 0;
   const vars = { '--rw-from': seg.from, '--rw-to': seg.to, '--rw-dur': `${dur}ms` } as CSSProperties;
-  const { into, span } = levelSpan(
-    barDone ? m.totalAfter : m.totalBefore,
-    barDone ? m.levelAfter : m.levelBefore,
-  );
+  const { into, span } = levelSpan(barDone ? m.totalAfter : m.totalBefore, barDone ? m.levelAfter : m.levelBefore);
   // The "into" readout climbs with the fill of the active segment.
   const segSpan = levelSpan(m.totalBefore, seg.level).span || span;
   const readInto = k < 0 ? into : barDone ? into : Math.round((holdingWrap ? 1 : seg.to) * segSpan);
   const readSpan = k < 0 || barDone ? span : segSpan;
-  const latestWrap = (() => {
-    let w = -1;
-    m.segments.forEach((s, i) => {
-      if (s.levelUp && t >= tl.seg[i].end) w = i;
-    });
-    return w;
-  })();
   const maxed = span === 0 && barDone;
+  const leveled = m.levelAfter > m.levelBefore;
 
   return (
     <div className='relative'>
       <div className='flex items-center gap-3'>
-        <div
-          key={level}
-          className={`grid h-11 w-11 shrink-0 place-items-center border font-display text-xl font-bold tabular-nums ${
-            level > m.levelBefore ? 'rw-badge-tick border-emerald-300/70 bg-emerald-300/15 text-emerald-100' : 'border-cyan-300/40 bg-cyan-300/[0.08] text-cyan-100'
-          }`}
-          aria-label={`Level ${level}`}
-        >
-          {level}
-        </div>
+        <LevelEmblem key={level} level={level} guest={!m.saved} className={level > m.levelBefore ? 'rw-badge-tick' : ''} />
         <div className='min-w-0 flex-1'>
           <div className='rw-track'>
             <div className='rw-fill rw-fill-base' style={{ transform: `scaleX(${k < 0 ? m.segments[0].from : seg.from})` }} />
@@ -194,37 +241,38 @@ function XpBar({ m, tl, t }: { m: RevealModel; tl: RevealTimeline; t: number }) 
             )}
             <div className='rw-track-notch' />
           </div>
-          <div className='mt-1.5 flex items-baseline justify-between font-mono text-[10px] uppercase tracking-[0.14em] text-white/45'>
-            <span className='tabular-nums'>
+          <div className='mt-1.5 flex items-baseline justify-between gap-3 text-[12px] text-white/50'>
+            <span className='font-mono tabular-nums'>
               {maxed ? (
                 'Max level'
               ) : (
                 <>
-                  <CountUp key={`i${k}:${barDone ? 1 : 0}`} value={readInto} from={k < 0 || barDone ? readInto : Math.round(seg.from * segSpan)} ms={holdingWrap || barDone ? 0 : dur} /> /{' '}
-                  {fmt(readSpan)} XP
+                  <CountUp
+                    key={`i${k}:${barDone ? 1 : 0}`}
+                    value={readInto}
+                    from={k < 0 || barDone ? readInto : Math.round(seg.from * segSpan)}
+                    ms={holdingWrap || barDone ? 0 : dur}
+                  />{' '}
+                  / {fmt(readSpan)} XP
                 </>
               )}
             </span>
-            {!maxed && !holdingWrap && <span>Next: Lv {level + 1}</span>}
+            {barDone && leveled ? (
+              <span className='rw-fade font-display text-[14px] font-semibold text-emerald-200'>
+                Lv {m.levelBefore} → {m.levelAfter}
+              </span>
+            ) : (
+              !maxed && !holdingWrap && <span className='font-sans'>Next: Lv {level + 1}</span>
+            )}
           </div>
         </div>
       </div>
-      {latestWrap >= 0 && (
-        <>
-          <div key={`f${latestWrap}`} className='rw-flash' />
-          <div key={`s${latestWrap}`} className='pointer-events-none absolute inset-x-0 -top-2 bottom-3 grid place-items-center'>
-            <span
-              className='rw-lvstamp border border-emerald-300/80 bg-[#04140d] px-5 py-1 font-display text-2xl font-bold uppercase tracking-[0.2em] text-emerald-100'
-              style={{ boxShadow: '0 0 34px rgba(52,211,153,0.55), inset 0 0 18px rgba(52,211,153,0.25)' }}
-            >
-              Level {m.segments[latestWrap].level + 1}
-            </span>
-          </div>
-        </>
-      )}
+      {latestWrap >= 0 && <div key={`f${latestWrap}`} className='rw-flash' />}
     </div>
   );
 }
+
+/* ── Reward cards ───────────────────────────────────────────────────────── */
 
 function KeyGlyph({ size }: { size: number }) {
   return (
@@ -235,63 +283,128 @@ function KeyGlyph({ size }: { size: number }) {
   );
 }
 
-function RewardCardView({ c, size }: { c: RevealCard; size: number }) {
-  const CARD = size;
-  const caption = (text: string, color: string) => (
-    <div className='mt-1 truncate text-center font-mono text-[9px] font-bold uppercase tracking-[0.14em]' style={{ color }}>
-      {text}
+// The card face alone (no caption): a cosmetic tile, a credits drop or a key.
+function CardFace({ c, size }: { c: RevealCard; size: number }) {
+  if (c.kind === 'cosmetic') return <ItemTile id={c.id} size={size} label={false} />;
+  if (c.kind === 'credits') {
+    return (
+      <div
+        className='flex flex-col items-center justify-center'
+        style={{ width: size, height: size, background: 'radial-gradient(120% 90% at 50% 20%, #7a4a0b, #2a1703)', boxShadow: 'inset 0 0 0 1px #fbbf2466' }}
+      >
+        <span aria-hidden='true' className='leading-none text-amber-200/80' style={{ fontSize: Math.round(size * 0.3) }}>
+          ⛁
+        </span>
+        <span className='font-display font-bold tabular-nums leading-tight text-amber-100' style={{ fontSize: Math.max(13, Math.round(size * 0.2)) }}>
+          {fmt(c.amount)}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className='flex flex-col items-center justify-center'
+      style={{ width: size, height: size, background: 'radial-gradient(120% 90% at 50% 20%, #1d4f8f, #0a1a33)', boxShadow: 'inset 0 0 0 1px #60a5fa66' }}
+    >
+      <KeyGlyph size={Math.round(size * 0.46)} />
     </div>
   );
-  if (c.kind === 'cosmetic') {
-    const col = RARITY_COLOR[c.rarity];
-    const style = { '--rw-glow': `${col.edge}cc` } as CSSProperties;
-    return (
-      <div className='rw-card' style={style} role='img' aria-label={`${cosmeticName(c.id)}, ${c.rarity}, level ${c.level} reward`}>
-        <div className='rw-card-burst' />
-        {c.rarity === 'legendary' && <div className='rw-card-rays' />}
-        <div className='rw-card-body'>
-          {(c.rarity === 'epic' || c.rarity === 'legendary') && <div className='rw-card-halo' />}
-          <ItemTile id={c.id} size={CARD} label={CARD >= 60} />
-          {c.rarity === 'legendary' && <div className='rw-card-shine' />}
-        </div>
-        {caption(`Lv ${c.level}`, col.edge)}
-      </div>
-    );
-  }
-  if (c.kind === 'credits') {
-    const style = { '--rw-glow': '#fbbf24aa' } as CSSProperties;
-    return (
-      <div className='rw-card' style={style} role='img' aria-label={`${c.amount} credits, level ${c.level} reward`}>
-        <div className='rw-card-burst' />
-        <div
-          className='rw-card-body flex flex-col items-center justify-center'
-          style={{ width: CARD, height: CARD, background: 'radial-gradient(120% 90% at 50% 20%, #7a4a0b, #2a1703)', boxShadow: 'inset 0 0 0 1px #fbbf2466' }}
-        >
-          <span
-            className={`font-display font-bold tabular-nums text-amber-200 ${CARD < 60 ? 'text-sm' : CARD < 80 ? 'text-xl' : 'text-2xl'}`}
-          >
-            +{fmt(c.amount)}
-          </span>
-          {CARD >= 60 && <span className='font-mono text-[9px] uppercase tracking-[0.16em] text-amber-200/70'>Credits</span>}
-        </div>
-        {caption(`Lv ${c.level}`, '#fcd34dcc')}
-      </div>
-    );
-  }
-  const style = { '--rw-glow': '#60a5facc' } as CSSProperties;
+}
+
+function cardGlow(c: RevealCard): string {
+  if (c.kind === 'cosmetic') return `${RARITY_COLOR[c.rarity].edge}cc`;
+  return c.kind === 'credits' ? '#fbbf24aa' : '#60a5facc';
+}
+
+function cardName(c: RevealCard): string {
+  if (c.kind === 'cosmetic') return cosmeticName(c.id);
+  return c.kind === 'credits' ? `${fmt(c.amount)} credits` : 'Case key';
+}
+
+function cardAria(c: RevealCard): string {
+  const what = c.kind === 'cosmetic' ? `${cosmeticName(c.id)}, ${c.rarity}` : cardName(c);
+  return `${what}, level ${c.level} reward`;
+}
+
+// A reward card in the column: the face with its reveal (flip + rarity burst;
+// epic/legendary halo; legendary rays + shine), then a sentence-case caption.
+function RewardCardView({ c, size, captioned = true }: { c: RevealCard; size: number; captioned?: boolean }) {
+  const rarity = c.kind === 'cosmetic' ? c.rarity : null;
+  const edge = c.kind === 'cosmetic' ? RARITY_COLOR[c.rarity].edge : c.kind === 'credits' ? '#fcd34d' : '#7dd3fc';
   return (
-    <div className='rw-card' style={style} role='img' aria-label={`Hat case key, level ${c.level} reward`}>
+    <div className='rw-card' style={{ '--rw-glow': cardGlow(c) } as CSSProperties} role='img' aria-label={cardAria(c)}>
       <div className='rw-card-burst' />
-      <div
-        className='rw-card-body flex flex-col items-center justify-center gap-1'
-        style={{ width: CARD, height: CARD, background: 'radial-gradient(120% 90% at 50% 20%, #1d4f8f, #0a1a33)', boxShadow: 'inset 0 0 0 1px #60a5fa66' }}
-      >
-        <KeyGlyph size={CARD < 60 ? 24 : 34} />
-        {CARD >= 60 && (
-          <span className='text-center font-mono text-[9px] uppercase leading-tight tracking-[0.12em] text-sky-100/80'>Case key</span>
+      {rarity === 'legendary' && <div className='rw-card-rays' />}
+      <div className='rw-card-body'>
+        {(rarity === 'epic' || rarity === 'legendary') && <div className='rw-card-halo' />}
+        <CardFace c={c} size={size} />
+        {rarity === 'legendary' && <div className='rw-card-shine' />}
+      </div>
+      {captioned && (
+        <div className='mt-1 text-[12px] leading-tight'>
+          {size >= 78 && <div className='truncate text-white/85'>{cardName(c)}</div>}
+          <div className='font-mono tabular-nums' style={{ color: edge }}>
+            Lv {c.level}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Level-up takeover ──────────────────────────────────────────────────── */
+
+// The one beat that stops and presents the new level: a hero emblem, "Lv 6 → 7"
+// and the best reward(s) large, then it collapses back into the column. It is
+// absolutely positioned against the dialog panel (no positioned ancestor sits
+// between the reveal and the ModalShell panel), so it covers the whole results
+// dialog without scrolling with it — also inside a fullscreened game root.
+function LevelTakeover({ m }: { m: RevealModel }) {
+  const leveled = m.levelAfter > m.levelBefore;
+  const two = m.spotlight.length > 1;
+  const tile = two ? 184 : 224;
+  const rewardCount = m.cards.length;
+  const more = rewardCount - m.spotlight.length;
+  return (
+    <div className='rw-takeover absolute inset-0 z-20 flex items-center justify-center overflow-hidden font-sans' role='status'>
+      <div className='rw-takeover-scrim absolute inset-0' />
+      <div className='rw-takeover-body relative flex flex-col items-center gap-7 px-6 lg:flex-row lg:gap-16'>
+        <div className='flex flex-col items-center text-center'>
+          <div className='rw-to-emblem'>
+            <LevelEmblem level={m.levelAfter} size='xl' guest={!m.saved} />
+          </div>
+          <div className='rw-to-title mt-4 font-display text-[2.6rem] font-bold uppercase leading-none tracking-[0.14em] text-emerald-200'>
+            {leveled ? 'Level up' : 'Career Road'}
+          </div>
+          <div className='rw-to-sub mt-2.5 font-display text-[20px] font-semibold text-white/85'>
+            Lv {m.roadFrom < m.levelBefore ? m.roadFrom : m.levelBefore} → {m.levelAfter}
+            {rewardCount > 0 && <span className='text-white/50'> · {rewardCount} reward{rewardCount === 1 ? '' : 's'}</span>}
+          </div>
+          {!m.saved && <div className='rw-to-sub mt-2 text-[14px] text-white/55'>Not saved. Log in to keep it.</div>}
+        </div>
+        {m.spotlight.length > 0 && (
+          <div className='flex flex-col items-center gap-3'>
+            <div className='flex items-start gap-5'>
+              {m.spotlight.map((c, i) => (
+                <div key={c.key} className='rw-to-tile flex flex-col items-center' style={{ animationDelay: `${TO_TILE_MS + i * 180}ms`, width: tile }}>
+                  <div className='rw-card' style={{ '--rw-glow': cardGlow(c) } as CSSProperties} role='img' aria-label={cardAria(c)}>
+                    <div className='rw-card-burst' style={{ animationDelay: `${TO_TILE_MS + 80 + i * 180}ms` }} />
+                    {c.kind === 'cosmetic' && c.rarity === 'legendary' && <div className='rw-card-rays' />}
+                    {c.kind === 'cosmetic' && rarityRank(c.rarity) >= 2 && <div className='rw-card-halo' />}
+                    <CardFace c={c} size={tile} />
+                  </div>
+                  <div className='mt-3 max-w-full truncate font-display text-[22px] font-semibold leading-tight text-white'>{cardName(c)}</div>
+                  <div className='mt-0.5 text-[14px]' style={{ color: c.kind === 'cosmetic' ? RARITY_COLOR[c.rarity].edge : '#cbd5e1' }}>
+                    {c.kind === 'cosmetic' ? `${cap(c.rarity)} ${SLOT_NAME[cosmeticById(c.id)?.slot ?? 'hat'].toLowerCase()}` : c.kind === 'case' ? 'One free hat-case opening' : 'Credits'}
+                    <span className='text-white/40'> · Lv {c.level}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {more > 0 && <div className='rw-to-sub text-[14px] text-white/55'>+{more} more below</div>}
+          </div>
         )}
       </div>
-      {caption(`Lv ${c.level}`, '#7dd3fccc')}
     </div>
   );
 }
@@ -364,43 +477,43 @@ export function RewardsReveal({
     last?.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
   }, [t, skipped, reduced]);
 
-  const cardSize = isDense(m) ? 52 : m.cards.length > 4 ? 64 : 78;
+  const dense = isDense(m);
+  // Catch-up / long runs spotlight the best 1–2 bigger at the head of the list.
+  const spotInList = dense || m.catchUp ? m.spotlight : [];
+  const listCards = m.cards.filter((c) => !spotInList.includes(c));
+  const cardSize = dense ? 72 : 78;
   const visibleLines = m.lines.filter((_, i) => t >= tl.lineAt[i]);
   const shownTotal = t >= tl.totalAt ? m.xp : visibleLines.length ? visibleLines[visibleLines.length - 1].running : 0;
-  const leveled = m.levelAfter > m.levelBefore;
   const guest = !m.saved;
   const instant = skipped;
+  const inTakeover = !!tl.takeover && t >= tl.takeover.start && t < tl.takeover.end;
+  const cardOn = (c: RevealCard) => t >= tl.cardAt[m.cards.indexOf(c)];
 
   const summary = done
     ? `${guest ? 'You would have earned' : 'Earned'} ${m.xp} XP${m.credits ? ` and ${m.credits} credits` : ''}${
-        leveled ? `, reaching level ${m.levelAfter}` : ''
+        m.levelAfter > m.levelBefore ? `, reaching level ${m.levelAfter}` : ''
       }${m.cards.length ? `. ${m.cards.length} Career Road reward${m.cards.length > 1 ? 's' : ''}` : ''}.`
     : '';
 
   return (
-    <div ref={rootRef} className={`rw-root flex flex-col gap-3 ${reduced ? 'rw-reduced' : ''} ${skipped ? 'rw-skip' : ''} ${guest ? 'rw-guest' : ''}`}>
+    <div ref={rootRef} className={`rw-root flex flex-col gap-3 font-sans ${reduced ? 'rw-reduced' : ''} ${skipped ? 'rw-skip' : ''} ${guest ? 'rw-guest' : ''}`}>
       {/* Header: the rolling total, with its qualifiers on the right. */}
       <div>
-        {guest && <div className='deck-label mb-1'>You would have earned</div>}
+        {guest && <div className='rw-label mb-1'>You would have earned</div>}
         <div className='flex items-end justify-between gap-3'>
           <div className='flex items-baseline gap-2'>
-          <span
-            key={shownTotal}
-            className={`rw-bump font-display text-[2.75rem] font-bold leading-none tabular-nums ${guest ? 'text-cyan-200/80' : 'text-cyan-200'}`}
-            style={{ textShadow: '0 0 24px rgba(34,211,238,0.35)' }}
-          >
-            +<CountUp value={shownTotal} ms={220} instant={instant} />
-          </span>
-          <span className='font-display text-xl font-bold uppercase text-cyan-200/70'>XP</span>
+            <span
+              key={shownTotal}
+              className={`rw-bump font-display text-[2.75rem] font-bold leading-none tabular-nums ${guest ? 'text-cyan-200/80' : 'text-cyan-200'}`}
+              style={{ textShadow: '0 0 24px rgba(34,211,238,0.35)' }}
+            >
+              +<CountUp value={shownTotal} ms={220} instant={instant} />
+            </span>
+            <span className='font-display text-xl font-bold uppercase text-cyan-200/70'>XP</span>
           </div>
           <span className='mb-1 flex flex-wrap justify-end gap-1.5'>
-            {m.offline && <Chip tone='amber'>Offline · XP ×{OFFLINE_XP_SCALE}</Chip>}
+            {m.offline && <Chip tone='amber'>Practice ×{OFFLINE_XP_SCALE}</Chip>}
             {guest && <Chip tone='plain'>Not saved</Chip>}
-            {leveled && !guest && t >= tl.seg[tl.seg.length - 1].end && (
-              <span className='rw-fade'>
-                <Chip tone='emerald'>Level up</Chip>
-              </span>
-            )}
           </span>
         </div>
       </div>
@@ -417,7 +530,7 @@ export function RewardsReveal({
                 className={`grid grid-cols-[minmax(0,1fr)_auto_4.25rem] items-baseline gap-3 border-t border-white/[0.06] py-[2px] ${on ? 'rw-line' : 'invisible'}`}
               >
                 <span className='truncate font-sans text-[13px] text-white/85'>{l.label}</span>
-                <span className='font-mono text-[11px] tabular-nums text-white/40'>{l.detail ?? ''}</span>
+                <span className='font-mono text-[12px] tabular-nums text-white/40'>{l.detail ?? ''}</span>
                 <span className={`text-right font-display text-[15px] font-bold tabular-nums ${l.xp < 0 ? 'text-amber-300' : 'text-cyan-200'}`}>
                   {on && <span className='rw-line-xp'>{signed(l.xp)}</span>}
                 </span>
@@ -426,10 +539,10 @@ export function RewardsReveal({
           })}
         </ul>
       ) : (
-        <p className='font-mono text-[11px] text-white/45'>No XP this match.</p>
+        <p className='text-[13px] text-white/50'>No XP this match.</p>
       )}
 
-      {/* XP bar (wraps once per level gained). */}
+      {/* XP bar (a flash per level gained; the takeover owns the big beat). */}
       <div data-beat={t >= tl.seg[0].start ? 'on' : undefined}>
         <XpBar m={m} tl={tl} t={t} />
       </div>
@@ -437,19 +550,39 @@ export function RewardsReveal({
       {/* Career Road rewards. */}
       {m.cards.length > 0 && (
         <div>
-          <div className='mb-2 flex items-center justify-between gap-2'>
-            <span className='deck-label'>{guest ? 'Career Road · would unlock' : 'Career Road'}</span>
-            {m.cards.some((c) => c.level <= m.levelBefore) && <Chip tone='cyan'>Catch-up</Chip>}
+          <div className='mb-2 flex items-baseline justify-between gap-2'>
+            <span className='rw-label'>{guest ? 'Career Road · would unlock' : 'Career Road'}</span>
+            <span className='text-[13px] text-white/50'>
+              {m.catchUp || m.cards.length > 2 ? (
+                <>
+                  Lv {m.roadFrom} → {m.levelAfter} · {m.cards.length} rewards
+                </>
+              ) : null}
+            </span>
           </div>
-          <div className={`flex flex-wrap ${isDense(m) ? 'gap-1.5' : m.cards.length > 4 ? 'gap-2' : 'gap-2.5'}`}>
-            {m.cards.map((c, i) => (
+          {/* One spotlight floats left and the small cards flow beside it (3 per
+              row in the 360 px column), then under it; two spotlights get
+              their own row. */}
+          <div className='flow-root'>
+            {spotInList.map((c) => (
               <div
                 key={c.key}
-                data-beat={t >= tl.cardAt[i] ? 'on' : undefined}
-                style={{ width: cardSize }}
-                className={t >= tl.cardAt[i] ? '' : 'invisible'}
+                data-beat={cardOn(c) ? 'on' : undefined}
+                style={{ width: SPOT }}
+                className={`mb-2 mr-2 ${spotInList.length === 1 ? 'float-left' : 'inline-block align-top'} ${cardOn(c) ? '' : 'invisible'}`}
               >
-                {t >= tl.cardAt[i] ? <RewardCardView c={c} size={cardSize} /> : <div style={{ height: cardSize + 17 }} />}
+                {cardOn(c) ? <RewardCardView c={c} size={SPOT} /> : <div style={{ height: SPOT + 36 }} />}
+              </div>
+            ))}
+            {spotInList.length > 1 && <div />}
+            {listCards.map((c) => (
+              <div
+                key={c.key}
+                data-beat={cardOn(c) ? 'on' : undefined}
+                style={{ width: cardSize }}
+                className={`mb-2 mr-2 inline-block align-top ${cardOn(c) ? '' : 'invisible'}`}
+              >
+                {cardOn(c) ? <RewardCardView c={c} size={cardSize} /> : <div style={{ height: cardSize + (cardSize >= 78 ? 36 : 20) }} />}
               </div>
             ))}
           </div>
@@ -459,7 +592,7 @@ export function RewardsReveal({
       {/* Challenges completed by this match. */}
       {m.challenges.length > 0 && (
         <div>
-          <div className='deck-label mb-1.5'>Challenges</div>
+          <div className='rw-label mb-1.5'>Challenges</div>
           <ul className='flex flex-col gap-1'>
             {m.challenges.map((c, i) => (
               <li
@@ -470,9 +603,9 @@ export function RewardsReveal({
                 <span className='rw-check grid h-5 w-5 shrink-0 place-items-center bg-emerald-400 text-[12px] font-bold text-zinc-950' aria-hidden='true'>
                   ✓
                 </span>
-                <span className='min-w-0 flex-1 truncate font-sans text-[12.5px] text-white/85'>{c.label}</span>
-                {c.xp > 0 && <span className='font-display text-[13px] font-bold tabular-nums text-cyan-200'>+{fmt(c.xp)} XP</span>}
-                {c.credits > 0 && <span className='font-display text-[13px] font-bold tabular-nums text-amber-200'>+{fmt(c.credits)} ⛁</span>}
+                <span className='min-w-0 flex-1 truncate font-sans text-[13px] text-white/85'>{c.label}</span>
+                {c.xp > 0 && <span className='font-display text-[14px] font-bold tabular-nums text-cyan-200'>+{fmt(c.xp)} XP</span>}
+                {c.credits > 0 && <Credits n={c.credits} gain className='font-display text-[14px] font-bold text-amber-200' />}
               </li>
             ))}
           </ul>
@@ -484,13 +617,15 @@ export function RewardsReveal({
         data-beat={t >= tl.creditsAt ? 'on' : undefined}
         className={`flex items-baseline justify-between border-t border-white/10 pt-2.5 ${t >= tl.creditsAt ? 'rw-fade' : 'invisible'}`}
       >
-        <span className='deck-label'>Credits</span>
+        <span className='rw-label'>Credits</span>
         <span className='flex items-baseline gap-3'>
           <span className='font-display text-2xl font-bold tabular-nums text-amber-200'>
-            +{t >= tl.creditsAt ? <CountUp value={m.credits} ms={560} instant={instant} /> : '0'} ⛁
+            +<span aria-hidden='true'>⛁</span> {t >= tl.creditsAt ? <CountUp value={m.credits} ms={560} instant={instant} /> : '0'}
           </span>
           {m.balance !== null && (
-            <span className='font-mono text-[10px] uppercase tracking-[0.14em] text-white/40'>Balance {fmt(m.balance)}</span>
+            <span className='text-[13px] text-white/50'>
+              Balance <Credits n={m.balance} className='text-white/70' />
+            </span>
           )}
         </span>
       </div>
@@ -501,7 +636,7 @@ export function RewardsReveal({
           data-beat={t >= tl.ctaAt ? 'on' : undefined}
           className={`clip-deck-sm border border-cyan-300/35 bg-cyan-300/[0.06] px-3.5 py-3 ${t >= tl.ctaAt ? 'rw-cta' : 'invisible'}`}
         >
-          <p className='mb-2.5 font-sans text-[12.5px] leading-snug text-white/75'>
+          <p className='mb-2.5 font-sans text-[13px] leading-snug text-white/75'>
             Guest matches aren&apos;t saved. Log in and your XP, level and unlocks stick.
           </p>
           {onLogin ? (
@@ -509,17 +644,17 @@ export function RewardsReveal({
               Log in to keep your progress
             </DeckButton>
           ) : (
-            <p className='font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-200/80'>Log in from the main menu to keep your progress.</p>
+            <p className='text-[13px] text-cyan-200/80'>Log in from the main menu to keep your progress.</p>
           )}
         </div>
       )}
 
-      <p className={`font-mono text-[10px] uppercase tracking-[0.16em] text-white/30 ${done ? 'invisible' : ''}`}>
-        Click or press Space to skip
-      </p>
+      <p className={`text-[13px] text-white/35 ${done ? 'invisible' : ''}`}>Click or press Space to skip</p>
       <p className='sr-only' aria-live='polite'>
         {summary}
       </p>
+
+      {inTakeover && tl.takeover && <LevelTakeover key={tl.takeover.start} m={m} />}
     </div>
   );
 }
@@ -529,15 +664,15 @@ export function RewardsReveal({
 export function RewardsPending({ gaveUp }: { gaveUp: boolean }) {
   if (gaveUp) {
     return (
-      <div className='rw-root flex flex-col gap-2'>
-        <span className='deck-label'>Rewards</span>
-        <p className='font-mono text-[11px] text-white/45'>No rewards for this match.</p>
+      <div className='rw-root flex flex-col gap-2 font-sans'>
+        <span className='rw-label'>Rewards</span>
+        <p className='text-[13px] text-white/50'>No rewards for this match.</p>
       </div>
     );
   }
   return (
-    <div className='rw-root rw-wait flex flex-col gap-3' aria-busy='true'>
-      <span className='deck-label'>Tallying rewards</span>
+    <div className='rw-root rw-wait flex flex-col gap-3 font-sans' aria-busy='true'>
+      <span className='rw-label'>Tallying rewards</span>
       <Skeleton className='h-11 w-40' />
       {[0, 1, 2, 3].map((i) => (
         <Skeleton key={i} className='h-4 w-full' />
