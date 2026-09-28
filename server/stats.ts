@@ -104,12 +104,19 @@ statsRouter.post('/stats', (req, res) => {
 
   // OFFLINE-ONLY. Online matches are recorded by the authoritative game server
   // (server/instagib-game.ts → recordMatch, pushed as a WS `progression`
-  // message), so anything POSTed here is treated as a bot/practice match no
-  // matter what the body claims: scaled down, capped per UTC day, and it never
-  // advances challenges or the first-win bonus. The training range is not a
-  // match at all.
+  // message), so this only accepts bot/practice matches (`offline: true`):
+  // XP-only (never career totals, leaderboards or titles), scaled down, capped
+  // per UTC day, and it never advances challenges or the first-win bonus. The
+  // training range is not a match at all.
   if (body.training === true) {
     res.status(400).json({ error: 'training' });
+    return;
+  }
+  // Only an explicit offline match is accepted. An older client bundle still
+  // POSTs its online matches (offline:false) — the game server has already
+  // recorded those, so refuse rather than record them twice.
+  if (body.offline !== true) {
+    res.status(400).json({ error: 'offline_only' });
     return;
   }
 
@@ -125,7 +132,7 @@ statsRouter.post('/stats', (req, res) => {
   const headshots = Math.min(clampInt(body.headshots, 200), kills);
   const bestStreak = Math.min(clampInt(body.bestStreak, 200), kills);
   const wins = body.won === true ? 1 : 0;
-  const offline = true; // forced — see above
+  const offline = true; // enforced above
   const accuracy = shotsFired > 0 ? (shotsHit / shotsFired) * 100 : 0;
   // Game mode is metadata for the audit row only (drives the admin dashboard's
   // mode breakdown). Whitelisted so a forged body can't pollute the breakdown.
