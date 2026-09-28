@@ -7,7 +7,7 @@ import { setCharacterFxQuality } from '../character/gibs';
 import type { Character } from '../character/character';
 import { itemDef } from '../items/catalog';
 import type { Look } from '../items/types';
-import { WornGear, wearableIds, wearableTris, type GearSlot } from './index';
+import { WornGear, wearableBounds, wearableIds, wearableTris, type GearSlot } from './index';
 
 // ── Wearables lab (dev only) ─────────────────────────────────────────────────
 // Contact sheets of combatants wearing the code-built hats / face / back items
@@ -145,6 +145,14 @@ export default function WearablesLab() {
       // Triangle budget audit (printed as a warning so headless captures log it).
       const rows = wearableIds().map((id) => `${id}:${wearableTris(id)}/${wearableTris(id, true)}`);
       console.warn(`[wear-tris] ${rows.join(' ')}`);
+      // Silhouette audit: hats → height above the crown (1.794); backs → |x| and depth behind the back (z 0.2).
+      const b = wearableIds().map((id) => {
+        const bb = wearableBounds(id);
+        if (!bb) return id;
+        const f = (v: number) => v.toFixed(3);
+        return `${id}:top+${f(bb.max.y - 1.794)},x${f(Math.max(-bb.min.x, bb.max.x))},z+${f(bb.max.z - 0.2)}`;
+      });
+      console.warn(`[wear-bounds] ${b.join(' ')}`);
     }
     const lab = new CharacterLab(canvas, params);
     lab.setDriver(wearablesDriver(params));

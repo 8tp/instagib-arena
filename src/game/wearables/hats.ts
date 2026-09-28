@@ -15,6 +15,7 @@ import {
   cbox,
   cyl,
   domeProfile,
+  deform,
   domeY,
   ellipsePath,
   extrude,
@@ -176,15 +177,31 @@ const place = (x: number, y: number, z: number, rx = 0, ry = 0, rz = 0) =>
 export const HAT_SPECS: Record<string, WearSpec> = {
   // Field Cap — the wearer's colour, soft six-panel crown, curved bill.
   'hat.cap': {
+    // A patrol cap: straight sides, a flat top raked forward, short bill —
+    // boxy where the Ballcap Pro is domed and the Beanie is slouched.
     build(k) {
-      k.add(skullcap(0.012, 1.684, k.seg(12)), accent(0xdadada, 0.62, 0.04));
-      brim(k, 1.694, helmR(1.694) + 0.01, 0.118, 1.2, 0.028, 0.004, accent(0x9a9a9a, 0.6, 0.04), surf(0x2b3326, 0.8, 0.02));
-      const ct = capTop(0.012, 1.684, 1);
-      k.add(cyl([0, ct - 0.004, HELM_Z0], [0, ct + 0.007, HELM_Z0], 0.014, 0.011, 8), accent(0x8a8a8a, 0.5, 0.1));
-      // Stitched emblem: a light hexagon on the front panel.
-      const p = onHelm(PI, 1.742, 0.014);
-      k.add(faceOut(cyl([0, 0, 0], [0, 0, -0.004], 0.022, 0.022, 6), PI, p, -0.5), surf(0xe9e5d8, 0.7, 0));
-      k.add(faceOut(cyl([0, 0, -0.002], [0, 0, -0.006], 0.012, 0.012, 6), PI, p, -0.5), accent(0x777777, 0.5, 0.1));
+      const cloth = accent(0xdadada, 0.7, 0.03);
+      k.add(
+        shell(
+          [
+            [0.146, 1.684],
+            [0.158, 1.687],
+            [0.16, 1.75],
+            [0.157, 1.808],
+            [0.12, 1.812],
+            [0, 1.814],
+          ],
+          k.seg(12),
+          { ydel: (phi, t) => (t > 0.5 ? -0.014 * Math.cos(phi) * (t - 0.5) * 2 : 0) },
+        ),
+        cloth,
+      );
+      k.add(band(1.684, 1.706, 0.016, 0.004, k.seg(12)), surf(0x2a2e25, 0.75, 0.05));
+      brim(k, 1.694, helmR(1.694) + 0.016, 0.09, 1.1, 0.02, 0.012, accent(0x8a8a8a, 0.6, 0.04), surf(0x2b3326, 0.8, 0.02));
+      // Front badge: a light hexagon with an accent core.
+      const p: V3 = [0, 1.752, HELM_Z0 - HELM_ZS * 0.162];
+      k.add(faceOut(cyl([0, 0, 0], [0, 0, -0.004], 0.02, 0.02, 6), PI, p), surf(0xe9e5d8, 0.7, 0));
+      k.add(faceOut(cyl([0, 0, -0.002], [0, 0, -0.006], 0.011, 0.011, 6), PI, p), accent(0x777777, 0.5, 0.1));
     },
     festive: (k) => festiveBand(k, 1.705, 0.022),
   },
@@ -208,18 +225,28 @@ export const HAT_SPECS: Record<string, WearSpec> = {
         ),
         accent(0x8c8c8c, 0.85, 0),
       );
-      const prof = domeProfile(0.022, 1.725, 1.794, 7).map(([r, y]) => [r, 1.725 + (y - 1.725) * 1.28] as [number, number]);
+      const YS = 1.6;
+      const prof = domeProfile(0.022, 1.725, 1.794, 7).map(([r, y]) => [r, 1.725 + (y - 1.725) * YS] as [number, number]);
+      // Slouch: the crown folds back and down.
+      const slouch = (v: THREE.Vector3) => {
+        const t = clamp01((v.y - 1.76) / 0.11);
+        v.z += 0.055 * t * t;
+        v.y -= 0.022 * t * t;
+      };
       k.add(
-        shell(prof, seg, {
-          rmul: (phi, t) => 1 + 0.012 * Math.cos(16 * phi) * (1 - t),
-          ydel: (phi, t) => 0.012 * t * t * Math.max(0, Math.cos(phi)),
-        }),
+        deform(
+          shell(prof, seg, {
+            rmul: (phi, t) => 1 + 0.012 * Math.cos(16 * phi) * (1 - t),
+          }),
+          slouch,
+        ),
         accent(0xd8d8d8, 0.88, 0),
       );
       // A contrast stripe.
-      k.add(shell([[helmR(1.755) + 0.0245, 1.752], [helmR(1.768) + 0.0245, 1.765]].map(([r, y]) => [r, 1.725 + (y - 1.725) * 1.28] as [number, number]), seg), surf(0xf1eee6, 0.88, 0));
-      const topY = 1.725 + (1.794 + 0.022 - 1.725) * 1.28;
-      k.add(ball(0, topY + 0.028, HELM_Z0 + 0.008, 0.042, k.low ? 0 : 1), surf(0xf4f1ea, 0.95, 0));
+      k.add(deform(shell([[helmR(1.755) + 0.0245, 1.752], [helmR(1.766) + 0.0245, 1.763]].map(([r, y]) => [r, 1.725 + (y - 1.725) * YS] as [number, number]), seg), slouch), surf(0xf1eee6, 0.88, 0));
+      const top = new THREE.Vector3(0, 1.725 + (1.794 + 0.022 - 1.725) * YS, HELM_Z0);
+      slouch(top);
+      k.add(ball(top.x, top.y + 0.02, top.z + 0.02, 0.05, k.low ? 0 : 1), surf(0xf4f1ea, 0.95, 0));
     },
     festive: (k) => festiveBand(k, 1.708, 0.034),
   },
@@ -265,8 +292,8 @@ export const HAT_SPECS: Record<string, WearSpec> = {
     build(k) {
       const m0 = k.mark();
       const seg = k.seg(16, 10);
-      const H = 0.24;
-      const R = 0.076;
+      const H = 0.17;
+      const R = 0.084;
       const bands: Surf[] = [accent(0xe0e0e0, 0.4, 0.1), surf(0xf6f3ec, 0.45, 0.05)];
       const N = 5;
       for (let i = 0; i < N; i++) {
@@ -301,7 +328,7 @@ export const HAT_SPECS: Record<string, WearSpec> = {
     },
     festive(k) {
       const m0 = k.mark();
-      stringLights(k, spiralPath(0.02, 0.2, 0.074, 0.022, 2.2, 26), { closed: false, bulbs: 10, droop: 0.005, size: 0.009 });
+      stringLights(k, spiralPath(0.02, 0.14, 0.082, 0.03, 1.8, 22), { closed: false, bulbs: 10, droop: 0.005, size: 0.009 });
       k.xf(m0, place(0.012, 1.772, 0.01, 0.1, 0, -0.2));
     },
   },
@@ -472,18 +499,18 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       const seg = k.seg(16, 10);
       const y0 = 1.8;
       const sect = (a: number, b: number, s: Surf) => {
-        const r = (f: number) => 0.078 - 0.062 * f;
-        k.add(revolve([[r(a), y0 + 0.26 * a], [r(b), y0 + 0.26 * b]], seg, { z0: HELM_Z0 }), s);
+        const r = (f: number) => 0.08 - 0.062 * f;
+        k.add(revolve([[r(a), y0 + 0.185 * a], [r(b), y0 + 0.185 * b]], seg, { z0: HELM_Z0 }), s);
       };
       sect(0, 0.3, or);
       sect(0.3, 0.44, refl);
       sect(0.44, 0.62, or);
       sect(0.62, 0.72, refl);
       sect(0.72, 1, or);
-      k.add(revolve([[0.016, y0 + 0.26], [0.008, y0 + 0.255]], seg, { z0: HELM_Z0 }), surf(0x2a1a10, 0.8, 0));
+      k.add(revolve([[0.018, y0 + 0.185], [0.009, y0 + 0.18]], seg, { z0: HELM_Z0 }), surf(0x2a1a10, 0.8, 0));
     },
     festive(k) {
-      stringLights(k, spiralPath(1.82, 2.02, 0.078, 0.028, 2, 26, 0, HELM_Z0), { closed: false, bulbs: 10, droop: 0.004, size: 0.009 });
+      stringLights(k, spiralPath(1.82, 1.97, 0.08, 0.034, 1.6, 22, 0, HELM_Z0), { closed: false, bulbs: 10, droop: 0.004, size: 0.009 });
     },
   },
 
@@ -496,9 +523,9 @@ export const HAT_SPECS: Record<string, WearSpec> = {
         revolve(
           [
             [0.146, 1.744],
-            [0.156, 1.8],
-            [0.168, 1.87],
-            [0.178, 1.925],
+            [0.156, 1.79],
+            [0.168, 1.84],
+            [0.178, 1.878],
           ],
           k.seg(28, 16),
           { zs: 1.08, z0: HELM_Z0, rmul: (phi) => 1 + 0.045 * Math.abs(Math.cos(7 * phi)) },
@@ -508,11 +535,11 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       k.add(
         revolve(
           [
-            [0.178, 1.925],
-            [0.205, 1.948],
-            [0.198, 1.99],
-            [0.14, 2.02],
-            [0, 2.03],
+            [0.178, 1.878],
+            [0.205, 1.9],
+            [0.198, 1.94],
+            [0.14, 1.968],
+            [0, 1.976],
           ],
           k.seg(21, 14),
           { zs: 1.08, z0: HELM_Z0, rmul: (phi, t) => 1 + 0.05 * Math.cos(7 * phi + 0.6) * Math.sin(t * PI) },
@@ -520,7 +547,7 @@ export const HAT_SPECS: Record<string, WearSpec> = {
         white,
       );
     },
-    festive: (k) => festiveSpiral(k, 1.76, 1.92, 0.162, 0.19, 1.6, 1.08),
+    festive: (k) => festiveSpiral(k, 1.76, 1.87, 0.162, 0.185, 1.3, 1.08),
   },
 
   // Graduate — skull cap + mortarboard, a gold tassel that swings.
@@ -791,11 +818,11 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       const spine = new THREE.CatmullRomCurve3(
         [
           new THREE.Vector3(0, 1.69, HELM_Z0),
-          new THREE.Vector3(0, 1.82, HELM_Z0 + 0.004),
-          new THREE.Vector3(0, 1.95, HELM_Z0 + 0.02),
-          new THREE.Vector3(0.01, 2.04, HELM_Z0 + 0.07),
-          new THREE.Vector3(0.018, 2.085, HELM_Z0 + 0.14),
-          new THREE.Vector3(0.024, 2.06, HELM_Z0 + 0.2),
+          new THREE.Vector3(0, 1.79, HELM_Z0 + 0.006),
+          new THREE.Vector3(0, 1.88, HELM_Z0 + 0.03),
+          new THREE.Vector3(0.012, 1.945, HELM_Z0 + 0.09),
+          new THREE.Vector3(0.022, 1.965, HELM_Z0 + 0.16),
+          new THREE.Vector3(0.03, 1.93, HELM_Z0 + 0.22),
         ],
         false,
         'centripetal',
@@ -827,7 +854,7 @@ export const HAT_SPECS: Record<string, WearSpec> = {
       const mp = spine.getPoint(0.2);
       k.add(faceOut(extrude(moon, 0.005, 0, 10), PI, [mp.x, mp.y, mp.z - rad(0.2) * 1.1 + 0.002]), starS);
     },
-    festive: (k) => festiveSpiral(k, 1.73, 1.98, 0.14, 0.07, 1.8, 1.1, 12),
+    festive: (k) => festiveSpiral(k, 1.72, 1.9, 0.14, 0.08, 1.5, 1.1, 12),
   },
 
   // Viking Helm — steel cap, bronze bands and rivets, big curved horns.
@@ -1205,15 +1232,17 @@ export const HAT_SPECS: Record<string, WearSpec> = {
     },
     subs: [
       {
-        pivot: [0, 1.885, HELM_Z0 + 0.02],
+        pivot: [0, 1.87, HELM_Z0 + 0.02],
         anim: { kind: 'bob', amp: 0.008, freq: 0.55 },
         build(k) {
-          const y = 1.885;
+          const y = 1.87;
           const seg = k.seg(40, 24);
           const m0 = k.mark();
-          k.add(revolve([[0.116, -0.008], [0.146, -0.008], [0.146, 0.008], [0.116, 0.008], [0.116, -0.008]], seg), hardLight(0xffe6a6, 1.5));
-          k.add(revolve([[0.124, 0.0085], [0.138, 0.0085]], seg), hardLight(0xffffff, 2.4));
-          k.add(revolve([[0.124, -0.0085], [0.138, -0.0085]], seg), hardLight(0xffffff, 2.4));
+          // A chunky band (reads at match distance) with a bright white core
+          // on both faces; emissive kept moderate so bloom stays tidy.
+          k.add(revolve([[0.108, -0.012], [0.152, -0.012], [0.158, 0], [0.152, 0.012], [0.108, 0.012], [0.102, 0], [0.108, -0.012]], seg), hardLight(0xffd98a, 1.4));
+          k.add(revolve([[0.118, 0.0125], [0.142, 0.0125]], seg), hardLight(0xffffff, 2.1));
+          k.add(revolve([[0.118, -0.0125], [0.142, -0.0125]], seg), hardLight(0xffffff, 2.1));
           // Tilted back a touch so it reads as a ring from the front.
           k.xf(m0, place(0, y, HELM_Z0 + 0.02, -0.28, 0, 0));
         },

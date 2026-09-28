@@ -35,6 +35,20 @@ const M = new THREE.Matrix4();
 const place = (x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, s = 1) =>
   M.compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(s, s, s));
 
+// Silhouette cap (fairness): wings are authored spread, then scaled in toward
+// the spine and swept back so every back item stays within ~0.35 m past the
+// shoulder line and ~0.25 m behind the back, below the helmet crown.
+// Scales the parts added since `from` about `pivot` (lateral sx, vertical sy)
+// and folds them back by `fold` rad (right side; mirrored after).
+function foldWing(k: Kit, from: number, pivot: V3, sx: number, sy: number, fold: number, sz = 1) {
+  const m = new THREE.Matrix4()
+    .makeTranslation(pivot[0], pivot[1], pivot[2])
+    .multiply(new THREE.Matrix4().makeRotationY(-fold))
+    .multiply(new THREE.Matrix4().makeScale(sx, sy, sz))
+    .multiply(new THREE.Matrix4().makeTranslation(-pivot[0], -pivot[1], -pivot[2]));
+  k.xf(from, m);
+}
+
 // A strap from a point on the item up over the shoulder, into the collar.
 function shoulderStrap(k: Kit, from: V3, s: Surf) {
   const sx = Math.sign(from[0]) || 1;
@@ -182,10 +196,10 @@ export const BACK_SPECS: Record<string, WearSpec> = {
     subs: [
       {
         pivot: [-0.085, 1.455, 0.29],
-        anim: { kind: 'swing', dir: [0, 1, 0.1], len: 0.45, stiff: 26, damp: 2.6, grav: 0.08 },
+        anim: { kind: 'swing', dir: [0, 1, 0.1], len: 0.32, stiff: 30, damp: 2.8, grav: 0.08 },
         build(k) {
           const p: V3 = [-0.085, 1.455, 0.29];
-          const tip: V3 = [p[0], p[1] + 0.55, p[2] + 0.055];
+          const tip: V3 = [p[0], p[1] + 0.36, p[2] + 0.036];
           k.add(cyl(p, tip, 0.0062, 0.003, 6), surf(0x2a2e36, 0.4, 0.6));
           k.add(octa(tip[0], tip[1] + 0.006, tip[2], 0.01, 1), { c: 0xff4040, r: 0.3, m: 0, e: 1.2, fx: 2 });
         },
@@ -328,6 +342,7 @@ export const BACK_SPECS: Record<string, WearSpec> = {
       k.add(sweep([R0, E, W], (t) => 0.016 - 0.006 * t, 6, { smooth: 2 }), boneS);
       for (const f of F) k.add(sweep([W, lerp(W, f, 0.5), f], (t) => 0.008 - 0.005 * t, 5), boneS);
       k.add(cyl(W, [W[0] + 0.012, W[1] + 0.05, W[2]], 0.011, 0.001, 6), surf(0xe6dcc6, 0.4, 0.1));
+      foldWing(k, m0, [0.05, 1.37, 0.212], 0.75, 0.9, 0.45);
       k.mirrorFrom(m0);
       k.add(cbox(0, 1.37, 0.205, 0.1, 0.06, 0.03, 0.01), boneS);
     },
@@ -446,6 +461,7 @@ export const BACK_SPECS: Record<string, WearSpec> = {
         const dir = new THREE.Vector3(0.25 + 0.4 * t, -1, 0).normalize();
         addFeather(root, dir, 0.1, 0.03, 0.028, feather);
       }
+      foldWing(k, m0, [0.05, 1.38, 0.214], 0.58, 0.85, 0.35, 0.6);
       k.mirrorFrom(m0);
       k.add(cbox(0, 1.38, 0.207, 0.1, 0.07, 0.03, 0.012), GOLD_DARK);
       k.add(octa(0, 1.38, 0.226, 0.014, 1.3), hardLight(0xfff4d6, 1.8));
@@ -476,6 +492,7 @@ export const BACK_SPECS: Record<string, WearSpec> = {
         k.add(hull([pt(0, -1, 0), pt(0, 1, 0), pt(1, -0.2, 0), pt(0, -1, 0.004), pt(0, 1, 0.004), pt(1, -0.2, 0.004), pt(0.6, 1, 0.002)]), hardLight(0xffffff, 1.1, 1));
         k.add(sweep([pt(0, 1, 0.006), pt(0.6, 1, 0.006), pt(1, -0.2, 0.006)], 0.0032, 4), hardLight(0xffffff, 2.4, 1));
       });
+      foldWing(k, m0, [0.1, 1.39, 0.25], 0.7, 0.85, 0.45, 0.8);
       k.mirrorFrom(m0);
     },
   },
@@ -500,16 +517,16 @@ export const BACK_SPECS: Record<string, WearSpec> = {
     }),
     subs: [
       {
-        pivot: [0, 1.6, 0.27],
+        pivot: [0, 1.6, 0.25],
         anim: { kind: 'spin', axis: [0, 0, 1], rate: 0.35 },
         build(k) {
-          const c: V3 = [0, 1.6, 0.27];
+          const c: V3 = [0, 1.6, 0.25];
           const seg = k.seg(40, 24);
-          const ring = revolve([[0.19, -0.005], [0.206, -0.005], [0.206, 0.005], [0.19, 0.005], [0.19, -0.005]], seg);
+          const ring = revolve([[0.132, -0.005], [0.148, -0.005], [0.148, 0.005], [0.132, 0.005], [0.132, -0.005]], seg);
           ring.rotateX(PI / 2);
           ring.translate(c[0], c[1], c[2]);
           k.add(ring, hardLight(0xffe7a8, 1.6));
-          const inner = revolve([[0.17, 0], [0.176, 0]], seg);
+          const inner = revolve([[0.118, 0], [0.124, 0]], seg);
           inner.rotateX(PI / 2);
           inner.translate(c[0], c[1], c[2] + 0.002);
           k.add(inner, hardLight(0xffffff, 2.4));
@@ -517,9 +534,9 @@ export const BACK_SPECS: Record<string, WearSpec> = {
           for (let i = 0; i < n; i++) {
             const a = (i / n) * PI * 2;
             const long = i % 2 === 0;
-            const g = octa(0, 0, 0, 0.008, long ? 4.5 : 2.6);
+            const g = octa(0, 0, 0, 0.007, long ? 3.0 : 1.8);
             g.rotateZ(-a);
-            const r = 0.206 + (long ? 0.036 : 0.021);
+            const r = 0.148 + (long ? 0.02 : 0.012);
             g.translate(c[0] + Math.sin(a) * r, c[1] + Math.cos(a) * r, c[2]);
             k.add(g, hardLight(long ? 0xffffff : 0xffd98a, 2.2));
           }

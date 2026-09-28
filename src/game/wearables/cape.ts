@@ -17,10 +17,13 @@ import type { CapeSpec } from './spec';
 
 const GRAV = -9.8;
 const MAX_STEP = 1 / 60;
+const MAX_STEP_LOW = 1 / 30; // low tier: coarser steps
 const DRAG = 1.15; // air drag (1/s)
 const DAMP60 = 0.988; // velocity kept per 1/60 s
 const PLEATS = 3;
 const PLEAT_AMP = 0.016;
+const MAX_BACK = 0.46; // chest-frame z (the back plate is at ~0.2)
+const MAX_SIDE = 0.36; // |x| — the shoulder line
 
 export type Wind = { x: number; y: number; z: number };
 
@@ -48,10 +51,12 @@ export class CapeSim {
   private t = 0;
   private readonly origin: V3;
   private readonly topY: number;
+  private readonly low: boolean;
 
   constructor(spec: CapeSpec, origin: V3, low: boolean, material: THREE.Material) {
     this.origin = origin;
     this.topY = spec.top[1];
+    this.low = low;
     const C = (this.C = low ? 4 : 6);
     const R = (this.R = low ? 5 : 7);
     const N = (this.N = C * R);
@@ -230,10 +235,10 @@ export class CapeSim {
     }
     dt = Math.min(Math.max(dt, 0), 0.1);
     if (dt > 0) {
-      const steps = Math.max(1, Math.ceil(dt / MAX_STEP - 1e-6));
+      const steps = Math.max(1, Math.ceil(dt / (this.low ? MAX_STEP_LOW : MAX_STEP) - 1e-6));
       const h = dt / steps;
       const damp = Math.pow(DAMP60, h * 60);
-      const iters = C > 4 ? 3 : 2;
+      const iters = this.low ? 2 : 3;
       const flutter = fxFlags.reduced ? 0.15 : 0.55; // calmer cloth under reduced effects
       for (let s = 1; s <= steps; s++) {
         this.t += h;
@@ -330,9 +335,24 @@ export class CapeSim {
         zb = 0.215 - 0.07 * t;
       } else if (ly > 0.9) zb = 0.18;
       else zb = 0.1;
+      // Silhouette cap (fairness): the cloth never billows more than ~0.26 m
+      // behind the back or past the shoulders.
+      let cx = lx;
+      let moved = false;
       if (lz < zb && ax < 0.3) {
         lz = zb;
-        const mx = lx - ox;
+        moved = true;
+      }
+      if (lz > MAX_BACK) {
+        lz = MAX_BACK;
+        moved = true;
+      }
+      if (ax > MAX_SIDE) {
+        cx = Math.sign(lx) * MAX_SIDE;
+        moved = true;
+      }
+      if (moved) {
+        const mx = cx - ox;
         const my = ly - oy;
         const mz = lz - oz;
         x = w[0] * mx + w[4] * my + w[8] * mz + w[12];
