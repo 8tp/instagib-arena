@@ -14,6 +14,7 @@ import {
   cyl,
   extrude,
   faceOut,
+  glow,
   hardLight,
   helmR,
   hull,
@@ -38,8 +39,9 @@ import type { WearSpec } from './spec';
 // y 1.585–1.679 (z −0.035…0.059). Straps go OVER the pods (y ≈ 1.69, on the
 // dome) or UNDER them (y ≈ 1.565, on the jaw).
 //
-// Fairness: anything that sits over the visor glows in the wearer's colour
-// (accent emissive), so a face item never hides the visor's read.
+// Fairness: no face item covers the whole visor band — lenses, slats and rims
+// sit proud of it and the glow shows around/between them (the hockey mask
+// rims its eye holes in the wearer's colour).
 
 const PI = Math.PI;
 
@@ -84,8 +86,6 @@ function strapUnder(from: V3, y = 1.563): V3[] {
   ];
 }
 
-// A mirror-lens surface: reflective, tinted + faintly lit in the wearer's colour.
-const LENS = (base = 0xcfd6de, e = 0.35): Surf => ({ c: base, r: 0.06, m: 1, t: 1, e });
 
 // Bend a flat (XY) plate onto the face: z follows a curved mask surface.
 function bendMask(g: THREE.BufferGeometry, cy: number, dz = 0): THREE.BufferGeometry {
@@ -100,44 +100,32 @@ function bendMask(g: THREE.BufferGeometry, cy: number, dz = 0): THREE.BufferGeom
 }
 
 export const FACE_SPECS: Record<string, WearSpec> = {
-  // Aviators — teardrop mirror lenses, thin gold frame, temples to the pods.
+  // Aviators — dark gold-mirror teardrops in a chunky gold frame with a brow
+  // bar, standing ~3 cm proud of the visor: a dark silhouette on the bright
+  // band, which still glows above, below and between the lenses.
   'face.aviators': {
     build(k) {
       const m0 = k.mark();
       const lens = new THREE.Shape();
-      lens.moveTo(-0.029, 0.016);
-      lens.quadraticCurveTo(0.0, 0.022, 0.031, 0.018);
-      lens.quadraticCurveTo(0.037, 0.004, 0.028, -0.012);
-      lens.quadraticCurveTo(0.012, -0.027, -0.006, -0.022);
-      lens.quadraticCurveTo(-0.03, -0.012, -0.029, 0.016);
-      const cx = 0.05;
-      const cy = 1.654;
+      lens.moveTo(-0.028, 0.013);
+      lens.quadraticCurveTo(0.0, 0.019, 0.03, 0.015);
+      lens.quadraticCurveTo(0.036, 0.002, 0.027, -0.011);
+      lens.quadraticCurveTo(0.012, -0.024, -0.006, -0.02);
+      lens.quadraticCurveTo(-0.029, -0.011, -0.028, 0.013);
+      const cx = 0.052;
+      const cy = 1.655;
       const phi = visorPhi(cx);
-      const cz = visorZ(cx) - 0.017;
-      k.add(faceOut(extrude(lens, 0.004, 0, 4), phi, [cx, cy, cz]), LENS(0x7d8a99, 0.3));
-      const rim = lens.getPoints(5).map((p) => [p.x, p.y, -0.0025] as V3);
-      const rg = sweep(rim, 0.0022, 4, { caps: false });
-      k.add(faceOut(rg, phi, [cx, cy, cz]), GOLD);
-      // Temple arm.
-      k.add(
-        sweep(
-          [
-            [0.08, 1.67, cz + 0.012],
-            [0.118, 1.672, -0.112],
-            [0.148, 1.668, -0.06],
-            [0.155, 1.662, -0.012],
-          ],
-          0.0026,
-          4,
-          { smooth: 2 },
-        ),
-        GOLD,
-      );
+      const cz = visorZ(cx) - 0.03;
+      k.add(faceOut(extrude(lens, 0.005, 0, 4), phi, [cx, cy, cz]), surf(0x4a3c22, 0.08, 0.95));
+      const rim = lens.getPoints(5).map((p) => [p.x, p.y, -0.003] as V3);
+      k.add(faceOut(sweep(rim, 0.0036, 4, { caps: false }), phi, [cx, cy, cz]), GOLD);
+      // Temple arm back to the ear pod.
+      k.add(sweep([[0.083, 1.668, cz + 0.004], [0.12, 1.672, -0.118], [0.15, 1.668, -0.06], [0.156, 1.662, -0.012]], 0.0032, 4, { smooth: 2 }), GOLD);
       k.mirrorFrom(m0);
-      // Double bridge.
-      const bz = visorZ(0) - 0.019;
-      k.add(sweep([[-0.022, 1.669, bz + 0.003], [0, 1.671, bz], [0.022, 1.669, bz + 0.003]], 0.0022, 4, { smooth: 2 }), GOLD);
-      k.add(sweep([[-0.02, 1.661, bz + 0.003], [0, 1.66, bz], [0.02, 1.661, bz + 0.003]], 0.0018, 4, { smooth: 2 }), GOLD);
+      // Brow bar + bridge.
+      const bz = visorZ(0) - 0.031;
+      k.add(sweep([[-0.08, 1.67, visorZ(0.08) - 0.029], [-0.03, 1.673, bz - 0.002], [0.03, 1.673, bz - 0.002], [0.08, 1.67, visorZ(0.08) - 0.029]], 0.0034, 4, { smooth: 2 }), GOLD);
+      k.add(sweep([[-0.022, 1.66, bz + 0.002], [0, 1.658, bz], [0.022, 1.66, bz + 0.002]], 0.0026, 4, { smooth: 2 }), GOLD);
     },
   },
 
@@ -159,41 +147,42 @@ export const FACE_SPECS: Record<string, WearSpec> = {
     },
   },
 
-  // Shutter Shades — slatted frame in your colour; the visor glows between.
+  // Shutter Shades — a chunky white slatted frame ~3.5 cm proud of the
+  // visor; the band glows between the slats.
   'face.shades': {
     build(k) {
-      const frame = accent(0xf0f0f0, 0.38, 0.12);
-      const off = 0.022;
-      const X = 0.128;
+      const frame = paint(0xf2f2f2, 0.35, 0.1);
+      const off = 0.036;
+      const X = 0.126;
       const zAt = (x: number) => visorZ(Math.min(Math.abs(x), 0.136)) - off;
       const loop: V3[] = [];
       const n = 9;
       for (let i = 0; i <= n; i++) {
         const x = -X + (2 * X * i) / n;
-        loop.push([x, 1.686, zAt(x)]);
+        loop.push([x, 1.69, zAt(x)]);
       }
-      loop.push([X + 0.004, 1.672, zAt(X)]);
-      loop.push([X + 0.004, 1.64, zAt(X)]);
+      loop.push([X + 0.006, 1.674, zAt(X)]);
+      loop.push([X + 0.006, 1.638, zAt(X)]);
       for (let i = n; i >= 0; i--) {
         const x = -X + (2 * X * i) / n;
-        loop.push([x, 1.629, zAt(x) - (Math.abs(x) < 0.03 ? 0.004 : 0)]);
+        loop.push([x, 1.622, zAt(x)]);
       }
-      loop.push([-X - 0.004, 1.64, zAt(X)]);
-      loop.push([-X - 0.004, 1.672, zAt(X)]);
+      loop.push([-X - 0.006, 1.638, zAt(X)]);
+      loop.push([-X - 0.006, 1.674, zAt(X)]);
       loop.push(loop[0]);
-      k.add(sweep(loop, 0.0045, 4, { caps: false, up: [0, 0, 1] }), frame);
-      for (let s = 1; s <= 4; s++) {
-        const y = 1.629 + (s * (1.686 - 1.629)) / 5;
+      k.add(sweep(loop, 0.0065, 4, { caps: false, up: [0, 0, 1] }), frame);
+      for (let sl = 1; sl <= 4; sl++) {
+        const y = 1.622 + (sl * (1.69 - 1.622)) / 5;
         const pts: V3[] = [];
         for (let i = 0; i <= n; i++) {
           const x = -X + (2 * X * i) / n;
           pts.push([x, y, zAt(x)]);
         }
-        k.add(sweep(pts, 0.0048, 4, { sy: 0.35, up: [0, 1, 0], caps: false }), frame);
+        k.add(sweep(pts, 0.0058, 4, { sy: 0.4, up: [0, 1, 0], caps: false }), frame);
       }
-      k.add(cbox(0, 1.657, visorZ(0) - off, 0.008, 0.056, 0.008, 0.002), frame);
+      k.add(cbox(0, 1.656, visorZ(0) - off, 0.012, 0.068, 0.01, 0.003), frame);
       const m0 = k.mark();
-      k.add(sweep([[X, 1.676, zAt(X)], [0.14, 1.675, -0.1], [0.152, 1.67, -0.05], [0.156, 1.664, -0.012]], 0.003, 4, { smooth: 2 }), frame);
+      k.add(sweep([[X, 1.678, zAt(X)], [0.142, 1.676, -0.1], [0.153, 1.67, -0.05], [0.156, 1.664, -0.012]], 0.0038, 4, { smooth: 2 }), frame);
       k.mirrorFrom(m0);
     },
   },
@@ -281,36 +270,42 @@ export const FACE_SPECS: Record<string, WearSpec> = {
     },
   },
 
-  // Monocle — a gold ring over the right eye, a chain to the ear pod.
+  // Monocle — a heavy gold ring standing proud of the right eye on a clip
+  // from the brow, a pale lens with a glint, a chain looping to the ear pod.
   'face.monocle': {
     build(k) {
-      const cx = 0.05;
+      const cx = 0.054;
       const phi = visorPhi(cx);
-      const at: V3 = [cx, 1.657, visorZ(cx) - 0.012];
+      const at: V3 = [cx, 1.655, visorZ(cx) - 0.03];
       const ringG = revolve(
         [
-          [0.027, -0.003],
-          [0.034, -0.003],
-          [0.034, 0.003],
-          [0.027, 0.003],
-          [0.027, -0.003],
+          [0.032, -0.005],
+          [0.044, -0.005],
+          [0.046, 0],
+          [0.044, 0.005],
+          [0.032, 0.005],
+          [0.032, -0.005],
         ],
-        k.seg(20, 12),
+        k.seg(22, 12),
       );
       ringG.rotateX(-PI / 2);
       k.add(faceOut(ringG, phi, at), GOLD);
-      const lensG = cyl([0, -0.001, 0], [0, 0.001, 0], 0.028, 0.028, k.seg(20, 12));
+      const lensG = cyl([0, -0.0012, 0], [0, 0.0012, 0], 0.033, 0.033, k.seg(22, 12));
       lensG.rotateX(-PI / 2);
-      k.add(faceOut(lensG, phi, at), LENS(0xe8f2ff, 0.3));
+      k.add(faceOut(lensG, phi, at), surf(0xdcebf6, 0.04, 0.35));
+      // Glint.
+      k.add(faceOut(cbox(0.012, 0.012, -0.002, 0.012, 0.003, 0.001, 0.0005).rotateZ(-0.7), phi, at), glow(0xffffff, 1.4));
+      // Clip up to the brow.
+      k.add(sweep([[cx + 0.03, 1.69, at[2] + 0.006], [cx + 0.036, 1.7, visorZ(cx + 0.036, 1.7) - 0.004], [cx + 0.03, 1.708, visorZ(cx + 0.03, 1.708) + 0.004]], 0.0035, 4, { smooth: 2 }), GOLD);
       const chain: V3[] = [
-        [0.078, 1.645, at[2] + 0.006],
-        [0.09, 1.61, -0.14],
-        [0.108, 1.588, -0.112],
-        [0.13, 1.592, -0.07],
-        [0.146, 1.605, -0.03],
+        [cx + 0.03, 1.628, at[2] + 0.004],
+        [0.098, 1.598, -0.15],
+        [0.116, 1.582, -0.114],
+        [0.136, 1.588, -0.07],
+        [0.148, 1.605, -0.03],
       ];
-      k.add(sweep(chain, 0.0016, 3, { smooth: 3 }), GOLD_DARK);
-      for (let i = 1; i < 4; i++) k.add(ball(chain[i][0], chain[i][1], chain[i][2], 0.003, 0), GOLD);
+      k.add(sweep(chain, 0.0026, 4, { smooth: 3 }), GOLD_DARK);
+      for (let i = 1; i < 5; i++) k.add(ball(chain[i][0], chain[i][1], chain[i][2], 0.0045, 0), GOLD);
     },
   },
 
@@ -454,7 +449,7 @@ export const FACE_SPECS: Record<string, WearSpec> = {
   // reticle, and a scan line across the visor (all hard light).
   'face.cyber': {
     build(k) {
-      const holo = (e: number): Surf => hardLight(0xffffff, e, 1);
+      const holo = (e: number): Surf => hardLight(0x3dff8c, e);
       k.add(cbox(0.172, 1.664, 0.0, 0.024, 0.06, 0.074, 0.006), GUNMETAL);
       k.add(cbox(0.185, 1.664, 0.0, 0.004, 0.042, 0.054, 0.001), holo(1.6));
       k.add(hull([[0.168, 1.694, 0.02], [0.176, 1.694, 0.02], [0.168, 1.694, -0.02], [0.176, 1.694, -0.02], [0.172, 1.74, 0.03]]), GUNMETAL);
@@ -462,7 +457,7 @@ export const FACE_SPECS: Record<string, WearSpec> = {
       k.add(sweep([[0.172, 1.674, -0.03], [0.158, 1.676, -0.098], [0.118, 1.676, -0.148], [0.086, 1.674, -0.168]], 0.0035, 4, { smooth: 2 }), GUNMETAL);
       const cx = 0.05;
       const phi = visorPhi(cx);
-      const at: V3 = [cx + 0.004, 1.656, visorZ(cx) - 0.024];
+      const at: V3 = [cx + 0.006, 1.656, visorZ(cx) - 0.038];
       const m0 = k.mark();
       // Eyepiece frame (4 bars) + corner brackets.
       const W = 0.034;
@@ -485,13 +480,13 @@ export const FACE_SPECS: Record<string, WearSpec> = {
       }
       // Data glyphs.
       for (let i = 0; i < 3; i++) k.add(cbox(-0.02 + i * 0.004, -0.013 + 0.0, -0.0005, 0.0025, 0.004 + i * 0.002, 0.001, 0.0002), holo(1.6));
-      k.add(plate((u, v) => [(u - 0.5) * W * 2, (v - 0.5) * H * 2, 0.0012] as V3, 1, 1).top, hardLight(0xffffff, 0.35, 1));
-      k.xf(m0, new THREE.Matrix4().makeRotationY(phi + PI).multiply(new THREE.Matrix4().makeScale(1.3, 1.3, 1)).setPosition(at[0], at[1], at[2]));
+      k.add(plate((u, v) => [(u - 0.5) * W * 2, (v - 0.5) * H * 2, 0.0012] as V3, 1, 1).top, hardLight(0x3dff8c, 0.3));
+      k.xf(m0, new THREE.Matrix4().makeRotationY(phi + PI).multiply(new THREE.Matrix4().makeScale(1.45, 1.45, 1)).setPosition(at[0], at[1], at[2]));
       // Scan line across the visor.
       const pts: V3[] = [];
       for (let i = 0; i <= 10; i++) {
         const x = -0.118 + (0.236 * i) / 10;
-        pts.push([x, 1.644, visorZ(x) - 0.011]);
+        pts.push([x, 1.644, visorZ(x) - 0.02]);
       }
       k.add(sweep(pts, 0.0016, 4, { caps: true }), holo(2.0));
     },
@@ -509,9 +504,9 @@ export const FACE_SPECS: Record<string, WearSpec> = {
         shell(
           [
             [helmR(1.68) + 0.002, 1.681],
-            [helmR(1.684) + 0.018, 1.684],
-            [helmR(1.698) + 0.02, 1.698],
-            [helmR(1.71) + 0.006, 1.711],
+            [helmR(1.684) + 0.03, 1.684],
+            [helmR(1.698) + 0.032, 1.699],
+            [helmR(1.714) + 0.006, 1.716],
           ],
           k.seg(14, 10),
           { phi0: PI - 1.25, phiLen: 2.5, ydel: (phi, t) => (t > 0.3 && t < 0.9 ? 0.005 * Math.cos((phi - PI) * 2.6) ** 2 : 0) },
@@ -525,16 +520,16 @@ export const FACE_SPECS: Record<string, WearSpec> = {
       const x1 = 0.126;
       for (let i = 0; i <= 6; i++) {
         const x = x0 + ((x1 - x0) * i) / 6;
-        rimPts.push([x, 1.683, visorZ(x, 1.68) - 0.006]);
+        rimPts.push([x, 1.684, visorZ(x, 1.68) - 0.014]);
       }
-      rimPts.push([x1 + 0.006, 1.655, visorZ(x1) - 0.004]);
+      rimPts.push([x1 + 0.008, 1.655, visorZ(x1) - 0.01]);
       for (let i = 6; i >= 0; i--) {
         const x = x0 + ((x1 - x0) * i) / 6;
-        rimPts.push([x, 1.628 - 0.006 * Math.sin((i / 6) * PI), visorZ(x, 1.63) - 0.006]);
+        rimPts.push([x, 1.627 - 0.007 * Math.sin((i / 6) * PI), visorZ(x, 1.63) - 0.014]);
       }
-      rimPts.push([x0 - 0.004, 1.655, visorZ(x0) - 0.01]);
+      rimPts.push([x0 - 0.005, 1.655, visorZ(x0) - 0.018]);
       rimPts.push(rimPts[0]);
-      k.add(sweep(rimPts, 0.0048, 4, { caps: false, smooth: 2 }), chrome);
+      k.add(sweep(rimPts, 0.0075, 5, { caps: false, smooth: 2 }), chrome);
       // Cheekbone.
       k.add(
         hull([

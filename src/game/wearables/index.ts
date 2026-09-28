@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { UnusualKind } from '../cosmetics';
 import { UnusualEffect } from '../fx/unusuals';
-import { fxFlags } from '../fx/fx-settings';
+import { fxFlags, viewPos } from '../fx/fx-settings';
 import { UNUSUAL_EFFECTS, type Look } from '../items/types';
 import { B, REST_ABS, SOCKETS } from '../character/rig';
 import type { Character } from '../character/character';
@@ -32,7 +32,15 @@ import { BACK_SPECS } from './backs';
 export type GearSlot = 'hat' | 'face' | 'back';
 // The wearer's world velocity, only needed when the rig moves IN PLACE (labs,
 // previews, a treadmill) — in the world the gear measures its own motion.
-export type GearMotion = { vx: number; vy: number; vz: number };
+// `camDist` (m) overrides the viewer distance used for the secondary-motion
+// LOD (by default: the last camera that rendered a combatant, fx-settings viewPos).
+export type GearMotion = { vx?: number; vy?: number; vz?: number; camDist?: number };
+
+// Secondary motion (cape cloth, swinging parts) freezes beyond this distance
+// from the viewer, or when the item hasn't been drawn recently (off-screen /
+// culled). It resumes from rest.
+const SIM_RANGE = 30;
+const SEEN_GRACE = 0.3; // s
 
 const SPECS: Record<GearSlot, Record<string, WearSpec>> = { hat: HAT_SPECS, face: FACE_SPECS, back: BACK_SPECS };
 const SOCKET_OF: Record<GearSlot, 'headTop' | 'face' | 'back'> = { hat: 'headTop', face: 'face', back: 'back' };
@@ -118,6 +126,23 @@ function festiveGeo(slot: GearSlot, id: string, low: boolean, b: Built): THREE.B
   return b.festive;
 }
 
+// Dev/lab: rest model-space bounds of an item (main + animated parts; capes
+// excluded — they're simulated). For the silhouette caps.
+export function wearableBounds(id: string): THREE.Box3 | null {
+  const slot = slotOfId(id);
+  if (!slot) return null;
+  const b = build(slot, id, false);
+  if (!b) return null;
+  const o = ORIGIN[slot];
+  const box = new THREE.Box3();
+  if (b.main) box.union(b.main.boundingBox!.clone().translate(new THREE.Vector3(o[0], o[1], o[2])));
+  for (const s of b.subs) {
+    s.geo.computeBoundingBox();
+    box.union(s.geo.boundingBox!.clone().translate(new THREE.Vector3(o[0] + s.pivot.x, o[1] + s.pivot.y, o[2] + s.pivot.z)));
+  }
+  return box;
+}
+
 // Dev/lab: triangle count of an item (all parts, full quality).
 export function wearableTris(id: string, low = false): number {
   const slot = slotOfId(id);
@@ -163,6 +188,9 @@ type SlotRt = {
   subs: SubRt[];
   cape: CapeSim | null;
   top: number;
+  low: boolean; // quality tier it was built for (rebuilt when fxFlags.low flips)
+  seen: number; // last draw time (s)
+  frozen: boolean;
 };
 
 const WIND0: Wind = { x: 0, y: 0, z: 0 };
@@ -228,7 +256,7 @@ export class WornGear {
     group.name = `gear.${slot}`;
     group.userData.shared = true;
     socket.add(group);
-    const rt: SlotRt = { id, look: { ...look }, group, material, uniforms, mesh: null, festive: null, subs: [], cape: null, top: built.top };
+    const rt: SlotRt = { id, look: { ...look }, group, material, uniforms, mesh: null, festive: null, subs: [], cape: null, top: built.top, low, seen: nowSec(), frozen: false };
     const sync = this.syncFn(rt);
     const mk = (geo: THREE.BufferGeometry, name: string) => {
       const m = new THREE.Mesh(geo, material);
@@ -307,6 +335,7 @@ export class WornGear {
       u.uLift.value = ch.uniforms.uLift.value * 0.8;
       u.uTime.value = nowSec();
       u.uCalm.value = fxFlags.reduced ? 1 : 0;
+      rt.seen = u.uTime.value;
     };
   }
 
@@ -365,6 +394,15 @@ export class WornGear {
     if (this.disposed) return;
     dt = Math.min(Math.max(dt, 0), 0.1);
     this.unusual?.update(dt);
+    // Quality tier flipped mid-session → rebuild worn items for the new tier.
+    for (const s of SLOTS) {
+      const rt = this.slots[s];
+      if (rt && rt.low !== fxFlags.low) {
+        const look = rt.look;
+        this.clearSlot(s);
+        this.setLook(s, look);
+      }
+    }
     const any = this.slots.hat?.subs.length || this.slots.face?.subs.length || this.slots.back?.subs.length || this.slots.back?.cape;
     if (!any) return;
     const w = this.wind;
@@ -382,12 +420,28 @@ export class WornGear {
     }
     this.lastPos.copy(_p);
     this.hasLast = true;
+    // Viewer distance for the LOD.
+    let camDist = motion?.camDist ?? 0;
+    if (motion?.camDist === undefined && viewPos.set) camDist = Math.hypot(_p.x - viewPos.x, _p.y - viewPos.y, _p.z - viewPos.z);
+    const now = nowSec();
     for (const s of SLOTS) {
       const rt = this.slots[s];
       if (!rt || (!rt.subs.length && !rt.cape)) continue;
       const socket = this.ch.sockets[SOCKET_OF[s]];
       socket.updateWorldMatrix(true, false);
       const active = this.visible && socket.visible && this.ch.root.visible;
+      // LOD: far away or not drawn lately → freeze (the frozen shape still
+      // rides the socket); resume from rest.
+      const far = camDist > SIM_RANGE || now - rt.seen > SEEN_GRACE;
+      if (active && far) {
+        if (!rt.frozen) {
+          rt.frozen = true;
+          rt.cape?.invalidate();
+          for (const sub of rt.subs) sub.fresh = true;
+        }
+        continue;
+      }
+      rt.frozen = false;
       if (rt.cape) {
         const n = active ? this.legSpheres() : 0;
         rt.cape.update(dt, socket, active ? w : WIND0, this.spheres, n, active);
