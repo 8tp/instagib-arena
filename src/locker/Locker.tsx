@@ -16,20 +16,33 @@ import { CasesTab } from '../economy/CasesTab';
 import { instSlot, instFullName } from '../economy/display';
 import { InventoryTab } from '../economy/InventoryTab';
 import { MarketTab } from '../economy/MarketTab';
+import { SPIN_TAB_KEY } from '../economy/spin-link';
+import { SpinTab } from '../economy/SpinTab';
 import { Balance } from '../economy/parts';
 import { TradesTab } from '../economy/TradesTab';
 import { useEconomy } from '../economy/useEconomy';
 
-export type LockerTab = 'inventory' | 'cases' | 'market' | 'trades';
+export type LockerTab = 'inventory' | 'cases' | 'spin' | 'market' | 'trades';
 const TABS: { id: LockerTab; label: string }[] = [
   { id: 'inventory', label: 'Inventory' },
   { id: 'cases', label: 'Cases' },
+  { id: 'spin', label: 'Spin' },
   { id: 'market', label: 'Market' },
   { id: 'trades', label: 'Trades' },
 ];
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// The menu's FREE SPIN pip leaves a one-shot hint so the Locker opens on Spin.
+// Read in the initialiser (StrictMode runs it twice), cleared in an effect.
+function takeDeepLink(): LockerTab | null {
+  try {
+    return sessionStorage.getItem(SPIN_TAB_KEY) === 'spin' ? 'spin' : null;
+  } catch {
+    return null;
+  }
+}
 
 function useNarrow(): boolean {
   const q = '(max-width: 900px)';
@@ -50,24 +63,34 @@ export function Locker({
   onClose,
   account,
   initialTab,
+  onLogin,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   onClose: () => void;
   account?: Account;
   initialTab?: LockerTab;
+  onLogin?: () => void; // guests: the Spin tab's "Sign in" CTA
 }) {
   const reduced = settings.reducedEffects || prefersReducedMotion();
   const narrow = useNarrow();
   const mock = mockOn();
   const loggedIn = !!account || mock;
-  const [tab, setTabState] = useState<LockerTab>(initialTab ?? 'inventory');
+  const [tab, setTabState] = useState<LockerTab>(() => initialTab ?? takeDeepLink() ?? 'inventory');
   const [closing, setClosing] = useState(false);
   const [sellUid, setSellUid] = useState<string | null>(null);
   const [offerUid, setOfferUid] = useState<string | null>(null);
   const [profile, setProfile] = useState<InstagibProfile | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const econ = useEconomy(settings, onChange, loggedIn);
+
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(SPIN_TAB_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // Level + stats (card collection, trade gates, card showcase).
   useEffect(() => {
@@ -211,6 +234,17 @@ export function Locker({
           loggedIn={loggedIn}
           reduced={reduced}
           lowSpec={settings.lowSpec}
+          onEquipItem={(item) => {
+            void econ.equip(instSlot(item), item.uid).then((ok) => ok && toast(`Equipped · ${instFullName(item)}`, { tone: 'ok', sound: 'equip' }));
+          }}
+        />
+      )}
+      {tab === 'spin' && (
+        <SpinTab
+          econ={econ}
+          loggedIn={loggedIn}
+          reduced={reduced}
+          onLogin={onLogin}
           onEquipItem={(item) => {
             void econ.equip(instSlot(item), item.uid).then((ok) => ok && toast(`Equipped · ${instFullName(item)}`, { tone: 'ok', sound: 'equip' }));
           }}

@@ -3,7 +3,7 @@
 // (sticky for the tab) every call is answered by an in-memory mock (./mock.ts)
 // that mirrors the same shapes, so the screens can be developed and
 // screenshotted without a server.
-import type { CaseDef, CaseId, ItemAttrs, ItemInstanceWire, ItemSlot, Loadout, Quality, Tier } from '../game/items/types';
+import type { CaseDef, CaseId, ItemAttrs, ItemInstanceWire, ItemSlot, Loadout, Quality, SpinInfo, SpinKind, SpinResult, Tier } from '../game/items/types';
 
 // slot → token: an instance uid, or `def:<id>` for a default / entitlement.
 export type Equipped = Partial<Record<ItemSlot, string>>;
@@ -171,6 +171,9 @@ export const econ = {
   salvage: (uids: string[]) => call<SalvageResp>('POST', '/api/inventory/salvage', { uids }, (m) => m.salvage(uids)),
   cases: () => call<CasesResp>('GET', '/api/cases', undefined, (m) => m.cases()),
   openCase: (caseId: CaseId, useRoll: boolean) => call<OpenCaseResp>('POST', '/api/cases/open', { caseId, useRoll }, (m) => m.openCase(caseId, useRoll)),
+  // Daily Spin (docs/economy.md §3b). GET is public; guests get freeAvailable:false.
+  spinInfo: () => call<SpinInfo>('GET', '/api/spin', undefined, (m) => m.spinInfo()),
+  spin: (kind: SpinKind) => call<Extract<SpinResult, { ok: true }>>('POST', '/api/spin', { kind }, (m) => m.spin(kind)),
   market: (q: MarketQuery) =>
     call<MarketResp>('GET', `/api/market${qs({ slot: q.slot, tier: q.tier, quality: q.quality, effect: q.effect, q: q.q, sort: q.sort, page: q.page })}`, undefined, (m) => m.market(q)),
   history: (def: string) => call<HistoryResp>('GET', `/api/market/history/${encodeURIComponent(def)}`, undefined, (m) => m.history(def)),
@@ -199,6 +202,12 @@ export function reasonText(r: { status: number; reason?: string; error?: string;
     case 'insufficient':
     case 'insufficient_fee':
       return r.need != null ? `Not enough credits (need ⛁ ${n}).` : 'Not enough credits.';
+    case 'already_spun':
+      return 'You’ve already used today’s free spin — come back after the reset.';
+    case 'empty_pool':
+      return 'The wheel is being restocked — try again shortly.';
+    case 'partner_inbox_full':
+      return 'That player has too many pending offers — try again later.';
     case 'no_rolls':
       return 'No free rolls left.';
     case 'roll_not_allowed':
