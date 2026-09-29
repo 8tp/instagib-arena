@@ -505,67 +505,6 @@
   text-transform: uppercase;
 }
 
-/* ── Reveal ── */
-.ec-reveal-wrap {
-  position: relative;
-}
-.ec-hero {
-  margin-bottom: 4px;
-  filter: drop-shadow(0 0 22px color-mix(in srgb, var(--rc) 60%, transparent));
-  animation: lk-pop 520ms cubic-bezier(0.2, 1.5, 0.4, 1) both;
-}
-.ec-callout {
-  padding: 6px 14px;
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  border: 1px solid;
-  background: rgba(168, 85, 247, 0.12);
-  text-shadow: 0 0 14px currentColor;
-}
-.ec-flash {
-  position: absolute;
-  inset: -20px;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(60% 55% at 50% 45%, var(--rc), transparent 72%);
-  mix-blend-mode: screen;
-  animation: ec-flash 1.1s ease-out both;
-}
-@keyframes ec-flash {
-  0% {
-    opacity: 0.6;
-  }
-  100% {
-    opacity: 0;
-  }
-}
-.ec-burst {
-  position: absolute;
-  inset: -40px -60px;
-  overflow: hidden;
-  pointer-events: none;
-}
-.ec-rays {
-  position: absolute;
-  left: 50%;
-  top: 46%;
-  width: 920px;
-  height: 920px;
-  margin: -460px 0 0 -460px;
-  background: repeating-conic-gradient(from 0deg, var(--rc) 0deg 5deg, transparent 5deg 18deg);
-  mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 0.6), transparent 70%);
-  opacity: 0.4;
-  animation: lk-spin 9s linear infinite;
-}
-.ec-rays-iri {
-  background: repeating-conic-gradient(#ff4fd8 0deg 5deg, transparent 5deg 12deg, #2ee6d6 12deg 17deg, transparent 17deg 24deg, #ffe14d 24deg 29deg, transparent 29deg 36deg);
-}
-.lk-reduced .ec-rays {
-  animation: none;
-}
-
 /* ── Market ── */
 .ec-listing-grid {
   display: grid;
@@ -875,8 +814,7 @@
 .lk-reduced .ec-iri-bg,
 .lk-reduced .ec-iri-chip,
 .lk-reduced .ec-iri-text,
-.lk-reduced .ec-crate,
-.lk-reduced .ec-flash {
+.lk-reduced .ec-crate {
   animation: none;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -885,7 +823,6 @@
   .ec-iri-chip,
   .ec-iri-text,
   .ec-crate,
-  .ec-flash,
   .ec-case {
     animation: none;
     transition: none;
@@ -1044,17 +981,1404 @@
   }
 }
 
-.ec-reel-ph {
+
+/* ═══ Cases tab: header, season, daily free case ═══════════════════════════ */
+.ec-cases-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 16px;
+}
+.ec-season-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #bdf3ff;
+  background: rgba(103, 232, 249, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.35);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+.ec-season-pill i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #67e8f9;
+  box-shadow: 0 0 8px #67e8f9;
+}
+.ec-season-chip {
+  color: #a5f3fc;
+  background: rgba(103, 232, 249, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.32);
+}
+.ec-free-ribbon {
+  position: absolute;
+  top: 8px;
+  right: -4px;
+  padding: 3px 8px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  color: #03140d;
+  background: #34d399;
+  box-shadow: 0 0 14px rgba(52, 211, 153, 0.55);
+}
+
+.ec-daily {
+  position: relative;
+  display: inline-flex;
+  isolation: isolate;
+}
+.ec-daily-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 18px 0 14px;
+  overflow: hidden;
+  text-align: left;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  transition:
+    filter 0.15s,
+    transform 0.1s;
+}
+.ec-daily-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1;
+}
+.ec-daily-text b {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ec-daily-text small {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ec-daily.is-ready .ec-daily-btn {
+  color: #03140d;
+  background: linear-gradient(135deg, #8af5c0 0%, #34d399 45%, #16a34a 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+.ec-daily.is-ready .ec-daily-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.ec-daily.is-ready .ec-daily-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.ec-daily.is-ready .ec-daily-btn:disabled {
+  filter: saturate(0.6) brightness(0.8);
+}
+.ec-daily.is-ready .ec-daily-text small {
+  color: rgba(3, 20, 13, 0.72);
+}
+/* A light sweep across the gift + a pulsing ring outside the chamfer. */
+.ec-daily.is-ready .ec-daily-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.55) 48%, transparent 66%);
+  translate: -120% 0;
+  animation: ec-daily-sweep 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+.ec-daily.is-ready::before {
+  content: '';
+  position: absolute;
+  inset: 2px -2px;
+  z-index: -1;
+  background: #34d399;
+  filter: blur(12px);
+  opacity: 0.25;
+  animation: ec-daily-pulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+.ec-daily.is-ready svg {
+  transform-origin: 50% 80%;
+  animation: ec-gift 1.8s ease-in-out infinite;
+}
+@keyframes ec-daily-sweep {
+  0%,
+  55% {
+    translate: -120% 0;
+  }
+  100% {
+    translate: 120% 0;
+  }
+}
+@keyframes ec-daily-pulse {
+  0%,
+  100% {
+    opacity: 0.2;
+    scale: 0.96;
+  }
+  50% {
+    opacity: 0.85;
+    scale: 1.04 1.12;
+  }
+}
+@keyframes ec-gift {
+  0%,
+  60%,
+  100% {
+    rotate: 0deg;
+  }
+  68% {
+    rotate: -12deg;
+  }
+  76% {
+    rotate: 10deg;
+  }
+  84% {
+    rotate: -6deg;
+  }
+}
+.ec-daily.is-used .ec-daily-btn {
+  color: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  cursor: default;
+}
+.ec-daily.is-used .ec-daily-text small {
+  color: #86efac;
+}
+
+/* ═══ Case opening ═════════════════════════════════════════════════════════ */
+.ec-rv {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+.ec-rv:not(.is-reveal) {
+  cursor: pointer;
+}
+.ec-rv-status {
+  margin-bottom: 14px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+}
+.ec-rv.is-reveal .ec-rv-status {
+  margin-bottom: 0;
+  font-size: 24px;
+  letter-spacing: 0.22em;
+  color: var(--rc);
+  text-shadow: 0 0 22px color-mix(in srgb, var(--rc) 70%, transparent);
+}
+.ec-rv.is-reveal .ec-rv-status span {
+  display: inline-block;
+  animation: ec-kicker 560ms cubic-bezier(0.2, 1.3, 0.4, 1) both;
+}
+.ec-rv-unobtainable.is-reveal:not(.is-reduced) .ec-rv-status span {
+  animation-delay: 1.3s;
+}
+@keyframes ec-kicker {
+  from {
+    opacity: 0;
+    letter-spacing: 0.7em;
+  }
+}
+
+/* The stage: reel + the crate overlay. */
+.ec-stage {
+  position: relative;
+  width: 100%;
+}
+.ec-reel {
+  position: relative;
+  height: calc(var(--cell) + 40px);
+  overflow: hidden;
+  background:
+    radial-gradient(40% 90% at 50% 50%, color-mix(in srgb, var(--ca) 14%, transparent), transparent 70%),
+    linear-gradient(180deg, #06080c, #0d1119 50%, #06080c);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+  mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent);
+  transition:
+    opacity 260ms ease-out,
+    scale 380ms cubic-bezier(0.2, 1.3, 0.4, 1);
+}
+.ec-rv.is-crate:not(.crate-burst) .ec-reel {
+  opacity: 0;
+  scale: 0.94;
+}
+.ec-reel-strip {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  display: flex;
+  margin-top: calc(var(--cell) / -2 - 4px);
+  will-change: transform;
+}
+.ec-reel-ghost {
+  z-index: 0;
+  opacity: 0;
+  filter: blur(3px);
+  pointer-events: none;
+}
+.ec-reel-strip:not(.ec-reel-ghost) {
+  z-index: 1;
+}
+.ec-gcell {
   position: relative;
   flex: none;
+  overflow: hidden;
+}
+.ec-gcell img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Cells: the tier's light on the rim and spilling on the floor below. */
+.ec-rcell {
+  position: relative;
+  flex: none;
+  transition: scale 110ms ease-out;
+}
+.ec-rcell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--tc) 50%, transparent),
+    inset 0 -22px 24px -16px var(--tc);
+}
+.ec-rcell::after {
+  content: '';
+  position: absolute;
+  left: 4%;
+  right: 4%;
+  bottom: -14px;
+  height: 14px;
+  background: radial-gradient(50% 100% at 50% 0%, var(--tc), transparent);
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity 110ms;
+}
+.ec-rcell.is-hot {
+  scale: 1.045;
+}
+.ec-rcell.is-hot::after {
+  opacity: 1;
+}
+.ec-rcell.is-won {
+  z-index: 3;
+  scale: 1.09;
+  transition: scale 260ms cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+.ec-rcell.is-won::before {
+  box-shadow:
+    inset 0 0 0 2px var(--tc),
+    0 0 26px 2px var(--tc);
+}
+.ec-rcell.is-won::after {
+  opacity: 1;
+}
+.ec-rv.is-hold .ec-rcell:not(.is-won) {
+  opacity: 0.28;
+  transition: opacity 360ms ease-out;
+}
+.ec-rv.is-hold .ec-rcell.is-won {
+  animation: ec-won-pulse 0.42s ease-in-out infinite alternate;
+}
+.ec-rv-unobtainable.is-hold .ec-rcell.is-won {
+  animation:
+    ec-won-pulse 0.6s ease-in-out infinite alternate,
+    ec-won-grow 1.25s cubic-bezier(0.3, 0, 0.2, 1) both;
+}
+@keyframes ec-won-pulse {
+  from {
+    filter: brightness(1);
+  }
+  to {
+    filter: brightness(1.45) drop-shadow(0 0 18px var(--tc));
+  }
+}
+@keyframes ec-won-grow {
+  from {
+    scale: 1.09;
+  }
+  to {
+    scale: 1.2;
+  }
+}
+
+/* Centre marker: a hot filament with arrow heads and a soft light column. */
+.ec-reel::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  z-index: 2;
+  width: calc(var(--cell) * 1.4);
+  translate: -50% 0;
+  background: radial-gradient(50% 55% at 50% 50%, rgba(255, 214, 130, 0.12), transparent);
+  pointer-events: none;
+}
+.ec-reel-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  z-index: 4;
+  width: 2px;
+  margin-left: -1px;
+  background: linear-gradient(180deg, #fff, #ffe7a3 18%, #ffc23d 50%, #ffe7a3 82%, #fff);
+  box-shadow:
+    0 0 8px 1px rgba(255, 194, 61, 0.95),
+    0 0 26px 5px rgba(255, 160, 40, 0.4);
+  pointer-events: none;
+}
+.ec-reel-marker::before,
+.ec-reel-marker::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  translate: -50% 0;
+  border: 9px solid transparent;
+  filter: drop-shadow(0 0 6px rgba(255, 194, 61, 0.9));
+}
+.ec-reel-marker::before {
+  top: 0;
+  border-top-color: #ffd36a;
+}
+.ec-reel-marker::after {
+  bottom: 0;
+  border-bottom-color: #ffd36a;
+}
+.ec-skip {
+  min-height: 18px;
+  margin-top: 10px;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+/* Anticipation: drop → land → rattle → the lid cracks, light leaks → burst. */
+.ec-open-crate {
+  position: fixed;
+  z-index: 72;
+  display: grid;
+  place-items: center;
+  width: 720px;
+  height: 720px;
+  translate: -50% -50%;
+  pointer-events: none;
+}
+.ec-open-crate > * {
+  grid-area: 1 / 1;
+}
+.ec-open-box {
+  position: relative;
+  transform-origin: 50% 88%;
+  animation: ec-crate-drop 640ms both;
+}
+.ec-open-box .ec-crate-svg {
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.6));
+}
+.ec-open-crate .ec-lid {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: ec-lid-crack 640ms both;
+}
+.ec-open-crate .ec-seam {
+  opacity: 0;
+  filter: drop-shadow(0 0 4px var(--ca)) drop-shadow(0 0 10px var(--ca));
+  animation: ec-seam 640ms both;
+}
+.ec-open-glow {
+  width: 380px;
+  height: 380px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--ca) 75%, #fff), color-mix(in srgb, var(--ca) 35%, transparent) 45%, transparent);
+  opacity: 0;
+  animation: ec-open-glow 640ms both;
+}
+.ec-open-rays {
+  width: 620px;
+  height: 620px;
+  background: repeating-conic-gradient(from 0deg, var(--ca) 0deg 4deg, transparent 4deg 15deg);
+  mask-image: radial-gradient(closest-side, #000 18%, transparent 72%);
+  opacity: 0;
+  animation:
+    ec-open-rays 640ms both,
+    ec-rot 7s linear infinite;
+}
+.ec-open-flash {
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, #fff, color-mix(in srgb, var(--ca) 80%, #fff) 35%, transparent 72%);
+  opacity: 0;
+}
+@keyframes ec-crate-drop {
+  0% {
+    transform: translateY(-150px) scale(0.84);
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.6);
+  }
+  31% {
+    transform: translateY(0) scale(1.08, 0.88);
+    opacity: 1;
+    animation-timing-function: ease-out;
+  }
+  40% {
+    transform: translateY(-8px) scale(0.97, 1.04);
+  }
+  48% {
+    transform: translateY(0) scale(1);
+  }
+  56% {
+    transform: rotate(-3deg);
+  }
+  63% {
+    transform: rotate(3.5deg) translateX(1px);
+  }
+  70% {
+    transform: rotate(-4deg) translateX(-2px);
+  }
+  77% {
+    transform: rotate(4.5deg) translateX(2px);
+  }
+  85% {
+    transform: rotate(-5deg) translateX(-2px) scale(1.02);
+  }
+  93% {
+    transform: rotate(4deg) scale(1.04);
+  }
+  100% {
+    transform: rotate(0deg) scale(1.05);
+  }
+}
+@keyframes ec-lid-crack {
+  0%,
+  55% {
+    transform: none;
+  }
+  68% {
+    transform: translateY(-2px) rotate(-2deg);
+  }
+  80% {
+    transform: translateY(-3px) rotate(2.5deg);
+  }
+  100% {
+    transform: translateY(-5px) rotate(-1deg);
+  }
+}
+@keyframes ec-seam {
+  0%,
+  50% {
+    opacity: 0;
+  }
+  75% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes ec-open-glow {
+  0%,
+  45% {
+    opacity: 0;
+    scale: 0.4;
+  }
+  100% {
+    opacity: 0.6;
+    scale: 1;
+  }
+}
+@keyframes ec-open-rays {
+  0%,
+  55% {
+    opacity: 0;
+    scale: 0.5;
+  }
+  100% {
+    opacity: 0.32;
+    scale: 1;
+  }
+}
+@keyframes ec-rot {
+  to {
+    rotate: 360deg;
+  }
+}
+/* Waiting on thumbnails (rare): keep rattling with the seam blazing. */
+.ec-open-crate.is-wait .ec-open-box {
+  animation: ec-crate-rattle 0.3s linear infinite;
+}
+.ec-open-crate.is-wait .ec-seam {
+  opacity: 1;
+  animation: ec-seam-pulse 0.5s ease-in-out infinite alternate;
+}
+.ec-open-crate.is-wait .ec-lid {
+  animation: ec-lid-rattle 0.3s linear infinite;
+}
+.ec-open-crate.is-wait .ec-open-glow {
+  opacity: 0.6;
+  animation: none;
+}
+.ec-open-crate.is-wait .ec-open-rays {
+  opacity: 0.32;
+  animation: ec-rot 7s linear infinite;
+}
+@keyframes ec-crate-rattle {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1.05);
+  }
+  25% {
+    transform: rotate(-3deg) translateX(-2px) scale(1.05);
+  }
+  75% {
+    transform: rotate(3deg) translateX(2px) scale(1.05);
+  }
+}
+@keyframes ec-lid-rattle {
+  0%,
+  100% {
+    transform: translateY(-5px);
+  }
+  50% {
+    transform: translateY(-7px) rotate(2deg);
+  }
+}
+@keyframes ec-seam-pulse {
+  to {
+    opacity: 0.6;
+  }
+}
+/* Burst. */
+.ec-open-crate.is-burst .ec-open-box {
+  animation: ec-crate-burst 170ms ease-in forwards;
+}
+.ec-open-crate.is-burst .ec-lid {
+  transform: translateY(-5px);
+  animation: ec-lid-fly 200ms ease-out forwards;
+}
+.ec-open-crate.is-burst .ec-seam {
+  opacity: 1;
+  animation: none;
+}
+.ec-open-crate.is-burst .ec-open-glow {
+  animation: ec-glow-out 360ms ease-out forwards;
+}
+.ec-open-crate.is-burst .ec-open-rays {
+  animation: ec-rays-out 360ms ease-out forwards;
+}
+.ec-open-crate.is-burst .ec-open-flash {
+  animation: ec-open-flash 430ms ease-out forwards;
+}
+@keyframes ec-crate-burst {
+  from {
+    transform: scale(1.05);
+    opacity: 1;
+    filter: brightness(1);
+  }
+  to {
+    transform: scale(1.4);
+    opacity: 0;
+    filter: brightness(2.4);
+  }
+}
+@keyframes ec-lid-fly {
+  to {
+    transform: translateY(-46px) rotate(-16deg);
+    opacity: 0;
+  }
+}
+@keyframes ec-glow-out {
+  from {
+    opacity: 0.6;
+    scale: 1;
+  }
+  to {
+    opacity: 0;
+    scale: 1.7;
+  }
+}
+@keyframes ec-rays-out {
+  from {
+    opacity: 0.32;
+    scale: 1;
+  }
+  to {
+    opacity: 0;
+    scale: 1.8;
+  }
+}
+@keyframes ec-open-flash {
+  0% {
+    opacity: 1;
+    scale: 0.25;
+  }
+  100% {
+    opacity: 0;
+    scale: 3.4;
+  }
+}
+
+/* The card. */
+.ec-rv-card {
+  position: relative;
   display: flex;
-  align-items: flex-end;
-  padding: 8px;
-  background: radial-gradient(115% 85% at 50% 22%, var(--a), var(--b) 78%);
-  box-shadow: inset 0 -3px 0 var(--e), inset 0 0 0 1px color-mix(in srgb, var(--e) 35%, transparent);
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: center;
+}
+.ec-rv-hero-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  padding: 26px 0 18px;
+}
+.ec-rv-hero-wrap > * {
+  grid-area: 1 / 1;
+}
+.ec-rv-rays {
+  width: 760px;
+  height: 760px;
+  max-width: none;
+  margin: -380px;
+  background: repeating-conic-gradient(from 0deg, var(--rc) 0deg 5deg, transparent 5deg 18deg);
+  mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 0.7), transparent 70%);
+  opacity: 0.4;
+  pointer-events: none;
+  animation:
+    ec-rays-in 700ms ease-out both,
+    ec-rot 16s linear infinite;
+}
+.ec-rv-rays.ec-rays-iri {
+  background: repeating-conic-gradient(#ff4fd8 0deg 5deg, transparent 5deg 12deg, #2ee6d6 12deg 17deg, transparent 17deg 24deg, #ffe14d 24deg 29deg, transparent 29deg 36deg);
+  opacity: 0.5;
+}
+@keyframes ec-rays-in {
+  from {
+    opacity: 0;
+    scale: 0.3;
+  }
+}
+.ec-rv-floor {
+  align-self: end;
+  width: 70%;
+  max-width: 420px;
+  height: 46px;
+  margin-bottom: -10px;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--rc) 55%, transparent), transparent);
+  pointer-events: none;
+}
+.ec-rv-hero {
+  position: relative;
+  filter: drop-shadow(0 0 28px color-mix(in srgb, var(--rc) 60%, transparent));
+}
+.ec-rv-hero-in {
+  animation: ec-pop 520ms cubic-bezier(0.2, 1.5, 0.4, 1) both;
+}
+.ec-rv-rare .ec-rv-hero-in,
+.ec-rv-epic .ec-rv-hero-in,
+.ec-rv-legendary .ec-rv-hero-in {
+  animation: ec-pop-strong 640ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+.ec-rv-relic .ec-rv-hero-in {
+  animation: ec-pop-slam 560ms cubic-bezier(0.3, 1.2, 0.4, 1) both;
+}
+.ec-rv-unobtainable .ec-rv-hero-in {
+  animation: ec-pop-rise 1.5s cubic-bezier(0.2, 1, 0.3, 1) both;
+}
+@keyframes ec-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.62);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes ec-pop-strong {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+    filter: brightness(3);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.1);
+    filter: brightness(1.5);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+@keyframes ec-pop-slam {
+  0% {
+    opacity: 0;
+    transform: scale(1.9);
+    filter: brightness(2.5);
+  }
+  42% {
+    opacity: 1;
+    transform: scale(0.93);
+    filter: brightness(1.6);
+  }
+  68% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+@keyframes ec-pop-rise {
+  0%,
+  30% {
+    opacity: 0;
+    transform: scale(0.3) rotate(-8deg);
+    filter: brightness(4) blur(10px);
+  }
+  62% {
+    opacity: 1;
+    transform: scale(1.12) rotate(1deg);
+    filter: brightness(1.8) blur(0);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1) blur(0);
+  }
+}
+/* Legendary / Relic: a halo ring off the hero. */
+.ec-rv-legendary .ec-rv-hero::after,
+.ec-rv-relic .ec-rv-hero::after {
+  content: '';
+  position: absolute;
+  inset: -10px;
+  box-shadow:
+    0 0 0 3px var(--rc),
+    0 0 30px 6px var(--rc);
+  opacity: 0;
+  animation: ec-halo 900ms ease-out 80ms both;
+  pointer-events: none;
+}
+@keyframes ec-halo {
+  0% {
+    opacity: 1;
+    scale: 0.9;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.5;
+  }
+}
+/* Relic / Unobtainable: a camera punch-in with a short shake. */
+.ec-rv-relic.is-reveal:not(.is-reduced) .ec-rv-card {
+  animation: ec-cam 640ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+.ec-rv-unobtainable.is-reveal:not(.is-reduced) .ec-rv-card {
+  animation: ec-cam 700ms cubic-bezier(0.2, 0.9, 0.3, 1) 0.45s both;
+}
+@keyframes ec-cam {
+  0% {
+    transform: scale(1.1);
+  }
+  14% {
+    transform: scale(1.12) translate(5px, -4px);
+  }
+  26% {
+    transform: scale(1.09) translate(-6px, 3px);
+  }
+  38% {
+    transform: scale(1.06) translate(4px, 2px);
+  }
+  52% {
+    transform: scale(1.03) translate(-2px, -1px);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+.ec-rv-unusual {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px 14px;
+  padding: 8px 40px;
+  background: linear-gradient(90deg, transparent, rgba(168, 85, 247, 0.3) 22%, rgba(168, 85, 247, 0.3) 78%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(197, 139, 255, 0.35),
+    inset 0 -1px 0 rgba(197, 139, 255, 0.35);
+  animation: ec-sting 720ms cubic-bezier(0.2, 1, 0.3, 1) 220ms both;
+}
+.ec-rv-unusual-star {
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #e3c6ff;
+  text-shadow:
+    0 0 12px #a855f7,
+    0 0 30px #a855f7;
+}
+.ec-rv-unusual-fx {
+  font-family: var(--font-display);
+  font-size: 19px;
   font-weight: 600;
-  line-height: 1.1;
-  color: rgba(255, 255, 255, 0.8);
+  letter-spacing: 0.08em;
+  color: #f3e6ff;
+}
+@keyframes ec-sting {
+  0% {
+    opacity: 0;
+    clip-path: inset(0 50% 0 50%);
+  }
+  100% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.ec-rv-name {
+  max-width: 100%;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.ec-rv-q {
+  display: inline-block;
+  margin-right: 0.3em;
+  text-shadow: 0 0 18px currentColor;
+  animation: ec-qword 480ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+@keyframes ec-qword {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(1.4);
+    filter: brightness(2);
+  }
+}
+.ec-rv-base {
+  display: inline-block;
+  text-shadow: 0 0 26px color-mix(in srgb, var(--rc) 55%, transparent);
+  animation: ec-rise 420ms ease-out 80ms both;
+}
+.ec-rv-base.ec-iri-text {
+  text-shadow: none;
+}
+.ec-rv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  animation: ec-rise 420ms ease-out 240ms both;
+}
+.ec-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+.ec-meta-chip.ec-season-chip {
+  color: #a5f3fc;
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.32);
+}
+.ec-rv-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  animation: ec-rise 420ms ease-out 320ms both;
+}
+.ec-rv-spent {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.48);
+  animation: ec-rise 420ms ease-out 360ms both;
+}
+.ec-rv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 6px;
+  animation: ec-rise 420ms ease-out 400ms both;
+}
+@keyframes ec-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+/* Unobtainable: the title card owns the first second; the card follows. */
+.ec-rv-unobtainable:not(.is-reduced) .ec-rv-name,
+.ec-rv-unobtainable:not(.is-reduced) .ec-rv-meta,
+.ec-rv-unobtainable:not(.is-reduced) .ec-rv-tags,
+.ec-rv-unobtainable:not(.is-reduced) .ec-rv-spent,
+.ec-rv-unobtainable:not(.is-reduced) .ec-rv-actions,
+.ec-rv-unobtainable:not(.is-reduced) .ec-rv-unusual {
+  animation-delay: 1.15s;
+}
+/* Reduced effects: the information, none of the motion. */
+.ec-rv.is-reduced .ec-rv-card *,
+.ec-rv.is-reduced .ec-rv-status span {
+  animation: none !important;
+}
+.ec-rv.is-reduced .ec-rv-card {
+  animation: deck-fade-in 180ms ease-out both;
+}
+.ec-rv.is-reduced .ec-rcell,
+.ec-rv.is-reduced .ec-reel {
+  transition: none;
+}
+.ec-rv.is-reduced.is-crate .ec-reel {
+  opacity: 0;
+}
+
+/* ═══ Screen-level FX (portalled; see RevealFx.tsx) ═══════════════════════ */
+.ecfx,
+.ecfx-hold {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ecfx-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.ecfx-flash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at var(--ox) var(--oy), #fff 0, color-mix(in srgb, var(--fc) 85%, #fff) 6%, var(--fc) 16%, transparent 58%);
+  mix-blend-mode: screen;
+  opacity: 0;
+  animation: ecfx-flash 760ms ease-out both;
+}
+.ecfx-rare .ecfx-flash,
+.ecfx-epic .ecfx-flash {
+  --fo: 0.5;
+}
+@keyframes ecfx-flash {
+  0% {
+    opacity: var(--fo, 0.85);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.ecfx-edge {
+  position: absolute;
+  inset: 0;
+  box-shadow:
+    inset 0 0 80px 14px var(--fc),
+    inset 0 0 220px 40px color-mix(in srgb, var(--fc) 35%, transparent);
+  opacity: 0;
+  animation: ecfx-edge 2.4s ease-out both;
+}
+.ecfx-unobtainable .ecfx-edge {
+  box-shadow:
+    inset 0 0 80px 14px #ff4fd8,
+    inset 0 0 220px 40px rgba(46, 230, 214, 0.35);
+  animation-duration: 1.8s;
+}
+@keyframes ecfx-edge {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  32% {
+    opacity: 0.5;
+  }
+  48% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.ecfx-streak {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--oy);
+  height: 4px;
+  margin-top: -2px;
+  background: linear-gradient(90deg, transparent, var(--fc) 26%, #fff 50%, var(--fc) 74%, transparent);
+  box-shadow: 0 0 22px 6px color-mix(in srgb, var(--fc) 65%, transparent);
+  opacity: 0;
+  animation: ecfx-streak 1s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+@keyframes ecfx-streak {
+  0% {
+    opacity: 1;
+    scale: 0 1;
+  }
+  35% {
+    opacity: 1;
+    scale: 1 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.1 0.4;
+  }
+}
+.ecfx-wave {
+  position: absolute;
+  left: var(--ox);
+  top: var(--oy);
+  width: 180px;
+  height: 180px;
+  margin: -90px 0 0 -90px;
+  border: 5px solid var(--fc);
+  border-radius: 50%;
+  box-shadow:
+    0 0 30px var(--fc),
+    inset 0 0 30px var(--fc);
+  opacity: 0;
+  animation: ecfx-wave 900ms cubic-bezier(0.1, 0.7, 0.3, 1) both;
+}
+.ecfx-wave-2 {
+  border-color: #fff;
+  animation-delay: 140ms;
+}
+.ecfx-unobtainable .ecfx-wave {
+  border-color: #ff4fd8;
+  box-shadow:
+    0 0 30px #ff4fd8,
+    inset 0 0 30px #ff4fd8;
+  animation-delay: 0.45s;
+}
+.ecfx-unobtainable .ecfx-wave-2 {
+  border-color: #2ee6d6;
+  box-shadow:
+    0 0 30px #2ee6d6,
+    inset 0 0 30px #2ee6d6;
+  animation-delay: 0.6s;
+}
+@keyframes ecfx-wave {
+  0% {
+    opacity: 1;
+    scale: 0.2;
+  }
+  100% {
+    opacity: 0;
+    scale: 9;
+  }
+}
+.ecfx-takeover {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 160vmax;
+  height: 160vmax;
+  margin: -80vmax 0 0 -80vmax;
+  background: conic-gradient(from 0deg, #ff4fd8, #7c5cff, #2ee6d6, #ffe14d, #ff4fd8);
+  mix-blend-mode: screen;
+  opacity: 0;
+  animation:
+    ecfx-take 1.3s ease-out both,
+    ec-rot 4s linear infinite;
+}
+.ecfx-takeover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  animation: ecfx-white 420ms ease-out both;
+}
+@keyframes ecfx-take {
+  0% {
+    opacity: 1;
+  }
+  18% {
+    opacity: 0.6;
+  }
+  55% {
+    opacity: 0.18;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+@keyframes ecfx-white {
+  from {
+    opacity: 0.95;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.ecfx-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  translate: 0 -50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 26px 16px;
+  text-align: center;
+  background: linear-gradient(90deg, transparent, rgba(12, 4, 28, 0.86) 14%, rgba(12, 4, 28, 0.86) 86%, transparent);
+  box-shadow:
+    0 -1px 0 rgba(255, 79, 216, 0.5),
+    0 1px 0 rgba(46, 230, 214, 0.5);
+  opacity: 0;
+  animation: ecfx-title 1.45s cubic-bezier(0.2, 0.9, 0.3, 1) 0.1s both;
+}
+.ecfx-title-kicker {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.78);
+}
+.ecfx-title-main {
+  font-family: var(--font-display);
+  font-size: clamp(44px, 9vw, 112px);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: transparent;
+  background: linear-gradient(90deg, #ff4fd8, #b69cff, #2ee6d6, #ffe14d, #ff4fd8);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 0 22px rgba(255, 79, 216, 0.6));
+  animation: ec-iri-shift 2.4s linear infinite;
+}
+.ecfx-title-name {
+  font-family: var(--font-display);
+  font-size: clamp(16px, 2.4vw, 24px);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #fff0fc;
+}
+/* Slams in, holds, then flies up and shrinks away towards the card's own
+   "UNOBTAINABLE" kicker (which fades in as it arrives), leaving the card clear. */
+@keyframes ecfx-title {
+  0% {
+    opacity: 0;
+    scale: 1.7;
+  }
+  14% {
+    opacity: 1;
+    scale: 0.97;
+  }
+  20% {
+    scale: 1;
+  }
+  66% {
+    opacity: 1;
+    scale: 1.02;
+    translate: 0 -50%;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.8, 0.4);
+  }
+  100% {
+    opacity: 0;
+    scale: 0.3 0.2;
+    translate: 0 calc(-50% - 24vh);
+    visibility: hidden;
+  }
+}
+/* What the takeover settles into: a dark iridescent vignette that stays. */
+.ecfx-settle {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 70% 62% at 50% 50%, transparent 55%, rgba(14, 3, 30, 0.6));
+  box-shadow:
+    inset 0 0 90px 6px rgba(255, 79, 216, 0.3),
+    inset 0 0 220px 30px rgba(124, 92, 255, 0.18),
+    inset 0 -60px 160px -40px rgba(46, 230, 214, 0.22);
+  opacity: 0;
+  animation: ecfx-settle 900ms ease-out 1.1s both;
+}
+@keyframes ecfx-settle {
+  to {
+    opacity: 1;
+  }
+}
+/* The hold before a Legendary+ reveal: the world falls away from the reel. */
+.ecfx-hold {
+  background: radial-gradient(ellipse 34% 26% at 50% 50%, transparent, rgba(0, 0, 0, 0.72));
+  animation: ecfx-hold 420ms ease-out both;
+}
+.ecfx-hold-legendary {
+  opacity: 0.55;
+}
+.ecfx-hold-unobtainable {
+  background: radial-gradient(ellipse 30% 22% at 50% 50%, transparent, rgba(4, 0, 12, 0.9));
+  animation: ecfx-hold 1.1s ease-in both;
+}
+.ecfx-hold-unobtainable::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 22% 18% at 50% 50%, rgba(255, 79, 216, 0.28), transparent);
+  animation: ecfx-heart 0.6s ease-in-out infinite alternate;
+}
+@keyframes ecfx-hold {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes ecfx-heart {
+  from {
+    opacity: 0.2;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  .ec-rv-name {
+    font-size: 26px;
+  }
+  .ec-rv-status {
+    font-size: 13px;
+    letter-spacing: 0.16em;
+  }
+  .ec-rv.is-reveal .ec-rv-status {
+    font-size: 19px;
+  }
+  .ec-rv-rays {
+    width: 520px;
+    height: 520px;
+  }
+  .ec-rv-unusual {
+    padding: 8px 18px;
+  }
+  .ec-rv-unusual-star {
+    font-size: 20px;
+  }
+  .ec-rv-actions .lk-action {
+    flex: 1 1 100%;
+  }
+  .ec-open-rays {
+    width: 440px;
+    height: 440px;
+  }
+  .ec-open-glow {
+    width: 280px;
+    height: 280px;
+  }
+}
+
+.lk-reduced .ec-daily::before,
+.lk-reduced .ec-daily svg,
+.lk-reduced .ec-daily-btn::after {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ec-daily::before,
+  .ec-daily svg,
+  .ec-daily-btn::after {
+    animation: none;
+  }
+}
+.ec-rv.is-reduced .ec-rv-hero::after {
+  display: none;
+}
+
+/* Reveal dialog frame in the tier colour: a hint on low tiers, full from
+   Legendary up. (Overrides ModalShell's amber tone once the card is out.) */
+.ec-rv-frame-common {
+  --frame: rgba(176, 183, 195, 0.3);
+  --frame-glow: rgba(176, 183, 195, 0.12);
+}
+.ec-rv-frame-uncommon {
+  --frame: rgba(94, 196, 107, 0.4);
+  --frame-glow: rgba(94, 196, 107, 0.16);
+}
+.ec-rv-frame-rare {
+  --frame: rgba(75, 141, 255, 0.55);
+  --frame-glow: rgba(75, 141, 255, 0.24);
+}
+.ec-rv-frame-epic {
+  --frame: rgba(168, 85, 247, 0.7);
+  --frame-glow: rgba(168, 85, 247, 0.3);
+}
+.ec-rv-frame-legendary {
+  --frame: #f59e0b;
+  --frame-glow: rgba(245, 158, 11, 0.45);
+}
+.ec-rv-frame-relic {
+  --frame: #ef4444;
+  --frame-glow: rgba(239, 68, 68, 0.5);
+}
+.ec-rv-frame-unobtainable {
+  --frame: #ff4fd8;
+  --frame-glow: rgba(255, 79, 216, 0.5);
+}
+.ec-rv-frame {
+  border-color: var(--frame) !important;
+  transition: border-color 400ms ease-out;
+}
+.ec-rv-frame > .deck-rule-draw {
+  background: linear-gradient(90deg, var(--frame), rgba(255, 255, 255, 0.1), transparent) !important;
+}
+.ec-rv-framed {
+  box-shadow: 0 0 60px -12px var(--frame-glow) !important;
 }

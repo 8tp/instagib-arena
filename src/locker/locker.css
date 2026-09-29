@@ -374,6 +374,10 @@
   background: #ffc23d;
   color: #1c1204;
 }
+.lk-action-daily {
+  background: #34d399;
+  color: #03140d;
+}
 .lk-action-done {
   background: rgba(103, 232, 249, 0.1);
   color: #a5f3fc;

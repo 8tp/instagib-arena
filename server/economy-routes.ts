@@ -9,6 +9,7 @@ import {
   casesInfo,
   ensureOnboarded,
   equipSlot,
+  nextDailyCaseAt,
   econState,
   getInventory,
   openCase,
@@ -17,7 +18,6 @@ import {
   salvageItems,
 } from './economy';
 import { browse, buyListing, listItem, myListings, netHash, priceHistory, unlistItem } from './market';
-import { spin, spinInfo } from './spin';
 import { acceptTrade, cancelTrade, createOffer, declineTrade, listTrades, tradeGate } from './trades';
 
 export const economyRouter = Router();
@@ -105,28 +105,22 @@ economyRouter.post('/inventory/salvage', (req, res) => {
 economyRouter.get('/cases', (req, res) => {
   const id = accountId(req);
   if (id) ensureOnboarded(id);
-  res.json({ ...casesInfo(), ...(id ? econState(id) : { credits: 0, freeRolls: 0 }) });
+  const next = id ? nextDailyCaseAt(id) : 0;
+  res.json({
+    ...casesInfo(),
+    ...(id ? econState(id) : { credits: 0, freeRolls: 0 }),
+    dailyAvailable: !!id && next === 0, // one free standard-case open per UTC day
+    nextDailyAt: next,
+  });
 });
 
 economyRouter.post('/cases/open', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
   const b = body(req);
-  send(res, openCase(id, str(b.caseId), b.useRoll === true));
-});
-
-// ── Daily Spin ───────────────────────────────────────────────────────────────
-// Public: the wheel segments + premium odds are published to everyone.
-economyRouter.get('/spin', (req, res) => {
-  const id = accountId(req);
-  if (id) ensureOnboarded(id);
-  res.json(spinInfo(id));
-});
-
-economyRouter.post('/spin', (req, res) => {
-  const id = writer(req, res);
-  if (!id) return;
-  send(res, spin(id, body(req).kind));
+  // `pay`: 'credits' | 'roll' | 'daily' (legacy clients send useRoll).
+  const pay = b.pay === 'daily' || b.pay === 'roll' || b.pay === 'credits' ? b.pay : b.useRoll === true ? 'roll' : 'credits';
+  send(res, openCase(id, str(b.caseId), pay));
 });
 
 // ── Market ───────────────────────────────────────────────────────────────────

@@ -438,7 +438,7 @@
   text-transform: uppercase;
   color: #fff;
 }
-/* "FREE SPIN" pip on the Locker door (a free daily spin is waiting). */
+/* "FREE CASE" pip on the Locker door (the daily free case is waiting). */
 .menu-door-spin {
   display: inline-flex;
   flex: none;

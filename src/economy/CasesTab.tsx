@@ -3,11 +3,14 @@
 // (guests too). Opening runs the reel; results land in the inventory.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { sfxProps, toast } from '../deck-core';
-import { TIERS, TIER_META, type CaseId, type ItemInstanceWire } from '../game/items/types';
+import { CURRENT_SEASON, SEASONS, TIERS, TIER_META, type CaseId, type ItemInstanceWire } from '../game/items/types';
+import { prefetchThumbnails } from '../game/thumbs';
 import { ItemTile } from '../ui/item-tile';
 import { TIER_COLOR, TIER_LABEL, isIridescent } from '../ui/rarity';
-import { econ as api, reasonText, type CaseInfo, type OpenCaseResp } from './api';
+import { econ as api, reasonText, type CaseInfo, type CasePay, type OpenCaseResp } from './api';
+import { DAILY_CASE_USED_EVENT, fmtCountdown } from './daily-case';
 import { CaseReveal } from './CaseReveal';
+import { CASE_HUE } from './case-hue';
 import { CrateArt } from './CrateArt';
 import { fallbackCases, pct, poolOf, qualityRows } from './rates';
 import { fmtCredits } from './display';
@@ -15,13 +18,28 @@ import { TicketGlyph } from '../menu/RewardTile';
 import { Balance } from './parts';
 import type { Econ } from './useEconomy';
 
-const CASE_HUE: Record<CaseId, { a: string; b: string; glyph: string }> = {
-  hat: { a: '#f59e0b', b: '#5a2f04', glyph: 'H' },
-  weapon: { a: '#ef4444', b: '#4a0d0d', glyph: 'W' },
-  accessory: { a: '#4b8dff', b: '#0d2452', glyph: 'A' },
-  taunt: { a: '#a855f7', b: '#2d0c4e', glyph: 'T' },
-  vault: { a: '#ff4fd8', b: '#1d0a3a', glyph: 'V' },
+const seasonLine = (id: number, name?: string): string => {
+  const s = SEASONS.find((x) => x.id === id);
+  return `${name ?? s?.name ?? `Season ${id}`}${s?.title ? ` · ${s.title}` : ''}`;
 };
+
+// A gift box (the daily free case) and a clock (its countdown).
+function GiftGlyph({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinejoin='round'>
+      <path d='M3.5 9.5h17v4h-17zM5 13.5h14V21H5zM12 9.5V21' />
+      <path d='M12 9.5c-1.2-3.6-5.6-5.2-6.4-2.7-.6 1.9 2.6 2.7 6.4 2.7zM12 9.5c1.2-3.6 5.6-5.2 6.4-2.7.6 1.9-2.6 2.7-6.4 2.7z' />
+    </svg>
+  );
+}
+function ClockGlyph({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round'>
+      <circle cx='12' cy='12' r='8.5' />
+      <path d='M12 7.5V12l3 2' />
+    </svg>
+  );
+}
 
 export function CasesTab({
   econ,
@@ -38,14 +56,29 @@ export function CasesTab({
 }) {
   const [sel, setSel] = useState<CaseId>('hat');
   const [busy, setBusy] = useState(false);
-  const [reveal, setReveal] = useState<{ key: number; caseId: CaseId; res: OpenCaseResp; usedRoll: boolean } | null>(null);
+  const [reveal, setReveal] = useState<{ key: number; caseId: CaseId; res: OpenCaseResp; pay: CasePay } | null>(null);
   // Published rates: the server's effective odds (public call), with the shared
   // contract as a fallback so guests / offline still see rates.
   const [cases, setCases] = useState<CaseInfo[]>(() => fallbackCases());
+  // Daily free case: one free standard-case open per UTC day (server-tracked).
+  const [daily, setDaily] = useState<{ available: boolean; nextAt: number }>({ available: false, nextAt: 0 });
+  const [season, setSeason] = useState<string>(() => seasonLine(CURRENT_SEASON));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (daily.available || daily.nextAt <= 0) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [daily]);
+  useEffect(() => {
+    if (!daily.available && daily.nextAt > 0 && now >= daily.nextAt) setDaily({ available: true, nextAt: 0 });
+  }, [now, daily]);
   useEffect(() => {
     let live = true;
     void api.cases().then((r) => {
-      if (live && r.ok && Array.isArray(r.cases) && r.cases.length > 0) setCases(r.cases);
+      if (!live || !r.ok) return;
+      if (Array.isArray(r.cases) && r.cases.length > 0) setCases(r.cases);
+      setDaily({ available: !!r.dailyAvailable, nextAt: r.nextDailyAt ?? 0 });
+      if (r.season) setSeason(seasonLine(r.season.id, r.season.name));
     });
     return () => {
       live = false;
@@ -54,6 +87,14 @@ export function CasesTab({
   const c = cases.find((x) => x.id === sel) ?? cases[0];
   const hue = CASE_HUE[c.id];
   const pool = useMemo(() => poolOf(c), [c]);
+  // Warm the pool's thumbnails the moment a case is picked: the reveal's reel
+  // draws from them and should never wait on the render queue.
+  useEffect(() => {
+    prefetchThumbnails(
+      pool.map((d) => d.id),
+      true,
+    );
+  }, [pool]);
   const ready = econ.status === 'ready';
 
   // The balance and the new item are applied when the reel LANDS (or the
@@ -71,34 +112,52 @@ export function CasesTab({
   useEffect(() => () => applyRef.current(), []);
 
   const opening = useRef(false);
-  const open = async (caseId: CaseId, useRoll: boolean) => {
+  const open = async (caseId: CaseId, pay: CasePay) => {
     if (opening.current) return;
     opening.current = true;
     applyPending();
     setBusy(true);
-    const r = await api.openCase(caseId, useRoll);
+    const r = await api.openCase(caseId, pay);
     setBusy(false);
     opening.current = false;
     if (!r.ok) {
       toast(reasonText(r), { tone: 'err' });
       if (r.reason === 'insufficient' || r.reason === 'no_rolls') econ.reload();
+      if (r.reason === 'daily_used') setDaily({ available: false, nextAt: Date.now() + 60_000 });
       return;
     }
+    if (pay === 'daily') {
+      setDaily({ available: false, nextAt: r.nextDailyAt ?? 0 });
+      setNow(Date.now());
+      window.dispatchEvent(new Event(DAILY_CASE_USED_EVENT));
+    }
     pending.current = r;
-    setReveal({ key: Date.now(), caseId, res: r, usedRoll: useRoll });
+    setReveal({ key: Date.now(), caseId, res: r, pay });
   };
 
   const canRoll = ready && econ.freeRolls > 0 && !c.premium;
   const canPay = ready && econ.credits >= c.cost;
+  const canDaily = ready && loggedIn && daily.available && !c.premium;
   const short = Math.max(0, c.cost - econ.credits);
 
   const counts = c.pool;
   const q = qualityRows(c.qualityOdds);
   const revealCase = reveal ? (cases.find((x) => x.id === reveal.caseId) ?? c) : c;
+  const againPay: CasePay | null = !revealCase.premium && econ.freeRolls > 0 ? 'roll' : econ.credits >= revealCase.cost ? 'credits' : null;
+  const dailyLeft = !daily.available && daily.nextAt > 0 ? fmtCountdown(daily.nextAt - now) : null;
 
   return (
     <div className='ec-page deck-scroll'>
       <div className='ec-page-in'>
+        <header className='ec-cases-head'>
+          <div className='min-w-0'>
+            <h2 className='ec-h1'>Cases</h2>
+            <p className='ec-sub !mb-0'>Every drop is decided by the server at fixed, published odds.</p>
+          </div>
+          <span className='ec-season-pill' title='Cases drop items from the current season only'>
+            <i aria-hidden /> {season}
+          </span>
+        </header>
         <div className='ec-cases' role='tablist' aria-label='Cases'>
           {cases.map((k) => {
             const h = CASE_HUE[k.id];
@@ -115,6 +174,7 @@ export function CasesTab({
                 {...sfxProps('tabSwitch')}
               >
                 <span className='ec-crate' aria-hidden><CrateArt id={k.id} a={h.a} b={h.b} size={96} /></span>
+                {loggedIn && daily.available && !k.premium && <span className='ec-free-ribbon'>Free today</span>}
                 <span className='ec-case-name'>{k.name}</span>
                 <span className='ec-case-cost'>{fmtCredits(k.cost)}</span>
               </button>
@@ -134,7 +194,7 @@ export function CasesTab({
                   className={`lk-action ${canPay ? 'lk-action-buy' : 'lk-action-muted'}`}
                   data-action='open-credits'
                   disabled={!canPay || busy}
-                  onClick={() => void open(c.id, false)}
+                  onClick={() => void open(c.id, 'credits')}
                   {...sfxProps('uiConfirm')}
                   title={!loggedIn ? 'Log in to open cases' : short > 0 ? `Need ${fmtCredits(short)} more` : undefined}
                 >
@@ -145,15 +205,34 @@ export function CasesTab({
                   className={`lk-action ${canRoll ? 'lk-action-equip' : 'lk-action-muted'}`}
                   data-action='open-roll'
                   disabled={!canRoll || busy}
-                  onClick={() => void open(c.id, true)}
+                  onClick={() => void open(c.id, 'roll')}
                   {...sfxProps('uiConfirm')}
                 >
                   <TicketGlyph size={18} /> {c.premium ? 'Credits only' : `Free roll · ${econ.freeRolls}`}
                 </button>
+                {loggedIn && !c.premium && (
+                  <span className={`ec-daily ${daily.available ? 'is-ready' : 'is-used'}`}>
+                    <button
+                      type='button'
+                      className='ec-daily-btn'
+                      data-action='open-daily'
+                      disabled={!canDaily || busy}
+                      onClick={() => void open(c.id, 'daily')}
+                      {...sfxProps('uiConfirm')}
+                      title='One free standard case every day (resets 00:00 UTC)'
+                    >
+                      {daily.available ? <GiftGlyph /> : <ClockGlyph />}
+                      <span className='ec-daily-text'>
+                        <b>{daily.available ? 'Daily free case' : 'Free case claimed'}</b>
+                        <small>{daily.available ? `Open this ${c.name} free` : dailyLeft ? `Next in ${dailyLeft}` : 'Back tomorrow'}</small>
+                      </span>
+                    </button>
+                  </span>
+                )}
                 {loggedIn && <Balance credits={ready ? econ.credits : null} freeRolls={null} />}
               </div>
               <p className='mt-3 font-sans text-[12.5px] text-white/50'>
-                Rolls are decided by the server. Free rolls open standard cases only. Duplicates are possible — salvage them or sell them on the market. Credits are earned in play, never bought.
+                {season} pool. Rolls are decided by the server. Your daily free case and free rolls open standard cases only. Duplicates are possible — salvage them or sell them on the market. Credits are earned in play, never bought.
               </p>
             </div>
           </div>
@@ -234,16 +313,16 @@ export function CasesTab({
           item={reveal.res.item}
           reduced={reduced}
           lowSpec={lowSpec}
-          usedRoll={reveal.usedRoll}
+          pay={reveal.pay}
           credits={econ.credits}
           freeRolls={econ.freeRolls}
-          canAgain={(!revealCase.premium && econ.freeRolls > 0) || econ.credits >= revealCase.cost}
+          againPay={againPay}
           onAgain={() => {
             applyPending();
+            if (!againPay) return;
             const id = reveal.caseId;
-            const roll = econ.freeRolls > 0 && !revealCase.premium;
             setReveal(null);
-            void open(id, roll);
+            void open(id, againPay);
           }}
           onLanded={applyPending}
           onEquip={(it) => {

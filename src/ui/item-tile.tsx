@@ -5,8 +5,8 @@
 import type { CSSProperties, FocusEvent, HTMLAttributes, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
 import { cardById, cosmeticById, nameColorById, titleById, type CatalogEntry, type CosmeticSource } from '../game/cosmetics';
 import { lookKey } from '../economy/look';
-import { itemDef } from '../game/items/catalog';
-import type { Look, Tier } from '../game/items/types';
+import { itemDef, seasonOf } from '../game/items/catalog';
+import type { ItemSlot, Look, Tier } from '../game/items/types';
 import { TIER_COLOR, TIER_LABEL, isIridescent, tierOfRarity, useThumbnailState } from './rarity';
 
 export function ItemTile({
@@ -29,6 +29,7 @@ export function ItemTile({
   subColor,
   mint,
   badge,
+  season = true,
   onClick,
   onDoubleClick,
   onPointerEnter,
@@ -57,6 +58,7 @@ export function ItemTile({
   subColor?: string;
   mint?: number; // serial → "#37" chip
   badge?: ReactNode; // small chip, top-left (quality marks)
+  season?: boolean; // release-season chip ("S0"), on by default for economy items
   label?: boolean;
   onClick?: () => void;
   onDoubleClick?: (e: MouseEvent<HTMLElement>) => void;
@@ -77,6 +79,9 @@ export function ItemTile({
   const interactive = !!onClick;
   const Tag = interactive ? 'button' : 'div';
   const lit = selected || equipped;
+  // Release season: a quiet "S0" under the top-right corner marks, on tiles
+  // big enough to carry it (never on defaults).
+  const seasonTag = season && def && !def.default && (fluid || size >= 64) ? `S${seasonOf(def)}` : null;
   // Unusual effects are glow on dark: the tile stays dark behind the effect,
   // the rarity colour lives on the rim, bar and name band.
   const darkFill = item?.slot === 'unusual' || !!look?.e;
@@ -197,12 +202,25 @@ export function ItemTile({
           </span>
         )}
         {badge && <span className='absolute left-[4cqw] top-[4cqw] flex max-w-[70%] flex-wrap gap-[2px]'>{badge}</span>}
-        {mint != null && (
+        {(mint != null || seasonTag) && (
           <span
-            className='absolute right-[4cqw] top-[4cqw] bg-black/60 px-[4px] py-[1px] font-mono font-semibold leading-tight text-white/80'
-            style={{ fontSize: 'max(12px, 8cqw)', marginRight: equipped ? 'max(18px, 15cqw)' : 0 }}
+            className='absolute right-[4cqw] top-[4cqw] flex flex-col items-end gap-[2cqw]'
+            style={{ marginRight: equipped ? 'max(18px, 15cqw)' : 0, marginTop: (locked && !equipped) || dot ? 'max(18px, 17cqw)' : 0 }}
           >
-            #{mint}
+            {mint != null && (
+              <span className='bg-black/60 px-[4px] py-[1px] font-mono font-semibold leading-tight text-white/80' style={{ fontSize: 'max(12px, 8cqw)' }}>
+                #{mint}
+              </span>
+            )}
+            {seasonTag && (
+              <span
+                className='bg-black/35 px-[3px] font-display font-semibold leading-tight tracking-[0.06em] text-white/50'
+                style={{ fontSize: 'max(12px, 7cqw)' }}
+                title={`Season ${seasonTag.slice(1)}`}
+              >
+                {seasonTag}
+              </span>
+            )}
           </span>
         )}
         {isNew && (
@@ -424,6 +442,18 @@ function Treatment({
       </span>
     );
   }
+  // No picture (no WebGL, or a render that failed): the slot's silhouette,
+  // never a bare letter.
+  const slot = itemDef(id)?.slot;
+  if (slot && SLOT_GLYPH[slot]) {
+    return (
+      <span aria-hidden className='absolute inset-0 grid place-items-center pb-[12cqw]' style={{ color: `${color}cc`, ...dim }}>
+        <svg viewBox='-16 -16 32 32' width='46%' height='46%' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'>
+          <path d={SLOT_GLYPH[slot]} />
+        </svg>
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden
@@ -434,3 +464,15 @@ function Treatment({
     </span>
   );
 }
+
+// Line-art silhouettes per item slot (the no-thumbnail fallback).
+const SLOT_GLYPH: Partial<Record<ItemSlot, string>> = {
+  hat: 'M-13 8h26M-8 8V-9h16V8M-8 2h16',
+  face: 'M-13 -4h26v7h-9l-3-3h-2l-3 3h-9zM-13 0h-2M13 0h2',
+  back: 'M-9 -11h18v20a3 3 0 0 1-3 3h-12a3 3 0 0 1-3-3zM-5 -11v-3h10v3M-9 -2h18',
+  finish: 'M-15 3h20l4-3h6M-9 3v6M-3 3l2 5M-15 3v-4h14',
+  beam: 'M-14 6 14 -6M-14 6l3-7M14 -6l-3 7M-4 2l8-4',
+  finisher: 'M0 -13v6M0 7v6M-13 0h6M7 0h6M-9 -9l4 4M5 5l4 4M9 -9l-4 4M-5 5l-4 4',
+  spawn: 'M-10 12h20M-6 12V-8M6 12V-8M-6 -8a6 3 0 0 0 12 0a6 3 0 0 0-12 0',
+  emote: 'M0 -11l3.2 6.8 7.4 1-5.4 5.1 1.4 7.4L0 5.7l-6.6 3.6 1.4-7.4-5.4-5.1 7.4-1z',
+};

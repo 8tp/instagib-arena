@@ -1,6 +1,6 @@
 // Pure display helpers for item instances (names, tiers, Looks, prices).
 // THREE-free. Everything the tiles / panels / market need to read an instance.
-import { itemDef } from '../game/items/catalog';
+import { itemDef, seasonOf } from '../game/items/catalog';
 import type { TradeGate } from './api';
 import {
   KS_EFFECTS,
@@ -9,7 +9,9 @@ import {
   TIER_META,
   TRADE,
   UNUSUAL_EFFECTS,
+  SEASONS,
   qualityPrefix,
+  seasonName,
   strangeRank,
   wearName,
   type ItemInstanceWire,
@@ -79,6 +81,15 @@ export function instLook(i: ItemInstanceWire): Look {
   return look;
 }
 
+// Release season of a def: "S0" on tiles, "Season 0" in panels.
+export type SeasonTag = { id: number; short: string; name: string; title: string };
+export function defSeason(defId: string): SeasonTag | null {
+  const d = itemDef(defId);
+  if (!d) return null;
+  const id = seasonOf(d);
+  return { id, short: `S${id}`, name: seasonName(id), title: SEASONS.find((s) => s.id === id)?.title ?? '' };
+}
+
 const QUALITY_TONE: Record<Quality, string> = {
   unusual: '#a855f7',
   strange: '#cf6a32',
@@ -91,6 +102,19 @@ const QUALITY_TONE: Record<Quality, string> = {
 export const qualityTone = (q: Quality): string => QUALITY_TONE[q];
 
 export type Tag = { text: string; color: string };
+
+// The quality prefix as coloured words (same order as qualityPrefix) — the
+// reveal card animates these in ahead of the base name.
+export function instPrefixParts(i: ItemInstanceWire): Tag[] {
+  const q = i.quality;
+  const out: Tag[] = [];
+  if (q.includes('unusual')) out.push({ text: 'Unusual', color: QUALITY_TONE.unusual });
+  if (q.includes('strange')) out.push({ text: strangeRank(i.attrs.kills ?? 0), color: QUALITY_TONE.strange });
+  if (q.includes('festive')) out.push({ text: 'Festive', color: QUALITY_TONE.festive });
+  if (q.includes('professional')) out.push({ text: 'Professional Killstreak', color: QUALITY_TONE.professional });
+  else if (q.includes('killstreak')) out.push({ text: 'Killstreak', color: QUALITY_TONE.killstreak });
+  return out;
+}
 // The attribute pills shown on tiles / the details card, most notable first.
 export function instTags(i: ItemInstanceWire): Tag[] {
   const out: Tag[] = [];

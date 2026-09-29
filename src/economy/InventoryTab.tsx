@@ -21,6 +21,7 @@ import {
   ORIGIN_LABEL,
   SLOT_LABEL,
   compareInst,
+  defSeason,
   fmtCredits,
   instBaseName,
   instBlurb,
@@ -569,6 +570,7 @@ function Details({
   const listed = inst?.state === 'listed';
   const gain = inst ? salvageValue(inst) : 0;
   const cardNeed = entry.locked ? levelNeed(entry) : 0;
+  const season = defSeason(entry.def.id);
   return (
     <div className='lk-details' style={{ ['--rc' as string]: c.edge }} aria-live='polite' data-uid={inst?.uid}>
       <div className='lk-details-info'>
@@ -576,6 +578,11 @@ function Details({
           <TierChip tier={tier} />
           <span className='lk-chip text-white/55' style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.14)' }}>{SLOT_LABEL[entry.slot]}</span>
           {inst && <span className='lk-chip font-mono text-white/70' style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.14)' }}>Mint #{inst.mint}</span>}
+          {season && !entry.def.default && (
+            <span className='lk-chip ec-season-chip' title={season.title ? `${season.name} · ${season.title}` : season.name}>
+              {season.name}
+            </span>
+          )}
           {inst && !inst.tradable && <span className='lk-chip text-white/55' style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.14)' }}>Bound</span>}
         </div>
         <div className='lk-name' style={{ color: c.text }}>{name}</div>

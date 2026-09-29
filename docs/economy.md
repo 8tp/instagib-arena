@@ -98,15 +98,17 @@ In: matches (existing formula), **daily challenges** (raised: 40–60 ⛁ + XP e
 (200–300 ⛁), Career Road credits + **free rolls** (road "case key" → 1 free roll), first win.
 Out: cases, market tax, listing fee. Salvage returns credits below case EV (~12%).
 
-## 3b. Daily Spin (Krunker-style wheel)
-`SPIN` in `src/game/items/types.ts`; server `server/spin.ts`; `GET/POST /api/spin {kind}`.
-- **Free** — one per UTC day per account (`instagib_stats.last_spin_day`). Segments:
-  25 ⛁ 28% · Common item 28% · 50 ⛁ 20% · Uncommon item 14% · 150 ⛁ 4% · free case roll 4% ·
-  Rare item 2%. Free-wheel items are plain (no unusual/strange/killstreak; finishes keep seed+wear).
-- **Premium** — 500 ⛁, unlimited. Always an item from every droppable slot, qualities rolled
-  like a case: Uncommon 50% · Rare 30% · Epic 14% · Legendary 4.5% · Relic 1.5%.
-  Salvage EV ≈ 62 ⛁ / 500 (12.5%, same as a standard case) — no arbitrage; Unobtainable stays Vault-only.
-- Items mint with origin `spin`. Odds published to everyone (guests see the wheel, sign in to spin).
+## 3b. Daily free case + Seasons
+- **Daily free case** — one free open of any STANDARD case (not the Vault) per UTC day per account
+  (`instagib_stats.last_daily_case`). Same roll as a paid open (odds + qualities). Separate from
+  banked free rolls. `POST /api/cases/open {caseId, pay:'credits'|'roll'|'daily'}`;
+  `GET /api/cases` adds `dailyAvailable` / `nextDailyAt` / `season`.
+  (Replaced the Daily Spin wheel, retired 2026-09-29; spin-won items keep origin `spin`.)
+- **Seasons** — every ItemDef has a season (`season`, absent = 0; `seasonOf()`); all launch items are
+  **Season 0 — Origins**. Cases drop only `CURRENT_SEASON` defs (incl. Vault unobtainables). A new
+  season rotates the whole case pool: older items stop dropping but stay owned/tradable/equippable and
+  show their season tag. To start one: add a `SeasonDef` to `SEASONS`, tag the new defs `season: N`,
+  bump `CURRENT_SEASON` (client + server ship together).
 
 ## 4. Market (fixed-price listings)
 - List an owned tradable instance for a price ≥ floor (= tier salvage × 1.5, min 5) and ≤

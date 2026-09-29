@@ -3677,10 +3677,6 @@ function Lobby({
           settings={settings}
           onChange={onChangeSettings}
           account={account}
-          onLogin={() => {
-            setLockerOpen(false);
-            onOpenLogin();
-          }}
           onClose={() => {
             setLockerOpen(false);
             setRefreshTick((t) => t + 1); // buys/cases changed credits
