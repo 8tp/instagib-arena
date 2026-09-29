@@ -301,8 +301,8 @@ export function redeemCode(playerId: string, rawCode: unknown, rateKey: string, 
     if (!c) return fail({ ok: false, error: 'not_found' });
     if (!c.active) return { ok: false, error: 'inactive' };
     if (c.expires_at && c.expires_at <= now) return { ok: false, error: 'expired' };
-    if (c.max_uses > 0 && c.uses >= c.max_uses) return { ok: false, error: 'used_up' };
     if (q(`SELECT 1 FROM instagib_code_redemptions WHERE code = ? AND player_id = ?`).get(code, playerId)) return { ok: false, error: 'already_redeemed' };
+    if (c.max_uses > 0 && c.uses >= c.max_uses) return { ok: false, error: 'used_up' };
     if (c.min_level > 0) {
       const xp = (q(`SELECT total_xp FROM instagib_stats WHERE player_id = ?`).get(playerId) as { total_xp: number } | undefined)?.total_xp ?? 0;
       if (levelForXp(xp) < c.min_level) return { ok: false, error: 'level', need: c.min_level };
