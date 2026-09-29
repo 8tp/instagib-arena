@@ -224,16 +224,16 @@ const SPARKS = /* glsl */ `
   p = o + v * ph * life - vec3(0.0, 0.9 * ph * ph * life * life, 0.0);
   size = 0.0035;
   col = mix(uA, uB, 0.7) * 2.5;
-  float active = step(cgH1(cyc * 2.7 + seed.y * 13.0), fill * 0.45 + uStreak * 0.5) * step(0.2, fill);
+  float moteOn = step(cgH1(cyc * 2.7 + seed.y * 13.0), fill * 0.45 + uStreak * 0.5) * step(0.2, fill);
   float shot = exp(-uShot * 5.0) * step(uShot, 0.8);
   if (seed.y < 0.5 && shot > 0.01) {
     float k = uShot;
     vec3 dir = normalize(vec3((seed.x - 0.5) * 1.6, (seed.z - 0.3) * 1.2, -0.6));
     p = vec3(0.0, ${BARREL_Y.toFixed(3)}, -0.91) + dir * k * 0.5 - vec3(0.0, 0.5 * k * k, 0.0);
-    active = 1.0;
+    moteOn = 1.0;
     ph = min(1.0, uShot * 2.0);
   }
-  a = active * (1.0 - ph) * (1.0 - uCalm * 0.5);
+  a = moteOn * (1.0 - ph) * (1.0 - uCalm * 0.5);
 `;
 
 export const buildTesla: CustomGunBuild = ({ lod, finish }) => {
