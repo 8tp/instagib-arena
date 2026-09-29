@@ -11,6 +11,7 @@ import { RAIL_COOLDOWN } from './constants';
 import { EffectsManager } from './effects';
 import { getFxContext } from './fx-pool';
 import { buildRailgun, type RailgunModel } from './weapon-model';
+import { customGun } from './gun/custom/registry';
 import {
   emoteById,
   railColorById,
@@ -497,15 +498,22 @@ export class CharacterPreview {
   }
 
   private ensureGun() {
+    const finish = railgunFinishById(this.cos.railgunFinish).data;
     if (this.gun) {
-      // A finish change recolours in place (uniforms) — no remount.
-      if (this.gunFinish !== this.cos.railgunFinish) {
-        this.gun.setFinish(railgunFinishById(this.cos.railgunFinish).data);
+      if (this.gunFinish === this.cos.railgunFinish) return;
+      // Same model → recolour in place (uniforms). A different custom model
+      // (Wyrmfang, Reaper… — finish.model) changes the gun's SHAPE, which
+      // setFinish can't do: rebuild it.
+      if ((this.gun.modelKey ?? null) === (customGun(finish.model) ? (finish.model ?? null) : null)) {
+        this.gun.setFinish(finish);
         this.gunFinish = this.cos.railgunFinish;
+        return;
       }
-      return;
+      const visible = this.gunPivot.visible;
+      this.disposeGun();
+      this.gunPivot.visible = visible;
     }
-    const g = buildRailgun(railgunFinishById(this.cos.railgunFinish).data);
+    const g = buildRailgun(finish);
     this.gun = g;
     this.gunFinish = this.cos.railgunFinish;
     g.setLowSpec(this.lowSpec);
