@@ -81,6 +81,9 @@ export const DEFAULT_SETTINGS: Settings = {
   worldBrightness: 0,
   enemyColor: '#ff2bd6',
   enemyBright: false,
+  enemyOutline: false,
+  enemyOutlineColor: '#ffffff',
+  enemyOutlineWidth: 2,
   killEffect: DEFAULT_KILL_EFFECT,
   railColor: DEFAULT_RAIL_COLOR,
   railgunFinish: DEFAULT_RAILGUN_FINISH,
@@ -95,6 +98,21 @@ export const DEFAULT_SETTINGS: Settings = {
   reducedEffects: prefersReducedMotion(),
   hideChat: false,
 };
+
+// Enemy outline thickness range (CSS px) — "within reason": thick enough to
+// read at range, never a blob that hides the body.
+export const ENEMY_OUTLINE_MIN = 1;
+export const ENEMY_OUTLINE_MAX = 5;
+
+export function clampOutlineWidth(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return DEFAULT_SETTINGS.enemyOutlineWidth;
+  return Math.max(ENEMY_OUTLINE_MIN, Math.min(ENEMY_OUTLINE_MAX, Math.round(n * 2) / 2));
+}
+
+export function sanitizeHex(v: unknown, fallback: string): string {
+  return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback;
+}
 
 export const CROSSHAIR_STYLES = ['cross', 'cross-dot', 'dot', 'circle'] as const;
 
@@ -174,6 +192,9 @@ export function decodeSettings(code: string): Settings | null {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      enemyOutline: !!(parsed.enemyOutline ?? DEFAULT_SETTINGS.enemyOutline),
+      enemyOutlineColor: sanitizeHex(parsed.enemyOutlineColor, DEFAULT_SETTINGS.enemyOutlineColor),
+      enemyOutlineWidth: clampOutlineWidth(parsed.enemyOutlineWidth ?? DEFAULT_SETTINGS.enemyOutlineWidth),
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
       keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },

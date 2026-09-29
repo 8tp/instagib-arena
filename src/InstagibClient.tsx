@@ -107,7 +107,7 @@ import { PlayerCard } from './ui/player-card';
 import { buildCardPayload } from './ui/player-card-data';
 import { SettingsModal, type SettingsTab } from './settings/SettingsModal';
 import { keyLabel } from './settings/keys';
-import { DEFAULT_CROSSHAIR, DEFAULT_SETTINGS, decodeCrosshair, encodeCrosshair } from './settings/codec';
+import { DEFAULT_CROSSHAIR, DEFAULT_SETTINGS, clampOutlineWidth, decodeCrosshair, encodeCrosshair, sanitizeHex } from './settings/codec';
 
 // (The reduced-effects toggle defaults to the OS "reduce motion" preference —
 // prefersReducedMotion() is shared with the deck chrome in src/deck-core.ts.)
@@ -213,6 +213,11 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setPlayerName?.(s.playerName);
   game.setWorldStyle?.(s.worldColor, s.worldBrightness);
   game.setEnemyStyle?.(s.enemyBright ? s.enemyColor : null);
+  game.setEnemyOutline?.(
+    !!s.enemyOutline,
+    sanitizeHex(s.enemyOutlineColor, DEFAULT_SETTINGS.enemyOutlineColor),
+    clampOutlineWidth(s.enemyOutlineWidth),
+  );
   game.setKillEffect?.(s.killEffect);
   game.setRailColor?.(s.railColor);
   game.setRailgunFinish?.(s.railgunFinish);

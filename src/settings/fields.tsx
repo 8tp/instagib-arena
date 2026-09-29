@@ -274,6 +274,37 @@ export function ColorRow({
   );
 }
 
+/** Live swatch for the enemy outline: a combatant silhouette on an arena-dark
+ *  backdrop, traced in the chosen colour at the chosen pixel width. */
+export function OutlinePreview({ color, width }: { color: string; width: number }) {
+  // A combatant (helmet + body) in a 48×64 box; the outline is a stroke drawn
+  // under the fill, so its visible width is `width` px outside the shape.
+  const body =
+    'M20 15h8l9 3.5Q40.2 19.8 40.4 23.1L41.5 37l-4.6.6-2-11.4-.6 12.6 1.4 20.2h-6.2L24 41l-5.5 18h-6.2l1.4-20.2-.6-12.6-2 11.4-4.6-.6 1.1-13.9Q7.8 19.8 11 18.5z';
+  const shapes = (
+    <>
+      <path d={body} />
+      <rect x={18.5} y={2.5} width={11} height={13} rx={5} />
+    </>
+  );
+  return (
+    <svg className='st-outline-preview' viewBox='-4 -3 56 68' width={62} height={76} role='img' aria-label='Outline preview'>
+      <defs>
+        <linearGradient id='st-olp-bg' x1='0' y1='0' x2='0' y2='1'>
+          <stop offset='0' stopColor='#2b3340' />
+          <stop offset='1' stopColor='#11151b' />
+        </linearGradient>
+      </defs>
+      <rect x={-4} y={-3} width={56} height={68} fill='url(#st-olp-bg)' />
+      <g fill={color} stroke={color} strokeWidth={width * 2 * 0.9} strokeLinejoin='round'>
+        {shapes}
+      </g>
+      <g fill='#ff6b4e'>{shapes}</g>
+      <rect x={19.8} y={7.2} width={8.4} height={2.6} rx={1.2} fill='#ffe3c8' />
+    </svg>
+  );
+}
+
 export function NumberRow({
   label,
   hint,

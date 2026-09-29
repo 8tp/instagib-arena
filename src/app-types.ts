@@ -71,6 +71,9 @@ export type Settings = {
   worldBrightness: number; // 0..1 full-bright emissive boost on surfaces
   enemyColor: string; // hex highlight applied to enemies when enemyBright is on
   enemyBright: boolean; // make enemies glow bright for visibility (Ratz-style)
+  enemyOutline: boolean; // draw an outline around enemies (depth-tested: never through walls)
+  enemyOutlineColor: string; // hex outline colour
+  enemyOutlineWidth: number; // outline thickness in CSS px (ENEMY_OUTLINE_MIN..MAX)
   killEffect: KillEffectStyle; // equipped kill-effect cosmetic (the frag explosion)
   railColor: string; // equipped rail-beam color cosmetic
   railgunFinish: string; // equipped railgun finish (first-person gun skin)
