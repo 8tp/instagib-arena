@@ -199,3 +199,79 @@
     transform: scaleX(0);
   }
 }
+
+/* ── Podium stage: the 3D viewport framed and faded into the panel ──────────── */
+.pg-stage {
+  position: relative;
+  overflow: hidden;
+  height: 300px;
+  width: 100%;
+  background: linear-gradient(180deg, #0d1320, #080b11);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+@media (min-width: 1024px) {
+  .pg-stage {
+    height: 340px;
+  }
+}
+/* Edge vignette so the canvas melts into the surrounding UI. */
+.pg-stage-vignette {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 50% 40%, transparent 55%, rgba(4, 6, 10, 0.55) 100%),
+    linear-gradient(90deg, rgba(4, 6, 10, 0.4), transparent 14%, transparent 86%, rgba(4, 6, 10, 0.4));
+}
+/* Bottom gradient into the scoreboard / rewards area. */
+.pg-stage-fade {
+  pointer-events: none;
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 14%;
+  background: linear-gradient(180deg, transparent, rgba(8, 11, 17, 0.9));
+}
+.pg-stage::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--pg-accent, #a5f3fc), transparent);
+  opacity: 0.5;
+}
+/* Chamfered corner brackets: the stage reads as a framed viewport. */
+.pg-corner {
+  pointer-events: none;
+  position: absolute;
+  top: 10px;
+  width: 22px;
+  height: 22px;
+  border: 0 solid var(--pg-accent, #a5f3fc);
+  opacity: 0.55;
+}
+.pg-corner-tl {
+  left: 10px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+.pg-corner-tr {
+  right: 10px;
+  border-top-width: 2px;
+  border-right-width: 2px;
+}
+
+/* Rewards column: faint top wash + accent hairline so it reads as a panel of its own. */
+.pg-rewards {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012) 45%, rgba(255, 255, 255, 0.02));
+}
+.pg-rewards::before {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--pg-accent, #a5f3fc), transparent);
+  opacity: 0.35;
+}
