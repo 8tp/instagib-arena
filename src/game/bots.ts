@@ -969,6 +969,16 @@ export class Bot {
     return this.facing;
   }
 
+  // Current aim pitch (radians, + up) toward the smoothed aim point while
+  // engaged, else level — the same angle the body's aim layer uses. Sampled by
+  // the match recorder so a killcam through this bot's eyes looks where it aimed.
+  getAimPitch(): number {
+    if (!this.state.alive || this.engagedId === null || !this.aimSeeded) return 0;
+    const eye = this.eyePos();
+    const h = Math.hypot(this.aimPoint.x - eye.x, this.aimPoint.z - eye.z);
+    return Math.atan2(this.aimPoint.y - eye.y, h);
+  }
+
   bounds(): { min: Vec3; max: Vec3 } {
     return {
       min: {

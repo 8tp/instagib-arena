@@ -1387,21 +1387,25 @@ function PlayOfTheMatchOverlay({
   // plays to completion, and the map vote opens after it (see POTG_GUARD_SEC).
 
   const pct = pom.total > 0 ? Math.max(0, Math.min(100, (1 - pom.remaining / pom.total) * 100)) : 0;
-  const barH = reduced ? '8vh' : '11vh';
+  const killTotal = Math.max(0, Math.min(8, pom.killTotal ?? 0));
+  const killsLanded = Math.min(killTotal, pom.hitId);
 
   return (
     <div className='pointer-events-none absolute inset-0 z-40 font-mono'>
-      <style>{'@keyframes pomHit{0%{opacity:0;transform:scale(1.5)}25%{opacity:1}100%{opacity:0;transform:scale(1)}}@keyframes pomVerdict{0%{opacity:0;transform:scale(0.82)}55%{opacity:1;transform:scale(1.04)}100%{opacity:1;transform:scale(1)}}'}</style>
+      <style>{'@keyframes pomHit{0%{opacity:0;transform:scale(1.5)}25%{opacity:1}100%{opacity:0;transform:scale(1)}}@keyframes pomVerdict{0%{opacity:0;transform:scale(0.82)}55%{opacity:1;transform:scale(1.04)}100%{opacity:1;transform:scale(1)}}@keyframes pomTick{0%{transform:scaleY(1.9);filter:brightness(2.2)}100%{transform:scaleY(1);filter:none}}'}</style>
 
-      {/* Cinematic letterbox bars */}
-      <div className='absolute inset-x-0 top-0 bg-black' style={{ height: barH }} />
-      <div className='absolute inset-x-0 bottom-0 bg-black' style={{ height: barH }} />
+      {/* Cinematic frame: a soft edge vignette + thin feathered bands top and
+          bottom (not solid bars — the frame is the star's screen, full height). */}
+      <ReplayFrame />
+
+      {/* A minimal replay tag, top-left — the rest of the frame is their screen. */}
+      <ReplayTag label={isPotg ? 'Replay' : 'Final blow'} tone={isPotg ? 'cyan' : 'amber'} />
 
       {/* First-person framing: the crosshair + a kill flash so it's clear we're
           watching someone frag. Hidden on the VICTORY/DEFEAT card. */}
       {!isVerdict && (
         <>
-          <Crosshair cfg={settings.crosshair} />
+          <Crosshair cfg={(pom.crosshairCode && decodeCrosshair(pom.crosshairCode)) || settings.crosshair} />
           <ReplayKillMarker hitId={pom.hitId} headshot={pom.hitHeadshot} />
         </>
       )}
@@ -1435,7 +1439,7 @@ function PlayOfTheMatchOverlay({
 
           {/* Lower third on the star's equipped playercard background. */}
           <div
-            className='absolute left-[4vw] bottom-[14vh] max-w-[46vw] overflow-hidden rounded-md border border-white/15 px-5 py-3 shadow-[0_6px_24px_rgba(0,0,0,0.6)]'
+            className='absolute left-[4vw] bottom-[9vh] max-w-[46vw] overflow-hidden rounded-md border border-white/15 px-5 py-3 shadow-[0_6px_24px_rgba(0,0,0,0.6)]'
             style={{ background: pom.kit?.cardBg ?? 'rgba(0,0,0,0.55)' }}
           >
             <div className='absolute inset-0 bg-black/35' />
@@ -1456,6 +1460,25 @@ function PlayOfTheMatchOverlay({
                 {pom.label}
                 {pom.subLabel ? <span className='ml-3 text-white/60'>· {pom.subLabel}</span> : null}
               </div>
+              {/* One tick per kill in the play, lit as each one lands. */}
+              {killTotal > 1 ? (
+                <div className='mt-2 flex gap-1.5' aria-hidden>
+                  {Array.from({ length: killTotal }, (_, i) => {
+                    const lit = i < killsLanded;
+                    return (
+                      <span
+                        key={`${i}-${lit ? 1 : 0}`}
+                        className='h-2.5 w-6 origin-bottom rounded-[1px]'
+                        style={{
+                          background: lit ? (pom.kit?.cardAccent ?? '#67e8f9') : 'rgba(255,255,255,0.18)',
+                          boxShadow: lit ? `0 0 8px ${pom.kit?.cardAccent ?? '#67e8f9'}99` : undefined,
+                          animation: lit && !reduced ? 'pomTick 260ms cubic-bezier(0.2,0.8,0.2,1) both' : undefined,
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
               {pom.kit ? (
                 <div className='mt-1.5 text-[15px] font-semibold uppercase tracking-[0.1em] text-amber-200 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]'>
                   {pom.kit.weapon}
@@ -1468,13 +1491,48 @@ function PlayOfTheMatchOverlay({
         </>
       )}
 
-      {/* Auto-advance progress bar pinned to the bottom letterbox edge. */}
-      <div className='absolute inset-x-0' style={{ bottom: barH, height: '2px' }}>
+      {/* Auto-advance progress bar: a hairline along the bottom edge. */}
+      <div className='absolute inset-x-0 bottom-0 h-[2px] bg-white/5'>
         <div
-          className={`h-full ${isPotg ? 'bg-cyan-400/80' : 'bg-amber-400/80'}`}
+          className={`h-full ${isPotg ? 'bg-cyan-400/70' : 'bg-amber-400/70'}`}
           style={{ width: `${pct}%`, transition: 'width 80ms linear' }}
         />
       </div>
+    </div>
+  );
+}
+
+// The replay/killcam cinematic frame: a soft vignette and feathered bands at the
+// top and bottom edges. Static (no motion), so it's the same under reduced effects.
+function ReplayFrame() {
+  return (
+    <>
+      <div
+        className='absolute inset-0'
+        style={{ background: 'radial-gradient(ellipse 75% 70% at 50% 50%, transparent 60%, rgba(0,0,0,0.42) 100%)' }}
+      />
+      <div
+        className='absolute inset-x-0 top-0 h-[9vh]'
+        style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.62), rgba(0,0,0,0.28) 45%, transparent)' }}
+      />
+      <div
+        className='absolute inset-x-0 bottom-0 h-[9vh]'
+        style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.62), rgba(0,0,0,0.28) 45%, transparent)' }}
+      />
+    </>
+  );
+}
+
+// Small "you're watching a replay" chip (REPLAY / KILLCAM): top-left over the
+// bare cinematic; under the score boxes on the killcam, where the live HUD keeps
+// its corners.
+function ReplayTag({ label, tone, center = false }: { label: string; tone: 'cyan' | 'amber' | 'rose'; center?: boolean }) {
+  const dot = tone === 'cyan' ? 'bg-cyan-300' : tone === 'amber' ? 'bg-amber-300' : 'bg-rose-400';
+  const place = center ? 'left-1/2 top-[7.4rem] -translate-x-1/2' : 'left-[2.2vw] top-[3.2vh]';
+  return (
+    <div className={`absolute ${place} flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[0.32em] text-white/80 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dot} shadow-[0_0_6px_currentColor]`} />
+      {label}
     </div>
   );
 }
@@ -1586,7 +1644,7 @@ const HudLayout = memo(function HudLayout({
       <HudXpTicker enabled={xpTicker} />
       {/* Your own card is NOT shown on your kills — it's broadcast so the VICTIM
           sees it on their killcam. The killer's card shows on YOUR killcam below. */}
-      <HudKillcam reduced={settings.reducedEffects} />
+      <HudKillcam reduced={settings.reducedEffects} crosshair={settings.crosshair} />
       {!dead && <HudSpeedAndStreak />}
       {!dead && <HudCooldowns />}
       {settings.showFps && <HudFps />}
@@ -1698,10 +1756,21 @@ function HudFragPopup() {
   return <FragPopup confirm={confirm} placement={placement} />;
 }
 
-function HudKillcam({ reduced }: { reduced: boolean }) {
+function HudKillcam({ reduced, crosshair }: { reduced: boolean; crosshair: CrosshairConfig }) {
   const killcam = useHudSlice((s) => s.killcam);
   const killcamId = useHudSlice((s) => s.killcamId);
-  return <KillcamOverlay killcam={killcam} killcamId={killcamId} reduced={reduced} />;
+  // Holding Tab over the killcam: the scoreboard takes the screen, so the death
+  // recap steps aside instead of printing through it.
+  const scoreboard = useHudSlice((s) => s.showScoreboard);
+  return (
+    <KillcamOverlay
+      killcam={killcam}
+      killcamId={killcamId}
+      reduced={reduced}
+      crosshair={crosshair}
+      recapHidden={scoreboard}
+    />
+  );
 }
 
 function HudFps() {
@@ -1803,10 +1872,14 @@ const KillcamOverlay = memo(function KillcamOverlay({
   killcam,
   killcamId,
   reduced = false,
+  crosshair,
+  recapHidden = false,
 }: {
   killcam: KillcamState | null;
   killcamId: number;
   reduced?: boolean;
+  crosshair?: CrosshairConfig;
+  recapHidden?: boolean;
 }) {
   // One item per death (KillcamState has no id; the store numbers them). It is
   // kept for the exit fade after the engine clears it on respawn.
@@ -1817,7 +1890,14 @@ const KillcamOverlay = memo(function KillcamOverlay({
   return (
     <>
       {items.map(({ item, leaving }) => (
-        <KillcamCard key={item.id} item={item} leaving={leaving} reduced={reduced} />
+        <KillcamCard
+          key={item.id}
+          item={item}
+          leaving={leaving}
+          reduced={reduced}
+          crosshair={crosshair}
+          recapHidden={recapHidden}
+        />
       ))}
     </>
   );
@@ -1827,55 +1907,110 @@ const KillcamCard = memo(function KillcamCard({
   item,
   leaving,
   reduced,
+  crosshair,
+  recapHidden,
 }: {
   item: KillcamItem;
   leaving: boolean;
   reduced: boolean;
+  crosshair?: CrosshairConfig;
+  recapHidden: boolean;
 }) {
   const { cam } = item;
+  // First person through the killer's eyes: their screen (the engine draws their
+  // gun), so a light frame, a crosshair + hit-marker, and the print tucked
+  // bottom-left clear of the gun. The orbit fallback keeps the heavier vignette.
+  const pov = !!cam.pov;
   return (
     <div
       className={`hud-killcam absolute inset-0 z-10${leaving ? ' hud-leaving' : ''}`}
       style={hudTiming(item.remaining, item.total, KILLCAM_FADE_LEAD_MS)}
     >
+      {pov ? (
+        <>
+          <style>{'@keyframes kcSlowFlash{0%{opacity:0.55}100%{opacity:0}}@keyframes pomHit{0%{opacity:0;transform:scale(1.5)}25%{opacity:1}100%{opacity:0;transform:scale(1)}}'}</style>
+          <ReplayFrame />
+          {!recapHidden && <ReplayTag label='Killcam' tone='rose' center />}
+          {crosshair && <Crosshair cfg={(cam.crosshairCode && decodeCrosshair(cam.crosshairCode)) || crosshair} />}
+          <KillcamHit reduced={reduced} />
+        </>
+      ) : (
+        <div
+          className='absolute inset-0'
+          style={{
+            background:
+              'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
+          }}
+        />
+      )}
+      {/* Lower third, hugging the bottom edge: the orbit killcam frames the
+          killer at centre (legs + gibs reach ~65% down), so the print sits below
+          that. In first person the killer's gun owns the bottom-right, so the
+          print and their playercard sit together on the left. */}
+      {/* (The wrapper carries the scoreboard fade: the card's own entrance
+          animation holds its opacity.) */}
       <div
-        className='absolute inset-0'
-        style={{
-          background:
-            'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
-        }}
-      />
-      {/* Lower third, hugging the bottom edge: the killcam frames the killer at
-          centre (legs + gibs reach ~65% down), so the print sits below that. */}
-      <div className='hud-killcam-card absolute inset-x-0 bottom-[3.5%] flex items-end justify-between gap-6 px-[5vw] font-mono'>
-        <div className='hud-killcam-print !px-6 !py-3 text-left'>
-          <div className='hud-cprint-sub'>You were fragged by</div>
-          <div className='font-display text-4xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
-            {cam.killerName}
+        className='absolute inset-x-0 bottom-[3.5%]'
+        style={{ opacity: recapHidden ? 0 : 1, transition: 'opacity 120ms ease-out' }}
+      >
+        <div
+          className={`hud-killcam-card flex items-end gap-6 px-[5vw] font-mono ${
+            pov ? 'justify-start' : 'justify-between'
+          }`}
+        >
+          <div className='hud-killcam-print !px-6 !py-3 text-left'>
+            <div className='hud-cprint-sub'>You were fragged by</div>
+            <div className='font-display text-4xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
+              {cam.killerName}
+            </div>
+            {cam.killerKit && (
+              <div className='mt-1.5 text-[16px] font-semibold uppercase tracking-[0.08em] text-amber-200 [text-shadow:0_2px_0_rgba(0,0,0,0.8)]'>
+                {cam.killerKit.weapon}
+                {cam.killerKit.weaponKills != null ? ` · ${cam.killerKit.weaponKills.toLocaleString('en-US')} kills` : ''}
+                {cam.killerKit.finisher ? <span className='text-white/75'>{` · ${cam.killerKit.finisher}`}</span> : null}
+              </div>
+            )}
+            <div className='mt-2 inline-block bg-black/55 px-3 py-1 text-[12px] uppercase tracking-[0.2em] text-white/80'>
+              Respawning in{' '}
+              <span className='text-white'>
+                <KillcamCountdown />s
+              </span>
+            </div>
           </div>
-          {cam.killerKit && (
-            <div className='mt-1.5 text-[16px] font-semibold uppercase tracking-[0.08em] text-amber-200 [text-shadow:0_2px_0_rgba(0,0,0,0.8)]'>
-              {cam.killerKit.weapon}
-              {cam.killerKit.weaponKills != null ? ` · ${cam.killerKit.weaponKills.toLocaleString('en-US')} kills` : ''}
-              {cam.killerKit.finisher ? <span className='text-white/75'>{` · ${cam.killerKit.finisher}`}</span> : null}
+          {cam.killerCard && (
+            <div className='pb-1'>
+              <PlayerCard card={cam.killerCard} reduced={reduced} />
             </div>
           )}
-          <div className='mt-2 inline-block bg-black/55 px-3 py-1 text-[12px] uppercase tracking-[0.2em] text-white/80'>
-            Respawning in{' '}
-            <span className='text-white'>
-              <KillcamCountdown />s
-            </span>
-          </div>
         </div>
-        {cam.killerCard && (
-          <div className='pb-1'>
-            <PlayerCard card={cam.killerCard} reduced={reduced} />
-          </div>
-        )}
       </div>
     </div>
   );
 });
+
+// The replayed kill landing in the first-person killcam: the hit-marker, plus a
+// brief white-hot wash as time slows (not under reduced effects — no flash, no
+// slow-mo there). Reads the LIVE killcam (the card's copy is the death's first
+// snapshot, which predates the kill replaying).
+function KillcamHit({ reduced }: { reduced: boolean }) {
+  const hitId = useHudSlice((s) => s.raw.killcam?.hitId ?? 0);
+  const headshot = useHudSlice((s) => !!s.raw.killcam?.hitHeadshot);
+  return (
+    <>
+      <ReplayKillMarker hitId={hitId} headshot={headshot} />
+      {!reduced && hitId > 0 && (
+        <div
+          key={hitId}
+          className='absolute inset-0'
+          style={{
+            background: 'radial-gradient(circle at center, rgba(255,255,255,0) 20%, rgba(255,236,236,0.5) 100%)',
+            animation: 'kcSlowFlash 420ms ease-out forwards',
+          }}
+        />
+      )}
+    </>
+  );
+}
 
 // The one live number on the death screen: the respawn countdown (10 Hz text
 // updates on this span alone; the card around it never re-renders).
