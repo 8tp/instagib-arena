@@ -98,6 +98,7 @@ import type {
 import { FragPopup } from './game/kill-overlays';
 import type { CrosshairConfig, InstagibProfile, ProgressionResp, Settings } from './app-types';
 import { setCharacterFxQuality } from './game/character/gibs';
+import { setDyeCalm } from './game/character/body';
 import { setFxQuality } from './game/fx-pool';
 import { Locker } from './locker/Locker';
 import { MatchOverOverlay, OnlineMatchResults } from './ui/results';
@@ -337,6 +338,7 @@ export default function InstagibClient() {
   // match is mounted.
   useEffect(() => {
     setCharacterFxQuality({ reducedEffects: settings.reducedEffects, lowSpec: settings.lowSpec });
+    setDyeCalm(settings.reducedEffects);
     setFxQuality(settings.lowSpec ? 0.5 : 1);
   }, [settings.reducedEffects, settings.lowSpec]);
 
