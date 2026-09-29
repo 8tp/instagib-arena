@@ -2,10 +2,8 @@
 // prepared statements. The table is created on first import (CREATE TABLE IF
 // NOT EXISTS), so there are no migrations to run.
 
-import fs from 'node:fs';
-import path from 'node:path';
 import zlib from 'node:zlib';
-import Database from 'better-sqlite3';
+import { sqlite } from './sqlite';
 import {
   ACCURACY_MIN_SHOTS,
   creditsForXp,
@@ -19,19 +17,19 @@ import {
   type RoadStep,
   type XpLine,
 } from '../src/game/progression';
+import type { ItemInstanceWire, ItemSlot, Loadout } from '../src/game/items/types';
 import {
-  ALL_COSMETICS,
-  CASE_CONSOLATION,
-  CASE_JACKPOT_CHANCE,
-  casePool,
-  cosmeticById,
-  defaultUnlockedIds,
-  HAT_CASE_COST,
-  levelGrantsAt,
-  RARITY_WEIGHT,
-  slotOf,
-  titleGrantsFrom,
-} from '../src/game/cosmetics';
+  ensureEconomySchema,
+  ensureOnboarded,
+  ensureStaffItems,
+  entitlementsFor,
+  initEconomy,
+  mintRoadRewards,
+  ownedDefIds,
+  resolveEquipped,
+  revokeStaffItems,
+  type EquippedMap,
+} from './economy';
 import {
   activeChallenges,
   challengeById,
@@ -47,24 +45,7 @@ import {
   type ChallengeMetric,
 } from '../src/game/challenges';
 
-const dataDir = process.env.DATA_DIR
-  ? path.resolve(process.env.DATA_DIR)
-  : path.join(process.cwd(), 'data');
-fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-
-const databasePath = process.env.DATABASE_PATH
-  ? path.resolve(process.env.DATABASE_PATH)
-  : path.join(dataDir, 'instagib.sqlite');
-
-const sqlite = new Database(databasePath);
-sqlite.pragma('journal_mode = WAL');
-sqlite.pragma('busy_timeout = 5000');
-// WAL + NORMAL: fsync only at checkpoint instead of on every commit. Still crash-
-// safe (only an OS/power loss in the small WAL window can lose the last few
-// transactions — acceptable for game stats), and it removes a synchronous fsync
-// from the shared event loop on every write. Match-end stat writes and logins no
-// longer risk stalling the 64Hz game tick on a slow (e.g. network-backed) disk.
-sqlite.pragma('synchronous = NORMAL');
+// The SQLite connection lives in ./sqlite (shared with the economy modules).
 
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS instagib_stats (
@@ -152,6 +133,7 @@ function ensureColumns() {
   add('offline_xp', 'offline_xp INTEGER NOT NULL DEFAULT 0');
 }
 ensureColumns();
+ensureEconomySchema();
 
 // The stored `level` column is a denormalized cache of levelForXp(total_xp)
 // (the admin players table sorts on it) — never an input to grants. Re-derive
@@ -626,33 +608,24 @@ type ProgRow = {
   total_xp: number;
   level: number;
   credits: number;
-  unlocked: string;
-  equipped: string;
   first_win_day: number;
   road_level: number;
-  case_keys: number;
+  free_rolls: number;
   offline_day: number;
   offline_xp: number;
 };
 
 const progSelectStmt = sqlite.prepare(
-  `SELECT total_xp, level, credits, unlocked, equipped, first_win_day,
-          road_level, case_keys, offline_day, offline_xp
+  `SELECT total_xp, level, credits, first_win_day,
+          road_level, free_rolls, offline_day, offline_xp
      FROM instagib_stats WHERE player_id = ?`,
 );
 
-// Everything progression owns except `equipped` (setEquipped writes that).
+// Everything progression owns (equipment lives in economy.ts: equipped_items).
 const progWriteStmt = sqlite.prepare(`
   UPDATE instagib_stats
-     SET total_xp = @totalXp, level = @level, credits = @credits, unlocked = @unlocked,
-         first_win_day = @firstWinDay, road_level = @roadLevel, case_keys = @caseKeys,
-         offline_day = @offlineDay, offline_xp = @offlineXp
-   WHERE player_id = @playerId`);
-// Same, leaving `unlocked` untouched (its stored JSON is unreadable).
-const progWriteKeepUnlockedStmt = sqlite.prepare(`
-  UPDATE instagib_stats
      SET total_xp = @totalXp, level = @level, credits = @credits,
-         first_win_day = @firstWinDay, road_level = @roadLevel, case_keys = @caseKeys,
+         first_win_day = @firstWinDay, road_level = @roadLevel, free_rolls = @freeRolls,
          offline_day = @offlineDay, offline_xp = @offlineXp
    WHERE player_id = @playerId`);
 // Offline matches don't touch career totals; just keep the row's name/last-seen fresh.
@@ -660,50 +633,11 @@ const touchRowStmt = sqlite.prepare(
   `UPDATE instagib_stats SET user_name = @userName, updated_at = @now WHERE player_id = @playerId`,
 );
 
-const equipUpdateStmt = sqlite.prepare(
-  `UPDATE instagib_stats SET equipped = @equipped WHERE player_id = @playerId`,
-);
-
-// Create a bare row for a player who is equipping/buying before ever recording a
+// Create a bare row for a player who is equipping/opening before ever recording a
 // match, so the UPDATEs above have a row to touch.
 const ensureRowStmt = sqlite.prepare(
   `INSERT OR IGNORE INTO instagib_stats (player_id, user_name, created_at, updated_at)
    VALUES (?, 'Player', ?, ?)`,
-);
-
-// Parse the `unlocked` JSON column. `null` = unreadable (corrupt JSON / not an
-// array): callers must then NOT write the column back, or they'd replace a
-// player's whole collection with whatever they just granted.
-function parseIdList(json: string | undefined): string[] | null {
-  if (!json) return [];
-  try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseEquipped(json: string | undefined): Record<string, string> {
-  if (!json) return {};
-  try {
-    const v = JSON.parse(json);
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
-    const out: Record<string, string> = {};
-    for (const [k, val] of Object.entries(v)) if (typeof val === 'string') out[k] = val;
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-// Every cosmetic id in the manifest — admins own all of them (incl. the
-// admin-exclusive crown/aura), so this is their entitlement set.
-const ALL_COSMETIC_IDS: readonly string[] = ALL_COSMETICS.map((c) => c.id);
-// Staff-exclusive ids. NEVER persisted into `unlocked` (stripped on read and on
-// write) — admins get them live from is_admin, so a demoted admin loses them.
-const ADMIN_COSMETIC_IDS: ReadonlySet<string> = new Set(
-  ALL_COSMETICS.filter((c) => c.source.type === 'admin').map((c) => c.id),
 );
 
 // Is this account id an admin? Cheap point lookup; cached statement.
@@ -714,34 +648,11 @@ export function isAdminId(playerId: string): boolean {
   return !!r?.is_admin;
 }
 
-// The persisted unlocks (bought / dropped / road / titles), minus admin items.
-// An unreadable column reads as empty (and is never written back — see saveLedger).
-function storedUnlocked(prog: ProgRow | undefined): Set<string> {
-  return new Set((parseIdList(prog?.unlocked) ?? []).filter((id) => !ADMIN_COSMETIC_IDS.has(id)));
-}
-
-// Owned = default freebies ∪ live level grants (from total XP, never the stored
-// level) ∪ persisted unlocks. Admins own EVERYTHING, live — the only way the
-// admin-exclusive cosmetics are ever owned.
-function ownedFrom(totalXp: number, stored: ReadonlySet<string>, isAdmin: boolean): Set<string> {
-  if (isAdmin) return new Set(ALL_COSMETIC_IDS);
-  const s = new Set(defaultUnlockedIds());
-  for (const id of levelGrantsAt(levelForXp(totalXp))) s.add(id);
-  for (const id of stored) s.add(id);
-  return s;
-}
-
-function ownedSet(prog: ProgRow | undefined, playerId: string): Set<string> {
-  return ownedFrom(prog?.total_xp ?? 0, storedUnlocked(prog), isAdminId(playerId));
-}
-
-// The unlocked-cosmetic set for an account id (from the igsession cookie),
-// used to ownership-check WS cosmetic equips. An empty/unknown id → defaults
-// only (so guests still get the free cosmetics, nothing locked); admins → all.
+// The def ids an account may equip / owns: defaults, level & achievement
+// entitlements (cards, titles, announcers), and every item instance it holds
+// (economy.ts). Guests → defaults only.
 export function unlockedSetFor(playerId: string): Set<string> {
-  if (!playerId) return new Set(defaultUnlockedIds());
-  const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
-  return ownedSet(prog, playerId);
+  return ownedDefIds(playerId);
 }
 
 // The account's real level (XP-derived) — the game server stamps it on the
@@ -759,13 +670,34 @@ function ymd(now: number): number {
   return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
 }
 
+// Legacy per-slot names the pre-v3 client used in `equipped` maps.
+const LEGACY_SLOT_KEY: Record<ItemSlot, string> = {
+  finish: 'railgunFinish',
+  beam: 'railColor',
+  finisher: 'killEffect',
+  spawn: 'spawnEffect',
+  hat: 'hat',
+  face: 'face',
+  back: 'back',
+  emote: 'emote',
+  card: 'card',
+  nameColor: 'nameColor',
+  title: 'title',
+};
+function legacyEquipped(looks: Loadout): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [slot, look] of Object.entries(looks)) out[LEGACY_SLOT_KEY[slot as ItemSlot]] = look.d;
+  return out;
+}
+
 export type Progression = {
   totalXp: number;
   level: number;
   credits: number;
-  unlocked: string[];
-  equipped: Record<string, string>;
-  caseKeys: number; // unspent free hat-case opens (Career Road keys)
+  unlocked: string[]; // def ids owned / entitled (back-compat; v3 clients read the inventory)
+  equipped: Record<string, string>; // legacy slot key → def id (from the equipped Looks)
+  caseKeys: number; // == freeRolls (back-compat alias)
+  freeRolls: number; // unspent free case rolls
   roadLevel: number; // highest Career Road level paid out
 };
 
@@ -776,7 +708,8 @@ export type RewardReply = RewardExtras & {
   xpGained: number; // total XP added (match + challenges)
   creditsGained: number; // total credits added (match + challenges + road)
   leveledUp: boolean;
-  newUnlocks: string[];
+  newUnlocks: string[]; // def ids newly owned / entitled by this call
+  newItems: ItemInstanceWire[]; // instances minted by this call (bound road rewards)
   progression: Progression;
 };
 
@@ -786,66 +719,48 @@ export type MatchRecordResult = RewardReply & { stats: PublicStats };
 // written back once (saveLedger) inside the caller's transaction.
 type Ledger = {
   playerId: string; // '' = guest preview (never saved)
-  isAdmin: boolean;
   totalXp: number;
   credits: number;
-  caseKeys: number;
+  freeRolls: number;
   roadLevel: number;
-  stored: Set<string>;
-  unlockedReadable: boolean; // false → the stored JSON is corrupt: never write `unlocked`
-  equipped: Record<string, string>;
   firstWinDay: number;
   offlineDay: number;
   offlineXp: number;
+  newItems: ItemInstanceWire[];
 };
 
 function loadLedger(playerId: string, prog: ProgRow | undefined): Ledger {
   return {
     playerId,
-    isAdmin: isAdminId(playerId),
     totalXp: prog?.total_xp ?? 0,
     credits: prog?.credits ?? 0,
-    caseKeys: prog?.case_keys ?? 0,
+    freeRolls: prog?.free_rolls ?? 0,
     roadLevel: Math.max(1, prog?.road_level ?? 1),
-    stored: storedUnlocked(prog),
-    unlockedReadable: parseIdList(prog?.unlocked) !== null,
-    equipped: parseEquipped(prog?.equipped),
     firstWinDay: prog?.first_win_day ?? 0,
     offlineDay: prog?.offline_day ?? 0,
     offlineXp: prog?.offline_xp ?? 0,
+    newItems: [],
   };
 }
 
-const ledgerOwned = (l: Ledger): Set<string> => ownedFrom(l.totalXp, l.stored, l.isAdmin);
-
 function saveLedger(l: Ledger): void {
   if (!l.playerId) return;
-  const row = {
+  progWriteStmt.run({
     playerId: l.playerId,
     totalXp: l.totalXp,
     level: levelForXp(l.totalXp),
     credits: l.credits,
     firstWinDay: l.firstWinDay,
     roadLevel: l.roadLevel,
-    caseKeys: l.caseKeys,
+    freeRolls: l.freeRolls,
     offlineDay: l.offlineDay,
     offlineXp: l.offlineXp,
-  };
-  if (l.unlockedReadable) {
-    progWriteStmt.run({
-      ...row,
-      unlocked: JSON.stringify([...l.stored].filter((id) => !ADMIN_COSMETIC_IDS.has(id))),
-    });
-  } else {
-    // Never clobber an unreadable collection with a partial one — leave it for
-    // a human to repair (the rest of the progression still saves).
-    console.error(`[progression] ${l.playerId}: unreadable 'unlocked' JSON — left untouched`);
-    progWriteKeepUnlockedStmt.run(row);
-  }
+  });
 }
 
 // Pay out every Career Road step in (roadLevel, level(totalXp)] onto the ledger:
-// credits, case keys, cosmetics (persisted). Returns the steps paid, ascending.
+// credits, free rolls, and cosmetics (minted as bound instances — economy.ts).
+// Returns the steps paid, ascending.
 function grantRoad(l: Ledger): RoadStep[] {
   const level = levelForXp(l.totalXp);
   if (level <= l.roadLevel) return [];
@@ -853,34 +768,41 @@ function grantRoad(l: Ledger): RoadStep[] {
   for (const step of steps) {
     for (const r of step.rewards) {
       if (r.type === 'credits') l.credits += r.amount;
-      else if (r.type === 'case') l.caseKeys += 1;
-      else if (!ADMIN_COSMETIC_IDS.has(r.id)) l.stored.add(r.id);
+      else if (r.type === 'case') l.freeRolls += r.count ?? 1;
     }
   }
+  if (l.playerId) l.newItems.push(...mintRoadRewards(l.playerId, steps));
   l.roadLevel = level;
   return steps;
 }
 
+type Before = { totalXp: number; credits: number; ents: Set<string> };
+
 function buildReply(
   l: Ledger,
-  before: { totalXp: number; credits: number; owned: Set<string> },
+  before: Before,
   extras: Omit<RewardExtras, 'levelBefore' | 'totalXpBefore'>,
 ): RewardReply {
-  const owned = ledgerOwned(l);
+  const owned = ownedDefIds(l.playerId);
   const levelBefore = levelForXp(before.totalXp);
   const level = levelForXp(l.totalXp);
+  const fresh = new Set<string>();
+  for (const id of entitlementsFor(l.playerId)) if (!before.ents.has(id)) fresh.add(id);
+  for (const it of l.newItems) fresh.add(it.def);
   return {
     xpGained: l.totalXp - before.totalXp,
     creditsGained: l.credits - before.credits,
     leveledUp: level > levelBefore,
-    newUnlocks: [...owned].filter((id) => !before.owned.has(id)),
+    newUnlocks: [...fresh],
+    newItems: l.newItems,
     progression: {
       totalXp: l.totalXp,
       level,
       credits: l.credits,
       unlocked: [...owned],
-      equipped: l.equipped,
-      caseKeys: l.caseKeys,
+      equipped: l.playerId ? legacyEquipped(resolveEquipped(l.playerId).looks) : {},
+      caseKeys: l.freeRolls,
+      freeRolls: l.freeRolls,
       roadLevel: l.roadLevel,
     },
     ...extras,
@@ -891,16 +813,19 @@ function buildReply(
 
 // Records a match and pays out everything it earns, atomically: the career-stat
 // upsert, match XP (itemized), first-win bonus, offline scale + daily cap,
-// challenge progress + auto-payout, achievement titles, and any Career Road
-// steps reached. better-sqlite3 is synchronous and the whole thing runs in one
-// transaction, so nothing can interleave. Guests (no account) get the same
-// computation as a preview (saved: false) with nothing written.
+// challenge progress + auto-payout, and any Career Road steps reached.
+// better-sqlite3 is synchronous and the whole thing runs in one transaction, so
+// nothing can interleave. Guests (no account) get the same computation as a
+// preview (saved: false) with nothing written. Achievement titles are
+// entitlements computed live from the career stats (economy.ts), not granted.
 export function recordMatch(delta: MatchDelta): MatchRecordResult {
   if (!delta.playerId) return previewMatch(delta);
   return recordMatchTx(delta);
 }
 
 const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult => {
+  ensureOnboarded(delta.playerId);
+  const entsBefore = entitlementsFor(delta.playerId);
   let stats: PublicStats;
   if (delta.offline) {
     // Offline (client-reported) matches are XP-only: they never feed career
@@ -920,7 +845,7 @@ const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult 
   }
 
   const l = loadLedger(delta.playerId, progSelectStmt.get(delta.playerId) as ProgRow | undefined);
-  const before = { totalXp: l.totalXp, credits: l.credits, owned: ledgerOwned(l) };
+  const before: Before = { totalXp: l.totalXp, credits: l.credits, ents: entsBefore };
 
   const won = delta.wins > 0;
   const today = ymd(delta.now);
@@ -956,21 +881,6 @@ const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult 
   if (!delta.offline) trackChallenges(delta.playerId, delta);
   const challenges = payoutCompletedChallenges(l, lines, delta.now);
 
-  // Achievement titles from the post-match career aggregate (server-derived;
-  // online matches only move it).
-  if (!delta.offline) {
-    for (const id of titleGrantsFrom({
-      kills: stats.totalKills,
-      headshots: stats.headshots,
-      wins: stats.totalWins,
-      bestStreak: stats.bestKillStreak,
-      games: stats.totalGames,
-      accuracy: stats.bestAccuracy,
-    })) {
-      l.stored.add(id);
-    }
-  }
-
   const roadRewards = grantRoad(l);
   saveLedger(l);
   return {
@@ -983,7 +893,7 @@ const recordMatchTx = sqlite.transaction((delta: MatchDelta): MatchRecordResult 
 // persisted — so the results screen can show what signing up would have kept.
 function previewMatch(delta: MatchDelta): MatchRecordResult {
   const l = loadLedger('', undefined);
-  const before = { totalXp: 0, credits: 0, owned: ledgerOwned(l) };
+  const before: Before = { totalXp: 0, credits: 0, ents: entitlementsFor('') };
   const won = delta.wins > 0;
   const { xp, lines } = matchXpLines(
     {
@@ -1024,13 +934,16 @@ export type Profile = {
   xpIntoLevel: number;
   xpForNext: number;
   credits: number;
-  unlocked: string[];
-  equipped: Record<string, string>;
+  unlocked: string[]; // def ids owned / entitled (back-compat)
+  equipped: Record<string, string>; // legacy slot key → def id (back-compat)
+  equippedUids: EquippedMap; // v3: slot → uid | 'def:<id>'
+  looks: Loadout; // v3: resolved Looks of the equipped items
   stats: PublicStats;
   // Ranked Duel standing (null = never played ranked) — drives the rating card
   // stat + the live rank title. `getRankedProfile` is declared below (hoisted).
   ranked: { rating: number; rank: number; provisional: boolean } | null;
-  caseKeys: number; // unspent free hat-case opens
+  freeRolls: number; // unspent free case rolls
+  caseKeys: number; // == freeRolls (back-compat alias)
   roadLevel: number; // highest Career Road level paid out (== level after catch-up)
   // Road steps this request just paid out as a catch-up (road_level had fallen
   // behind the XP level — e.g. the first visit after the curve change). Usually [].
@@ -1040,6 +953,7 @@ export type Profile = {
 // Catch-up: pay any Career Road steps between the stored road_level and the
 // XP-derived level. Idempotent; a no-op (no write) when already current.
 const catchUpRoadTx = sqlite.transaction((playerId: string): RoadStep[] => {
+  ensureOnboarded(playerId);
   const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
   if (!prog) return [];
   const level = levelForXp(prog.total_xp);
@@ -1056,155 +970,25 @@ export function getProfile(playerId: string): Profile {
   const totalXp = prog?.total_xp ?? 0;
   const lp = levelProgress(totalXp);
   const rp = getRankedProfile(playerId);
-  const owned = ownedSet(prog, playerId);
-  // Only report equipped items the player still owns (a demoted admin's crown,
-  // a retired id) — the WS equip path already enforces the same.
-  const equipped: Record<string, string> = {};
-  for (const [slot, id] of Object.entries(parseEquipped(prog?.equipped))) if (owned.has(id)) equipped[slot] = id;
+  const { equipped, looks } = playerId ? resolveEquipped(playerId) : { equipped: {}, looks: {} };
   return {
     level: lp.level,
     totalXp,
     xpIntoLevel: lp.xpIntoLevel,
     xpForNext: lp.xpForNext,
     credits: prog?.credits ?? 0,
-    unlocked: [...owned],
-    equipped,
+    unlocked: [...ownedDefIds(playerId)],
+    equipped: legacyEquipped(looks),
+    equippedUids: equipped,
+    looks,
     stats: getStats(playerId),
     ranked: rp ? { rating: rp.rating, rank: rp.rank, provisional: rp.provisional } : null,
-    caseKeys: prog?.case_keys ?? 0,
+    freeRolls: prog?.free_rolls ?? 0,
+    caseKeys: prog?.free_rolls ?? 0,
     roadLevel: Math.max(1, prog?.road_level ?? 1),
     catchUp,
   };
 }
-
-export type EquipResult =
-  | { ok: true; equipped: Record<string, string> }
-  | { ok: false; reason: 'unknown' | 'slot_mismatch' | 'locked'; equipped: Record<string, string> };
-
-// Equip a cosmetic the player owns. Server-validated against the manifest and
-// the owned set, so a forged equip can't grant or apply a locked item.
-export function setEquipped(playerId: string, slot: string, id: string): EquipResult {
-  if (!playerId) return { ok: false, reason: 'locked', equipped: {} }; // guest: no persistence
-  const prog = progSelectStmt.get(playerId) as ProgRow | undefined;
-  const equipped = parseEquipped(prog?.equipped);
-  if (!cosmeticById(id)) return { ok: false, reason: 'unknown', equipped };
-  if (slotOf(id) !== slot) return { ok: false, reason: 'slot_mismatch', equipped };
-  if (!ownedSet(prog, playerId).has(id)) return { ok: false, reason: 'locked', equipped };
-  equipped[slot] = id;
-  const now = Date.now();
-  ensureRowStmt.run(playerId, now, now);
-  equipUpdateStmt.run({ playerId, equipped: JSON.stringify(equipped) });
-  return { ok: true, equipped };
-}
-
-export type BuyResult =
-  | { ok: true; credits: number; unlocked: string[] }
-  | {
-      ok: false;
-      reason: 'unknown' | 'not_for_sale' | 'owned' | 'insufficient';
-      credits: number;
-      unlocked: string[];
-    };
-
-// Spend credits to unlock a buyable cosmetic. Validated server-side.
-export function buyCosmetic(playerId: string, id: string): BuyResult {
-  if (!playerId) return { ok: false, reason: 'insufficient', credits: 0, unlocked: [...defaultUnlockedIds()] };
-  return buyTx(playerId, id);
-}
-
-const buyTx = sqlite.transaction((playerId: string, id: string): BuyResult => {
-  const c = cosmeticById(id);
-  const l = loadLedger(playerId, progSelectStmt.get(playerId) as ProgRow | undefined);
-  const owned = ledgerOwned(l);
-  // Unreadable stored collection: the purchase couldn't be saved — don't charge.
-  if (!c || !l.unlockedReadable) return { ok: false, reason: 'unknown', credits: l.credits, unlocked: [...owned] };
-  if (c.source.type !== 'credits')
-    return { ok: false, reason: 'not_for_sale', credits: l.credits, unlocked: [...owned] };
-  if (owned.has(id)) return { ok: false, reason: 'owned', credits: l.credits, unlocked: [...owned] };
-  if (l.credits < c.source.price)
-    return { ok: false, reason: 'insufficient', credits: l.credits, unlocked: [...owned] };
-  const now = Date.now();
-  ensureRowStmt.run(playerId, now, now);
-  l.credits -= c.source.price;
-  l.stored.add(id);
-  saveLedger(l);
-  return { ok: true, credits: l.credits, unlocked: [...ledgerOwned(l)] };
-});
-
-export type CaseResult =
-  | {
-      ok: true;
-      won: string | null; // the cosmetic id dropped; null = consolation credits (all case hats owned)
-      jackpot: boolean; // `won` is a case-exclusive unusual
-      consolation: number; // credits paid back on a jackpot-miss once every case hat is owned (else 0)
-      usedKey: boolean; // opened with a free Career Road key (no credits spent)
-      credits: number;
-      caseKeys: number;
-      unlocked: string[];
-    }
-  | { ok: false; reason: 'insufficient' | 'complete' | 'error'; credits: number; caseKeys: number };
-
-// Open a hat case (server-authoritative roll). Spends a free key if the player
-// has one, else HAT_CASE_COST credits. Never drops a duplicate: CASE_JACKPOT_CHANCE
-// for an un-owned case-exclusive unusual, else an un-owned case hat weighted by
-// rarity, else (every case hat owned) CASE_CONSOLATION credits back. Owning the
-// whole pool → 'complete' (nothing spent).
-export function openCase(playerId: string): CaseResult {
-  if (!playerId) return { ok: false, reason: 'insufficient', credits: 0, caseKeys: 0 };
-  return openCaseTx(playerId);
-}
-
-const openCaseTx = sqlite.transaction((playerId: string): CaseResult => {
-  const now = Date.now();
-  ensureRowStmt.run(playerId, now, now);
-  const l = loadLedger(playerId, progSelectStmt.get(playerId) as ProgRow | undefined);
-  // Unreadable stored collection: a drop couldn't be saved — don't charge.
-  if (!l.unlockedReadable) return { ok: false, reason: 'error', credits: l.credits, caseKeys: l.caseKeys };
-  const pool = casePool(ledgerOwned(l));
-  if (pool.hats.length === 0 && pool.jackpots.length === 0) {
-    return { ok: false, reason: 'complete', credits: l.credits, caseKeys: l.caseKeys };
-  }
-  const usedKey = l.caseKeys > 0;
-  if (!usedKey && l.credits < HAT_CASE_COST) {
-    return { ok: false, reason: 'insufficient', credits: l.credits, caseKeys: l.caseKeys };
-  }
-  if (usedKey) l.caseKeys -= 1;
-  else l.credits -= HAT_CASE_COST;
-
-  let won: string | null = null;
-  let jackpot = false;
-  let consolation = 0;
-  if (pool.jackpots.length > 0 && Math.random() < CASE_JACKPOT_CHANCE) {
-    won = pool.jackpots[Math.floor(Math.random() * pool.jackpots.length)].id;
-    jackpot = true;
-  } else if (pool.hats.length > 0) {
-    const total = pool.hats.reduce((s, h) => s + (RARITY_WEIGHT[h.rarity] ?? 1), 0);
-    let r = Math.random() * total;
-    won = pool.hats[pool.hats.length - 1].id;
-    for (const h of pool.hats) {
-      r -= RARITY_WEIGHT[h.rarity] ?? 1;
-      if (r <= 0) {
-        won = h.id;
-        break;
-      }
-    }
-  } else {
-    consolation = CASE_CONSOLATION;
-    l.credits += consolation;
-  }
-  if (won) l.stored.add(won);
-  saveLedger(l);
-  return {
-    ok: true,
-    won,
-    jackpot,
-    consolation,
-    usedKey,
-    credits: l.credits,
-    caseKeys: l.caseKeys,
-    unlocked: [...ledgerOwned(l)],
-  };
-});
 
 // --- Challenges -------------------------------------------------------------
 
@@ -1378,9 +1162,10 @@ const claimTx = sqlite.transaction((playerId: string, def: ChallengeDef, now: nu
   // Atomic claim: the `AND claimed = 0` guard means a second claim flips no rows.
   const info = chClaimStmt.run({ playerId, challenge: def.id, period });
   if (info.changes === 0) return { ok: false, reason: 'claimed' };
+  ensureOnboarded(playerId);
   ensureRowStmt.run(playerId, now, now);
   const l = loadLedger(playerId, progSelectStmt.get(playerId) as ProgRow | undefined);
-  const before = { totalXp: l.totalXp, credits: l.credits, owned: ledgerOwned(l) };
+  const before: Before = { totalXp: l.totalXp, credits: l.credits, ents: entitlementsFor(playerId) };
   l.totalXp += def.rewardXp;
   l.credits += def.rewardCredits;
   const label = challengeLabel(def);
@@ -1616,6 +1401,13 @@ export function createUser(u: {
   createdAt: number;
 }): void {
   insertUserStmt.run(u);
+  // Starter bundle (credits + free rolls by level 1) — the same one-time
+  // onboarding existing accounts got at the v3 reset. Never blocks registration.
+  try {
+    ensureOnboarded(u.id);
+  } catch (err) {
+    console.error('[economy] onboarding failed for new account', err);
+  }
 }
 export function findUserByName(usernameLower: string): UserRow | undefined {
   return userByLowerStmt.get(usernameLower) as UserRow | undefined;
@@ -1632,7 +1424,19 @@ export function setVerified(id: string, value: boolean): boolean {
   return setVerifiedStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
 }
 export function setAdmin(id: string, value: boolean): boolean {
-  return setAdminStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
+  const ok = setAdminStmt.run({ id, v: value ? 1 : 0 }).changes > 0;
+  if (ok) {
+    try {
+      // Staff ("Sovereign") gear is granted as bound instances and taken back on demotion.
+      if (value) {
+        ensureOnboarded(id);
+        ensureStaffItems(id);
+      } else revokeStaffItems(id);
+    } catch (err) {
+      console.error('[economy] staff items sync failed', err);
+    }
+  }
+  return ok;
 }
 // Promote the configured ADMIN_USERNAMES to admin on boot (idempotent). Lets you
 // designate your account on Railway via an env var — register first, set the var,
@@ -1640,9 +1444,18 @@ export function setAdmin(id: string, value: boolean): boolean {
 export function syncAdminsFromEnv(usernamesLower: string[]): number {
   if (usernamesLower.length === 0) return 0;
   const ph = usernamesLower.map(() => '?').join(',');
-  return sqlite
+  const changes = sqlite
     .prepare(`UPDATE instagib_users SET is_admin = 1 WHERE username_lower IN (${ph})`)
     .run(...usernamesLower).changes;
+  for (const r of sqlite.prepare(`SELECT id FROM instagib_users WHERE username_lower IN (${ph})`).all(...usernamesLower) as { id: string }[]) {
+    try {
+      ensureOnboarded(r.id);
+      ensureStaffItems(r.id);
+    } catch (err) {
+      console.error('[economy] staff items sync failed', err);
+    }
+  }
+  return changes;
 }
 export function createSession(token: string, userId: string, now: number): void {
   insertSessionStmt.run(token, userId, now);
@@ -2501,3 +2314,7 @@ export function getWeeklyChallengeMe(
   entry.hasReplay = weeklyReplayPlayerIds(wk).has(playerId);
   return { ...entry, rank };
 }
+
+// Economy v3: tables + the one-time reset/onboarding migration (idempotent). Last, so
+// every table/statement above exists first.
+initEconomy({ logEvent, isAdmin: isAdminId });

@@ -141,6 +141,8 @@ export const SOCKETS = {
   headTop: { bone: B.head, pos: [0, 0.232, 0.012] as const }, // helmet crown (hats)
   gun: { bone: B.handR, pos: [0, -0.065, -0.012] as const }, // palm centre (railgun grip)
   chest: { bone: B.chest, pos: [0, 0.12, -0.12] as const }, // sternum (particles)
+  face: { bone: B.head, pos: [0, 0.09, -0.16] as const }, // visor front (face items)
+  back: { bone: B.chest, pos: [0, 0.12, 0.2] as const }, // behind the power pack (back items)
 } as const;
 export type SocketName = keyof typeof SOCKETS;
 

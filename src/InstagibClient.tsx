@@ -49,21 +49,26 @@ import { NameBadges } from './ui/badges';
 import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './ui/hud-const';
 import { FightCall, HudXpTicker, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
 import { fragLimitFor, mapIdByName, mapNameById, modeLine, modeTitle, placementLine, type MatchFlavor } from './ui/match-info';
-import { CONTROLS } from './controls';
-import { MAPS, mapById } from './game/map';
+import { mapById } from './game/map';
 import { ANNOUNCER_PACKS, DEFAULT_ANNOUNCER_PACK, setUiVolume, type AnnouncerPackId } from './game/audio';
 import {
   LobbyClient,
   type LobbyRoom,
   type LobbyStatus,
   type PresenceState,
-  type PresencePlayer,
   type ChatMessage,
   type RankedStatus,
   type RankedRoom,
   type RankedResult,
 } from './game/net';
+import { withLegacyFromLooks } from './game/look-runtime';
+import { itemDef } from './game/items/catalog';
+import { TIER_META, qualityPrefix, wearName } from './game/items/types';
 import { ONLINE_MAP_POOL } from './game/arena-data';
+import { CHAT_CLIENT_MAX_LEN, mapLabel } from './lobby/helpers';
+import { GlobalChatPanel, OnlinePlayersPanel, OpenLobbies, ServerStatusChip } from './lobby/ServerBrowser';
+import { CreateMatchModal, CreateOnlineModal, InviteModal } from './lobby/CreateMatch';
+import { DisconnectedOverlay, JoinErrorOverlay, OnboardingModal, WaitingForOpponents } from './lobby/Overlays';
 import {
   AIR_JUMPS,
   cm360,
@@ -79,7 +84,6 @@ import {
   DEFAULT_SENSITIVITY,
   DEFAULT_VERT_SCALE,
   DEFAULT_VOLUME,
-  GAME_MODES,
   HIT_MARKER_DURATION_SEC,
   HIT_MARKER_KILL_DURATION_SEC,
   M_YAW_DEG,
@@ -87,7 +91,6 @@ import {
   MAX_FOV,
   MAX_ZOOM_FOV,
   MAX_VIEWMODEL_OFFSET,
-  MAX_PLAYERS,
   MAX_SENSITIVITY,
   MAX_VERT_SCALE,
   MIN_DPI,
@@ -301,6 +304,7 @@ const DEFAULT_SETTINGS: Settings = {
   resolutionScale: 1,
   lowSpec: false,
   bloom: true,
+  bloomIntensity: 0.8,
   shadows: true,
   antialias: true,
   vignette: true,
@@ -391,6 +395,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setRawInput?.(s.rawInput);
   game.setQuality?.(s.resolutionScale, s.lowSpec);
   game.setPostFx?.({ bloom: s.bloom, shadows: s.shadows, aa: s.antialias, vignette: s.vignette });
+  game.setBloomScale?.(s.bloomIntensity ?? 0.8);
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
   game.setZoomFov?.(s.zoomFov);
@@ -410,6 +415,8 @@ function applySettingsToGame(game: Game, s: Settings) {
   // Echo the crosshair (as a share-code) so a spectator can render the same
   // reticle we use; the local HUD still draws it from settings.crosshair.
   game.setCrosshairCode?.(encodeCrosshair(s.crosshair));
+  const strange = s.finishItem?.quality.includes('strange') ? (s.finishItem.attrs.kills ?? 0) : null;
+  game.setLooks?.(s.looks, s.equippedUids, strange);
   game.setHat?.(s.hat);
   game.setUnusual?.(s.unusual);
   game.setEmote?.(s.emote);
@@ -473,6 +480,7 @@ const INITIAL_HUD: HudState = {
   killFlash: null,
   damageFlash: 0,
   killcam: null,
+  taunting: false,
   showScoreboard: false,
   matchOver: null,
   netStatus: 'off',
@@ -494,7 +502,13 @@ const INITIAL_HUD: HudState = {
 export default function InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // Every settings write keeps the legacy per-slot ids in step with `looks`.
+  const [settings, setSettingsRaw] = useState<Settings>(DEFAULT_SETTINGS);
+  const setSettings = useCallback(
+    (u: Settings | ((s: Settings) => Settings)) =>
+      setSettingsRaw((prev) => withLegacyFromLooks(typeof u === 'function' ? u(prev) : u)),
+    [],
+  );
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
@@ -675,59 +689,6 @@ export default function InstagibClient() {
   );
 }
 
-// First-run welcome: pick a display name + a quick controls primer. Shown once
-// (guarded by the `instagib-onboarded` localStorage flag).
-function OnboardingModal({
-  onPlayGuest,
-  onCreateAccount,
-}: {
-  onPlayGuest: () => void;
-  onCreateAccount: () => void;
-}) {
-  // Escape / backdrop = play as guest (every other modal is escapable). The
-  // drifting deck grid inside the sheet is this dialog's one flourish — it is
-  // the first thing a new player sees.
-  return (
-    <ModalShell
-      title='Welcome to the Arena'
-      onClose={onPlayGuest}
-      fixed
-      z='z-[60]'
-      size='lg'
-      className='deck-bg'
-      footer={({ close }) => (
-        <>
-          <DeckButton onClick={close} size='sm' center sound='uiBack'>
-            Play as Guest
-          </DeckButton>
-          <DeckButton onClick={onCreateAccount} solid accent='cyan' center>
-            Create account
-          </DeckButton>
-        </>
-      )}
-    >
-      <p className='-mt-1 font-display text-sm font-semibold uppercase tracking-[0.24em] text-white/80'>
-        One railgun. One shot. Pure movement.
-      </p>
-      <div>
-        <div className='deck-label'>Controls</div>
-        <div className='mt-2 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2'>
-          {CONTROLS.map(([key, action]) => (
-            <div key={key} className='flex items-baseline gap-2.5 text-[12px]'>
-              <kbd className='deck-kbd'>{key}</kbd>
-              <span className='font-sans text-white/60'>{action}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-      <p className='font-sans text-[13px] leading-relaxed text-white/55'>
-        Jump in as a <span className='text-white/85'>guest</span> right now — or create a free account
-        to save your XP, levels, credits, and cosmetics and climb the leaderboards.
-      </p>
-    </ModalShell>
-  );
-}
-
 /* ───────────────────────── In-match view ───────────────────────── */
 
 function GameView({
@@ -756,6 +717,8 @@ function GameView({
   const gameRef = useRef<Game | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
+  // Weapon inspect: while the first-person gun look-over plays, the item card shows.
+  const [inspect, setInspect] = useState<{ kills: number | null } | null>(null);
   // Every HudState push (20 Hz + events) lands in this store. GameView itself
   // only re-renders on the SLOW fields it gates overlays with; the in-match
   // HUD pieces subscribe to their own slices inside HudOverlay. The paused
@@ -851,6 +814,7 @@ function GameView({
       }
     };
     window.addEventListener('keydown', onDebugKey);
+    game.setInspectListener((active, kills) => setInspect(active ? { kills } : null));
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
         setJoinDuplicate(ev.reason === 'duplicate');
@@ -1123,6 +1087,7 @@ function GameView({
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge && loggedIn} />}
+      {!hud.pom && inspect && <InspectCard settings={settings} kills={inspect.kills} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1560,10 +1525,6 @@ function SpectatorView({
   );
 }
 
-function mapLabel(id: string): string {
-  return MAPS.find((m) => m.id === id)?.label ?? id;
-}
-
 /* ───────────────────────── Map vote (end of match) ───────────────────────── */
 
 // Play of the Match: a mostly-transparent cinematic frame over the live 3D
@@ -1663,18 +1624,41 @@ function PlayOfTheMatchOverlay({
             className='absolute inset-x-0 top-[16%] flex flex-col items-center transition-opacity duration-700'
             style={{ opacity: titleVisible ? 1 : 0 }}
           >
-            <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
+            <div className='text-[15px] font-semibold uppercase tracking-[0.5em] text-cyan-300/90 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
               Play of the Match
             </div>
           </div>
 
-          <div className='absolute left-[4vw] bottom-[14vh]'>
-            <div className='text-3xl font-extrabold uppercase tracking-[0.04em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
-              {pom.star}
-            </div>
-            <div className='mt-1 text-lg font-bold uppercase tracking-[0.25em] text-cyan-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
-              {pom.label}
-              {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
+          {/* Lower third on the star's equipped playercard background. */}
+          <div
+            className='absolute left-[4vw] bottom-[14vh] max-w-[46vw] overflow-hidden rounded-md border border-white/15 px-5 py-3 shadow-[0_6px_24px_rgba(0,0,0,0.6)]'
+            style={{ background: pom.kit?.cardBg ?? 'rgba(0,0,0,0.55)' }}
+          >
+            <div className='absolute inset-0 bg-black/35' />
+            <div className='relative'>
+              <div
+                className='text-3xl font-extrabold uppercase tracking-[0.04em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
+                style={{ color: pom.kit?.nameColor ?? '#ffffff' }}
+              >
+                {pom.star}
+              </div>
+              {pom.kit?.title ? (
+                <div className='text-[12px] font-bold uppercase tracking-[0.4em] text-white/70'>{pom.kit.title}</div>
+              ) : null}
+              <div
+                className='mt-1 text-lg font-bold uppercase tracking-[0.25em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
+                style={{ color: pom.kit?.cardAccent ?? '#67e8f9' }}
+              >
+                {pom.label}
+                {pom.subLabel ? <span className='ml-3 text-white/60'>· {pom.subLabel}</span> : null}
+              </div>
+              {pom.kit ? (
+                <div className='mt-1.5 text-[15px] font-semibold uppercase tracking-[0.1em] text-amber-200 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]'>
+                  {pom.kit.weapon}
+                  {pom.kit.weaponKills != null ? ` · ${pom.kit.weaponKills.toLocaleString('en-US')} kills` : ''}
+                  {pom.kit.finisher ? <span className='text-white/60'>{` · ${pom.kit.finisher}`}</span> : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </>
@@ -1757,120 +1741,45 @@ function MapVoteOverlay({
   );
 }
 
-// Build a shareable ?join= invite URL for a room code (used by the invite modal
-// and the waiting-for-opponents overlay).
-function inviteLink(roomId: string): string {
-  if (typeof window === 'undefined') return `?join=${roomId}`;
-  return `${window.location.origin}${window.location.pathname}?join=${roomId}`;
-}
-
-// Online + the connection dropped mid-match: tell the player the game stalled
-// and is auto-retrying, instead of leaving them in a silent "ghost match".
-function DisconnectedOverlay({ error, onLeave }: { error: boolean; onLeave: () => void }) {
-  return (
-    <ModalShell label='Connection lost' tone='rose' z='z-30' backdrop='heavy' bodyClassName='items-center text-center'>
-      <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-rose-200'>
-        <span className='deck-pulse inline-block h-1.5 w-1.5 rounded-full bg-rose-300 shadow-[0_0_6px_rgba(251,113,133,0.85)]' />
-        {error ? 'Connection error' : 'Connection lost'}
-      </div>
-      <div className='-mt-2'>
-        <div className='font-display text-xl font-bold uppercase tracking-[0.12em] text-white'>Reconnecting…</div>
-        <p className='mt-2 font-sans text-sm text-white/55'>
-          Lost contact with the server. Trying to get you back into the match — this usually
-          takes a few seconds.
-        </p>
-      </div>
-      <DeckButton onClick={onLeave} size='sm' center sound='uiBack'>
-        Leave to menu
-      </DeckButton>
-    </ModalShell>
-  );
-}
-
-// Online + alone: instead of a silent empty arena, show what's happening and a
-// one-click way to fill the lobby (#6a).
-function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLeave: () => void }) {
-  const link = inviteLink(roomId);
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <ModalShell label='Waiting for opponents' z='z-30' width='w-[460px]' backdrop='heavy' bodyClassName='text-center'>
-      <div className='flex items-center justify-center gap-2 text-[11px] uppercase tracking-[0.3em] text-cyan-200'>
-        <span className='deck-pulse inline-block h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_rgba(103,232,249,0.85)]' />
-        Waiting for opponents
-      </div>
-      <div className='-mt-2'>
-        <div className='font-display text-xl font-bold uppercase tracking-[0.12em] text-white'>You&apos;re the only one here</div>
-        <p className='mt-2 font-sans text-sm text-white/55'>
-          The match starts the moment another player joins. Share the link to fill the lobby.
-        </p>
-      </div>
-      <div>
-        <div className='flex items-center gap-2'>
-          <input
-            readOnly
-            value={link}
-            aria-label='Invite link'
-            onFocus={(e) => e.currentTarget.select()}
-            className='deck-input deck-input-sm min-w-0 flex-1'
-          />
-          <UtilButton onClick={copy} tone='cyan' sound='uiConfirm' className='shrink-0'>
-            {copied ? 'Copied!' : 'Copy'}
-          </UtilButton>
-        </div>
-        {roomId && (
-          <div className='mt-2 text-[10px] uppercase tracking-[0.16em] text-white/40'>
-            Lobby code: <span className='text-white/80'>{roomId}</span>
-          </div>
-        )}
-      </div>
-      <DeckButton onClick={onLeave} full center sound='uiBack'>
-        Leave to Lobby
-      </DeckButton>
-    </ModalShell>
-  );
-}
-
-function JoinErrorOverlay({
-  message,
-  onLeave,
-  onRetry,
-}: {
-  message: string;
-  onLeave: () => void;
-  onRetry?: () => void;
-}) {
-  return (
-    <ModalShell label="Couldn't join" tone='rose' z='z-40' size='sm' backdrop='heavy' bodyClassName='text-center'>
-      <div>
-        <div className='font-display text-lg font-bold uppercase tracking-[0.16em] text-rose-300'>
-          Couldn&apos;t join
-        </div>
-        <p className='mt-3 font-sans text-sm text-white/65'>{message}</p>
-      </div>
-      <div className='flex gap-3'>
-        {onRetry && (
-          <DeckButton onClick={onRetry} solid accent='emerald' center className='flex-1'>
-            Try Again
-          </DeckButton>
-        )}
-        <DeckButton onClick={onLeave} solid={!onRetry} accent={onRetry ? 'plain' : 'emerald'} center className='flex-1' sound='uiBack'>
-          Back to Lobby
-        </DeckButton>
-      </div>
-    </ModalShell>
-  );
-}
-
 /* ───────────────────────── HUD layout ───────────────────────── */
+
+// The equipped finish's card while you inspect the gun: full name (quality
+// prefix + name), Strange kills + rank, wear, pattern seed, mint number, in the
+// tier colour. Data is the equipped instance the hub put in Settings.finishItem;
+// a plain stock/bought finish shows just its name.
+function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const item = settings.finishItem ?? null;
+  const def = itemDef(item?.def ?? settings.looks?.finish?.d ?? settings.railgunFinish);
+  const tier = item?.tier ?? def?.tier ?? 'common';
+  const color = TIER_META[tier].color;
+  const attrs = item?.attrs ?? {};
+  const base = attrs.customName ?? def?.name ?? 'Railgun';
+  const prefix = item ? qualityPrefix(item.quality, { ...attrs, kills: kills ?? attrs.kills }) : '';
+  const title = prefix ? `${prefix} ${base}` : base;
+  const bits: string[] = [];
+  if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
+  if (typeof attrs.wear === 'number') bits.push(wearName(attrs.wear));
+  if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
+  if (item) bits.push(`#${item.mint}`);
+  return (
+    <div
+      aria-hidden='true'
+      className='pointer-events-none absolute bottom-44 right-8 max-w-[22rem] text-right font-mono'
+      style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
+    >
+      <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
+      <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
+        {title}
+      </div>
+      {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
+    </div>
+  );
+}
 
 function HudOverlay({
   store,
@@ -2079,10 +1988,11 @@ function HudInvuln() {
 
 function HudWarmup() {
   const secs = useHudSlice((s) =>
-    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam
+    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam && !s.taunting
       ? Math.max(1, Math.ceil(s.warmupMsLeft / 1000))
       : 0,
   );
+  const taunting = useHudSlice((s) => s.taunting);
   // The countdown's last word: "Fight!" the moment the gun goes live.
   const [fight, setFight] = useState(false);
   const [prevSecs, setPrevSecs] = useState(secs);
@@ -2091,7 +2001,7 @@ function HudWarmup() {
     if (prevSecs > 0 && secs === 0) setFight(true);
   }
   if (secs > 0) return <WarmupOverlay secs={secs} />;
-  return fight ? <FightCall onDone={() => setFight(false)} /> : null;
+  return fight && !taunting ? <FightCall onDone={() => setFight(false)} /> : null;
 }
 
 function HudScoreboard({ showPing, info }: { showPing: boolean; info: HudMatchInfo }) {
@@ -2197,28 +2107,33 @@ const KillcamCard = memo(function KillcamCard({
             'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
         }}
       />
-      {/* Lower third: the killcam frames the killer at centre with their
-          nameplate above — the print must not sit on either. */}
-      <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
-        {/* A dark band behind the print: rail beams and bright walls cross
-            this part of the frame, and the print must read over all of it. */}
-        <div className='hud-killcam-print'>
+      {/* Lower third, hugging the bottom edge: the killcam frames the killer at
+          centre (legs + gibs reach ~65% down), so the print sits below that. */}
+      <div className='hud-killcam-card absolute inset-x-0 bottom-[3.5%] flex items-end justify-between gap-6 px-[5vw] font-mono'>
+        <div className='hud-killcam-print !px-6 !py-3 text-left'>
           <div className='hud-cprint-sub'>You were fragged by</div>
-          <div className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
+          <div className='font-display text-4xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
             {cam.killerName}
+          </div>
+          {cam.killerKit && (
+            <div className='mt-1.5 text-[16px] font-semibold uppercase tracking-[0.08em] text-amber-200 [text-shadow:0_2px_0_rgba(0,0,0,0.8)]'>
+              {cam.killerKit.weapon}
+              {cam.killerKit.weaponKills != null ? ` · ${cam.killerKit.weaponKills.toLocaleString('en-US')} kills` : ''}
+              {cam.killerKit.finisher ? <span className='text-white/75'>{` · ${cam.killerKit.finisher}`}</span> : null}
+            </div>
+          )}
+          <div className='mt-2 inline-block bg-black/55 px-3 py-1 text-[12px] uppercase tracking-[0.2em] text-white/80'>
+            Respawning in{' '}
+            <span className='text-white'>
+              <KillcamCountdown />s
+            </span>
           </div>
         </div>
         {cam.killerCard && (
-          <div className='mt-5'>
+          <div className='pb-1'>
             <PlayerCard card={cam.killerCard} reduced={reduced} />
           </div>
         )}
-        <div className='mt-4 bg-black/55 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-white/75'>
-          Respawning in{' '}
-          <span className='text-white'>
-            <KillcamCountdown />s
-          </span>
-        </div>
       </div>
     </div>
   );
@@ -3090,7 +3005,6 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 
 const QUICK_MAP_POOL = ['causeway', 'reactor', 'lounge'];
 // Maps offered for online matches (no bots online → human-friendly pool).
-const ONLINE_MAP_IDS: readonly string[] = ONLINE_MAP_POOL;
 
 function randomMapId(): string {
   return QUICK_MAP_POOL[Math.floor(Math.random() * QUICK_MAP_POOL.length)];
@@ -3199,7 +3113,6 @@ function ChallengeTimer({ gameRef }: { gameRef: { current: Game | null } }) {
 // Menu chat caps. CLIENT_LEN mirrors the server's CHAT_MAX_LEN (the server is
 // authoritative; this is just so the input + counter agree). LOG_MAX bounds the
 // in-memory log (the server already trims replayed history to 50).
-const CHAT_CLIENT_MAX_LEN = 240;
 const CHAT_LOG_MAX = 120;
 
 // ── Ranked Duel ──────────────────────────────────────────────────────────────
@@ -3477,8 +3390,9 @@ function Lobby({
       unusual: settings.unusual,
       railgunFinish: settings.railgunFinish,
       emote: settings.emote,
+      looks: settings.looks,
     }),
-    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote],
+    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote, settings.looks],
   );
   // Career Road try-on: your loadout, with the previewed reward swapped in.
   const roadLoadout = useMemo(
@@ -3593,6 +3507,7 @@ function Lobby({
         active={!modalOpen}
         still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
+        bloomScale={settings.bloomIntensity ?? 0.8}
         onMap={onBackdropMap}
         hero={heroLoadout}
         heroSlot={heroSlotRef}
@@ -3823,6 +3738,7 @@ function Lobby({
                   <OpenLobbies
                     rooms={rooms}
                     online={online}
+                    status={lobbyStatus}
                     onJoin={(r) => startOnline(r.id, r.mapId)}
                     onSpectate={(r) => startSpectate(r.id, r.mapId)}
                     onRefresh={() => lobbyRef.current?.refresh()}
@@ -3984,499 +3900,6 @@ function Lobby({
 
 // (DeckButton / UtilButton — the angular action buttons — live in src/deck.tsx
 // so the login sheet and the landing page's feedback form share them.)
-
-// Compact mode badge — color-coded by mode for quick scanning in lobby rows.
-function ModeBadge({ mode }: { mode: GameMode }) {
-  const color =
-    mode === 'tdm' ? 'border-sky-300/40 bg-sky-300/15 text-sky-200' :
-    mode === 'duel' ? 'border-fuchsia-300/40 bg-fuchsia-300/15 text-fuchsia-200' :
-    'border-emerald-300/40 bg-emerald-300/15 text-emerald-200';
-  const short = mode === 'tdm' ? 'TDM' : mode === 'duel' ? '1v1' : 'FFA';
-  return <span className={`deck-chip ${color}`}>{short}</span>;
-}
-
-function ServerStatusChip({ status }: { status: LobbyStatus }) {
-  const map = {
-    open: { dot: 'bg-emerald-400', ring: 'border-emerald-400/40 text-emerald-200', t: 'Online', title: 'Connected — online play available' },
-    connecting: { dot: 'bg-amber-400', ring: 'border-amber-400/40 text-amber-200', t: 'Linking', title: 'Connecting to the match server…' },
-    closed: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline', title: 'Match server unreachable — solo vs bots still works' },
-    error: { dot: 'bg-rose-400', ring: 'border-rose-400/40 text-rose-200', t: 'Offline', title: 'Match server unreachable — solo vs bots still works' },
-  } as const;
-  const s = map[status];
-  return (
-    <span
-      title={s.title}
-      className={`clip-deck-sm inline-flex items-center gap-1.5 border px-2.5 py-1 font-display text-[12px] font-bold uppercase tracking-[0.1em] ${s.ring}`}
-    >
-      <span className={`deck-pulse h-1.5 w-1.5 rounded-full ${s.dot}`} />
-      {s.t}
-    </span>
-  );
-}
-
-function OpenLobbies({
-  rooms,
-  online,
-  onJoin,
-  onSpectate,
-  onRefresh,
-}: {
-  rooms: LobbyRoom[];
-  online: boolean;
-  onJoin: (r: LobbyRoom) => void;
-  onSpectate: (r: LobbyRoom) => void;
-  onRefresh: () => void;
-}) {
-  // Body of the menu's social dock (the dock supplies the frame + tabs).
-  return (
-    <>
-      <div className='flex shrink-0 items-center justify-between px-4 pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40'>
-        <span>{online ? `${rooms.length} open ${rooms.length === 1 ? 'lobby' : 'lobbies'}` : 'Linking to server…'}</span>
-        <button
-          type='button'
-          onClick={onRefresh}
-          disabled={!online}
-          {...sfxProps('uiClick')}
-          className='text-cyan-300/70 transition hover:text-cyan-200 disabled:opacity-40'
-        >
-          Refresh
-        </button>
-      </div>
-      <div className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1'>
-        {!online ? (
-          <div className='flex h-full items-center justify-center px-4 py-10 text-center font-mono text-[11px] uppercase tracking-[0.14em] text-white/30'>
-            Linking to server…
-          </div>
-        ) : rooms.length === 0 ? (
-          <div className='flex h-full flex-col items-center justify-center gap-1 px-6 py-10 text-center'>
-            <span className='font-display text-sm font-semibold uppercase tracking-[0.14em] text-white/55'>No open lobbies</span>
-            <span className='text-[12px] text-white/35'>Hit Play to start one, or create a match.</span>
-          </div>
-        ) : (
-          <div className='flex flex-col gap-2'>
-            {rooms.map((r) => (
-              <div
-                key={r.id}
-                className='clip-deck-sm flex items-center justify-between gap-3 border border-white/8 bg-white/[0.03] px-3 py-2.5 transition hover:border-cyan-300/30 hover:bg-white/[0.06]'
-              >
-                <div className='min-w-0'>
-                  <div className='truncate font-display text-[13px] font-semibold text-white'>{r.name}</div>
-                  <div className='mt-1 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.1em] text-white/45'>
-                    <ModeBadge mode={r.mode} />
-                    <span>{mapLabel(r.mapId)}</span>
-                    <span className='text-white/20'>·</span>
-                    <span className='tabular-nums text-white/70'>
-                      {r.players}/{r.capacity}
-                    </span>
-                    {r.state === 'voting' && (
-                      <span className='deck-chip border-cyan-300/40 bg-cyan-300/15 text-cyan-200'>voting</span>
-                    )}
-                    {r.spectators > 0 && (
-                      <span className='deck-chip text-white/60'>{r.spectators} watching</span>
-                    )}
-                  </div>
-                </div>
-                <div className='flex shrink-0 items-center gap-1.5'>
-                  {/* Watch is always available for live matches — the whole point
-                      is that a FULL match is still watchable. */}
-                  <DeckButton onClick={() => onSpectate(r)} title='Spectate this match' size='sm' center>
-                    Watch
-                  </DeckButton>
-                  <DeckButton onClick={() => onJoin(r)} disabled={!r.joinable} solid accent='emerald' size='sm' center>
-                    {r.joinable ? 'Join' : 'Full'}
-                  </DeckButton>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
-// "Who's online" tab of the social dock. Registered players are listed by name
-// (with staff/verified badges + an in-match dot); guests are shown only as an
-// aggregate count (never named — they're anonymous and a name list would be a
-// slur vector). All values are server-authoritative.
-function OnlinePlayersPanel({
-  presence,
-  youName,
-}: {
-  presence: PresenceState | null;
-  youName: string | null;
-}) {
-  const players: PresencePlayer[] = presence?.players ?? [];
-  const guests = presence?.guests ?? 0;
-  return (
-    <div className='deck-scroll min-h-0 flex-1 overflow-y-auto px-3 py-3'>
-      <div className='mb-2 flex items-center gap-2 px-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40'>
-        <span className='deck-pulse h-1.5 w-1.5 rounded-full bg-emerald-400' />
-        {presence ? `${presence.online} online` : 'Linking…'}
-      </div>
-      {players.length === 0 && guests === 0 ? (
-        <div className='px-1 py-6 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-white/30'>
-          No one online
-        </div>
-      ) : (
-        <div className='flex flex-col gap-0.5'>
-          {players.map((p) => {
-            const you = !!youName && p.name === youName;
-            return (
-              <div
-                key={p.name}
-                className={`flex items-center gap-1.5 px-1.5 py-1 text-[12px] ${you ? 'text-cyan-100' : 'text-white/85'}`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${p.inMatch ? 'bg-amber-400' : 'bg-emerald-400/70'}`}
-                  title={p.inMatch ? 'In a match' : 'In the menu'}
-                />
-                <span className='truncate'>{p.name}</span>
-                <NameBadges admin={p.admin} verified={p.verified} size={11} />
-                {you && (
-                  <span className='ml-0.5 shrink-0 text-[9px] uppercase tracking-[0.1em] text-cyan-300/80'>
-                    you
-                  </span>
-                )}
-              </div>
-            );
-          })}
-          {guests > 0 && (
-            <div className='mt-1 border-t border-white/8 px-1.5 pt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-white/40'>
-              + {guests} {guests === 1 ? 'guest' : 'guests'}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Live global chat (one room) — the social dock's Chat tab. Identity + content
-// are server-authoritative and server-moderated (sanitized, length-capped,
-// profanity-filtered, rate-limited); we render names/text as React text nodes,
-// so they're escaped — no raw HTML.
-function GlobalChatPanel({
-  messages,
-  online,
-  canChat,
-  youName,
-  onSend,
-}: {
-  messages: ChatMessage[];
-  online: boolean;
-  canChat: boolean; // false for guests — they can read but not send
-  youName: string | null;
-  onSend: (text: string) => void;
-}) {
-  const [draft, setDraft] = useState('');
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  // Stick to the newest message as the log grows.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
-
-  const canSend = online && canChat;
-  const submit = () => {
-    const text = draft.trim();
-    if (!text || !canSend) return;
-    onSend(text.slice(0, CHAT_CLIENT_MAX_LEN));
-    setDraft('');
-  };
-
-  return (
-    <>
-      <div ref={scrollRef} className='deck-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3'>
-        {messages.length === 0 ? (
-          <div className='flex h-full items-center justify-center px-6 py-8 text-center font-mono text-[10px] uppercase leading-relaxed tracking-[0.12em] text-white/30'>
-            {online ? 'No messages yet — say hi.' : 'Linking to server…'}
-          </div>
-        ) : (
-          <div className='flex flex-col gap-1'>
-            {messages.map((m) => {
-              const mine = !!youName && !m.guest && m.name === youName;
-              return (
-                <div key={m.id} className='text-[12px] leading-snug'>
-                  <span
-                    className={`mr-1 inline-flex items-center gap-0.5 font-semibold ${
-                      m.guest ? 'text-white/45' : mine ? 'text-cyan-200' : 'text-cyan-300/90'
-                    }`}
-                  >
-                    {m.name}
-                    <NameBadges admin={m.admin} verified={m.verified} size={11} />
-                    <span className='text-white/30'>:</span>
-                  </span>
-                  <span className='break-words text-white/85'>{m.text}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      <div className='flex shrink-0 items-center gap-2 border-t border-white/10 p-2'>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          maxLength={CHAT_CLIENT_MAX_LEN}
-          disabled={!canSend}
-          aria-label='Chat message'
-          placeholder={!online ? 'Offline' : !canChat ? 'Log in to chat' : 'Message everyone…'}
-          className='min-w-0 flex-1 bg-white/[0.04] px-3 py-2 font-mono text-[12px] text-white outline-none transition placeholder:text-white/30 focus:bg-white/[0.07] disabled:opacity-40'
-        />
-        <DeckButton
-          onClick={submit}
-          disabled={!canSend || draft.trim().length === 0}
-          solid
-          accent='cyan'
-          size='sm'
-          center
-          className='shrink-0'
-          sound='uiClick'
-        >
-          Send
-        </DeckButton>
-      </div>
-    </>
-  );
-}
-
-function InviteModal({
-  roomId,
-  onEnter,
-  onClose,
-}: {
-  roomId: string;
-  onEnter: () => void;
-  onClose: () => void;
-}) {
-  const link = inviteLink(roomId);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      toast('Copied invite link', { tone: 'ok' });
-    } catch {
-      // Clipboard API blocked (insecure context / permission) — select the
-      // field so the user can copy manually instead of a silent no-op (#26c).
-      inputRef.current?.select();
-      toast('Link selected — press Ctrl/⌘+C to copy', { tone: 'warn' });
-    }
-  };
-  return (
-    <ModalShell title='Private Match' tone='emerald' onClose={onClose}>
-      <p className='font-sans text-sm text-white/60'>
-        Share this link with friends — it drops them straight into your lobby.
-      </p>
-      <div>
-        <div className='flex items-center gap-2'>
-          <input
-            ref={inputRef}
-            readOnly
-            value={link}
-            aria-label='Invite link'
-            onFocus={(e) => e.currentTarget.select()}
-            className='deck-input deck-input-sm min-w-0 flex-1'
-          />
-          <UtilButton onClick={copy} tone='cyan' sound='none' className='shrink-0'>
-            Copy
-          </UtilButton>
-        </div>
-        <div className='mt-2 text-[10px] uppercase tracking-[0.16em] text-white/40'>
-          Lobby code: <span className='text-white/80'>{roomId}</span>
-        </div>
-      </div>
-      <DeckButton onClick={onEnter} solid accent='emerald' full center>
-        Enter Match
-      </DeckButton>
-    </ModalShell>
-  );
-}
-
-function CreateOnlineModal({
-  settings,
-  mode,
-  onChangeSettings,
-  onChangeMode,
-  onClose,
-  onCreate,
-}: {
-  settings: Settings;
-  mode: GameMode;
-  onChangeSettings: (s: Settings) => void;
-  onChangeMode: (m: GameMode) => void;
-  onClose: () => void;
-  onCreate: (opts: { mapId: string; isPublic: boolean; capacity: number; mode: GameMode }) => void;
-}) {
-  const [players, setPlayers] = useState(MAX_PLAYERS);
-  const [mapId, setMapId] = useState(settings.mapId);
-  const [isPublic, setIsPublic] = useState(true);
-
-  // Online play has no bots — restrict to the human-friendly online pool.
-  const onlineMaps = MAPS.filter((m) => ONLINE_MAP_IDS.includes(m.id));
-
-  // Duel is always 1v1 — force the capacity to 2 regardless of the slider.
-  const isDuel = mode === 'duel';
-  const capacity = isDuel ? 2 : players;
-
-  const create = () => {
-    onChangeSettings({ ...settings, mapId });
-    onCreate({ mapId, isPublic, capacity, mode });
-  };
-
-  return (
-    <ModalShell title='Create Match' onClose={onClose}>
-      <ButtonGroup
-        label='Game mode'
-        value={mode}
-        options={GAME_MODES.map((m) => ({ id: m.id, label: m.label }))}
-        onChange={(v) => onChangeMode(v)}
-      />
-      <SelectField label='Arena' value={mapId} options={onlineMaps} onChange={setMapId} />
-      {isDuel ? (
-        <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
-          <span>Players</span>
-          <span className='tabular-nums text-white/85'>1v1 (2 players)</span>
-        </div>
-      ) : (
-        <label className='flex flex-col gap-1.5'>
-          <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
-            <span>Max players</span>
-            <span className='tabular-nums text-white/85'>{players}</span>
-          </div>
-          <input
-            type='range'
-            min={2}
-            max={MAX_PLAYERS}
-            step={1}
-            value={players}
-            onChange={(e) => setPlayers(Number(e.target.value))}
-            className='deck-range'
-          />
-        </label>
-      )}
-      <ButtonGroup
-        label='Visibility'
-        value={isPublic ? 'public' : 'private'}
-        options={[
-          { id: 'public', label: 'Public (Custom Lobby)' },
-          { id: 'private', label: 'Private (Invite only)' },
-        ]}
-        onChange={(v) => setIsPublic(v === 'public')}
-      />
-      <div className='-mt-3 text-[10px] normal-case tracking-normal text-white/40'>
-        {isPublic
-          ? 'Public matches appear in Open Lobbies for anyone to join.'
-          : 'Private matches are invite-only — you’ll get a link to share.'}
-      </div>
-      <DeckButton onClick={create} solid accent='emerald' full center>
-        {isPublic ? 'Create & Play' : 'Create & Get Link'}
-      </DeckButton>
-    </ModalShell>
-  );
-}
-
-// (ModalShell — the shared dialog frame with Escape/backdrop close, exit motion,
-// focus trap + restore, and the modal stack — lives in src/deck.tsx.)
-
-function CreateMatchModal({
-  settings,
-  onChangeSettings,
-  onClose,
-  onStart,
-}: {
-  settings: Settings;
-  onChangeSettings: (s: Settings) => void;
-  onClose: () => void;
-  onStart: (config: MatchConfig) => void;
-}) {
-  const [players, setPlayers] = useState(MAX_PLAYERS);
-  const [mapId, setMapId] = useState(settings.mapId);
-  const [difficulty, setDifficulty] = useState<BotDifficulty>(settings.difficulty);
-  const [gameMode, setGameMode] = useState<GameMode>('ffa');
-
-  // Duel is always 1v1 (1 bot); FFA/TDM use the slider.
-  const effPlayers = gameMode === 'duel' ? 2 : players;
-
-  const start = () => {
-    onChangeSettings({ ...settings, mapId, difficulty });
-    onStart({
-      mode: 'local',
-      mapId,
-      botCount: Math.max(1, effPlayers - 1),
-      difficulty,
-      gameMode,
-    });
-  };
-
-  return (
-    <ModalShell title='Solo vs Bots' tone='amber' onClose={onClose}>
-      <SelectField label='Arena' value={mapId} options={MAPS} onChange={setMapId} />
-      <div className='flex flex-col gap-1.5'>
-        <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Mode</span>
-        <div className='grid grid-cols-3 gap-2'>
-          {GAME_MODES.map((m) => (
-            <SegButton key={m.id} active={gameMode === m.id} onClick={() => setGameMode(m.id)} title={m.blurb}>
-              {m.id === 'ffa' ? 'FFA' : m.id === 'tdm' ? 'TDM' : 'Duel'}
-            </SegButton>
-          ))}
-        </div>
-      </div>
-      <label className={`flex flex-col gap-1.5 ${gameMode === 'duel' ? 'opacity-40' : ''}`}>
-        <div className='flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-white/65'>
-          <span>Players</span>
-          <span className='tabular-nums text-white/85'>
-            {gameMode === 'duel'
-              ? '2 (1 bot · 1v1)'
-              : `${effPlayers} (${effPlayers - 1} ${effPlayers - 1 === 1 ? 'bot' : 'bots'}${gameMode === 'tdm' ? ' · 2 teams' : ''})`}
-          </span>
-        </div>
-        <input
-          type='range'
-          min={2}
-          max={MAX_PLAYERS}
-          step={1}
-          value={effPlayers}
-          disabled={gameMode === 'duel'}
-          onChange={(e) => setPlayers(Number(e.target.value))}
-          className='deck-range'
-        />
-      </label>
-      <DifficultyPicker value={difficulty} onChange={setDifficulty} />
-      <DeckButton onClick={start} solid accent='emerald' full center>
-        Start Match
-      </DeckButton>
-    </ModalShell>
-  );
-}
-
-function DifficultyPicker({
-  value,
-  onChange,
-}: {
-  value: BotDifficulty;
-  onChange: (d: BotDifficulty) => void;
-}) {
-  const opts: BotDifficulty[] = ['easy', 'medium', 'hard'];
-  return (
-    <div className='flex flex-col gap-1.5'>
-      <span className='text-[11px] uppercase tracking-[0.16em] text-white/65'>Bot difficulty</span>
-      <div className='grid grid-cols-3 gap-2'>
-        {opts.map((o) => (
-          <SegButton key={o} active={value === o} onClick={() => onChange(o)}>
-            {o}
-          </SegButton>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /* ───────────────────────── Settings modal ───────────────────────── */
 
@@ -4709,6 +4132,15 @@ function SettingsModal({
                   value={settings.bloom}
                   disabled={settings.lowSpec}
                   onChange={(v) => onChange({ ...settings, bloom: v })}
+                />
+                <SliderField
+                  label='Bloom intensity'
+                  value={settings.bloomIntensity ?? 0.8}
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, bloomIntensity: v })}
                 />
                 <ToggleField
                   label='Shadows'

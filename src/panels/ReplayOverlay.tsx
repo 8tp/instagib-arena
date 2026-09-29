@@ -34,6 +34,11 @@ export function ReplayViewerOverlay({
     fov: settings.fov,
     resolutionScale: settings.resolutionScale,
     lowSpec: settings.lowSpec,
+    volume: settings.volume,
+    sfxVolume: settings.sfxVolume,
+    announcerVolume: settings.announcerVolume,
+    announcerEnabled: settings.announcerEnabled,
+    announcerPack: settings.announcerPack,
   });
   // onClose changes identity on every parent (Lobby) re-render — keep it in a ref
   // so the viewer effect can depend only on playerId. Otherwise the Lobby's

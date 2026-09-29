@@ -9,7 +9,7 @@ import './menu.css';
 
 // The two headline surfaces get real doors on the menu: a Career Road tile
 // (the next reward, how far away it is) and a Locker tile (what you're
-// wearing, your case keys).
+// wearing, your free rolls).
 export function FrontDoors({
   profile,
   guest,
@@ -28,7 +28,7 @@ export function FrontDoors({
   const level = guest ? 1 : (profile?.level ?? 1);
   const next = nextRoadStep(level);
   const toNext = !guest && profile && profile.xpForNext > 0 ? Math.max(0, profile.xpForNext - profile.xpIntoLevel) : 0;
-  const keys = !guest ? (profile?.caseKeys ?? 0) : 0;
+  const keys = !guest ? (profile?.freeRolls ?? profile?.caseKeys ?? 0) : 0;
   const wearing = hatById(hat).model ? hat : railgunFinish;
   const nextName = next ? rewardText(next.rewards[0], (id) => cosmeticById(id)?.name) : '';
 
@@ -52,14 +52,14 @@ export function FrontDoors({
           <XpBar frac={guest ? 0 : xpFraction(profile)} height={5} label='Progress to next level' />
         </span>
       </button>
-      <button type='button' onClick={onLocker} {...sfxProps('uiClick')} className='menu-door clip-deck-sm' aria-label={`Locker${keys > 0 ? `. ${keys} case keys` : ''}`}>
+      <button type='button' onClick={onLocker} {...sfxProps('uiClick')} className='menu-door clip-deck-sm' aria-label={`Locker${keys > 0 ? `. ${keys} free roll${keys === 1 ? '' : 's'}` : ''}`}>
         <ItemTile id={wearing} size={52} label={false} />
         <span className='flex min-w-0 flex-1 flex-col gap-1'>
           <span className='menu-door-title'>Locker</span>
-          <span className='truncate font-sans text-[13px] text-white/70'>Customize your look</span>
+          <span className='truncate font-sans text-[13px] text-white/70'>Inventory · cases · market</span>
         </span>
         {keys > 0 && (
-          <span className='menu-door-keys' title={`${keys} hat case key${keys === 1 ? '' : 's'}`}>
+          <span className='menu-door-keys' title={`${keys} free roll${keys === 1 ? '' : 's'} — open a case for free`}>
             <KeyGlyph size={15} /> {keys}
           </span>
         )}

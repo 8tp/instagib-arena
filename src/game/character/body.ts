@@ -881,6 +881,19 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
       ].join('\n'),
     )
     .replace(
+      '#include <lights_fragment_end>',
+      [
+        '#include <lights_fragment_end>',
+        // Cap direct specular: flat-shaded facets mirror a grazing sun / rim
+        // light across the whole face at once, and that peak bloomed into white
+        // blobs on the armour. Emissive (visor, lights) is unaffected.
+        'reflectedLight.directSpecular = min(reflectedLight.directSpecular, vec3(0.9));',
+        '#ifdef USE_CLEARCOAT',
+        'clearcoatSpecularDirect = min(clearcoatSpecularDirect, vec3(0.6));',
+        '#endif',
+      ].join('\n'),
+    )
+    .replace(
       '#include <emissivemap_fragment>',
       [
         '#include <emissivemap_fragment>',
@@ -975,7 +988,9 @@ export function createCharacterMaterial(): { material: THREE.MeshPhysicalMateria
     metalness: 1,
     envMapIntensity: 1.1,
     clearcoat: 0.55,
-    clearcoatRoughness: 0.2,
+    // Satin lacquer: at 0.2 the clearcoat peak bloomed into white blobs under a
+    // grazing sun / rim light (the "flash on the chest" on players).
+    clearcoatRoughness: 0.38,
     sheen: 1,
     sheenRoughness: 0.45,
     sheenColor: new THREE.Color(0x5a6272),

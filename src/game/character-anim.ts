@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DEFAULT_KILL_EFFECT, type EmoteKind, type KillEffectStyle } from './cosmetics';
+import { DEFAULT_KILL_EFFECT, type KillEffectStyle } from './cosmetics';
 import { Character } from './character/character';
 import { B } from './character/rig';
 import { PoseSpec, SIDE_L, SIDE_R, solvePose } from './character/pose';
@@ -7,7 +7,7 @@ import { evalClip, type Clip } from './character/clip';
 import { HOLD, PALM_OFFSET } from './character/gun';
 import { GibBurst, type GibFloor } from './character/gibs';
 import { Locomotion, type FootfallListener, type LocoInput } from './locomotion';
-import { emoteClip, emoteStance } from './emotes';
+import { emoteClip, emoteStance, type AnyEmoteKind as EmoteKind } from './emotes';
 
 // Third-person animation for the code-built arena combatant, shared by
 // networked remote players, offline bots, replays, the podium and the Locker.
