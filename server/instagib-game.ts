@@ -366,6 +366,9 @@ type ClientRecord = {
   looks: Loadout; // v3: resolved Looks of the equipped items (broadcast in `meta`)
   strangeUids: string[]; // equipped Strange instances that earn this match's counted frags
   lastTauntMs: number; // taunt rate-limit
+  lastLoadoutMs: number; // loadout re-resolve throttle (see queueLoadout)
+  pendingLoadout: (() => { looks: Loadout; strangeUids: string[] }) | null;
+  loadoutTimer: ReturnType<typeof setTimeout> | null;
   crosshair: string; // equipped crosshair as a share-code string ('' = default); echoed for spectators
   card: CardPayload | null; // playercard shown on the victim's killcam
   playerId: string; // account id from the igsession cookie on the WS upgrade, '' if guest
@@ -1065,9 +1068,12 @@ export function attachInstagibWs(wss: WebSocketServer) {
     });
     // Strange items: each counted frag ticks the equipped Strange finish / beam /
     // finisher instances (batched here, not per kill — keeps the WS loop cheap).
-    if (c.mKills > 0 && c.strangeUids.length > 0 && c.playerId) {
+    // Counted with the same repeat-victim decay as XP, so two accounts can't farm
+    // Strange ranks off each other.
+    const strangeKills = Math.round(c.mKillWeight);
+    if (strangeKills > 0 && c.strangeUids.length > 0 && c.playerId) {
       try {
-        addStrangeKills(c.playerId, c.strangeUids, c.mKills);
+        addStrangeKills(c.playerId, c.strangeUids, strangeKills);
       } catch (err) {
         console.error('[instagib] addStrangeKills failed', err);
       }
@@ -1565,6 +1571,29 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (!c.roomId) return;
     const room = rooms.get(c.roomId);
     if (room) broadcastMeta(room);
+  };
+
+  // Loadout changes re-resolve ownership and re-broadcast the room meta, so they
+  // are coalesced: at most one apply per LOADOUT_MIN_MS per player, and the
+  // LATEST request in a burst always wins (a trailing apply is scheduled).
+  const LOADOUT_MIN_MS = 400;
+  const queueLoadout = (c: ClientRecord, resolve: () => { looks: Loadout; strangeUids: string[] }): void => {
+    c.pendingLoadout = resolve;
+    if (c.loadoutTimer) return;
+    const run = (): void => {
+      c.loadoutTimer = null;
+      const fn = c.pendingLoadout;
+      c.pendingLoadout = null;
+      if (!fn || clients.get(c.id) !== c) return; // gone (or replaced on resume)
+      c.lastLoadoutMs = Date.now();
+      const res = fn();
+      const before = JSON.stringify(c.looks);
+      applyLooks(c, res.looks, res.strangeUids);
+      if (JSON.stringify(c.looks) !== before) bumpMeta(c);
+    };
+    const wait = c.lastLoadoutMs + LOADOUT_MIN_MS - Date.now();
+    if (wait <= 0) run();
+    else c.loadoutTimer = setTimeout(run, wait);
   };
 
   // Record a tick-stamped sender's arrival lateness; a few times a second,
@@ -2112,6 +2141,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
       looks: {},
       strangeUids: [],
       lastTauntMs: 0,
+      lastLoadoutMs: 0,
+      pendingLoadout: null,
+      loadoutTimer: null,
       crosshair: '',
       card: null,
       playerId,
@@ -2503,10 +2535,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
         case 'loadout': {
           const tokens = Array.isArray(msg.uids) ? (msg.uids as unknown[]).filter((u): u is string => typeof u === 'string') : [];
           if (!record.playerId) break;
-          const res = resolveTokens(record.playerId, tokens);
-          const before = JSON.stringify(record.looks);
-          applyLooks(record, res.looks, res.strangeUids);
-          if (JSON.stringify(record.looks) !== before) bumpMeta(record);
+          const pid = record.playerId;
+          queueLoadout(record, () => resolveTokens(pid, tokens.slice(0, 32)));
           break;
         }
 
@@ -2522,10 +2552,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
         case 'railColor':
         case 'railgunFinish': {
           if (!record.playerId) break;
-          const eq = resolveEquipped(record.playerId);
-          const before = JSON.stringify(record.looks);
-          applyLooks(record, eq.looks, eq.strangeUids);
-          if (JSON.stringify(record.looks) !== before) bumpMeta(record);
+          const pid = record.playerId;
+          queueLoadout(record, () => resolveEquipped(pid));
           break;
         }
 

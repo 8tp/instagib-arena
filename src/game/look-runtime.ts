@@ -255,7 +255,11 @@ export class BodyGear {
     if (slot === 'hat') gear.setUnusual(unusualKindForEffect(look?.e) ?? unusualKindOf(look ?? null));
   }
   setLegacy(hatId: string, unusualId: string): void {
-    void this.hat.setHat(hatId);
+    // Straight to the gear: setLook bypasses WornHat's id dedupe, so going through
+    // setHat here could skip a hat that setLook had since replaced.
+    const gear = this.hat.gear;
+    if (gear) gear.setLook('hat', hatId && hatId !== 'hat.none' ? { d: hatId } : null);
+    else void this.hat.setHat(hatId);
     this.hat.setUnusual(unusualId);
   }
   setLooks(looks: Loadout): void {
