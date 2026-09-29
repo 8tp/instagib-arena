@@ -304,9 +304,9 @@ export type ReplayDeps = {
   // Nameplates on the replay actors: 'small' (a compact plate; the default) or
   // 'off'. Full-size plates crowd a first-person cinematic frame.
   plates?: 'small' | 'off';
-  // Optional actor pool (the in-game killcam + PotG): a body built for one
-  // replay is handed back on dispose and reused by the next, so a death doesn't
-  // rebuild everyone's character + custom gun. `acquireActor` returns a pooled
+  // Optional actor pool (the in-game Play of the Match): a body built ahead of
+  // time or for one segment is handed back on dispose and reused by the next, so
+  // the cinematic never builds everyone's character + custom gun on one frame. `acquireActor` returns a pooled
   // body for this id (already back in the scene) or null to build a new one.
   acquireActor?: (id: string, name: string) => RemotePlayer | null;
   releaseActor?: (actor: RemotePlayer) => void;
@@ -359,9 +359,9 @@ const REPLAY_PLATE_SCALE = 0.5;
 // `freezeSec` holds on the final frame afterwards (the cinematic "pause").
 // `holdAtEnd` (full-run rewatch) pauses on the final frame instead of finishing,
 // so the viewer can scrub back / replay rather than auto-tearing-down.
-// `aimHoldAfter` (killcam): from this match-time on, the star's view holds the
+// `aimHoldAfter` (final blow): from this match-time on, the star's view holds the
 // line of their shot that landed there instead of following their recorded
-// look — the killcam ends on the kill, not on the killer spinning to a new target.
+// look — the freeze sits on the kill, not on the killer spinning to a new target.
 export type ReplayOptions = { timeScale?: number; freezeSec?: number; holdAtEnd?: boolean; aimHoldAfter?: number };
 
 // The buffers ReplayPlayer reads. MatchRecorder satisfies this directly; a

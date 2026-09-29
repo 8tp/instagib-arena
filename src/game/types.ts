@@ -174,14 +174,6 @@ export type KillcamState = {
   // What the killer was holding (from their equipped Looks): the gun with its
   // qualities and their finisher — shown on the killcam card when known.
   killerKit?: { weapon: string; weaponKills?: number; finisher: string };
-  // True while the killcam is the first-person replay through the killer's eyes
-  // (their gun + crosshair); false/absent = the orbit cam fallback.
-  pov?: boolean;
-  // The killer's crosshair share-code for the POV killcam ('' = the viewer's own).
-  crosshairCode?: string;
-  // Bumps when the replayed kill lands (hit-marker + the slow-mo flash).
-  hitId?: number;
-  hitHeadshot?: boolean;
 };
 
 export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';

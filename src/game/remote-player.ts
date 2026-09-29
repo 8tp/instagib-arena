@@ -239,8 +239,8 @@ export class RemotePlayer {
   }
 
   // Replay framing: a compact plate (`k` × the live size) so first-person
-  // cinematics aren't crowded by labels; `setPlateSuppressed` turns it off for
-  // good (respawns inside the clip don't bring it back).
+  // cinematics aren't crowded by labels; `setPlateSuppressed` turns it off until
+  // cleared (respawns don't bring it back) — replays, and the killcam showcase.
   private plateScale = 1;
   private plateSuppressed = false;
   setPlateScale(k: number) {
@@ -635,11 +635,6 @@ export class RemotePlayer {
   // Convenience: the remote's taunt from the server's relayed emote Look.
   playTauntLook(look: Look | undefined, seconds: number) {
     this.playTaunt(emoteKindOfLook(look), look, seconds);
-  }
-
-  // Raise the nameplate (killcam framing: keeps it clear of a hat's unusual).
-  setPlateLift(m: number) {
-    this.nameSprite.position.y = BOT_HEIGHT + 0.35 + m;
   }
 
   get isTaunting(): boolean {

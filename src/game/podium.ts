@@ -99,6 +99,12 @@ export class PodiumScene {
   private t = 0; // scene time (seconds since start)
   private disposed = false;
   private gen = 0; // setWinners generation (a slow font load must not clobber a newer call)
+  // Shader warm-up gate (see start()): draw only once compileAsync has finished
+  // for everything currently in the scene; bumping contentGen re-arms it.
+  private ready = false;
+  private warm: Promise<void> | null = null;
+  private contentGen = 0;
+  private reflector: Reflector | null = null;
   private readonly owned: Array<{ dispose(): void }> = [];
   private readonly low: boolean;
   private readonly reduced: boolean;
@@ -300,6 +306,7 @@ export class PodiumScene {
       refl.rotation.x = -Math.PI / 2;
       refl.position.y = -0.004;
       s.add(refl);
+      this.reflector = refl;
       this.owned.push(refl.material as THREE.Material, refl.getRenderTarget());
       const tiles = new THREE.MeshStandardMaterial({
         map: floorTex,
@@ -654,6 +661,30 @@ export class PodiumScene {
 
       this.chars.push({ group, character, anim, hat, gear, gun, plate, plateA: this.reduced ? 1 : 0, plateAt: RISE_DELAY[idx] + 0.9, x: slot.x });
     }
+    // New performers: compile their programs before the next draw.
+    this.contentGen++;
+    this.ready = false;
+  }
+
+  // Compile every program the first draw will use, off the main thread: the
+  // main pass, plus the mirror pass (it draws the scene into its own half-float
+  // target, which needs different program variants).
+  private compileAll(): Promise<unknown> {
+    const r = this.renderer;
+    const jobs: Promise<unknown>[] = [r.compileAsync(this.scene, this.camera)];
+    const refl = this.reflector;
+    if (refl) {
+      const prev = r.getRenderTarget();
+      refl.visible = false; // the mirror never draws itself
+      r.setRenderTarget(refl.getRenderTarget());
+      try {
+        jobs.push(r.compileAsync(this.scene, this.camera));
+      } finally {
+        r.setRenderTarget(prev);
+        refl.visible = true;
+      }
+    }
+    return Promise.all(jobs);
   }
 
   // ── Loop ──────────────────────────────────────────────────────────────────
@@ -664,6 +695,25 @@ export class PodiumScene {
       const now = nowMs / 1000;
       const dt = this.clock.last ? Math.min(0.05, now - this.clock.last) : 0;
       this.clock.last = now;
+      // This scene has its own GL context, so nothing is compiled yet: the first
+      // draw would block the main thread on every program (~0.4 s at match end).
+      // Compile off-thread first (compileAsync) and only start drawing — and the
+      // choreography clock — once the programs are ready; new performers
+      // (setWinners) re-arm this. The canvas simply stays blank meanwhile.
+      if (!this.ready) {
+        if (!this.warm) {
+          const content = this.contentGen;
+          this.warm = this.compileAll()
+            .catch(() => undefined)
+            .then(() => {
+              this.warm = null;
+              // Performers arrived mid-compile: the next tick compiles them too.
+              if (content === this.contentGen) this.ready = true;
+            });
+        }
+        this.raf = requestAnimationFrame(tick);
+        return;
+      }
       this.t += dt;
       this.update(dt);
       this.renderer.render(this.scene, this.camera);
