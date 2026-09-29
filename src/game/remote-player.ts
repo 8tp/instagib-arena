@@ -136,6 +136,11 @@ export class RemotePlayer {
   private plateHidden = false; // nameplate off while the corpse is on screen
   private modelRoot: THREE.Object3D | null = null;
   private character: Character | null = null;
+  // The combatant body (null on the capsule fallback) — for viewer-side
+  // overlays such as the enemy outline.
+  get body(): Character | null {
+    return this.character;
+  }
   // Look inputs: TDM team colour > the viewer's enemy highlight > own skin.
   private highlight: THREE.Color | null = null;
   private weaponGroup: AttachedRailgun | null = null; // the attached 3rd-person railgun (recoloured on finish change)

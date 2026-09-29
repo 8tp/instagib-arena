@@ -265,6 +265,11 @@ export class Bot {
   // implementation remote players use. Null on the capsule fallback.
   private anim: CharacterAnimator | null = null;
   private character: Character | null = null;
+  // The combatant body (null on the capsule fallback) — for viewer-side
+  // overlays such as the enemy outline.
+  get body(): Character | null {
+    return this.character;
+  }
   private highlight: THREE.Color | null = null; // viewer's enemy-highlight colour
   private teamLook: string | null = null; // TDM team colour (overrides highlight)
   private lastMap: ArenaMap | null = null; // for the gib floor probe (visual only)
