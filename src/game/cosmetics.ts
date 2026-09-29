@@ -119,6 +119,8 @@ export const RAIL_COLORS: readonly RailColorCosmetic[] = [
   { id: 'rail.ember',  name: 'Ember',  blurb: 'Molten orange-red beam.',        rarity: 'rare',   source: { type: 'credits', price: 600 },  data: { core: 0xffd0b0, helix: 0xff4410 } },
   { id: 'rail.gold',   name: 'Gold',   blurb: 'A regal gold beam.',             rarity: 'epic',   source: { type: 'credits', price: 1800 }, data: { core: 0xffe6a8, helix: 0xffb000 } },
   { id: 'rail.admin',  name: 'Sovereign', blurb: 'Staff-gold rail — admin only.', rarity: 'epic', source: { type: 'admin' },              data: { core: 0xffffff, helix: 0xffd700 }, mode: 'gilded' },
+  { id: 'rail.white',  name: 'Pure',     blurb: 'A clean white-hot rail.',              rarity: 'common', source: { type: 'case' }, data: { core: 0xffffff, helix: 0xdfe8ff } },
+  { id: 'rail.crimson', name: 'Crimson', blurb: 'A blood-red tracer.',                  rarity: 'common', source: { type: 'case' }, data: { core: 0xffd6d6, helix: 0xff2a3c } },
   { id: 'rail.ratz',   name: 'Ratz',     blurb: 'Hot-pink neon, straight out of 2003.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, data: { core: 0xffd6f4, helix: 0xff2bd6 } },
   { id: 'rail.void',   name: 'Void',     blurb: 'A deep violet slash of light.',        rarity: 'rare',   source: { type: 'level', level: 45 },     data: { core: 0xd9d0ff, helix: 0x5a3cff } },
   { id: 'rail.spectrum', name: 'Spectrum', blurb: 'The helix cycles through every hue.', rarity: 'legendary', source: { type: 'level', level: 50 }, data: { core: 0xffffff, helix: 0xff4fd8 }, mode: 'spectrum' },
@@ -149,6 +151,9 @@ export type RailgunFinish = {
   accent: number; // energy rail base color
   accentHot: number; // bright energy color
   pattern?: FinishPattern;
+  // Economy v3: high-tier finishes swap in a CUSTOM gun model (geometry +
+  // VFX; src/game/gun/custom/). Absent = the standard railgun.
+  model?: string;
 };
 
 export type RailgunFinishCosmetic = {
@@ -167,14 +172,25 @@ export const RAILGUN_FINISHES: readonly RailgunFinishCosmetic[] = [
   { id: 'gun.carbon',  name: 'Carbon',         blurb: 'Matte-black with a white-hot core.',  rarity: 'rare',   source: { type: 'credits', price: 1000 },  data: { body: 0x0c0e12, metal: 0x1c2026, metalLt: 0x3a414b, accent: 0xdfe8f4, accentHot: 0xffffff, pattern: 'carbon' } },
   { id: 'gun.gold',    name: 'Midas',          blurb: 'A gilded receiver fit for a champ.',  rarity: 'epic',   source: { type: 'credits', price: 2200 },  data: { body: 0x241a08, metal: 0x6e5520, metalLt: 0xb0902f, accent: 0xffd24a, accentHot: 0xfff4c0 } },
   { id: 'gun.void',    name: 'Void',           blurb: 'Deep-violet frame, arc-light rails.', rarity: 'epic',   source: { type: 'credits', price: 1800 },  data: { body: 0x0b0718, metal: 0x1a1233, metalLt: 0x5a3cff, accent: 0x6a4cff, accentHot: 0xd6ccff, pattern: 'void' } },
-  { id: 'gun.admin',   name: 'Regalia',        blurb: 'Gilded staff rail — admin only.',     rarity: 'epic',   source: { type: 'admin' },                 data: { body: 0xf1ece0, metal: 0xb88a22, metalLt: 0xf0c95a, accent: 0xffd24a, accentHot: 0xfff4d0, pattern: 'enamel' } },
+  { id: 'gun.admin',   name: 'Sovereign Regalia', blurb: 'The staff railgun: gilded, crowned, humming with power — staff only.', rarity: 'epic', source: { type: 'admin' }, data: { body: 0xf1ece0, metal: 0xb88a22, metalLt: 0xf0c95a, accent: 0xffd24a, accentHot: 0xfff4d0, pattern: 'enamel', model: 'sovereign' } },
   // Finish wave 2 — patterned / animated treatments.
   { id: 'gun.arctic',  name: 'Arctic',         blurb: 'White ceramic plates, ice-blue rails.', rarity: 'rare',     source: { type: 'level', level: 41 },      data: { body: 0xc9d3dc, metal: 0x8b98a6, metalLt: 0xeef3f7, accent: 0x6fd6ff, accentHot: 0xe0f7ff, pattern: 'ceramic' } },
   { id: 'gun.hazard',  name: 'Hazard',         blurb: 'Industrial chevrons. Handle with care.', rarity: 'rare',    source: { type: 'credits', price: 900 },  data: { body: 0x1a1a14, metal: 0x3a3a30, metalLt: 0xd9b400, accent: 0xffc400, accentHot: 0xfff0a0, pattern: 'hazard' } },
   { id: 'gun.ratz',    name: 'Ratz',           blurb: 'Hex-plated neon, pink and cyan.',        rarity: 'epic',    source: { type: 'credits', price: 2000 },  data: { body: 0x15101c, metal: 0x2a1f38, metalLt: 0xff5fcf, accent: 0xff3ec8, accentHot: 0x9ff8ff, pattern: 'hex' } },
   { id: 'gun.glitch',  name: 'Glitch',         blurb: 'Digital camo that won\'t sit still.',    rarity: 'epic',    source: { type: 'level', level: 68 },      data: { body: 0x0d1410, metal: 0x1d2a22, metalLt: 0x3f5a48, accent: 0x3bff8a, accentHot: 0xd4ffe6, pattern: 'digital' } },
   { id: 'gun.plasma',  name: 'Plasma Core',    blurb: 'Black frame, veins of living energy.',   rarity: 'legendary', source: { type: 'credits', price: 3200 },  data: { body: 0x0a0710, metal: 0x1b1426, metalLt: 0x3b2a55, accent: 0xc23bff, accentHot: 0xffc2ff, pattern: 'plasma' } },
-  { id: 'gun.spectrum', name: 'Spectrum',      blurb: 'Iridescent chrome that shifts with the light.', rarity: 'legendary', source: { type: 'level', level: 90 }, data: { body: 0x1a1d24, metal: 0x9aa3b2, metalLt: 0xe6ebf2, accent: 0xff4fd8, accentHot: 0xffffff, pattern: 'spectrum' } },
+  { id: 'gun.spectrum', name: 'Spectrum',      blurb: 'Iridescent chrome that shifts with the light.', rarity: 'legendary', source: { type: 'level', level: 90 }, data: { body: 0x1a1d24, metal: 0x9aa3b2, metalLt: 0xe6ebf2, accent: 0xff4fd8, accentHot: 0xffffff, pattern: 'spectrum', model: 'prism' } },
+  // v3 Commons (the Weapon case needs a Common tier).
+  { id: 'gun.olive',     name: 'Olive Drab',     blurb: 'Field-issue green.',                   rarity: 'common', source: { type: 'case' }, data: { body: 0x1f2418, metal: 0x3a4230, metalLt: 0x6b7658, accent: 0x9fd46a, accentHot: 0xe2ffc4 } },
+  { id: 'gun.desert',    name: 'Desert Tan',     blurb: 'Sun-bleached and sand-blasted.',        rarity: 'common', source: { type: 'case' }, data: { body: 0x3a3022, metal: 0x6a5a40, metalLt: 0xb89f76, accent: 0xffb45e, accentHot: 0xffe6c2 } },
+  { id: 'gun.urban',     name: 'Urban Grey',     blurb: 'Concrete camo for concrete maps.',      rarity: 'common', source: { type: 'case' }, data: { body: 0x23262b, metal: 0x44484f, metalLt: 0x8b9099, accent: 0xc9d3e0, accentHot: 0xffffff } },
+  // v3 custom-model guns (Legendary → Unobtainable). Tiers set in items/catalog.ts.
+  { id: 'gun.dragon',    name: 'Wyrmfang',       blurb: 'A scaled dragon-bone rail that breathes embers.',          rarity: 'legendary', source: { type: 'case' }, data: { body: 0x1a0c08, metal: 0x4a2414, metalLt: 0xc2572a, accent: 0xff5a1f, accentHot: 0xffd08a, model: 'dragon' } },
+  { id: 'gun.tesla',     name: 'Tesla Coilgun',  blurb: 'Exposed copper coils arcing with live current.',            rarity: 'legendary', source: { type: 'case' }, data: { body: 0x14161c, metal: 0x7a4a24, metalLt: 0xd08a4a, accent: 0x6fd6ff, accentHot: 0xe8faff, model: 'tesla' } },
+  { id: 'gun.reaper',    name: 'Reaper',         blurb: 'A scythe-bladed rail wreathed in cold soulfire.',           rarity: 'legendary', source: { type: 'case' }, data: { body: 0x0c0d10, metal: 0x2a2e36, metalLt: 0x8a94a6, accent: 0x3bffb0, accentHot: 0xd4ffe6, model: 'reaper' } },
+  { id: 'gun.seraph',    name: 'Seraph',         blurb: 'White-gold wings fold along a hard-light barrel.',          rarity: 'legendary', source: { type: 'case' }, data: { body: 0xece6d8, metal: 0xc9a44a, metalLt: 0xfff1c4, accent: 0xffe08a, accentHot: 0xffffff, model: 'seraph' } },
+  { id: 'gun.oblivion',  name: 'Oblivion',       blurb: 'A rail forged around a captive black hole.',               rarity: 'legendary', source: { type: 'case' }, data: { body: 0x07060c, metal: 0x1a1426, metalLt: 0x6a4cff, accent: 0x9b6bff, accentHot: 0xf0e4ff, model: 'oblivion' } },
+  { id: 'gun.celestial', name: 'Celestial',      blurb: 'A living starfield in the shape of a railgun.',            rarity: 'legendary', source: { type: 'case' }, data: { body: 0x05060f, metal: 0x1c2240, metalLt: 0x8fb2ff, accent: 0x7fd4ff, accentHot: 0xffffff, model: 'celestial' } },
 ];
 
 export function railgunFinishById(id: string): RailgunFinishCosmetic {
@@ -251,7 +267,8 @@ export function isSpawnEffect(id: string): boolean {
 // a path under public/; null = bare-headed (the free default). Models are
 // CC-BY 3.0 from Poly Pizza — see public/models/instagib/hats/ATTRIBUTION.md.
 export const DEFAULT_HAT = 'hat.none';
-const HAT_DIR = '/models/instagib/hats';
+// Hats are code-built now (src/game/wearables/); `model` is only a truthy "is a
+// real hat" marker for the legacy consumers.
 
 export type HatCosmetic = {
   id: string;
@@ -279,14 +296,14 @@ export type HatCosmetic = {
 
 export const HATS: readonly HatCosmetic[] = [
   { id: 'hat.none',       name: 'Bare Head',      blurb: 'No hat — classic.',                      rarity: 'common', source: { type: 'default' },             model: null },
-  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: `${HAT_DIR}/cap.glb`, fit: 0.92, sink: -0.03, yaw: Math.PI / 2 },
-  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: `${HAT_DIR}/baseball-cap.glb`, fit: 1.05, sink: -0.04, yaw: Math.PI },
-  { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'case' }, model: `${HAT_DIR}/hard-hat.glb`, fit: 0.94, sink: -0.04 },
-  { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 19 },     model: `${HAT_DIR}/graduation-cap.glb`, fit: 0.86, sink: -0.02 },
-  { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'case' }, model: `${HAT_DIR}/top-hat.glb`, fit: 0.86, sink: 0.0, stretch: 1.45 },
-  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 35 },    model: `${HAT_DIR}/propeller-hat.glb`, fit: 0.92, sink: -0.05 },
-  { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'case' }, model: `${HAT_DIR}/wizard-hat.glb`, fit: 0.84, sink: -0.02, stretch: 1.08 },
-  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: `${HAT_DIR}/crown.glb`, fit: 0.78, sink: 0.0 },
+  { id: 'hat.cap',        name: 'Cap',            blurb: 'A simple ballcap.',                       rarity: 'common', source: { type: 'default' },             model: 'wearable', fit: 0.92, sink: -0.03, yaw: Math.PI / 2 },
+  { id: 'hat.baseball',   name: 'Ballcap Pro',    blurb: 'The fitted classic.',                    rarity: 'common', source: { type: 'level', level: 2 },     model: 'wearable', fit: 1.05, sink: -0.04, yaw: Math.PI },
+  { id: 'hat.hardhat',    name: 'Hard Hat',       blurb: 'Safety first, fragging second.',         rarity: 'rare',   source: { type: 'case' }, model: 'wearable', fit: 0.94, sink: -0.04 },
+  { id: 'hat.graduation', name: 'Graduate',       blurb: 'Top of the class.',                      rarity: 'rare',   source: { type: 'level', level: 19 },     model: 'wearable', fit: 0.86, sink: -0.02 },
+  { id: 'hat.tophat',     name: 'Top Hat',        blurb: 'Distinguished destruction.',             rarity: 'epic',   source: { type: 'case' }, model: 'wearable', fit: 0.86, sink: 0.0, stretch: 1.45 },
+  { id: 'hat.propeller',  name: 'Propeller Cap',  blurb: 'Beanie with a spin.',                    rarity: 'epic',   source: { type: 'level', level: 35 },    model: 'wearable', fit: 0.92, sink: -0.05 },
+  { id: 'hat.wizard',     name: 'Wizard Hat',     blurb: 'One-shot, one spell.',                   rarity: 'epic',   source: { type: 'case' }, model: 'wearable', fit: 0.84, sink: -0.02, stretch: 1.08 },
+  { id: 'hat.crown',      name: 'Crown',          blurb: 'Royalty in the arena — staff only.',     rarity: 'epic',   source: { type: 'admin' },               model: 'wearable', fit: 0.78, sink: 0.0 },
 ];
 
 export function hatById(id: string): HatCosmetic {
@@ -394,7 +411,20 @@ export const DEFAULT_CARD = 'card.slate';
 // .pcard-anim-* classes in src/index.css); the static gradient stays the base so
 // the card is always legible, and the animation is suppressed under reduced
 // effects / prefers-reduced-motion. `undefined` = a plain static card.
-export type CardAnim = 'holo' | 'shimmer' | 'pulse' | 'aurora' | 'scan';
+export type CardAnim =
+  | 'holo'
+  | 'shimmer'
+  | 'pulse'
+  | 'aurora'
+  | 'scan'
+  | 'circuit' // pulses racing along circuit traces
+  | 'rain' // rain streaks + CRT scanlines
+  | 'stars' // three-layer parallax starfield
+  | 'plasma' // drifting plasma blobs
+  | 'glitch' // RGB-split slice glitches
+  | 'fire' // rising flame tongues + embers
+  | 'foil' // rainbow foil sweep
+  | 'boreal'; // aurora borealis ribbons
 
 export type CardCosmetic = {
   id: string;
@@ -410,16 +440,25 @@ export type CardCosmetic = {
 export const CARD_STYLES: readonly CardCosmetic[] = [
   { id: 'card.slate',  name: 'Slate',     blurb: 'Clean gunmetal.',           rarity: 'common', source: { type: 'default' },              bg: 'linear-gradient(135deg,#1e293b,#0b1220)',                          accent: '#67e8f9' },
   { id: 'card.ember',  name: 'Ember',     blurb: 'Molten edges.',             rarity: 'rare',   source: { type: 'level', level: 11 },      bg: 'linear-gradient(135deg,#7c2d12,#180a05)',                          accent: '#fb923c' },
-  { id: 'card.toxic',  name: 'Toxic',     blurb: 'Acid wash.',                rarity: 'rare',   source: { type: 'credits', price: 600 },  bg: 'linear-gradient(135deg,#14532d,#05140a)',                          accent: '#86efac' },
+  { id: 'card.toxic',  name: 'Toxic',     blurb: 'Acid wash.',                rarity: 'rare',   source: { type: 'level', level: 15 },      bg: 'linear-gradient(135deg,#14532d,#05140a)',                          accent: '#86efac' },
   { id: 'card.cyber',  name: 'Cyber',     blurb: 'Neon grid.',                rarity: 'rare',   source: { type: 'level', level: 27 },     bg: 'linear-gradient(135deg,#0e7490,#3b0764)',                          accent: '#22d3ee' },
-  { id: 'card.void',   name: 'Void',      blurb: 'Deep violet, slow aurora.', rarity: 'epic',   source: { type: 'credits', price: 1500 }, bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa', anim: 'aurora' },
+  { id: 'card.void',   name: 'Void',      blurb: 'Deep violet, slow aurora.', rarity: 'epic',   source: { type: 'level', level: 33 },      bg: 'radial-gradient(circle at 30% 20%,#4c1d95,#06010f)',                accent: '#a78bfa', anim: 'aurora' },
   { id: 'card.gold',   name: 'Gilded',    blurb: 'A drifting golden sheen.',  rarity: 'epic',   source: { type: 'level', level: 47 },     bg: 'linear-gradient(135deg,#854d0e,#1c1206)',                          accent: '#fbbf24', anim: 'shimmer' },
   { id: 'card.admin',  name: 'Sovereign', blurb: 'Staff only — holographic.', rarity: 'epic',   source: { type: 'admin' },                bg: 'linear-gradient(135deg,#3a2c05,#0c0a04)',                          accent: '#ffd700', anim: 'holo' },
   // Animated tier — the card slot's premium upgrade. Each pairs a static base
   // gradient with a CSS motion layer (.pcard-anim-*).
-  { id: 'card.prism',  name: 'Prism',     blurb: 'A rotating holographic foil.', rarity: 'epic', source: { type: 'credits', price: 2200 }, bg: 'linear-gradient(135deg,#0b1220,#1e1b4b)',                         accent: '#a5f3fc', anim: 'holo' },
+  { id: 'card.prism',  name: 'Prism',     blurb: 'A rotating holographic foil.', rarity: 'epic', source: { type: 'level', level: 55 },     bg: 'linear-gradient(135deg,#0b1220,#1e1b4b)',                         accent: '#a5f3fc', anim: 'holo' },
   { id: 'card.nebula', name: 'Nebula',    blurb: 'Living violet-teal aurora.',   rarity: 'epic', source: { type: 'level', level: 65 },     bg: 'radial-gradient(circle at 70% 30%,#155e75,#1e1b4b 60%,#05010f)',  accent: '#67e8f9', anim: 'aurora' },
-  { id: 'card.matrix', name: 'Matrix',    blurb: 'Scrolling neon scanlines.',    rarity: 'epic', source: { type: 'credits', price: 1800 }, bg: 'linear-gradient(135deg,#022c22,#03140f)',                        accent: '#4ade80', anim: 'scan' },
+  { id: 'card.matrix', name: 'Matrix',    blurb: 'Scrolling neon scanlines.',    rarity: 'epic', source: { type: 'level', level: 80 },     bg: 'linear-gradient(135deg,#022c22,#03140f)',                        accent: '#4ade80', anim: 'scan' },
+  // v3 wave: level-unlocked, animated (levels 5–100). Never case items or tradable.
+  { id: 'card.circuit',  name: 'Circuit',    blurb: 'Data pulses race along live traces.',        rarity: 'rare',      source: { type: 'level', level: 5 },   bg: 'linear-gradient(135deg,#06222b,#04121a)',                                        accent: '#67e8f9', anim: 'circuit' },
+  { id: 'card.downpour', name: 'Downpour',   blurb: 'Night rain on a flickering CRT.',            rarity: 'rare',      source: { type: 'level', level: 8 },   bg: 'linear-gradient(160deg,#1b2a3f,#070b14)',                                        accent: '#9cc4ff', anim: 'rain' },
+  { id: 'card.starfield',name: 'Starfield',  blurb: 'Three layers of stars drifting past.',       rarity: 'epic',      source: { type: 'level', level: 20 },  bg: 'radial-gradient(120% 100% at 50% 110%,#1a1446,#04030f 70%)',                     accent: '#c4b5fd', anim: 'stars' },
+  { id: 'card.plasma',   name: 'Plasma',     blurb: 'Slow, hot blobs of magenta and cyan.',       rarity: 'epic',      source: { type: 'level', level: 40 },  bg: 'linear-gradient(135deg,#2a0a3d,#06182b)',                                        accent: '#f0abfc', anim: 'plasma' },
+  { id: 'card.glitch',   name: 'Glitch',     blurb: 'The signal tears. Then it doesn’t.',         rarity: 'epic',      source: { type: 'level', level: 60 },  bg: 'linear-gradient(135deg,#150c1f,#08111a)',                                        accent: '#5eead4', anim: 'glitch' },
+  { id: 'card.inferno',  name: 'Inferno',    blurb: 'Flames lick up the card, embers rising.',    rarity: 'legendary', source: { type: 'level', level: 72 },  bg: 'linear-gradient(180deg,#1c0703,#3d0e05)',                                        accent: '#fdba74', anim: 'fire' },
+  { id: 'card.foil',     name: 'Holo Foil',  blurb: 'A rainbow sweep across brushed foil.',       rarity: 'legendary', source: { type: 'level', level: 90 },  bg: 'linear-gradient(135deg,#1b1f2b,#2b2f3d 50%,#141826)',                            accent: '#fde68a', anim: 'foil' },
+  { id: 'card.boreal',   name: 'Boreal',     blurb: 'Aurora ribbons over a frozen night.',        rarity: 'legendary', source: { type: 'level', level: 100 }, bg: 'linear-gradient(180deg,#03101c,#071a2a 55%,#0a2233)',                            accent: '#86efac', anim: 'boreal' },
 ];
 
 export function cardById(id: string): CardCosmetic {
@@ -445,7 +484,13 @@ export type EmoteKind =
   | 'salute'
   | 'beckon'
   | 'slowclap'
-  | 'flourish';
+  | 'flourish'
+  | 'airguitar'
+  | 'headbang'
+  | 'robot'
+  | 'kneel'
+  | 'railspin'
+  | 'laugh';
 
 export type EmoteCosmetic = {
   id: string;
@@ -467,6 +512,13 @@ export const EMOTES: readonly EmoteCosmetic[] = [
   { id: 'emote.beckon',   name: 'Come Get Some', blurb: 'Palm up, fingers curl. Bring it.',       rarity: 'rare',   source: { type: 'level', level: 39 },     kind: 'beckon' },
   { id: 'emote.slowclap', name: 'Slow Clap',     blurb: 'Deeply, deeply unimpressed.',            rarity: 'rare',   source: { type: 'credits', price: 700 },  kind: 'slowclap' },
   { id: 'emote.flourish', name: 'Present Arms',  blurb: 'A railgun twirl, snapped to attention.', rarity: 'epic',   source: { type: 'level', level: 53 },     kind: 'flourish' },
+  // v3 taunts (Taunt Case). Tiers in items/catalog.ts LEGACY_TIER.
+  { id: 'emote.laugh',     name: 'Belly Laugh',  blurb: 'Doubled over. Merciless.',              rarity: 'common',    source: { type: 'case' }, kind: 'laugh' },
+  { id: 'emote.headbang',  name: 'Headbang',     blurb: 'The rail was the riff.',                rarity: 'common',    source: { type: 'case' }, kind: 'headbang' },
+  { id: 'emote.kneel',     name: 'Take a Knee',  blurb: 'A moment of silence for the fragged.',  rarity: 'common',    source: { type: 'case' }, kind: 'kneel' },
+  { id: 'emote.robot',     name: 'Robot',        blurb: 'Beep. Boop. Gibbed.',                   rarity: 'rare',      source: { type: 'case' }, kind: 'robot' },
+  { id: 'emote.airguitar', name: 'Air Guitar',   blurb: 'Shred on the corpse.',                  rarity: 'epic',      source: { type: 'case' }, kind: 'airguitar' },
+  { id: 'emote.railspin',  name: 'Rail Spin',    blurb: 'A showboat gun twirl, caught clean.',   rarity: 'legendary', source: { type: 'case' }, kind: 'railspin' },
 ];
 
 export function emoteById(id: string): EmoteCosmetic {

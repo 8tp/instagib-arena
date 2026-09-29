@@ -94,7 +94,7 @@ export function CareerRoad({
 
   const initial = nextRoadStep(level) ?? road[Math.min(road.length - 1, level - 1)];
   // "Coming up": the next five named cosmetics ahead (epic / legendary first,
-  // then the nearest rares) — never a row of identical case keys.
+  // then the nearest rares) — never a row of identical free rolls.
   const milestones = useMemo(() => {
     const RANK: Record<string, number> = { legendary: 3, epic: 2, rare: 1, common: 0 };
     const ahead: { level: number; index: number; reward: RoadReward; rank: number }[] = [];
@@ -343,9 +343,9 @@ export function CareerRoad({
         {!guest && profile && (
           <div className='flex items-center gap-4'>
             <Credits amount={profile.credits} className='road-credits' />
-            {(profile.caseKeys ?? 0) > 0 && (
-              <span className='menu-door-keys' title='Hat case keys'>
-                <KeyGlyph size={15} /> {profile.caseKeys}
+            {(profile.freeRolls ?? profile.caseKeys ?? 0) > 0 && (
+              <span className='menu-door-keys' title='Free case rolls'>
+                <KeyGlyph size={15} /> {profile.freeRolls ?? profile.caseKeys}
               </span>
             )}
           </div>

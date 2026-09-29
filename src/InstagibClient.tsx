@@ -61,6 +61,9 @@ import {
   type RankedRoom,
   type RankedResult,
 } from './game/net';
+import { withLegacyFromLooks } from './game/look-runtime';
+import { itemDef } from './game/items/catalog';
+import { TIER_META, qualityPrefix, wearName } from './game/items/types';
 import { ONLINE_MAP_POOL } from './game/arena-data';
 import {
   AIR_JUMPS,
@@ -300,6 +303,7 @@ const DEFAULT_SETTINGS: Settings = {
   resolutionScale: 1,
   lowSpec: false,
   bloom: true,
+  bloomIntensity: 0.8,
   shadows: true,
   antialias: true,
   vignette: true,
@@ -390,6 +394,7 @@ function applySettingsToGame(game: Game, s: Settings) {
   game.setRawInput?.(s.rawInput);
   game.setQuality?.(s.resolutionScale, s.lowSpec);
   game.setPostFx?.({ bloom: s.bloom, shadows: s.shadows, aa: s.antialias, vignette: s.vignette });
+  game.setBloomScale?.(s.bloomIntensity ?? 0.8);
   game.setKeybinds?.(s.keybinds);
   game.setFov?.(s.fov);
   game.setZoomFov?.(s.zoomFov);
@@ -409,6 +414,8 @@ function applySettingsToGame(game: Game, s: Settings) {
   // Echo the crosshair (as a share-code) so a spectator can render the same
   // reticle we use; the local HUD still draws it from settings.crosshair.
   game.setCrosshairCode?.(encodeCrosshair(s.crosshair));
+  const strange = s.finishItem?.quality.includes('strange') ? (s.finishItem.attrs.kills ?? 0) : null;
+  game.setLooks?.(s.looks, s.equippedUids, strange);
   game.setHat?.(s.hat);
   game.setUnusual?.(s.unusual);
   game.setEmote?.(s.emote);
@@ -472,6 +479,7 @@ const INITIAL_HUD: HudState = {
   killFlash: null,
   damageFlash: 0,
   killcam: null,
+  taunting: false,
   showScoreboard: false,
   matchOver: null,
   netStatus: 'off',
@@ -493,7 +501,13 @@ const INITIAL_HUD: HudState = {
 export default function InstagibClient() {
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // Every settings write keeps the legacy per-slot ids in step with `looks`.
+  const [settings, setSettingsRaw] = useState<Settings>(DEFAULT_SETTINGS);
+  const setSettings = useCallback(
+    (u: Settings | ((s: Settings) => Settings)) =>
+      setSettingsRaw((prev) => withLegacyFromLooks(typeof u === 'function' ? u(prev) : u)),
+    [],
+  );
   const [view, setView] = useState<'lobby' | 'playing'>('lobby');
   const [config, setConfig] = useState<MatchConfig | null>(null);
   const [lastResult, setLastResult] = useState<MatchResult | null>(null);
@@ -755,6 +769,8 @@ function GameView({
   const gameRef = useRef<Game | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endResult, setEndResult] = useState<MatchResult | null>(null);
+  // Weapon inspect: while the first-person gun look-over plays, the item card shows.
+  const [inspect, setInspect] = useState<{ kills: number | null } | null>(null);
   // Every HudState push (20 Hz + events) lands in this store. GameView itself
   // only re-renders on the SLOW fields it gates overlays with; the in-match
   // HUD pieces subscribe to their own slices inside HudOverlay. The paused
@@ -850,6 +866,7 @@ function GameView({
       }
     };
     window.addEventListener('keydown', onDebugKey);
+    game.setInspectListener((active, kills) => setInspect(active ? { kills } : null));
     game.setNetEventListener((ev: NetMatchEvent) => {
       if (ev.type === 'join-failed') {
         setJoinDuplicate(ev.reason === 'duplicate');
@@ -1122,6 +1139,7 @@ function GameView({
       <canvas ref={canvasRef} onClick={requestPlay} className='block h-full w-full' />
       {/* The HUD is hidden while the Play-of-the-Match clip plays cinematically. */}
       {!hud.pom && <HudOverlay store={hudStore} settings={settings} info={hudInfo} xpTicker={!isChallenge && loggedIn} />}
+      {!hud.pom && inspect && <InspectCard settings={settings} kills={inspect.kills} />}
       {/* In-game chat (online matches): message log + composer. Survives the
           PotG/results screens being shown, but is hidden by the Hide-chat setting. */}
       {!settings.hideChat && config.mode === 'multiplayer' && (
@@ -1662,18 +1680,41 @@ function PlayOfTheMatchOverlay({
             className='absolute inset-x-0 top-[16%] flex flex-col items-center transition-opacity duration-700'
             style={{ opacity: titleVisible ? 1 : 0 }}
           >
-            <div className='text-[11px] uppercase tracking-[0.55em] text-cyan-300/80'>
+            <div className='text-[15px] font-semibold uppercase tracking-[0.5em] text-cyan-300/90 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
               Play of the Match
             </div>
           </div>
 
-          <div className='absolute left-[4vw] bottom-[14vh]'>
-            <div className='text-3xl font-extrabold uppercase tracking-[0.04em] text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
-              {pom.star}
-            </div>
-            <div className='mt-1 text-lg font-bold uppercase tracking-[0.25em] text-cyan-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'>
-              {pom.label}
-              {pom.subLabel ? <span className='ml-3 text-white/55'>· {pom.subLabel}</span> : null}
+          {/* Lower third on the star's equipped playercard background. */}
+          <div
+            className='absolute left-[4vw] bottom-[14vh] max-w-[46vw] overflow-hidden rounded-md border border-white/15 px-5 py-3 shadow-[0_6px_24px_rgba(0,0,0,0.6)]'
+            style={{ background: pom.kit?.cardBg ?? 'rgba(0,0,0,0.55)' }}
+          >
+            <div className='absolute inset-0 bg-black/35' />
+            <div className='relative'>
+              <div
+                className='text-3xl font-extrabold uppercase tracking-[0.04em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
+                style={{ color: pom.kit?.nameColor ?? '#ffffff' }}
+              >
+                {pom.star}
+              </div>
+              {pom.kit?.title ? (
+                <div className='text-[12px] font-bold uppercase tracking-[0.4em] text-white/70'>{pom.kit.title}</div>
+              ) : null}
+              <div
+                className='mt-1 text-lg font-bold uppercase tracking-[0.25em] drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]'
+                style={{ color: pom.kit?.cardAccent ?? '#67e8f9' }}
+              >
+                {pom.label}
+                {pom.subLabel ? <span className='ml-3 text-white/60'>· {pom.subLabel}</span> : null}
+              </div>
+              {pom.kit ? (
+                <div className='mt-1.5 text-[15px] font-semibold uppercase tracking-[0.1em] text-amber-200 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]'>
+                  {pom.kit.weapon}
+                  {pom.kit.weaponKills != null ? ` · ${pom.kit.weaponKills.toLocaleString('en-US')} kills` : ''}
+                  {pom.kit.finisher ? <span className='text-white/60'>{` · ${pom.kit.finisher}`}</span> : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </>
@@ -1870,6 +1911,44 @@ function JoinErrorOverlay({
 }
 
 /* ───────────────────────── HUD layout ───────────────────────── */
+
+// The equipped finish's card while you inspect the gun: full name (quality
+// prefix + name), Strange kills + rank, wear, pattern seed, mint number, in the
+// tier colour. Data is the equipped instance the hub put in Settings.finishItem;
+// a plain stock/bought finish shows just its name.
+function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const item = settings.finishItem ?? null;
+  const def = itemDef(item?.def ?? settings.looks?.finish?.d ?? settings.railgunFinish);
+  const tier = item?.tier ?? def?.tier ?? 'common';
+  const color = TIER_META[tier].color;
+  const attrs = item?.attrs ?? {};
+  const base = attrs.customName ?? def?.name ?? 'Railgun';
+  const prefix = item ? qualityPrefix(item.quality, { ...attrs, kills: kills ?? attrs.kills }) : '';
+  const title = prefix ? `${prefix} ${base}` : base;
+  const bits: string[] = [];
+  if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
+  if (typeof attrs.wear === 'number') bits.push(wearName(attrs.wear));
+  if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
+  if (item) bits.push(`#${item.mint}`);
+  return (
+    <div
+      aria-hidden='true'
+      className='pointer-events-none absolute bottom-44 right-8 max-w-[22rem] text-right font-mono'
+      style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
+    >
+      <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
+      <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
+        {title}
+      </div>
+      {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
+    </div>
+  );
+}
 
 function HudOverlay({
   store,
@@ -2078,10 +2157,11 @@ function HudInvuln() {
 
 function HudWarmup() {
   const secs = useHudSlice((s) =>
-    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam
+    s.warmupMsLeft > 0 && !s.vote && !s.matchOver && !s.killcam && !s.taunting
       ? Math.max(1, Math.ceil(s.warmupMsLeft / 1000))
       : 0,
   );
+  const taunting = useHudSlice((s) => s.taunting);
   // The countdown's last word: "Fight!" the moment the gun goes live.
   const [fight, setFight] = useState(false);
   const [prevSecs, setPrevSecs] = useState(secs);
@@ -2090,7 +2170,7 @@ function HudWarmup() {
     if (prevSecs > 0 && secs === 0) setFight(true);
   }
   if (secs > 0) return <WarmupOverlay secs={secs} />;
-  return fight ? <FightCall onDone={() => setFight(false)} /> : null;
+  return fight && !taunting ? <FightCall onDone={() => setFight(false)} /> : null;
 }
 
 function HudScoreboard({ showPing, info }: { showPing: boolean; info: HudMatchInfo }) {
@@ -2196,28 +2276,33 @@ const KillcamCard = memo(function KillcamCard({
             'radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.55) 100%)',
         }}
       />
-      {/* Lower third: the killcam frames the killer at centre with their
-          nameplate above — the print must not sit on either. */}
-      <div className='hud-killcam-card absolute inset-x-0 bottom-[12%] flex flex-col items-center text-center font-mono'>
-        {/* A dark band behind the print: rail beams and bright walls cross
-            this part of the frame, and the print must read over all of it. */}
-        <div className='hud-killcam-print'>
+      {/* Lower third, hugging the bottom edge: the killcam frames the killer at
+          centre (legs + gibs reach ~65% down), so the print sits below that. */}
+      <div className='hud-killcam-card absolute inset-x-0 bottom-[3.5%] flex items-end justify-between gap-6 px-[5vw] font-mono'>
+        <div className='hud-killcam-print !px-6 !py-3 text-left'>
           <div className='hud-cprint-sub'>You were fragged by</div>
-          <div className='mt-1 font-display text-5xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
+          <div className='font-display text-4xl font-bold uppercase tracking-[0.03em] text-rose-300 [text-shadow:0_3px_0_rgba(0,0,0,0.7),0_0_14px_rgba(0,0,0,0.9)]'>
             {cam.killerName}
+          </div>
+          {cam.killerKit && (
+            <div className='mt-1.5 text-[16px] font-semibold uppercase tracking-[0.08em] text-amber-200 [text-shadow:0_2px_0_rgba(0,0,0,0.8)]'>
+              {cam.killerKit.weapon}
+              {cam.killerKit.weaponKills != null ? ` · ${cam.killerKit.weaponKills.toLocaleString('en-US')} kills` : ''}
+              {cam.killerKit.finisher ? <span className='text-white/75'>{` · ${cam.killerKit.finisher}`}</span> : null}
+            </div>
+          )}
+          <div className='mt-2 inline-block bg-black/55 px-3 py-1 text-[12px] uppercase tracking-[0.2em] text-white/80'>
+            Respawning in{' '}
+            <span className='text-white'>
+              <KillcamCountdown />s
+            </span>
           </div>
         </div>
         {cam.killerCard && (
-          <div className='mt-5'>
+          <div className='pb-1'>
             <PlayerCard card={cam.killerCard} reduced={reduced} />
           </div>
         )}
-        <div className='mt-4 bg-black/55 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-white/75'>
-          Respawning in{' '}
-          <span className='text-white'>
-            <KillcamCountdown />s
-          </span>
-        </div>
       </div>
     </div>
   );
@@ -3749,6 +3834,11 @@ function ReplayViewerOverlay({
     fov: settings.fov,
     resolutionScale: settings.resolutionScale,
     lowSpec: settings.lowSpec,
+    volume: settings.volume,
+    sfxVolume: settings.sfxVolume,
+    announcerVolume: settings.announcerVolume,
+    announcerEnabled: settings.announcerEnabled,
+    announcerPack: settings.announcerPack,
   });
   // onClose changes identity on every parent (Lobby) re-render — keep it in a ref
   // so the viewer effect can depend only on playerId. Otherwise the Lobby's
@@ -4146,8 +4236,9 @@ function Lobby({
       unusual: settings.unusual,
       railgunFinish: settings.railgunFinish,
       emote: settings.emote,
+      looks: settings.looks,
     }),
-    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote],
+    [settings.playerName, settings.hat, settings.unusual, settings.railgunFinish, settings.emote, settings.looks],
   );
   // Career Road try-on: your loadout, with the previewed reward swapped in.
   const roadLoadout = useMemo(
@@ -4262,6 +4353,7 @@ function Lobby({
         active={!modalOpen}
         still={settings.lowSpec || settings.reducedEffects || LIGHT_DEVICE}
         lowSpec={settings.lowSpec}
+        bloomScale={settings.bloomIntensity ?? 0.8}
         onMap={onBackdropMap}
         hero={heroLoadout}
         heroSlot={heroSlotRef}
@@ -5888,6 +5980,15 @@ function SettingsModal({
                   value={settings.bloom}
                   disabled={settings.lowSpec}
                   onChange={(v) => onChange({ ...settings, bloom: v })}
+                />
+                <SliderField
+                  label='Bloom intensity'
+                  value={settings.bloomIntensity ?? 0.8}
+                  min={0}
+                  max={1.5}
+                  step={0.05}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => onChange({ ...settings, bloomIntensity: v })}
                 />
                 <ToggleField
                   label='Shadows'

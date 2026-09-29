@@ -19,6 +19,9 @@ export const CELL = {
   wisp: 9, // tall soft ellipse
   diamond: 10, // faceted gem
   ring: 11, // thin soft ring
+  bubble: 12, // soap bubble: thin rim, faint fill, specular glints
+  petal: 13, // blossom petal with a notch (rotate + squash to flutter)
+  snow: 14, // six-armed snowflake
 } as const;
 
 const N = 4;
@@ -178,6 +181,68 @@ export function unusualAtlas(): THREE.Texture {
     ctx.beginPath();
     ctx.arc(cx, cy, 27, 0, Math.PI * 2);
     ctx.fill();
+  });
+
+  cell(CELL.bubble, (cx, cy) => {
+    const g = ctx.createRadialGradient(cx, cy, 6, cx, cy, 27);
+    g.addColorStop(0, 'rgba(255,255,255,0.06)');
+    g.addColorStop(0.7, 'rgba(255,255,255,0.16)');
+    g.addColorStop(0.9, 'rgba(255,255,255,0.85)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 27, 0, Math.PI * 2);
+    ctx.fill();
+    radial(cx - 10, cy - 11, 6, [[0, 1], [0.6, 0.6], [1, 0]]);
+    radial(cx + 10, cy + 12, 4, [[0, 0.55], [1, 0]]);
+  });
+  cell(CELL.petal, (cx, cy) => {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + 22);
+    ctx.bezierCurveTo(cx - 20, cy + 6, cx - 16, cy - 20, cx - 4, cy - 20);
+    ctx.lineTo(cx, cy - 13);
+    ctx.lineTo(cx + 4, cy - 20);
+    ctx.bezierCurveTo(cx + 16, cy - 20, cx + 20, cy + 6, cx, cy + 22);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(cx, cy - 20, cx, cy + 22);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(1, 'rgba(255,255,255,0.7)');
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + 14);
+    ctx.lineTo(cx, cy - 6);
+    ctx.stroke();
+  });
+  cell(CELL.snow, (cx, cy) => {
+    ctx.strokeStyle = 'rgba(255,255,255,1)';
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(255,255,255,0.8)';
+    ctx.shadowBlur = 4;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + ca * 25, cy + sa * 25);
+      ctx.stroke();
+      ctx.lineWidth = 2.2;
+      for (const d of [11, 18]) {
+        const bx = cx + ca * d, by = cy + sa * d;
+        for (const s of [-1, 1]) {
+          const b = a + s * 0.85;
+          ctx.beginPath();
+          ctx.moveTo(bx, by);
+          ctx.lineTo(bx + Math.cos(b) * 7, by + Math.sin(b) * 7);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.shadowBlur = 0;
+    radial(cx, cy, 7, [[0, 1], [1, 0]]);
   });
 
   const t = new THREE.CanvasTexture(cv);

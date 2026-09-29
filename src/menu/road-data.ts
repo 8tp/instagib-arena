@@ -7,6 +7,8 @@
 // "Rewards coming" placeholder elsewhere — so it degrades to something true.
 
 import { ALL_COSMETICS, cosmeticById, type CosmeticSlot } from '../game/cosmetics';
+import { itemDef } from '../game/items/catalog';
+import { TIER_META } from '../game/items/types';
 import { CAREER_ROAD, MAX_LEVEL, type RoadReward, type RoadStep } from '../game/progression';
 import type { InstagibProfile } from '../app-types';
 
@@ -53,21 +55,23 @@ const SLOT_NOUN: Record<CosmeticSlot, string> = {
   announcer: 'announcer pack',
 };
 
-// "Epic railgun finish" / "Credits" / "Hat case key" — the kind line under a
+// "Epic railgun finish" / "Credits" / "Free roll" — the kind line under a
 // reward's name.
 export function rewardKind(r: RoadReward): string {
   if (r.type === 'credits') return 'Credits';
-  if (r.type === 'case') return 'Hat case key';
+  if (r.type === 'case') return (r.count ?? 1) > 1 ? `${r.count} free case rolls` : 'Free case roll';
   const c = cosmeticById(r.id);
   if (!c) return 'Cosmetic';
-  const rarity = c.rarity.charAt(0).toUpperCase() + c.rarity.slice(1);
+  // The v3 tier label (the item catalog re-tiers the legacy 4 rarities into 7).
+  const tier = itemDef(r.id)?.tier;
+  const rarity = tier ? TIER_META[tier].label : c.rarity.charAt(0).toUpperCase() + c.rarity.slice(1);
   return `${rarity} ${SLOT_NOUN[c.slot] ?? 'cosmetic'}`;
 }
 
 // Short text for a reward (tooltips, the profile block's next-reward line).
 export function rewardText(r: RoadReward, name?: (id: string) => string | undefined): string {
   if (r.type === 'credits') return `${r.amount.toLocaleString()} credits`;
-  if (r.type === 'case') return 'Case key';
+  if (r.type === 'case') return (r.count ?? 1) > 1 ? `${r.count} free rolls` : 'Free roll';
   return name?.(r.id) ?? r.id;
 }
 
@@ -80,7 +84,8 @@ export function nextRoadStep(level: number): RoadNode | null {
 // Fields the progression track adds to /api/profile; optional so an older
 // server (or a guest) still renders.
 export type MenuProfile = InstagibProfile & {
-  caseKeys?: number;
+  caseKeys?: number; // == freeRolls (back-compat alias)
+  freeRolls?: number; // unspent free case rolls (v3)
   roadLevel?: number; // highest Career Road level granted
   catchUp?: RoadStep[]; // road steps granted by this fetch (e.g. after a curve change)
 };

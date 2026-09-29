@@ -26,8 +26,21 @@ export async function prewarmGuns(postFx: PostFxPipeline, opts: { lowSpec?: bool
   if (kept.has(postFx)) return;
   const vm = buildRailgun(undefined, { lod: 'high' });
   vm.setLowSpec(!!opts.lowSpec);
+  // Item-quality overlays (killstreak sheen, festive lights, strange counter)
+  // are drawn only when on, so switch them on for the warm-up: their programs
+  // (sheen, festive, counter) then compile here, not mid-match. Unusuals,
+  // taunt auras and killstreak eyes share the unusual point/ribbon programs,
+  // which prewarmFx (effects.ts) compiles.
+  vm.setKillstreak('sheen.team', 'ks.fire');
+  vm.setStreak(10);
+  vm.setFestive(true);
+  vm.setStrangeKills(1);
   const tp = new THREE.Group();
-  tp.add(new AttachedRailgun(), new RailBeams(1).group);
+  const tpGun = new AttachedRailgun();
+  tpGun.setKillstreak('sheen.team', 'ks.fire');
+  tpGun.setStreak(10);
+  tpGun.setFestive(true);
+  tp.add(tpGun, new RailBeams(1).group);
   kept.set(postFx, [vm.group, tp]);
   await Promise.all([postFx.prewarm(vm.group, 'viewmodel'), postFx.prewarm(tp, 'world')]);
 }

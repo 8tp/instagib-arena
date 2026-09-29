@@ -14,6 +14,9 @@ import { EffectsManager } from './effects';
 import { ReplayPlayer, type ReplaySource } from './replay';
 import { createCamera, createRenderer, createScene } from './renderer';
 import type { ReplayData } from './replay-codec';
+import { SoundManager, type AnnouncerPackId } from './audio';
+import { makeReplaySfx } from './replay-audio';
+import { spawnEffectById } from './cosmetics';
 import type { Vec3 } from './types';
 
 const BEAM_LIFE = 0.14; // seconds a replayed rail trace lingers before fading
@@ -33,6 +36,12 @@ export type ReplayViewerOptions = {
   fov?: number;
   resolutionScale?: number;
   lowSpec?: boolean;
+  // The player's audio settings, so the rewatch honours their mix + mute.
+  volume?: number;
+  sfxVolume?: number;
+  announcerVolume?: number;
+  announcerEnabled?: boolean;
+  announcerPack?: AnnouncerPackId;
 };
 
 type Beam = { mesh: THREE.Mesh; life: number };
@@ -43,6 +52,8 @@ export class ReplayViewer {
   private camera: THREE.PerspectiveCamera;
   private mapMesh: THREE.Object3D | null = null;
   private effects = new EffectsManager();
+  private audio = new SoundManager();
+  private tmpDir = new THREE.Vector3();
   private player: ReplayPlayer | null = null;
   private beams: Beam[] = [];
   private beamGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 6, 1, true);
@@ -76,6 +87,12 @@ export class ReplayViewer {
       this.camera.updateProjectionMatrix();
     }
     this.applyQuality(opts.resolutionScale ?? 1, opts.lowSpec ?? false);
+    if (typeof opts.volume === 'number') this.audio.setVolume(opts.volume);
+    if (typeof opts.sfxVolume === 'number') this.audio.setSfxVolume(opts.sfxVolume);
+    if (typeof opts.announcerVolume === 'number') this.audio.setAnnouncerVolume(opts.announcerVolume);
+    if (typeof opts.announcerEnabled === 'boolean') this.audio.setAnnouncerEnabled(opts.announcerEnabled);
+    if (opts.announcerPack) this.audio.setAnnouncerPack(opts.announcerPack);
+    this.audio.setLowSpec(opts.lowSpec ?? false);
     this.resizeHandler = () => this.handleResize();
     window.addEventListener('resize', this.resizeHandler);
   }
@@ -93,6 +110,17 @@ export class ReplayViewer {
   // token resolves immediately). Safe to call once.
   async start() {
     const arena = mapById(this.data.mapId);
+    this.audio.setMap(this.data.mapId);
+    // The replay's sound set (shots, frags + finishers, other runners' footsteps).
+    // Best-effort: with no audio context the rewatch is simply silent.
+    void this.audio.init().then(() => {
+      if (this.disposed) {
+        this.audio.dispose(); // disposed while the context was being created
+        return;
+      }
+      this.audio.resume();
+      this.audio.replayBegin(1, 0.25);
+    });
     this.mapMesh = buildMapMesh(arena);
     this.scene.add(this.mapMesh);
 
@@ -107,6 +135,7 @@ export class ReplayViewer {
       frames,
       kills: this.data.kills,
       shots: this.data.shots,
+      taunts: this.data.taunts,
     };
     const localName = source.profiles.get(this.data.localId)?.name ?? 'Runner';
 
@@ -117,8 +146,11 @@ export class ReplayViewer {
       spawnBeam: (o, e) => this.spawnBeam(o, e),
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
-      spawnKillEffect: (at, headshot) => this.effects.spawnKillBurst(this.scene, at, headshot),
+      spawnKillEffect: (at, headshot, _killerId, finisher) =>
+        this.effects.spawnKillBurst(this.scene, at, headshot, finisher),
+      spawnIn: (at, id) => this.effects.spawnInBurst(this.scene, at, spawnEffectById(id).style),
       reducedEffects: () => false,
+      sfx: makeReplaySfx(this.audio, { announcer: false }),
     });
     player.start(
       {
@@ -156,6 +188,8 @@ export class ReplayViewer {
     window.removeEventListener('resize', this.resizeHandler);
     this.player?.dispose();
     this.player = null;
+    this.audio.replayEnd(0.05);
+    this.audio.dispose();
     for (const b of this.beams) this.scene.remove(b.mesh);
     this.beams.length = 0;
     this.effects.dispose(this.scene);
@@ -184,6 +218,12 @@ export class ReplayViewer {
       this.player?.update(dt);
       this.effects.step(dt, this.scene);
       this.stepBeams(dt);
+      // Spatial audio follows the replay camera.
+      this.camera.getWorldDirection(this.tmpDir);
+      this.audio.setListenerPose(
+        this.camera.position.x, this.camera.position.y, this.camera.position.z,
+        this.tmpDir.x, this.tmpDir.y, this.tmpDir.z, 0, 1, 0,
+      );
     } catch {
       /* keep rendering the last good state */
     }
