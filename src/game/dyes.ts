@@ -5,8 +5,8 @@
 // `dye.none` = your natural name-keyed bright skin (character.ts SKIN_PALETTE).
 //
 // Fairness (CLAUDE.md "skill stays sacred"):
-//   • Solid colours stay inside the same relative-luminance band as the natural
-//     skins (~0.28–0.75), so no dye is markedly darker (harder to see).
+//   • Every plain colour (solids, two-tones, stripes) has relative luminance
+//     ≥ 0.33 — at least the darkest natural skin — so no dye is harder to see.
 //   • The dark patterns (Void, Magma, Circuit, Nebula, Event Horizon) are dark
 //     on purpose but carry a bright fresnel rim + glowing detail, so their
 //     silhouette reads at least as well as a natural skin.
@@ -71,13 +71,13 @@ export const PATTERN_ANIMATED: Record<DyePattern, boolean> = {
 
 export const DYES: readonly DyeDef[] = [
   // ── Common: gloss solids (luminance-banded) ────────────────────────────────
-  { id: 'dye.signal', name: 'Signal Red', blurb: 'Loud, proud, impossible to miss.', tier: 'common', pattern: 'solid', a: '#ff4a4a' },
+  { id: 'dye.signal', name: 'Signal Red', blurb: 'Loud, proud, impossible to miss.', tier: 'common', pattern: 'solid', a: '#ff6e6e' },
   { id: 'dye.tangerine', name: 'Tangerine', blurb: 'Zesty orange lacquer.', tier: 'common', pattern: 'solid', a: '#ff8a2a' },
   { id: 'dye.canary', name: 'Canary', blurb: 'Bright as a warning light.', tier: 'common', pattern: 'solid', a: '#ffd83a' },
   { id: 'dye.lime', name: 'Lime Rind', blurb: 'Acid-green plates.', tier: 'common', pattern: 'solid', a: '#8fe03a' },
   { id: 'dye.teal', name: 'Lagoon', blurb: 'Warm-water teal.', tier: 'common', pattern: 'solid', a: '#22c7b0' },
   { id: 'dye.sky', name: 'Sky Blue', blurb: 'Clear-day cyan-blue.', tier: 'common', pattern: 'solid', a: '#44b4ff' },
-  { id: 'dye.grape', name: 'Grape Soda', blurb: 'Fizzy purple.', tier: 'common', pattern: 'solid', a: '#a878ff' },
+  { id: 'dye.grape', name: 'Grape Soda', blurb: 'Fizzy purple.', tier: 'common', pattern: 'solid', a: '#b484ff' },
   { id: 'dye.bubblegum', name: 'Bubblegum', blurb: 'Pop it.', tier: 'common', pattern: 'solid', a: '#ff7cc4' },
   { id: 'dye.bone', name: 'Bone', blurb: 'Off-white, clean, clinical.', tier: 'common', pattern: 'solid', a: '#e8e1cf' },
   // ── Uncommon: finishes (matte / metal) ─────────────────────────────────────
@@ -87,20 +87,20 @@ export const DYES: readonly DyeDef[] = [
   { id: 'dye.lavender', name: 'Lavender Haze', blurb: 'Matte and dreamy.', tier: 'uncommon', pattern: 'solid', a: '#c2a8ff', finish: 'matte' },
   { id: 'dye.rosegold', name: 'Rose Gold', blurb: 'Brushed pink metal.', tier: 'uncommon', pattern: 'solid', a: '#f2a48e', finish: 'metal' },
   { id: 'dye.copper', name: 'Burnished Copper', blurb: 'Warm brushed metal.', tier: 'uncommon', pattern: 'solid', a: '#e8874a', finish: 'metal' },
-  { id: 'dye.cobaltmetal', name: 'Cobalt Flake', blurb: 'Metal-flake blue.', tier: 'uncommon', pattern: 'solid', a: '#5f8cff', finish: 'metal' },
+  { id: 'dye.cobaltmetal', name: 'Cobalt Flake', blurb: 'Metal-flake blue.', tier: 'uncommon', pattern: 'solid', a: '#6e9bff', finish: 'metal' },
   // ── Rare: two-tones ────────────────────────────────────────────────────────
   { id: 'dye.sunset', name: 'Sunset Strip', blurb: 'Orange at the boots, magenta at the crown.', tier: 'rare', pattern: 'gradient', a: '#ff9a2e', b: '#ff4fa8' },
-  { id: 'dye.deepsea', name: 'Deep Sea', blurb: 'Teal fading up into ocean blue.', tier: 'rare', pattern: 'gradient', a: '#27d6b0', b: '#3f7dff' },
+  { id: 'dye.deepsea', name: 'Deep Sea', blurb: 'Teal fading up into ocean blue.', tier: 'rare', pattern: 'gradient', a: '#27d6b0', b: '#609eff' },
   { id: 'dye.toxic', name: 'Toxic Runoff', blurb: 'Radioactive green rising to acid yellow.', tier: 'rare', pattern: 'gradient', a: '#3ddc5a', b: '#e8f23a' },
   { id: 'dye.frostbite', name: 'Frostbite', blurb: 'Ice-white plates, glacier-blue feet.', tier: 'rare', pattern: 'gradient', a: '#4fb6ff', b: '#eef8ff' },
-  { id: 'dye.dusk', name: 'Afterglow', blurb: 'Violet dusk into a peach horizon.', tier: 'rare', pattern: 'gradient', a: '#9a6bff', b: '#ffb38a' },
-  { id: 'dye.hazard', name: 'Hazard Tape', blurb: 'Diagonal yellow-and-grey warning bands.', tier: 'rare', pattern: 'stripes', a: '#ffd23a', b: '#7d8596', scale: 7 },
-  { id: 'dye.candy', name: 'Candy Cane', blurb: 'Red-and-white barber stripes.', tier: 'rare', pattern: 'stripes', a: '#ff4e5e', b: '#f4f1ec', scale: 8 },
+  { id: 'dye.dusk', name: 'Afterglow', blurb: 'Violet dusk into a peach horizon.', tier: 'rare', pattern: 'gradient', a: '#b586ff', b: '#ffb38a' },
+  { id: 'dye.hazard', name: 'Hazard Tape', blurb: 'Diagonal yellow-and-grey warning bands.', tier: 'rare', pattern: 'stripes', a: '#ffd23a', b: '#959dae', scale: 7 },
+  { id: 'dye.candy', name: 'Candy Cane', blurb: 'Red-and-white barber stripes.', tier: 'rare', pattern: 'stripes', a: '#ff6c7c', b: '#f4f1ec', scale: 8 },
   // ── Epic: special finishes ─────────────────────────────────────────────────
   { id: 'dye.chrome', name: 'Liquid Chrome', blurb: 'A mirror you can frag in.', tier: 'epic', pattern: 'chrome', a: '#dfe6ee' },
   { id: 'dye.gold', name: '24 Karat', blurb: 'Solid gold plate. Tasteful? No.', tier: 'epic', pattern: 'chrome', a: '#ffc94a' },
   { id: 'dye.pearl', name: 'Oil Slick Pearl', blurb: 'Pearl-white with a shifting rainbow sheen.', tier: 'epic', pattern: 'pearl', a: '#eef0f6' },
-  { id: 'dye.neontiger', name: 'Neon Tiger', blurb: 'Hot-pink bands on electric orange.', tier: 'epic', pattern: 'stripes', a: '#ff8a1f', b: '#ff3fb4', scale: 11 },
+  { id: 'dye.neontiger', name: 'Neon Tiger', blurb: 'Hot-pink bands on electric orange.', tier: 'epic', pattern: 'stripes', a: '#ff8a1f', b: '#ff5acf', scale: 11 },
   // ── Legendary: animated ────────────────────────────────────────────────────
   { id: 'dye.chroma', name: 'Chroma Cycle', blurb: 'Full-spectrum RGB bands sweeping up the armour.', tier: 'legendary', pattern: 'chroma', a: '#ff4fd8' },
   { id: 'dye.hologram', name: 'Hardlight', blurb: 'A projected soldier: scanlines and a cyan glow.', tier: 'legendary', pattern: 'hologram', a: '#5ff4ff' },
