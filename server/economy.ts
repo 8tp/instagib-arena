@@ -377,7 +377,11 @@ export function entitlementsFor(playerId: string): Set<string> {
   out.add('title.ranked');
   // A cosmetic whose source is 'default' but which is also a real (non-default)
   // item def — e.g. hat.cap, now a Common case hat — must be owned, not implied.
-  for (const c of ALL_COSMETICS) if (c.source.type === 'default' && (itemDef(c.id)?.default ?? true)) out.add(c.id);
+  for (const c of ALL_COSMETICS) {
+    if (c.source.type !== 'default') continue;
+    const d = itemDef(c.id);
+    if (!d || d.default) out.add(c.id);
+  }
   if (!playerId) return out;
   const s = q(
     `SELECT total_xp, total_kills, headshots, total_wins, best_kill_streak, total_games, best_accuracy, legacy_unlocked

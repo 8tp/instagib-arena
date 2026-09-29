@@ -86,8 +86,11 @@ economyRouter.post('/inventory/equip', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
   const b = body(req);
-  const uid = b.uid == null ? null : str(b.uid);
-  send(res, equipSlot(id, b.slot, uid));
+  if (b.uid != null && typeof b.uid !== 'string') {
+    res.status(400).json({ ok: false, error: 'bad_request' });
+    return;
+  }
+  send(res, equipSlot(id, b.slot, b.uid == null ? null : b.uid));
 });
 
 economyRouter.post('/inventory/salvage', (req, res) => {
