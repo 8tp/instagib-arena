@@ -399,7 +399,7 @@ export class Bot {
         this.aimSeeded = false;
         this.lastTargetId = null;
         this.anim?.respawn(this.group.position); // clear the gibs, back to idle
-        this.nameSprite.visible = true;
+        this.nameSprite.visible = !this.plateSuppressed;
       }
       return null;
     }
@@ -1011,9 +1011,12 @@ export class Bot {
     }
   }
 
-  // Raise the nameplate (killcam framing: keeps it clear of a hat's unusual).
-  setPlateLift(m: number) {
-    this.nameSprite.position.y = BOT_HEIGHT + 0.35 + m;
+  // Killcam showcase: the nameplate stays off while this bot is on camera (a
+  // respawn inside that window doesn't bring it back).
+  private plateSuppressed = false;
+  setPlateSuppressed(off: boolean) {
+    this.plateSuppressed = off;
+    this.nameSprite.visible = !off && this.state.alive;
   }
 
   get isTaunting(): boolean {

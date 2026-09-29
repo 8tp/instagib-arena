@@ -60,6 +60,7 @@ import {
 } from './constants';
 import { EffectsManager, prewarmFx } from './effects';
 import { prewarmGuns } from './gun/prewarm';
+import { prewarmPodiumTextures } from './podium-textures';
 import { setRailBeamsReduced, type RailBeamMode } from './fx/rail-beam';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
@@ -116,28 +117,26 @@ import { encodeReplay } from './replay-codec';
 const FINALE_TIME_SCALE = 0.5; // play the final blow at half speed
 const FINALE_FREEZE_SEC = 1.9; // then hold on the frozen frame: the VICTORY/DEFEAT beat
 
-// Killcam framing: the camera sits a FIXED distance from the killer (on the side
-// you died from) and follows them, so a long-range frag isn't a tiny speck — and
-// a tighter FOV zooms in on who got you.
-const KILLCAM_DIST = 5; // metres from the killer
-const KILLCAM_HEIGHT = 1.6; // metres above the killer's centre (mild down-angle)
-const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
+// Killcam: a third-person showcase of the player who got you — full body at
+// medium range (hat, face, back gear, unusual, gun all in shot), from a slightly
+// low angle, on a slow arc that starts on the side you died from (so it frames
+// what the old fixed cam did: them, facing you) and dollies in a touch. Driven
+// by the killcam's own clock, so it is frame-rate independent.
+const KILLCAM_DIST_FROM = 3.9; // metres from the killer's focus point at the start…
+const KILLCAM_DIST_TO = 3.35; // …easing in to this by the end
+const KILLCAM_ARC = 0.9; // radians swept across the killcam (centred on your side)
+const KILLCAM_FOCUS_Y = 1.05; // look at this height above their feet (chest: head-to-toe fits)
+const KILLCAM_CAM_Y = 0.7; // lens height above their feet (below the focus → low angle)
+const KILLCAM_WALL_MARGIN = 0.3; // sphere-sweep radius: the lens stays this far off walls
+const KILLCAM_FOV = 58; // tighter than gameplay FOV → a portrait, not a wide shot
 
-// First-person killcam (CoD style): the last moments before your death replayed
-// through the KILLER's eyes with their gun, ending on the shot that got you. It
-// runs inside the unchanged KILLCAM_DURATION_SEC: the lead-in plays at real
-// speed, then time eases into a brief slow-mo across the kill (match-time
-// seconds below) and holds the frame after it until you respawn.
-const KILLCAM_POV_SLOW_SCALE = 0.4; // slow-mo speed across the kill
-const KILLCAM_POV_SLOW_IN = 0.14; // slow-mo starts this long before the kill…
-const KILLCAM_POV_RAMP = 0.1; // …after easing down over this long
-const KILLCAM_POV_POST = 0.24; // match-time shown after the kill
-const KILLCAM_POV_TAIL = 0.12; // wall-clock margin so the kill lands before respawn
-const KILLCAM_POV_MIN_LEAD = 0.5; // less lead-in than this → orbit cam instead
-// Replay bodies parked for reuse between killcams / the PotG (one per player),
-// pre-built one at a time in live play every REPLAY_WARM_SEC.
+// Play-of-the-Match replay bodies (one per player): pre-built one at a time in
+// live play every REPLAY_WARM_SEC and reused across the cinematic's segments, so
+// match end never builds a crowd of characters on one frame.
 const REPLAY_ACTOR_POOL_MAX = 16;
 const REPLAY_WARM_SEC = 0.5;
+// First-person guns parked for reuse (yours + replay stars' custom models).
+const VM_SPARES_MAX = 3;
 
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
@@ -388,7 +387,9 @@ export class Game {
   // When set, buildViewmodel() uses this finish (the watched player's gun skin)
   // instead of the local player's; cleared outside spectator mode.
   private viewmodelFinishOverride: string | null = null;
-  private liftedPlate: { setPlateLift(m: number): void } | null = null;
+  // The killer whose nameplate the killcam showcase has tucked away (the card
+  // names them; a big plate would sit over their hat).
+  private showcasedPlate: { setPlateSuppressed(off: boolean): void } | null = null;
   private tauntHidden: THREE.Object3D[] = []; // opponents hidden from the taunt camera this frame
   private replayVmActive = false; // the viewmodel is showing the replay star's gun
   private replayVmStreak = -1;
@@ -400,10 +401,6 @@ export class Game {
   // (compileAsync), so the swap never stalls a frame on a shader compile.
   private vmWarming = false;
   private vmWarmToken = 0;
-  // First-person killcam replay (see KILLCAM_POV_*), null = orbit cam / alive.
-  private killcamReplay: ReplayPlayer | null = null;
-  private killcamKillT = 0; // recorder time of the kill being replayed
-  private killcamHitId = 0; // bumps on the replayed kill (HUD hit-marker + slow-mo flash)
   // Live bodies hidden for the frame while a replay draws its own actors.
   private replayHidden: THREE.Object3D[] = [];
   // Replay bodies kept between replays (see ReplayDeps.acquireActor), detached
@@ -464,7 +461,15 @@ export class Game {
   private killFlash: KillFlash | null = null;
   private damageFlash = 0; // 0..1, set on death, decays — red "you were hit" vignette
   private killcam: KillcamState | null = null;
+  // Killcam showcase state: the smoothed feet point being framed, the arc's
+  // starting yaw, and the line-of-sight-clamped lens distance, for this death.
   private killcamLookAt = new THREE.Vector3();
+  private killcamFor: KillcamState | null = null;
+  private killcamBaseYaw = 0;
+  private killcamReach = 0;
+  private readonly tmpBox: AABB = { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
+  private readonly killcamDir = { x: 0, y: 0, z: 0 };
+  private readonly killcamOrigin = { x: 0, y: 0, z: 0 };
 
   // Play of the Match: record the live match, then on match-end pick the best
   // moment and replay it cinematically before the results screen. All captured
@@ -634,6 +639,9 @@ export class Game {
     // other's probe material after it's gone). Best-effort — never throws.
     void prewarmFx(this.renderer, this.scene, this.camera)
       .then(() => (this.disposed ? undefined : prewarmGuns(this.postFx, { lowSpec: this.lowSpec })))
+      // The results podium's procedural textures (session-cached): drawn now,
+      // one per task, so the end-of-match screen only wraps finished canvases.
+      .then(() => (this.disposed || this.training ? undefined : prewarmPodiumTextures()))
       .catch(() => {});
     this.player = new Player(this.map.spawn);
     // Gibs bounce on the real floor under the victim (closure reads the current map).
@@ -1010,14 +1018,13 @@ export class Game {
     // Spectators show the WATCHED player's finish; normal play shows the local one.
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
-    const norm = (v: unknown) => (!v || v === 'default' || v === 'standard' ? '' : String(v));
-    const wantKey = norm((finish as { model?: string }).model);
+    const wantKey = gunModelKey((finish as { model?: string }).model);
     const hadGun = !!this.viewmodelRail;
     if (this.viewmodelRail) {
       // Same gun model → recolour in place (geometry shared). A finish with a
       // different (custom) model swaps guns: the current one is parked as a
       // spare (reused on the way back — replays swap to the star's gun and back).
-      if (norm(this.viewmodelRail.modelKey) === wantKey) {
+      if (gunModelKey(this.viewmodelRail.modelKey) === wantKey) {
         this.viewmodelRail.setFinish(finish);
         this.applyViewmodelV3(true);
         return;
@@ -1056,14 +1063,14 @@ export class Game {
     this.applyViewmodelV3(true);
   }
 
-  // Park a detached viewmodel gun for reuse (at most two spares; the oldest is
-  // freed). Its quality overlays are reset by whoever reuses it (applyFinishLook).
+  // Park a detached viewmodel gun for reuse (at most VM_SPARES_MAX; the oldest
+  // is freed). Its quality overlays are reset by whoever reuses it (applyFinishLook).
   private stashViewmodel(vm: RailgunModel) {
-    const key = !vm.modelKey || vm.modelKey === 'default' || vm.modelKey === 'standard' ? '' : vm.modelKey;
+    const key = gunModelKey(vm.modelKey);
     this.vmSpares.get(key)?.dispose();
     this.vmSpares.delete(key);
     this.vmSpares.set(key, vm);
-    while (this.vmSpares.size > 2) {
+    while (this.vmSpares.size > VM_SPARES_MAX) {
       const [oldKey, old] = this.vmSpares.entries().next().value as [string, RailgunModel];
       old.dispose();
       this.vmSpares.delete(oldKey);
@@ -1296,11 +1303,119 @@ export class Game {
     }
   }
 
-  // Killcam: raise the killer's nameplate above their unusual crown (reset after).
-  private liftKillerPlate(t: { setPlateLift(m: number): void } | null, looks?: Loadout) {
-    if (this.liftedPlate && this.liftedPlate !== t) this.liftedPlate.setPlateLift(0);
-    this.liftedPlate = t;
-    t?.setPlateLift(looks?.hat?.e ? 0.75 : 0.2);
+  // Killcam showcase: hide the killer's nameplate while they're on camera (the
+  // killcam card names them), restore it after.
+  private showcasePlate(t: { setPlateSuppressed(off: boolean): void } | null) {
+    if (this.showcasedPlate === t) return;
+    this.showcasedPlate?.setPlateSuppressed(false);
+    this.showcasedPlate = t;
+    t?.setPlateSuppressed(true);
+  }
+
+  // Killcam showcase camera (see KILLCAM_*): frame the killer's full body from a
+  // slightly low angle on a slow arc round them. The lens distance is clamped by
+  // a sphere sweep from the killer out to the lens, so it never sits in a wall —
+  // blocked, it pulls in toward them (instantly), and eases back out when clear.
+  private placeKillcamCamera(kc: KillcamState) {
+    const killer = this.remotePlayers.get(kc.killerId);
+    const killerBot = killer ? null : this.bots?.bots.find((b) => b.state.id === kc.killerId);
+    this.showcasePlate(killer ?? killerBot ?? null);
+    const feet = killer ? killer.group.position : killerBot ? killerBot.state.pos : kc.deathPos;
+    const dt = this.frameDt;
+    const look = this.killcamLookAt;
+    if (this.killcamFor !== kc) {
+      // A new death: snap onto the killer and start the arc on your side of them.
+      this.killcamFor = kc;
+      look.set(feet.x, feet.y, feet.z);
+      const dx = kc.deathPos.x - feet.x;
+      const dz = kc.deathPos.z - feet.z;
+      const side = Math.hypot(dx, dz) < 0.5 ? 0 : Math.atan2(dx, dz);
+      // Your side first; if a wall crowds that arc, the first side with room
+      // (a quarter turn either way, then behind them).
+      let best = side;
+      let bestRoom = -1;
+      for (const off of [0, 0.8, -0.8, Math.PI]) {
+        const room = this.killcamRoom(feet.x, feet.y + KILLCAM_FOCUS_Y, feet.z, side + off, KILLCAM_DIST_FROM);
+        if (room > bestRoom + 0.25) {
+          best = side + off;
+          bestRoom = room;
+        }
+        if (room >= KILLCAM_DIST_FROM - 0.05) break;
+      }
+      this.killcamBaseYaw = best;
+      this.killcamReach = Math.min(KILLCAM_DIST_FROM, bestRoom);
+    } else if (Math.abs(feet.x - look.x) + Math.abs(feet.y - look.y) + Math.abs(feet.z - look.z) > 6) {
+      // They respawned elsewhere mid-killcam: cut to them, don't fly across the map.
+      look.set(feet.x, feet.y, feet.z);
+      this.killcamReach = Infinity; // snaps to the room below
+    } else {
+      // Follow them smoothly (real dt → frame-rate independent); height tracks
+      // tighter so a jump or a drop never leaves them out of frame.
+      const a = 1 - Math.exp(-7 * dt);
+      const ay = 1 - Math.exp(-16 * dt);
+      look.x += (feet.x - look.x) * a;
+      look.y += (feet.y - look.y) * ay;
+      look.z += (feet.z - look.z) * a;
+    }
+    const u = kc.total > 0 ? Math.min(1, Math.max(0, 1 - kc.remaining / kc.total)) : 0;
+    const e = u * u * (3 - 2 * u);
+    const yaw = this.killcamBaseYaw + KILLCAM_ARC * (e - 0.5);
+    const dist = KILLCAM_DIST_FROM + (KILLCAM_DIST_TO - KILLCAM_DIST_FROM) * e;
+    // Ray from the focus point (their chest) out to the wanted lens position,
+    // clamped to the room the walls leave (sphere sweep, see killcamRoom).
+    const fx = look.x;
+    const fy = look.y + KILLCAM_FOCUS_Y;
+    const fz = look.z;
+    const allowed = this.killcamRoom(fx, fy, fz, yaw, dist);
+    this.killcamReach = allowed < this.killcamReach
+      ? allowed
+      : this.killcamReach + (allowed - this.killcamReach) * (1 - Math.exp(-4 * dt));
+    const dir = this.killcamDir;
+    const r = this.killcamReach;
+    this.camera.position.set(fx + dir.x * r, fy + dir.y * r, fz + dir.z * r);
+    this.tmpV3b.set(fx, fy, fz);
+    this.camera.lookAt(this.tmpV3b);
+    // Keep the frame on the killer: other players are left out of the shot.
+    this.hideOthersForKillcam(killer?.group ?? killerBot?.group ?? null);
+  }
+
+  // How far the killcam lens can sit from the focus point (fx,fy,fz) along the
+  // arc direction `yaw` (dropping to KILLCAM_CAM_Y) before a wall, up to `dist`.
+  // Sphere sweep: every wall box inflated by the margin, so the lens can't graze
+  // a corner or slip through a crack. Leaves the unit direction in killcamDir.
+  private killcamRoom(fx: number, fy: number, fz: number, yaw: number, dist: number): number {
+    const d = this.killcamDir;
+    d.x = Math.sin(yaw) * dist;
+    d.y = KILLCAM_CAM_Y - KILLCAM_FOCUS_Y;
+    d.z = Math.cos(yaw) * dist;
+    const len = Math.hypot(d.x, d.y, d.z);
+    d.x /= len;
+    d.y /= len;
+    d.z /= len;
+    const o = this.killcamOrigin;
+    o.x = fx;
+    o.y = fy;
+    o.z = fz;
+    const M = KILLCAM_WALL_MARGIN;
+    const box = this.tmpBox;
+    let room = len;
+    for (const b of this.map.boxes) {
+      box.min.x = b.min.x - M; box.min.y = b.min.y - M; box.min.z = b.min.z - M;
+      box.max.x = b.max.x + M; box.max.y = b.max.y + M; box.max.z = b.max.z + M;
+      const t = rayAabb(o, d, box);
+      if (t !== null && t < room) room = Math.max(0, t);
+    }
+    return room;
+  }
+
+  private hideOthersForKillcam(keep: THREE.Object3D | null) {
+    const hide = (g: THREE.Object3D) => {
+      if (g === keep || !g.visible) return;
+      g.visible = false;
+      this.replayHidden.push(g);
+    };
+    for (const rp of this.remotePlayers.values()) hide(rp.group);
+    if (this.bots) for (const b of this.bots.bots) hide(b.group);
   }
 
   // FAIRNESS: the taunt camera must never reveal anything the first-person eye
@@ -1598,9 +1713,7 @@ export class Game {
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.replay?.dispose();
     this.replay = null;
-    this.killcamReplay?.dispose();
-    this.killcamReplay = null;
-    // (After the replays above hand their bodies back.) Parked bodies are off
+    // (After the replay above hands its bodies back.) Parked bodies are off
     // the scene graph, so disposeScene() below would miss them.
     for (const a of this.replayActorPool.values()) a.dispose(this.scene);
     this.replayActorPool.clear();
@@ -1820,7 +1933,7 @@ export class Game {
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
     const rc = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR);
     const c = rc.data;
-    if (!this.killcamReplay) this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
+    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
     // Recorded so replays (killcam from this shooter's eyes, Play of the Match)
     // redraw other players' rails too, not just yours and the bots'.
     if (b.id && !this.spectator) {
@@ -1832,7 +1945,7 @@ export class Game {
     }
     if (b.id) this.remotePlayers.get(b.id)?.notifyFire(c.helix); // their 3rd-person gun flashes + recharges
     // Their discharge flash at the muzzle, in their rail colour.
-    if (!this.killcamReplay && (!b.id || !this.remotePlayers.get(b.id))) this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
+    if (!b.id || !this.remotePlayers.get(b.id)) this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
     if (this.spectator && b.id === this.spectatedId) {
       this.spectatedShotMs = performance.now();
       this.viewmodelRail?.notifyFire();
@@ -1921,7 +2034,6 @@ export class Game {
     // The clip is normally done by the time the vote resolves; finish it
     // defensively (no-op if not playing) so a fresh match starts clean.
     this.finishPlayOfMatch();
-    this.stopKillcamReplay();
     this.recorder.reset();
     // New match on the winning map: reset local medal/streak + per-run stats
     // (server resets the authoritative scoreboard; HUD reads it from snapshots).
@@ -2123,16 +2235,6 @@ export class Game {
       ) {
         this.recorder.tick(dt, () => this.sampleReplayFrame());
         if (!this.killcam) this.warmReplayActors(dt);
-      }
-      // First-person killcam: drive the replay (it owns the camera) on the
-      // speed curve; it ends with the killcam (respawn, map change, reset).
-      const kr = this.killcamReplay;
-      if (kr) {
-        if (!this.killcam || this.recorder.frames.length === 0) this.stopKillcamReplay();
-        else {
-          kr.setSpeed(this.killcamSpeed(kr.currentT, this.killcamKillT));
-          kr.update(dt);
-        }
       }
     }
     // Skip GL work while the WebGL context is lost (GPU reset / driver hiccup)
@@ -2945,10 +3047,10 @@ export class Game {
     // above stays on the eye line), so the flash sits on the claw it came from.
     const shooter = this.bots?.bots.find((b) => b.state.id === intent.botId);
     const visible = shooter?.gunMuzzle(this.tmpBotMuzzle) ?? origin;
-    if (!this.killcamReplay) this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
+    this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
     // A bot holding a gun flashes its own muzzle claw; the world flash is only
     // the fallback (a gunless capsule).
-    if (!this.killcamReplay && !shooter?.gunMuzzle(this.tmpBotMuzzle)) this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
+    if (!shooter?.gunMuzzle(this.tmpBotMuzzle)) this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
     shooter?.notifyFire(RAIL_HELIX_COLOR);
     this.recorder.logShot({
       origin: { x: visible.x, y: visible.y, z: visible.z }, // the beam as drawn (gun muzzle)
@@ -2964,7 +3066,7 @@ export class Game {
 
     // Landed on someone (instagib = every hit is a kill) → count for accuracy.
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
-    if (!this.killcamReplay) this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
+    this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
     this.recorder.logKill({
       killerId: intent.botId,
       victimId: victimKind === 'player' ? 'you' : victimId,
@@ -2978,9 +3080,7 @@ export class Game {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (victim) {
         const finisher = this.botFinisher(intent.botId);
-        // (While your first-person killcam plays, live world FX stay off: the
-        // camera is in the replay, where they'd be ghosts at the wrong time.)
-        if (!this.killcamReplay) this.spawnKillEffect(
+        this.spawnKillEffect(
           new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
           false,
           finisher,
@@ -3039,7 +3139,6 @@ export class Game {
     this.playerDeaths += 1;
     // Invuln spans the killcam plus a short grace once you respawn.
     this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
-    const bot = this.bots?.bots.find((b) => b.state.id === killerId);
     this.killcam = {
       killerId,
       killerName,
@@ -3048,13 +3147,6 @@ export class Game {
       total: KILLCAM_DURATION_SEC,
       killerKit: this.killerKitOf(killerId),
     };
-    if (bot) {
-      this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
-    } else {
-      this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
-    }
-    // The kill is already logged (handleBotShot) — replay it from the bot's eyes.
-    this.startKillcamReplay(killerId);
     this.pushKillfeed({
       killer: killerName,
       killerLocal: false,
@@ -3160,10 +3252,9 @@ export class Game {
 
     // Dying to the match-ending blow leaves a killcam running; the cinematic
     // replaces it (its gating hid the replay star's gun for the whole finale).
-    this.stopKillcamReplay();
     if (this.killcam) {
       this.killcam = null;
-      this.liftKillerPlate(null);
+      this.showcasePlate(null);
     }
 
     // Hide the live world — the replay renders its own actors on the real map.
@@ -3181,7 +3272,7 @@ export class Game {
   // Spin up the ReplayPlayer for one cinematic segment and surface its overlay.
   private startReplaySegment(i: number) {
     const seg = this.replaySegments[i];
-    const replay = this.makeReplayPlayer('potg');
+    const replay = this.makeReplayPlayer();
     replay.start(seg.clip, this.recorder, seg.opts);
     this.replay = replay;
     // Replay audio treatment (soft low-pass, slow-mo pitch, boundary fade) + the
@@ -3264,10 +3355,7 @@ export class Game {
     }
   }
 
-  // `kind` picks where the star's kills are surfaced (the PotG overlay's hit
-  // marker + kill ticks, or the killcam's) and whether the announcer calls
-  // multi-kills (not over your own death).
-  private makeReplayPlayer(kind: 'potg' | 'killcam'): ReplayPlayer {
+  private makeReplayPlayer(): ReplayPlayer {
     return new ReplayPlayer({
       scene: this.scene,
       camera: this.camera,
@@ -3296,7 +3384,7 @@ export class Game {
       },
       reducedEffects: () => this.reducedEffects,
       // Replay audio: shots, frags + finishers, movement (see replay-audio.ts).
-      sfx: makeReplaySfx(this.audio, { announcer: kind === 'potg' }),
+      sfx: makeReplaySfx(this.audio),
       // The star's own body drives the first-person viewmodel: the two-stage fire
       // kick + muzzle bloom, the coils' discharge + glow pop, hop and landing dip.
       onStarEvent: (ev, strength) => {
@@ -3310,13 +3398,9 @@ export class Game {
       // Each star kill in the clip flashes a crosshair hit-marker so it reads as
       // "they just fragged someone" (the sound is the replay sfx's).
       onStarKill: (headshot) => {
-        if (kind === 'potg' && this.pom) {
+        if (this.pom) {
           this.pom.hitId += 1;
           this.pom.hitHeadshot = headshot;
-        } else if (kind === 'killcam' && this.killcam) {
-          this.killcamHitId += 1;
-          this.killcam.hitId = this.killcamHitId;
-          this.killcam.hitHeadshot = headshot;
         }
         this.emitHud();
       },
@@ -3337,93 +3421,6 @@ export class Game {
   // '' (the viewer's own) for you and for bots, which have none.
   private starCrosshair(id: string): string {
     return id === 'you' ? '' : this.net?.cosmeticsOf(id)?.crosshair ?? '';
-  }
-
-  // ── First-person killcam ───────────────────────────────────────────────────
-
-  // Replay the kill that just ended your life from the killer's eyes (their
-  // gun, finish and crosshair), if the recording covers it: the kill must be
-  // the latest logged one, and the killer must have been seen alive for a
-  // meaningful lead-in. Otherwise the orbit cam (render) stays as the fallback.
-  private startKillcamReplay(killerId: string) {
-    this.stopKillcamReplay();
-    const kc = this.killcam;
-    if (!kc || this.spectator || this.training || this.matchOver || this.vote || this.replay) return;
-    if (killerId === 'you') return;
-    const rec = this.recorder;
-    const k = rec.kills[rec.kills.length - 1];
-    if (!k || k.victimId !== 'you' || k.killerId !== killerId || rec.durationSec - k.t > 0.6) return;
-    const frames = rec.frames;
-    // Recording must be live up to the kill (it stops at its frame cap).
-    if (frames.length < 4 || frames[frames.length - 1].t < k.t - 0.1) return;
-    if (!frames[frames.length - 1].poses[killerId]) return;
-
-    // Wall budget: the slow-mo stretch (ease-in, the kill, the tail) is fixed,
-    // the rest of KILLCAM_DURATION_SEC is real-time lead-in.
-    const reduced = this.reducedEffects;
-    const slowFrom = reduced ? 0 : KILLCAM_POV_SLOW_IN + KILLCAM_POV_RAMP;
-    let slowWall = 0;
-    if (reduced) slowWall = KILLCAM_POV_POST;
-    else {
-      const n = 32;
-      const du = KILLCAM_POV_RAMP / n;
-      for (let i = 0; i < n; i++) slowWall += du / this.killcamSpeed(k.t - slowFrom + (i + 0.5) * du, k.t);
-      slowWall += (KILLCAM_POV_SLOW_IN + KILLCAM_POV_POST) / KILLCAM_POV_SLOW_SCALE;
-    }
-    const lead = KILLCAM_DURATION_SEC - KILLCAM_POV_TAIL - slowWall;
-    let startT = Math.max(frames[0].t, k.t - slowFrom - lead);
-    // The killer must be alive through the lead-in: start after their respawn.
-    for (let i = frames.length - 1; i >= 0; i--) {
-      const f = frames[i];
-      if (f.t > k.t) continue;
-      if (f.t < startT) break;
-      const p = f.poses[killerId];
-      if (!p || !p.visible) {
-        startT = frames[i + 1]?.t ?? k.t;
-        break;
-      }
-    }
-    if (k.t - startT < KILLCAM_POV_MIN_LEAD) return;
-
-    const replay = this.makeReplayPlayer('killcam');
-    replay.start(
-      { starId: killerId, starName: kc.killerName, label: 'KILLCAM', startT, endT: k.t + KILLCAM_POV_POST, kills: [k] },
-      rec,
-      // Hold the frame after the kill until you respawn (the killcam timer ends it).
-      { freezeSec: KILLCAM_DURATION_SEC, aimHoldAfter: k.t },
-    );
-    this.killcamReplay = replay;
-    this.killcamKillT = k.t;
-    this.shake = 0; // the death shake belongs to your body, not the killer's view
-    // Live rails still in flight (the one that just got you among them) would
-    // hang in the replay as ghosts ahead of their time: clear them.
-    this.weapon.disposeAll(this.scene);
-    this.setReplayViewmodel(killerId);
-    kc.pov = true;
-    kc.crosshairCode = this.starCrosshair(killerId);
-    kc.hitId = 0;
-    this.emitHud();
-  }
-
-  // Replay speed at match-time `t` for a kill at `killT`: real time, easing into
-  // the slow-mo KILLCAM_POV_SLOW_IN before the kill and staying slow after it.
-  private killcamSpeed(t: number, killT: number): number {
-    if (this.reducedEffects) return 1;
-    const u = t - (killT - KILLCAM_POV_SLOW_IN - KILLCAM_POV_RAMP);
-    if (u <= 0) return 1;
-    const x = Math.min(1, u / KILLCAM_POV_RAMP);
-    const e = x * x * (3 - 2 * x);
-    return 1 + (KILLCAM_POV_SLOW_SCALE - 1) * e;
-  }
-
-  private stopKillcamReplay() {
-    const kr = this.killcamReplay;
-    if (!kr) return;
-    kr.dispose();
-    this.killcamReplay = null;
-    if (this.killcam) this.killcam.pov = false;
-    // The PotG (if it is taking over) installs its own star's gun right after.
-    if (!this.replay) this.restoreReplayViewmodel();
   }
 
   // A parked replay body for `id` (same name, same model tier), back in the
@@ -3448,10 +3445,32 @@ export class Game {
     this.replayWarmAccum += dt;
     if (this.replayWarmAccum < REPLAY_WARM_SEC) return;
     this.replayWarmAccum = 0;
-    if (!this.botModel || this.replayActorPool.size >= REPLAY_ACTOR_POOL_MAX) return;
-    for (const [id, profile] of this.recorder.profiles) {
-      if (this.replayActorPool.has(id)) continue;
-      this.releaseReplayActor(buildReplayActor(profile, this.scene, this.botModel));
+    if (this.botModel && this.replayActorPool.size < REPLAY_ACTOR_POOL_MAX) {
+      for (const [id, profile] of this.recorder.profiles) {
+        if (this.replayActorPool.has(id)) continue;
+        const actor = buildReplayActor(profile, this.scene, this.botModel);
+        // Compile its programs now too, off-thread (compile walks visible
+        // objects only), so its first replay frame doesn't block on them.
+        actor.group.visible = true;
+        void this.postFx.prewarm(actor.group, 'world').catch(() => undefined);
+        this.releaseReplayActor(actor);
+        return;
+      }
+    }
+    // Then the first-person guns a replay star could hold: a custom-model finish
+    // is a separate build (~8 ms) plus its own shaders, so build + compile it
+    // here, not on the match-ending frame when the cinematic swaps to it.
+    const curKey = gunModelKey(this.viewmodelRail?.modelKey);
+    for (const profile of this.recorder.profiles.values()) {
+      const fid = profile.looks?.finish?.d;
+      if (!fid || !isRailgunFinish(fid)) continue;
+      const finish = railgunFinishById(fid).data;
+      const key = gunModelKey((finish as { model?: string }).model);
+      if (!key || key === curKey || this.vmSpares.has(key) || this.vmSpares.size >= VM_SPARES_MAX) continue;
+      const vm = buildRailgun(finish);
+      vm.setLowSpec(this.lowSpec);
+      void this.postFx.prewarm(vm.group, 'viewmodel').catch(() => undefined);
+      this.stashViewmodel(vm);
       return;
     }
   }
@@ -3584,7 +3603,7 @@ export class Game {
     // Killstreaks for the third-person sheen / eyes (yours is the medal tracker's).
     if (!iAmKiller) this.streaks.set(ev.killerId, (this.streaks.get(ev.killerId) ?? 0) + 1);
     this.streaks.delete(ev.victimId);
-    if (!this.killcamReplay) this.spawnKillEffect(burstAt, ev.headshot, finisher);
+    this.spawnKillEffect(burstAt, ev.headshot, finisher);
 
     if (iAmKiller) {
       // Killer: trust the server-authoritative score (next snapshot will
@@ -3645,7 +3664,6 @@ export class Game {
       this.medals.onDeath();
       this.viewmodelMotion.cancelInspect(true);
       this.playerDeaths += 1;
-      const killer = this.remotePlayers.get(ev.killerId);
       this.killcam = {
         killerId: ev.killerId,
         killerName: ev.killerName,
@@ -3655,18 +3673,6 @@ export class Game {
         killerCard: ev.killerCard,
         killerKit: this.killerKitOf(ev.killerId),
       };
-      // Initialize the killcam's smoothed look-at near the killer's
-      // current position so we don't whip from origin on the first
-      // frame.
-      if (killer) {
-        this.killcamLookAt.set(
-          killer.group.position.x,
-          killer.centerY(),
-          killer.group.position.z,
-        );
-      } else {
-        this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
-      }
     } else {
       // Bystander — just hide the dead remote player briefly.
       const rp = this.remotePlayers.get(ev.victimId);
@@ -3697,8 +3703,6 @@ export class Game {
       killerName: ev.killerName,
       victimName: ev.victimName,
     });
-    // Your death: now that the kill is logged, replay it from the killer's eyes.
-    if (iAmVictim && this.killcam) this.startKillcamReplay(this.replayId(ev.killerId));
   }
 
   private pushKillfeed(
@@ -3793,7 +3797,7 @@ export class Game {
       this.killcam.remaining -= dt;
       if (this.killcam.remaining <= 0) {
         this.killcam = null;
-        this.liftKillerPlate(null);
+        this.showcasePlate(null);
         this.playLocalSpawnEffect(); // you materialize at your new spawn
         this.maybeAnnounceSpawn(); // occasional deploy/encouragement line
       }
@@ -4110,9 +4114,9 @@ export class Game {
 
   private render() {
     if (this.taunt && (this.killcam || this.matchOver || this.vote || this.replay || this.spectator)) this.abortTaunt();
-    if (this.replay || this.killcamReplay) {
-      // Play of the Match / first-person killcam: the ReplayPlayer owns the
-      // camera (positioned in its update() earlier this frame).
+    if (this.replay) {
+      // Play of the Match: the ReplayPlayer owns the camera (positioned in its
+      // update() earlier this frame), so leave it untouched here.
     } else if (this.spectator) {
       // First-person spectator: ride the watched player's eyes + aim. Their pose
       // comes from the interpolated remote snapshot (pitch is transmitted), so we
@@ -4125,57 +4129,7 @@ export class Game {
         this.camera.rotation.set(snap.pitch, snap.yaw, 0, 'YXZ');
       }
     } else if (this.killcam) {
-      // Killcam: track the killer's center (smoothed so them running around
-      // doesn't jitter the shot), then park the camera a FIXED distance from
-      // them — on the side you died from, so you see who shot you up close and
-      // the camera follows them. Long-range frags are framed the same as point
-      // blank instead of showing a distant speck.
-      const killer = this.remotePlayers.get(this.killcam.killerId);
-      const killerBot = killer
-        ? null
-        : this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
-      this.liftKillerPlate(killer ?? killerBot ?? null, killer ? this.net?.remotes.get(killer.id ?? '')?.looks : killerBot?.loadout);
-      const targetX = killer
-        ? killer.group.position.x
-        : killerBot
-          ? killerBot.state.pos.x
-          : this.killcam.deathPos.x;
-      const targetY = killer
-        ? killer.centerY()
-        : killerBot
-          ? killerBot.centerY()
-          : this.killcam.deathPos.y + 1.5;
-      const targetZ = killer
-        ? killer.group.position.z
-        : killerBot
-          ? killerBot.state.pos.z
-          : this.killcam.deathPos.z;
-      // Exponential smoothing toward the target (real dt → framerate-independent).
-      const dt = this.frameDt;
-      const a = 1 - Math.exp(-6 * dt);
-      this.killcamLookAt.x += (targetX - this.killcamLookAt.x) * a;
-      this.killcamLookAt.y += (targetY - this.killcamLookAt.y) * a;
-      this.killcamLookAt.z += (targetZ - this.killcamLookAt.z) * a;
-      const look = this.killcamLookAt;
-      // Horizontal direction from the killer back toward where you died (so the
-      // camera is on your side, looking at the killer roughly face-on). Falls
-      // back to a fixed axis for a point-blank frag (killer ≈ death spot).
-      let dx = this.killcam.deathPos.x - look.x;
-      let dz = this.killcam.deathPos.z - look.z;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.5) {
-        dx = 0;
-        dz = 1;
-      } else {
-        dx /= len;
-        dz /= len;
-      }
-      this.camera.position.set(
-        look.x + dx * KILLCAM_DIST,
-        look.y + KILLCAM_HEIGHT,
-        look.z + dz * KILLCAM_DIST,
-      );
-      this.camera.lookAt(look);
+      this.placeKillcamCamera(this.killcam);
     } else {
       // Interpolate the camera between the last two 64Hz sim positions by the
       // leftover accumulator fraction, so motion is smooth at any refresh rate
@@ -4205,7 +4159,7 @@ export class Game {
     }
     // Screen shake: jitter the camera position, decaying each frame. (Skipped
     // during the PoM replay — the ReplayPlayer owns the camera.)
-    if (!this.replay && !this.killcamReplay && this.shake > 1e-4) {
+    if (!this.replay && this.shake > 1e-4) {
       this.camera.position.x += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
@@ -4217,8 +4171,7 @@ export class Game {
     // zoom-out back to gameplay when the killcam ends.
     const zooming =
       this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote && !this.replay;
-    // (The first-person killcam keeps the gameplay FOV: it should read as their screen.)
-    const targetFov = this.killcam && !this.killcamReplay ? KILLCAM_FOV : zooming ? this.zoomFov : this.baseFov;
+    const targetFov = this.killcam ? KILLCAM_FOV : zooming ? this.zoomFov : this.baseFov;
     if (Math.abs(this.camera.fov - targetFov) > 0.01) {
       this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 * this.frameDt));
       this.camera.updateProjectionMatrix();
@@ -4257,10 +4210,10 @@ export class Game {
       const specSnap =
         this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
       const specPov = !!specSnap;
-      // A replay (Play of the Match / the first-person killcam) shows the star's
-      // gun even while you're dead — only the orbit killcam hides it. A freshly
-      // built gun waits for its shaders (vmWarming) instead of stalling a frame.
-      const rp = this.replay ?? this.killcamReplay;
+      // The Play of the Match shows the star's gun even if a killcam was still
+      // up; the third-person killcam hides it. A freshly built gun waits for its
+      // shaders (vmWarming) instead of stalling a frame.
+      const rp = this.replay;
       this.viewmodel.visible =
         !this.hideViewmodel && !this.vmWarming && (this.locked || specPov || !!rp) && (!this.killcam || !!rp) && !this.taunt;
       if (rp && this.viewmodelRail) {
@@ -4324,7 +4277,7 @@ export class Game {
     // vignette follows reduced-effects each frame; the sun's shadow box is
     // re-centred under the (now finalized) camera inside render().
     this.postFx.muteVignette(this.reducedEffects);
-    if (this.replay || this.killcamReplay) this.hideLiveBodiesForReplay();
+    if (this.replay) this.hideLiveBodiesForReplay();
     this.postFx.render();
     for (const g of this.tauntHidden) g.visible = true;
     this.tauntHidden.length = 0;
@@ -4372,6 +4325,11 @@ export class Game {
 // Registry id of a map (drives the per-map audio: room, surface, ambience).
 function mapIdOf(map: ArenaMap): string {
   return MAPS.find((m) => m.map === map)?.id ?? map.name.toLowerCase().replace(/\s+/g, '');
+}
+
+// A railgun finish's custom-model key ('' = the standard gun).
+function gunModelKey(v: unknown): string {
+  return !v || v === 'default' || v === 'standard' ? '' : String(v);
 }
 
 // Small stable string hash (for picking a per-bot spawn-effect style).

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 
 // Procedural canvas textures for the results podium — no image assets. Every
-// helper returns textures the caller owns and must dispose.
+// helper returns textures the caller owns and must dispose. The expensive fixed
+// ones (wall, floor, marble, brushed metal, glows) draw their canvas once per
+// session and share it (cachedCanvas); prewarmPodiumTextures() draws them early.
 
 export const PODIUM_FONT = '"Chakra Petch", "Geist", system-ui, sans-serif';
 
@@ -21,6 +23,18 @@ function makeCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingCo
   cv.width = w;
   cv.height = h;
   return [cv, cv.getContext('2d')!];
+}
+
+// A procedural canvas, drawn once per key for the session (the texture wrapping
+// it is per caller; disposing that never touches the canvas).
+const canvasCache = new Map<string, HTMLCanvasElement>();
+function cachedCanvas(key: string, draw: () => HTMLCanvasElement): HTMLCanvasElement {
+  let cv = canvasCache.get(key);
+  if (!cv) {
+    cv = draw();
+    canvasCache.set(key, cv);
+  }
+  return cv;
 }
 
 function tex(cv: HTMLCanvasElement, srgb = true, aniso = 4): THREE.CanvasTexture {
@@ -44,57 +58,60 @@ export function roundRectPath(c: CanvasRenderingContext2D, x: number, y: number,
 // seam / rivet detailing used on the plinth body. Used as both map and bump.
 export function brushedMetal(base: string, seed: number, opts: { streak?: number; frame?: boolean; size?: number } = {}) {
   const size = opts.size ?? 512;
-  const [cv, c] = makeCanvas(size, size);
-  const rnd = mulberry32(seed);
-  c.fillStyle = base;
-  c.fillRect(0, 0, size, size);
-  // Soft vertical banding (anisotropic sheen).
-  const g = c.createLinearGradient(0, 0, 0, size);
-  g.addColorStop(0, 'rgba(255,255,255,0.10)');
-  g.addColorStop(0.5, 'rgba(0,0,0,0.10)');
-  g.addColorStop(1, 'rgba(255,255,255,0.05)');
-  c.fillStyle = g;
-  c.fillRect(0, 0, size, size);
-  const streak = opts.streak ?? 0.11;
-  for (let i = 0; i < size * 5; i++) {
-    const y = rnd() * size;
-    const x = rnd() * size;
-    const len = size * (0.15 + rnd() * 0.7);
-    c.strokeStyle = rnd() > 0.5 ? `rgba(255,255,255,${rnd() * streak})` : `rgba(0,0,0,${rnd() * streak * 1.4})`;
-    c.lineWidth = rnd() > 0.85 ? 2 : 1;
-    for (const ox of [0, -size]) {
-      c.beginPath();
-      c.moveTo(x + ox, y);
-      c.lineTo(x + ox + len, y);
+  const cv = cachedCanvas(`bm:${base}:${seed}:${opts.streak ?? ''}:${opts.frame ? 1 : 0}:${size}`, () => {
+    const [cv, c] = makeCanvas(size, size);
+    const rnd = mulberry32(seed);
+    c.fillStyle = base;
+    c.fillRect(0, 0, size, size);
+    // Soft vertical banding (anisotropic sheen).
+    const g = c.createLinearGradient(0, 0, 0, size);
+    g.addColorStop(0, 'rgba(255,255,255,0.10)');
+    g.addColorStop(0.5, 'rgba(0,0,0,0.10)');
+    g.addColorStop(1, 'rgba(255,255,255,0.05)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, size, size);
+    const streak = opts.streak ?? 0.11;
+    for (let i = 0; i < size * 5; i++) {
+      const y = rnd() * size;
+      const x = rnd() * size;
+      const len = size * (0.15 + rnd() * 0.7);
+      c.strokeStyle = rnd() > 0.5 ? `rgba(255,255,255,${rnd() * streak})` : `rgba(0,0,0,${rnd() * streak * 1.4})`;
+      c.lineWidth = rnd() > 0.85 ? 2 : 1;
+      for (const ox of [0, -size]) {
+        c.beginPath();
+        c.moveTo(x + ox, y);
+        c.lineTo(x + ox + len, y);
+        c.stroke();
+      }
+    }
+    if (opts.frame) {
+      // Inset panel seam (dark groove + lit lip) and corner rivets.
+      const m = size * 0.045;
+      c.lineWidth = 3;
+      c.strokeStyle = 'rgba(0,0,0,0.65)';
+      roundRectPath(c, m, m, size - m * 2, size - m * 2, 10);
       c.stroke();
+      c.lineWidth = 1.5;
+      c.strokeStyle = 'rgba(255,255,255,0.16)';
+      roundRectPath(c, m + 3, m + 3, size - m * 2, size - m * 2, 10);
+      c.stroke();
+      for (const [rx, ry] of [
+        [m * 2.1, m * 2.1],
+        [size - m * 2.1, m * 2.1],
+        [m * 2.1, size - m * 2.1],
+        [size - m * 2.1, size - m * 2.1],
+      ]) {
+        const rg = c.createRadialGradient(rx - 2, ry - 2, 1, rx, ry, 7);
+        rg.addColorStop(0, 'rgba(255,255,255,0.5)');
+        rg.addColorStop(1, 'rgba(0,0,0,0.6)');
+        c.fillStyle = rg;
+        c.beginPath();
+        c.arc(rx, ry, 6, 0, Math.PI * 2);
+        c.fill();
+      }
     }
-  }
-  if (opts.frame) {
-    // Inset panel seam (dark groove + lit lip) and corner rivets.
-    const m = size * 0.045;
-    c.lineWidth = 3;
-    c.strokeStyle = 'rgba(0,0,0,0.65)';
-    roundRectPath(c, m, m, size - m * 2, size - m * 2, 10);
-    c.stroke();
-    c.lineWidth = 1.5;
-    c.strokeStyle = 'rgba(255,255,255,0.16)';
-    roundRectPath(c, m + 3, m + 3, size - m * 2, size - m * 2, 10);
-    c.stroke();
-    for (const [rx, ry] of [
-      [m * 2.1, m * 2.1],
-      [size - m * 2.1, m * 2.1],
-      [m * 2.1, size - m * 2.1],
-      [size - m * 2.1, size - m * 2.1],
-    ]) {
-      const rg = c.createRadialGradient(rx - 2, ry - 2, 1, rx, ry, 7);
-      rg.addColorStop(0, 'rgba(255,255,255,0.5)');
-      rg.addColorStop(1, 'rgba(0,0,0,0.6)');
-      c.fillStyle = rg;
-      c.beginPath();
-      c.arc(rx, ry, 6, 0, Math.PI * 2);
-      c.fill();
-    }
-  }
+    return cv;
+  });
   const t = tex(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
@@ -102,29 +119,32 @@ export function brushedMetal(base: string, seed: number, opts: { streak?: number
 
 // Dark veined "marble" — used for the base step. Value-noise veins.
 export function darkMarble(seed: number, size = 512) {
-  const [cv, c] = makeCanvas(size, size);
-  const rnd = mulberry32(seed);
-  const g = c.createLinearGradient(0, 0, size, size);
-  g.addColorStop(0, '#171d28');
-  g.addColorStop(1, '#0e131b');
-  c.fillStyle = g;
-  c.fillRect(0, 0, size, size);
-  for (let v = 0; v < 26; v++) {
-    let x = rnd() * size;
-    let y = rnd() * size;
-    let a = rnd() * Math.PI * 2;
-    c.strokeStyle = `rgba(190,215,255,${0.03 + rnd() * 0.08})`;
-    c.lineWidth = 0.6 + rnd() * 1.6;
-    c.beginPath();
-    c.moveTo(x, y);
-    for (let s = 0; s < 40; s++) {
-      a += (rnd() - 0.5) * 0.9;
-      x += Math.cos(a) * 12;
-      y += Math.sin(a) * 12;
-      c.lineTo(x, y);
+  const cv = cachedCanvas(`marble:${seed}:${size}`, () => {
+    const [cv, c] = makeCanvas(size, size);
+    const rnd = mulberry32(seed);
+    const g = c.createLinearGradient(0, 0, size, size);
+    g.addColorStop(0, '#171d28');
+    g.addColorStop(1, '#0e131b');
+    c.fillStyle = g;
+    c.fillRect(0, 0, size, size);
+    for (let v = 0; v < 26; v++) {
+      let x = rnd() * size;
+      let y = rnd() * size;
+      let a = rnd() * Math.PI * 2;
+      c.strokeStyle = `rgba(190,215,255,${0.03 + rnd() * 0.08})`;
+      c.lineWidth = 0.6 + rnd() * 1.6;
+      c.beginPath();
+      c.moveTo(x, y);
+      for (let s = 0; s < 40; s++) {
+        a += (rnd() - 0.5) * 0.9;
+        x += Math.cos(a) * 12;
+        y += Math.sin(a) * 12;
+        c.lineTo(x, y);
+      }
+      c.stroke();
     }
-    c.stroke();
-  }
+    return cv;
+  });
   const t = tex(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
@@ -132,39 +152,42 @@ export function darkMarble(seed: number, size = 512) {
 
 // Stage floor: dark glossy tiles with hairline seams and a faint lit inlay.
 export function stageFloor(seed: number, size = 1024) {
-  const [cv, c] = makeCanvas(size, size);
-  const rnd = mulberry32(seed);
-  c.fillStyle = '#0d121a';
-  c.fillRect(0, 0, size, size);
-  const n = 8;
-  const cell = size / n;
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      const s = 0.02 + rnd() * 0.035;
-      c.fillStyle = `rgba(150,180,230,${s})`;
-      c.fillRect(i * cell + 2, j * cell + 2, cell - 4, cell - 4);
+  const cv = cachedCanvas(`floor:${seed}:${size}`, () => {
+    const [cv, c] = makeCanvas(size, size);
+    const rnd = mulberry32(seed);
+    c.fillStyle = '#0d121a';
+    c.fillRect(0, 0, size, size);
+    const n = 8;
+    const cell = size / n;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const s = 0.02 + rnd() * 0.035;
+        c.fillStyle = `rgba(150,180,230,${s})`;
+        c.fillRect(i * cell + 2, j * cell + 2, cell - 4, cell - 4);
+      }
     }
-  }
-  c.strokeStyle = 'rgba(0,0,0,0.9)';
-  c.lineWidth = 5;
-  for (let k = 0; k <= n; k++) {
-    c.beginPath();
-    c.moveTo(k * cell, 0);
-    c.lineTo(k * cell, size);
-    c.moveTo(0, k * cell);
-    c.lineTo(size, k * cell);
-    c.stroke();
-  }
-  c.strokeStyle = 'rgba(90,200,255,0.10)';
-  c.lineWidth = 1.5;
-  for (let k = 0; k <= n; k++) {
-    c.beginPath();
-    c.moveTo(k * cell + 3, 0);
-    c.lineTo(k * cell + 3, size);
-    c.moveTo(0, k * cell + 3);
-    c.lineTo(size, k * cell + 3);
-    c.stroke();
-  }
+    c.strokeStyle = 'rgba(0,0,0,0.9)';
+    c.lineWidth = 5;
+    for (let k = 0; k <= n; k++) {
+      c.beginPath();
+      c.moveTo(k * cell, 0);
+      c.lineTo(k * cell, size);
+      c.moveTo(0, k * cell);
+      c.lineTo(size, k * cell);
+      c.stroke();
+    }
+    c.strokeStyle = 'rgba(90,200,255,0.10)';
+    c.lineWidth = 1.5;
+    for (let k = 0; k <= n; k++) {
+      c.beginPath();
+      c.moveTo(k * cell + 3, 0);
+      c.lineTo(k * cell + 3, size);
+      c.moveTo(0, k * cell + 3);
+      c.lineTo(size, k * cell + 3);
+      c.stroke();
+    }
+    return cv;
+  });
   const t = tex(cv, true, 8);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
@@ -204,76 +227,82 @@ export function numeralPlate(n: number, medalHex: string, size = 256) {
 
 // Soft radial glow (additive sprites / floor pools / halo).
 export function radialGlow(size = 256, stops: Array<[number, string]> = [[0, 'rgba(255,255,255,1)'], [0.35, 'rgba(255,255,255,0.35)'], [1, 'rgba(255,255,255,0)']]) {
-  const [cv, c] = makeCanvas(size, size);
-  const g = c.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  for (const [o, col] of stops) g.addColorStop(o, col);
-  c.fillStyle = g;
-  c.fillRect(0, 0, size, size);
+  const cv = cachedCanvas(`glow:${size}:${JSON.stringify(stops)}`, () => {
+    const [cv, c] = makeCanvas(size, size);
+    const g = c.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    for (const [o, col] of stops) g.addColorStop(o, col);
+    c.fillStyle = g;
+    c.fillRect(0, 0, size, size);
+    return cv;
+  });
   return tex(cv);
 }
 
 // The arena wall: dark panelled steel, a lit horizon band, vertical light strips
 // and a vignette. Drawn wide; the mesh stretches it behind the stage.
 export function arenaWall(seed: number, w = 2048, h = 768) {
-  const [cv, c] = makeCanvas(w, h);
-  const rnd = mulberry32(seed);
-  const g = c.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, '#0a1020');
-  g.addColorStop(0.45, '#182238');
-  g.addColorStop(0.78, '#0f1626');
-  g.addColorStop(1, '#070a11');
-  c.fillStyle = g;
-  c.fillRect(0, 0, w, h);
-  // Big panel grid.
-  const pw = w / 16;
-  const ph = h / 6;
-  for (let j = 0; j < 6; j++) {
-    for (let i = 0; i < 16; i++) {
-      c.fillStyle = `rgba(150,185,255,${0.012 + rnd() * 0.035})`;
-      c.fillRect(i * pw + 3, j * ph + 3, pw - 6, ph - 6);
+  const cv = cachedCanvas(`wall:${seed}:${w}x${h}`, () => {
+    const [cv, c] = makeCanvas(w, h);
+    const rnd = mulberry32(seed);
+    const g = c.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#0a1020');
+    g.addColorStop(0.45, '#182238');
+    g.addColorStop(0.78, '#0f1626');
+    g.addColorStop(1, '#070a11');
+    c.fillStyle = g;
+    c.fillRect(0, 0, w, h);
+    // Big panel grid.
+    const pw = w / 16;
+    const ph = h / 6;
+    for (let j = 0; j < 6; j++) {
+      for (let i = 0; i < 16; i++) {
+        c.fillStyle = `rgba(150,185,255,${0.012 + rnd() * 0.035})`;
+        c.fillRect(i * pw + 3, j * ph + 3, pw - 6, ph - 6);
+      }
     }
-  }
-  c.strokeStyle = 'rgba(0,0,0,0.6)';
-  c.lineWidth = 3;
-  for (let i = 0; i <= 16; i++) {
-    c.beginPath();
-    c.moveTo(i * pw, 0);
-    c.lineTo(i * pw, h);
-    c.stroke();
-  }
-  for (let j = 0; j <= 6; j++) {
-    c.beginPath();
-    c.moveTo(0, j * ph);
-    c.lineTo(w, j * ph);
-    c.stroke();
-  }
-  // Horizon band glow behind the podium.
-  const band = c.createLinearGradient(0, h * 0.5, 0, h * 0.82);
-  band.addColorStop(0, 'rgba(60,150,255,0)');
-  band.addColorStop(0.5, 'rgba(70,170,255,0.20)');
-  band.addColorStop(1, 'rgba(60,150,255,0)');
-  c.fillStyle = band;
-  c.fillRect(0, h * 0.5, w, h * 0.32);
-  // Lit horizontal strips.
-  for (const [y, a] of [
-    [h * 0.3, 0.55],
-    [h * 0.335, 0.25],
-  ] as const) {
-    const sg = c.createLinearGradient(0, 0, w, 0);
-    sg.addColorStop(0, 'rgba(60,200,255,0)');
-    sg.addColorStop(0.5, `rgba(120,225,255,${a})`);
-    sg.addColorStop(1, 'rgba(60,200,255,0)');
-    c.fillStyle = sg;
-    c.fillRect(0, y, w, 3);
-  }
-  // Side vignette.
-  const v = c.createLinearGradient(0, 0, w, 0);
-  v.addColorStop(0, 'rgba(0,0,0,0.75)');
-  v.addColorStop(0.25, 'rgba(0,0,0,0)');
-  v.addColorStop(0.75, 'rgba(0,0,0,0)');
-  v.addColorStop(1, 'rgba(0,0,0,0.75)');
-  c.fillStyle = v;
-  c.fillRect(0, 0, w, h);
+    c.strokeStyle = 'rgba(0,0,0,0.6)';
+    c.lineWidth = 3;
+    for (let i = 0; i <= 16; i++) {
+      c.beginPath();
+      c.moveTo(i * pw, 0);
+      c.lineTo(i * pw, h);
+      c.stroke();
+    }
+    for (let j = 0; j <= 6; j++) {
+      c.beginPath();
+      c.moveTo(0, j * ph);
+      c.lineTo(w, j * ph);
+      c.stroke();
+    }
+    // Horizon band glow behind the podium.
+    const band = c.createLinearGradient(0, h * 0.5, 0, h * 0.82);
+    band.addColorStop(0, 'rgba(60,150,255,0)');
+    band.addColorStop(0.5, 'rgba(70,170,255,0.20)');
+    band.addColorStop(1, 'rgba(60,150,255,0)');
+    c.fillStyle = band;
+    c.fillRect(0, h * 0.5, w, h * 0.32);
+    // Lit horizontal strips.
+    for (const [y, a] of [
+      [h * 0.3, 0.55],
+      [h * 0.335, 0.25],
+    ] as const) {
+      const sg = c.createLinearGradient(0, 0, w, 0);
+      sg.addColorStop(0, 'rgba(60,200,255,0)');
+      sg.addColorStop(0.5, `rgba(120,225,255,${a})`);
+      sg.addColorStop(1, 'rgba(60,200,255,0)');
+      c.fillStyle = sg;
+      c.fillRect(0, y, w, 3);
+    }
+    // Side vignette.
+    const v = c.createLinearGradient(0, 0, w, 0);
+    v.addColorStop(0, 'rgba(0,0,0,0.75)');
+    v.addColorStop(0.25, 'rgba(0,0,0,0)');
+    v.addColorStop(0.75, 'rgba(0,0,0,0)');
+    v.addColorStop(1, 'rgba(0,0,0,0.75)');
+    c.fillStyle = v;
+    c.fillRect(0, 0, w, h);
+    return cv;
+  });
   const t = tex(cv);
   return t;
 }
@@ -352,4 +381,31 @@ export function namePlate(p: PlateSpec) {
     c.fillText('YOU', W - 44, 244);
   }
   return tex(cv, true, 8);
+}
+
+// The podium's fixed texture set, with the exact arguments podium.ts builds it
+// from (keep the two in step): drawn one per task ahead of the results screen
+// (at match load), so the podium only wraps cached canvases when it appears.
+export const PODIUM_MEDAL_BASE = ['#b98a22', '#8d97a6', '#94592b']; // brushed cap tints
+export const PODIUM_GLOW_STOPS: Array<[number, string]> = [
+  [0, 'rgba(255,214,120,0.9)'],
+  [0.4, 'rgba(255,190,90,0.22)'],
+  [1, 'rgba(255,170,60,0)'],
+];
+export async function prewarmPodiumTextures(): Promise<void> {
+  if (typeof document === 'undefined') return;
+  const jobs: Array<() => THREE.Texture> = [
+    () => arenaWall(7),
+    () => stageFloor(11),
+    () => darkMarble(3),
+    () => brushedMetal('#262f3d', 21, { frame: true }),
+    ...PODIUM_MEDAL_BASE.map((b, i) => () => brushedMetal(b, 40 + i, { streak: 0.16 })),
+    () => radialGlow(256, PODIUM_GLOW_STOPS),
+    () => radialGlow(128),
+    () => radialGlow(64),
+  ];
+  for (const job of jobs) {
+    job().dispose();
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }

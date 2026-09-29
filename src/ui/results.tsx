@@ -46,20 +46,38 @@ function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWi
 // Mounts the Three.js podium scene on a canvas and tears it down on unmount.
 function PodiumResults({ winners, lowSpec, reduced }: { winners: PodiumWinner[]; lowSpec: boolean; reduced: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // The 3D stage never holds up the results panel: it starts building after the
+  // panel's first paint, in short tasks, and fades in on its first frame.
+  const [shown, setShown] = useState(false);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
-    const scene = new PodiumScene(canvas, { lowSpec, reducedEffects: reduced });
-    void scene.setWinners(winners);
-    scene.start();
-    const onResize = () => scene.resize();
-    window.addEventListener('resize', onResize);
+    let scene: PodiumScene | null = null;
+    let timer = 0;
+    const onResize = () => scene?.resize();
+    // rAF → timeout: runs just after the frame that paints the panel.
+    const raf = requestAnimationFrame(() => {
+      timer = window.setTimeout(() => {
+        scene = new PodiumScene(canvas, { lowSpec, reducedEffects: reduced, onFirstFrame: () => setShown(true) });
+        void scene.setWinners(winners);
+        scene.start();
+        window.addEventListener('resize', onResize);
+      }, 0);
+    });
     return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
       window.removeEventListener('resize', onResize);
-      scene.dispose();
+      scene?.dispose();
     };
   }, [winners, lowSpec, reduced]);
-  return <canvas ref={ref} className='block h-full w-full' />;
+  return (
+    <canvas
+      ref={ref}
+      className='block h-full w-full'
+      style={{ opacity: shown ? 1 : 0, transition: reduced ? undefined : 'opacity 420ms ease-out' }}
+    />
+  );
 }
 
 export type ResultsMode = 'ffa' | 'tdm' | 'duel';
