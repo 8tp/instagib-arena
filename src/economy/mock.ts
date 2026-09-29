@@ -15,12 +15,17 @@ import {
   TIER_META,
   TRADE,
   UNUSUAL_EFFECTS,
+  REWARD_LIMITS,
   type CaseId,
+  type InboxMessageWire,
   type ItemAttrs,
   type ItemInstanceWire,
   type ItemSlot,
   type Loadout,
   type Quality,
+  type RedeemCodeWire,
+  type RewardBundle,
+  type RewardItemSpec,
   type Tier,
 } from '../game/items/types';
 import type {
@@ -43,13 +48,23 @@ import type {
   OfferBody,
   OpenCaseResp,
   CasePay,
+  ClaimResp,
+  CreateCodeBody,
+  GiftBody,
+  Granted,
+  InboxResp,
+  InboxSummary,
+  PlayerHit,
   PlayerInvResp,
+  RedeemResp,
+  Redemption,
   Res,
   SalvageResp,
   Trade,
   TradesResp,
 } from './api';
 import { instBaseName, instTier, marketFloor, listingFee, instLook } from './display';
+import { specQualities } from '../inbox/reward';
 
 const ok = <T>(d: T): Res<T> => ({ ...d, ok: true }) as unknown as Res<T>;
 const fail = (status: number, reason: string): Res<never> => ({ ok: false, status, reason });
@@ -591,3 +606,204 @@ export function adminHistory(uid: string): Promise<Res<ItemHistoryResp>> {
   return delay(ok({ item: it, owner: ME, events: ev }), 80);
 }
 
+
+// ── Inbox + redeem codes (docs/economy.md §7b) ──────────────────────────────
+// ?mockInbox=empty starts with no messages; ?mockInbox=error fails the list.
+const mockInboxMode = (): string => new URLSearchParams(window.location.search).get('mockInbox') ?? '';
+const IB = {
+  seeded: false,
+  seq: 40,
+  messages: [] as InboxMessageWire[],
+  codes: [] as RedeemCodeWire[],
+  redemptions: {} as Record<string, Redemption[]>,
+  fails: [] as number[],
+};
+const HOUR = 3600_000;
+function ibMsg(m: Partial<InboxMessageWire> & Pick<InboxMessageWire, 'kind' | 'title'>): InboxMessageWire {
+  return { id: IB.seq++, body: '', sender: 'Instagib Staff', createdAt: Date.now(), readAt: 0, claimedAt: 0, expiresAt: 0, reward: {}, granted: [], ...m };
+}
+function ibCode(c: Partial<RedeemCodeWire> & Pick<RedeemCodeWire, 'code' | 'reward'>): RedeemCodeWire {
+  return { note: '', maxUses: 0, uses: 0, expiresAt: 0, minLevel: 0, active: true, createdBy: 'Huddled', createdAt: Date.now() - 2 * DAY, ...c };
+}
+function ibEnsure() {
+  ensure();
+  if (IB.seeded) return;
+  IB.seeded = true;
+  IB.codes.push(
+    ibCode({ code: 'WELCOME-ARENA', reward: { credits: 500, rolls: 3, items: [{ def: 'hat.tophat', quality: ['unusual'], attrs: { effect: 'fx.sunbeams' }, bound: true }] }, note: 'Welcome to the arena. Have a hat on us.', maxUses: 1000, uses: 212 }),
+    ibCode({ code: 'LAUNCH-2026', reward: { credits: 250 }, maxUses: 100, uses: 100, createdAt: Date.now() - 9 * DAY }),
+    ibCode({ code: 'SUMMER-HEAT', reward: { rolls: 5 }, expiresAt: Date.now() - DAY, uses: 57, createdAt: Date.now() - 40 * DAY }),
+    ibCode({ code: 'VETERAN-50', reward: { items: [{ def: 'back.wings.energy', quality: ['strange'], attrs: { kills: 0 } }] }, minLevel: 50, uses: 3 }),
+  );
+  IB.redemptions['WELCOME-ARENA'] = [
+    { player: 'Kestrel', at: Date.now() - 3 * HOUR },
+    { player: 'Nyx', at: Date.now() - 20 * HOUR },
+  ];
+  if (mockInboxMode() === 'empty') return;
+  const receiptItem = make('face.aviators', { origin: 'code', createdAt: Date.now() - 3 * DAY });
+  S.items.push(receiptItem);
+  IB.messages.push(
+    ibMsg({ kind: 'code', title: 'Code redeemed: LAUNCH-2026', body: 'Thanks for playing Instagib Arena.', createdAt: Date.now() - 3 * DAY, readAt: Date.now() - 3 * DAY, claimedAt: Date.now() - 3 * DAY, reward: { credits: 250, items: [{ def: 'face.aviators' }] }, granted: [receiptItem] }),
+    ibMsg({ kind: 'system', title: 'Season 0 is live', body: 'Cases now drop the Origins collection. Older items stay yours forever — tradable, equippable, and tagged with their season.', createdAt: Date.now() - 26 * HOUR, readAt: Date.now() - 20 * HOUR }),
+    ibMsg({
+      kind: 'gift',
+      title: 'Thanks for playtesting!',
+      body: 'You found bugs, you sent clips, you kept the servers warm. Here’s a little something from all of us.',
+      createdAt: Date.now() - 2 * HOUR,
+      expiresAt: Date.now() + 6 * DAY,
+      reward: {
+        credits: 1500,
+        rolls: 5,
+        items: [
+          { def: 'hat.crown', quality: ['unusual'], attrs: { effect: 'fx.galaxy' }, bound: true },
+          { def: 'gun.gold', quality: ['strange', 'killstreak'], attrs: { kills: 0, sheen: 'sheen.violet', seed: 77, wear: 0.03 } },
+        ],
+      },
+    }),
+    ibMsg({ kind: 'gift', title: 'Weekend double-XP bonus', body: 'A few free rolls for the weekend grind.', createdAt: Date.now() - 20 * 60_000, reward: { rolls: 3 } }),
+  );
+}
+const ibCounts = (): InboxSummary => ({
+  unread: IB.messages.filter((m) => !m.readAt).length,
+  unclaimed: IB.messages.filter((m) => !m.claimedAt && (m.reward.credits || m.reward.rolls || m.reward.items?.length) && (!m.expiresAt || m.expiresAt > Date.now())).length,
+});
+// Mint a bundle into the mock inventory (no validation beyond known defs).
+function ibGrant(b: RewardBundle, origin: 'code' | 'gift'): Granted {
+  S.credits += b.credits ?? 0;
+  S.freeRolls += b.rolls ?? 0;
+  const items = (b.items ?? []).map((spec) => {
+    const { tier, ...attrs } = (spec.attrs ?? {}) as ItemAttrs & { tier?: Tier };
+    const it = make(spec.def, { quality: specQualities(spec), attrs, origin, tradable: !spec.bound && (itemDef(spec.def)?.tradable ?? true), tier: spec.tier ?? tier, createdAt: Date.now() });
+    S.items.push(it);
+    return { ...it };
+  });
+  return { credits: b.credits ?? 0, rolls: b.rolls ?? 0, items };
+}
+function mockValidate(raw: RewardBundle | undefined): string | null {
+  const b = raw ?? {};
+  const int = (v: unknown, max: number) => v == null || (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= max);
+  if (!int(b.credits, REWARD_LIMITS.credits)) return 'bad_credits';
+  if (!int(b.rolls, REWARD_LIMITS.rolls)) return 'bad_rolls';
+  const items = b.items ?? [];
+  if (items.length > REWARD_LIMITS.items) return 'bad_items';
+  for (const it of items as RewardItemSpec[]) {
+    const d = itemDef(it.def);
+    if (!d) return 'item_unknown_def';
+    if (d.default || d.slot === 'card' || d.slot === 'title') return 'item_not_an_item';
+  }
+  if (!b.credits && !b.rolls && items.length === 0) return 'empty_reward';
+  return null;
+}
+
+export function inbox(): Promise<Res<InboxResp>> {
+  ibEnsure();
+  if (mockInboxMode() === 'error') return delay(fail(500, 'network'), 300);
+  return delay(ok({ messages: [...IB.messages].sort((a, b) => b.id - a.id).map((m) => ({ ...m })), ...ibCounts() }), 180);
+}
+export function inboxSummary(): Promise<Res<InboxSummary>> {
+  ibEnsure();
+  return delay(ok(ibCounts()), 60);
+}
+export function inboxRead(id: number | 'all'): Promise<Res<object>> {
+  ibEnsure();
+  for (const m of IB.messages) if ((id === 'all' || m.id === id) && !m.readAt) m.readAt = Date.now();
+  return delay(ok({}), 60);
+}
+export function inboxClaim(id: number): Promise<Res<ClaimResp>> {
+  ibEnsure();
+  const m = IB.messages.find((x) => x.id === id);
+  if (!m) return delay(fail(404, 'not_found'));
+  if (m.claimedAt) return delay(fail(400, 'claimed'));
+  if (m.expiresAt && m.expiresAt <= Date.now()) return delay(fail(400, 'expired'));
+  if (!m.reward.credits && !m.reward.rolls && !m.reward.items?.length) return delay(fail(400, 'nothing'));
+  const granted = ibGrant(m.reward, 'gift');
+  m.claimedAt = Date.now();
+  m.readAt ||= m.claimedAt;
+  m.granted = granted.items;
+  return delay(ok({ message: { ...m }, granted, credits: S.credits, freeRolls: S.freeRolls }), 380);
+}
+export function redeem(raw: string): Promise<Res<RedeemResp>> {
+  ibEnsure();
+  const now = Date.now();
+  IB.fails = IB.fails.filter((t) => t > now - 10 * 60_000);
+  if (IB.fails.length >= 10) return delay(fail(429, 'too_many_attempts'));
+  const code = raw.trim().toUpperCase().replace(/\s+/g, '');
+  const miss = (r: string) => {
+    IB.fails.push(now);
+    return delay(fail(400, r));
+  };
+  if (!/^[A-Z0-9][A-Z0-9-]{2,31}$/.test(code)) return miss('bad_code');
+  const c = IB.codes.find((x) => x.code === code);
+  if (!c) return miss('not_found');
+  if (!c.active) return delay(fail(400, 'inactive'));
+  if (c.expiresAt && c.expiresAt <= now) return delay(fail(400, 'expired'));
+  if (c.maxUses > 0 && c.uses >= c.maxUses) return delay(fail(400, 'used_up'));
+  if ((IB.redemptions[code] ?? []).some((r) => r.player === ME)) return delay(fail(400, 'already_redeemed'));
+  if (c.minLevel > S.level) return delay({ ok: false, status: 400, reason: 'level', error: 'level', need: c.minLevel } as Res<never>);
+  const granted = ibGrant(c.reward, 'code');
+  c.uses++;
+  (IB.redemptions[code] ??= []).unshift({ player: ME, at: now });
+  const msg = ibMsg({ kind: 'code', title: `Code redeemed: ${code}`, body: c.note || 'Thanks for playing Instagib Arena.', reward: c.reward, granted: granted.items, claimedAt: now, readAt: now });
+  IB.messages.push(msg);
+  return delay(ok({ code, granted, credits: S.credits, freeRolls: S.freeRolls, messageId: msg.id }), 520);
+}
+
+// Admin
+export function adminCodes(): Promise<Res<{ codes: RedeemCodeWire[] }>> {
+  ibEnsure();
+  return delay(ok({ codes: [...IB.codes].sort((a, b) => b.createdAt - a.createdAt).map((c) => ({ ...c })) }), 100);
+}
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export function adminCreateCode(b: CreateCodeBody): Promise<Res<{ code: RedeemCodeWire }>> {
+  ibEnsure();
+  const bad = mockValidate(b.reward);
+  if (bad) return delay(fail(400, bad));
+  let code = (b.code ?? '').trim().toUpperCase().replace(/\s+/g, '');
+  if (code && !/^[A-Z0-9][A-Z0-9-]{2,31}$/.test(code)) return delay(fail(400, 'bad_code'));
+  if (code && IB.codes.some((c) => c.code === code)) return delay(fail(400, 'code_taken'));
+  if (b.expiresAt && b.expiresAt <= Date.now()) return delay(fail(400, 'bad_expiry'));
+  if (!code) code = Array.from({ length: 3 }, () => Array.from({ length: 4 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join('')).join('-');
+  const c = ibCode({ code, reward: b.reward, note: b.note ?? '', maxUses: b.maxUses ?? 0, expiresAt: b.expiresAt ?? 0, minLevel: b.minLevel ?? 0, createdBy: ME, createdAt: Date.now() });
+  IB.codes.push(c);
+  return delay(ok({ code: { ...c } }), 160);
+}
+export function adminCodeActive(code: string, active: boolean): Promise<Res<{ code: RedeemCodeWire }>> {
+  ibEnsure();
+  const c = IB.codes.find((x) => x.code === code);
+  if (!c) return delay(fail(404, 'not_found'));
+  c.active = active;
+  return delay(ok({ code: { ...c } }), 80);
+}
+export function adminCodeRedemptions(code: string): Promise<Res<{ redemptions: Redemption[] }>> {
+  ibEnsure();
+  return delay(ok({ redemptions: IB.redemptions[code] ?? [] }), 80);
+}
+export function adminGift(b: GiftBody): Promise<Res<{ sent: number }>> {
+  ibEnsure();
+  if (!b.title?.trim()) return delay(fail(400, 'no_title'));
+  const hasReward = !!b.reward && Object.keys(b.reward).length > 0;
+  if (hasReward) {
+    const bad = mockValidate(b.reward);
+    if (bad) return delay(fail(400, bad));
+  }
+  if (b.expiresAt && b.expiresAt <= Date.now()) return delay(fail(400, 'bad_expiry'));
+  const known = [ME, ...Object.keys(S.people)];
+  if (!b.all && !known.some((k) => k.toLowerCase() === (b.player ?? '').toLowerCase())) return delay(fail(404, 'not_found'));
+  if (b.all || (b.player ?? '').toLowerCase() === ME.toLowerCase()) {
+    IB.messages.push(ibMsg({ kind: hasReward ? 'gift' : 'system', title: b.title.trim(), body: b.body ?? '', reward: hasReward ? b.reward! : {}, expiresAt: b.expiresAt ?? 0 }));
+  }
+  return delay(ok({ sent: b.all ? 1287 : 1 }), 220);
+}
+export function adminValidateReward(reward: RewardBundle): Promise<Res<object>> {
+  const bad = mockValidate(reward);
+  return delay(bad ? fail(400, bad) : ok({}), 90);
+}
+export function adminFindPlayers(q: string): Promise<Res<{ players: PlayerHit[] }>> {
+  ensure();
+  const all: PlayerHit[] = [ME, ...Object.keys(S.people), ...SELLERS.filter((s) => !(s in S.people))].map((name, i) => ({ id: `acct-${name.toLowerCase()}`, userName: name, level: 40 - i * 4, lastSeen: Date.now() - i * 5 * HOUR }));
+  const t = q.trim().toLowerCase();
+  return delay(ok({ players: all.filter((p) => !t || p.userName.toLowerCase().includes(t)).slice(0, 8) }), 90);
+}
+export function adminAccountCount(): Promise<Res<{ overview: { totalAccounts: number } }>> {
+  return delay(ok({ overview: { totalAccounts: 1287 } }), 60);
+}

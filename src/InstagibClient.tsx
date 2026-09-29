@@ -29,6 +29,7 @@ import type { HeroLoadout } from './menu/menu-hero';
 import { ProfileBlock } from './menu/ProfileBlock';
 import { FrontDoors } from './menu/FrontDoors';
 import { AccountMenu } from './menu/AccountMenu';
+import { InboxButton } from './inbox/InboxButton';
 import { HeroSlot } from './menu/HeroSlot';
 import { ChallengesModal, ChallengesStrip } from './menu/Challenges';
 import { CareerRoad } from './menu/CareerRoad';
@@ -3322,6 +3323,14 @@ function Lobby({
             />
           </div>
           <div className='menu-in-top ml-auto flex items-center gap-3 sm:pt-1' style={{ ['--d' as string]: 1 }}>
+            <InboxButton
+              loggedIn={!!account}
+              reduced={settings.reducedEffects}
+              lowSpec={settings.lowSpec}
+              credits={lobbyProfile?.credits ?? null}
+              refreshKey={refreshTick}
+              onGranted={refreshMeta}
+            />
             {account && (
               <AccountMenu
                 isAdmin={account.isAdmin}

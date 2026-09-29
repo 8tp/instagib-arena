@@ -20,6 +20,8 @@ import { LOCKER_TAB_KEY } from '../economy/daily-case';
 import { Balance } from '../economy/parts';
 import { TradesTab } from '../economy/TradesTab';
 import { useEconomy } from '../economy/useEconomy';
+import { CodeIcon } from '../inbox/icons';
+import { InboxPanel } from '../inbox/InboxPanel';
 
 export type LockerTab = 'inventory' | 'cases' | 'market' | 'trades';
 const TABS: { id: LockerTab; label: string }[] = [
@@ -77,6 +79,7 @@ export function Locker({
   const [sellUid, setSellUid] = useState<string | null>(null);
   const [offerUid, setOfferUid] = useState<string | null>(null);
   const [profile, setProfile] = useState<InstagibProfile | null>(null);
+  const [redeemOpen, setRedeemOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const econ = useEconomy(settings, onChange, loggedIn);
 
@@ -197,6 +200,12 @@ export function Locker({
           ))}
         </nav>
         <div className='ml-auto flex items-center gap-4'>
+          {loggedIn && (
+            <button type='button' className='clip-deck-sm inline-flex items-center gap-1.5 border border-white/15 bg-white/[0.04] px-2.5 py-1.5 font-display text-[13px] font-semibold uppercase tracking-[0.08em] text-white/75 transition hover:border-cyan-300/60 hover:text-cyan-100 focus-visible:border-cyan-300 focus-visible:outline-none' onClick={() => setRedeemOpen(true)} aria-label='Redeem a code' title='Redeem a code' {...sfxProps('uiClick')} data-action='locker-redeem'>
+              <CodeIcon size={16} />
+              {!narrow && <span>Redeem code</span>}
+            </button>
+          )}
           {loading ? <Skeleton className='h-5 w-24' /> : <Balance credits={econ.status === 'ready' ? econ.credits : null} freeRolls={econ.status === 'ready' ? econ.freeRolls : null} compact={narrow} />}
           <button type='button' className='lk-close' onClick={close} aria-label='Close the Locker' {...sfxProps('none')}>
             ✕ ESC
@@ -238,6 +247,16 @@ export function Locker({
       {tab === 'market' && <MarketTab econ={econ} loggedIn={loggedIn} sellUid={sellUid} clearSell={() => setSellUid(null)} myName={mock ? 'MockPlayer' : (account?.username ?? '')} />}
       {tab === 'trades' && (
         <TradesTab econ={econ} loggedIn={loggedIn} offerUid={offerUid} clearOffer={() => setOfferUid(null)} myName={mock ? 'MockPlayer' : (account?.username ?? '')} />
+      )}
+      {redeemOpen && (
+        <InboxPanel
+          onClose={() => setRedeemOpen(false)}
+          reduced={reduced}
+          lowSpec={settings.lowSpec}
+          balance={econ.status === 'ready' ? { credits: econ.credits, freeRolls: econ.freeRolls } : undefined}
+          economy={econ}
+          focusRedeem
+        />
       )}
     </div>
   );

@@ -1,0 +1,688 @@
+/* Inbox + redeem codes (src/inbox/). Same deck language as the Locker: near-
+   black panels, clipped corners, display caps, cyan = select, amber = a gift
+   waiting, fuchsia = announcements. Motion is CSS keyed by id; .ib-reduced and
+   prefers-reduced-motion switch it off. */
+
+.ib-body {
+  gap: 14px !important;
+}
+
+/* ── Balance in the title row + the "+⛁ 500" floaters ─────────────────── */
+.ib-balance {
+  position: relative;
+  display: inline-flex;
+  font-family: var(--font-display);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ib-balance .ec-balance b {
+  font-size: 18px;
+}
+.ib-balance .ec-rolls {
+  font-size: 13px;
+  padding: 3px 7px;
+}
+.ib-balance[data-bump] .ec-balance {
+  animation: ib-bump 620ms cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
+}
+@keyframes ib-bump {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  30% {
+    transform: scale(1.18);
+    filter: brightness(1.8) drop-shadow(0 0 10px rgba(255, 211, 90, 0.8));
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+.ib-floater {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+  pointer-events: none;
+  animation: ib-float 1500ms cubic-bezier(0.15, 0.8, 0.3, 1) both;
+}
+.ib-floater-credits {
+  color: #ffd35a;
+}
+.ib-floater-rolls {
+  color: #67e8f9;
+  animation-delay: 120ms;
+}
+.ib-floater-items {
+  color: #e9d5ff;
+  animation-delay: 240ms;
+}
+@keyframes ib-float {
+  0% {
+    opacity: 0;
+    transform: translateY(46px) scale(0.8);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(18px) scale(1.05);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px) scale(1);
+  }
+}
+
+/* ── Redeem a code ────────────────────────────────────────────────────── */
+.ib-redeem {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ib-redeem-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(165, 243, 252, 0.8);
+}
+.ib-redeem-row {
+  display: flex;
+  min-width: 0;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  transition: box-shadow 0.15s;
+}
+.ib-redeem-row:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.75), 0 0 22px -6px rgba(103, 232, 249, 0.5);
+}
+.ib-redeem-row.has-err {
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.7);
+}
+.ib-redeem-input {
+  min-width: 0;
+  flex: 1;
+  height: 46px;
+  padding: 0 14px;
+  background: transparent;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: #fff;
+}
+.ib-redeem-input::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+}
+.ib-redeem-btn {
+  display: inline-grid;
+  min-width: 112px;
+  place-items: center;
+  padding: 0 18px;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #06121a;
+  background: #67e8f9;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.ib-redeem-btn:hover:not(:disabled) {
+  background: #a5f3fc;
+}
+.ib-redeem-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -4px;
+}
+.ib-redeem-btn:disabled {
+  cursor: not-allowed;
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.08);
+}
+.ib-spin {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ib-rot 0.7s linear infinite;
+}
+@keyframes ib-rot {
+  to {
+    rotate: 360deg;
+  }
+}
+.ib-err {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.35;
+  color: #fda4af;
+  animation: ib-shake 320ms ease-out both;
+}
+@keyframes ib-shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  60% {
+    transform: translateX(3px);
+  }
+}
+
+/* ── Message list ─────────────────────────────────────────────────────── */
+.ib-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.ib-list-head h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.ib-count {
+  color: #67e8f9;
+  letter-spacing: 0.1em;
+}
+.ib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ib-skel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.ib-msg {
+  --kc: 232, 121, 249; /* system: fuchsia */
+  position: relative;
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+.ib-kind-gift {
+  --kc: 251, 191, 36;
+}
+.ib-kind-code {
+  --kc: 103, 232, 249;
+}
+.ib-msg:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.ib-msg.is-open {
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(var(--kc), 0.35);
+}
+.ib-msg.is-claimable {
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.1), rgba(251, 191, 36, 0.02) 55%);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.3);
+}
+.ib-msg-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px 11px 11px;
+  text-align: left;
+  outline: none;
+}
+.ib-msg-head:focus-visible {
+  box-shadow: inset 0 0 0 2px #fff;
+}
+.ib-msg-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  place-items: center;
+  color: rgb(var(--kc));
+  background: rgba(var(--kc), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--kc), 0.35);
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+.ib-msg-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+.ib-msg-title {
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.78);
+}
+.ib-msg.is-unread .ib-msg-title,
+.ib-msg.is-open .ib-msg-title {
+  color: #fff;
+}
+.ib-msg.is-open .ib-msg-title {
+  white-space: normal;
+}
+.ib-msg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.42);
+}
+.ib-msg-meta > * {
+  white-space: nowrap;
+}
+.ib-msg-meta > * + *::before {
+  content: '·';
+  margin-right: 6px;
+  color: rgba(255, 255, 255, 0.3);
+}
+.ib-exp {
+  color: #fcd34d;
+}
+.ib-exp.is-gone {
+  color: rgba(255, 255, 255, 0.35);
+}
+.ib-pill {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.ib-pill-gift {
+  color: #1a1204;
+  background: #fbbf24;
+  box-shadow: 0 0 16px -2px rgba(251, 191, 36, 0.7);
+  animation: ib-glow 1.8s ease-in-out infinite;
+}
+@keyframes ib-glow {
+  50% {
+    box-shadow: 0 0 4px -2px rgba(251, 191, 36, 0.4);
+  }
+}
+.ib-pill-done {
+  color: #6ee7b7;
+  background: rgba(52, 211, 153, 0.1);
+}
+.ib-pill-code {
+  color: #a5f3fc;
+  background: rgba(103, 232, 249, 0.1);
+}
+.ib-pill-off {
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+}
+.ib-dot {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #67e8f9;
+  box-shadow: 0 0 10px rgba(103, 232, 249, 0.9);
+}
+.ib-msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 2px 14px 16px 63px;
+  animation: ib-open 200ms ease-out both;
+}
+@keyframes ib-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.ib-msg-text {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-line;
+  color: rgba(255, 255, 255, 0.78);
+}
+.ib-attach {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.ib-attach.is-waiting {
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.35);
+  background: radial-gradient(120% 90% at 50% 0%, rgba(251, 191, 36, 0.1), rgba(0, 0, 0, 0.35) 70%);
+}
+.ib-attach-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+.ib-attach.is-waiting .ib-attach-label {
+  color: #fcd34d;
+}
+.ib-claimed-note {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #6ee7b7;
+}
+
+/* ── Reward chips + tiles ─────────────────────────────────────────────── */
+.ib-reward {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ib-reward-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ib-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+.ib-chip small {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.75;
+}
+.ib-chip-credits {
+  color: #ffd35a;
+  background: rgba(255, 195, 61, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 195, 61, 0.45);
+}
+.ib-chip-rolls {
+  color: #67e8f9;
+  background: rgba(103, 232, 249, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.4);
+}
+.ib-chip-big {
+  padding: 9px 15px;
+  font-size: 26px;
+}
+.ib-reward-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--tile, 92px), 1fr));
+  gap: 12px 10px;
+}
+.ib-reward-item {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.ib-reward-name {
+  max-width: 100%;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  overflow-wrap: anywhere;
+}
+/* A just-claimed gift: the minted items pop in one by one with a tier flare. */
+.ib-attach.is-fresh .ib-pop,
+.ib-reveal .ib-pop {
+  animation: ib-pop 520ms cubic-bezier(0.2, 0.9, 0.3, 1.35) both;
+  animation-delay: calc(var(--i, 0) * 110ms + 80ms);
+}
+.ib-attach.is-fresh .ib-reward-item > :first-child,
+.ib-reveal .ib-reward-item > :first-child {
+  animation: ib-flare 900ms ease-out both;
+  animation-delay: calc(var(--i, 0) * 110ms + 160ms);
+}
+@keyframes ib-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.6);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ib-flare {
+  0% {
+    filter: brightness(2.2) drop-shadow(0 0 18px var(--tc, #fff));
+  }
+  100% {
+    filter: none;
+  }
+}
+
+/* ── Empty / error ────────────────────────────────────────────────────── */
+.ib-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 44px 16px;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.5);
+}
+.ib-state b {
+  font-family: var(--font-display);
+  font-size: 20px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+.ib-state-icon {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 4px;
+  place-items: center;
+  color: rgba(103, 232, 249, 0.8);
+  background: rgba(103, 232, 249, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.25);
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+}
+.ib-state-err b {
+  color: #fda4af;
+}
+.ib-state-err > :last-child {
+  margin-top: 8px;
+}
+
+/* ── The redeem reveal ────────────────────────────────────────────────── */
+.ib-reveal {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+  padding: 30px 18px 26px;
+  text-align: center;
+  background: radial-gradient(90% 70% at 50% 30%, color-mix(in srgb, var(--rc) 20%, transparent), transparent 70%), rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rc) 45%, transparent);
+}
+.ib-reveal-rays {
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 38%;
+  width: 720px;
+  height: 720px;
+  margin: -360px 0 0 -360px;
+  background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--rc) 60%, transparent) 0deg 5deg, transparent 5deg 18deg);
+  mask-image: radial-gradient(closest-side, rgba(0, 0, 0, 0.55), transparent 72%);
+  opacity: 0.45;
+  pointer-events: none;
+  animation:
+    ib-rays-in 700ms ease-out both,
+    ib-rot 22s linear infinite;
+}
+@keyframes ib-rays-in {
+  from {
+    opacity: 0;
+    scale: 0.3;
+  }
+}
+.ib-reveal-kicker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--rc) 70%, #fff);
+  animation: ib-pop 400ms ease-out both;
+}
+.ib-reveal-code {
+  font-family: var(--font-display);
+  font-size: clamp(26px, 7vw, 40px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: #fff;
+  text-shadow: 0 0 24px color-mix(in srgb, var(--rc) 70%, transparent);
+  overflow-wrap: anywhere;
+  animation: ib-stamp 520ms cubic-bezier(0.2, 0.9, 0.3, 1.2) 80ms both;
+}
+@keyframes ib-stamp {
+  0% {
+    opacity: 0;
+    transform: scale(1.8);
+    letter-spacing: 0.3em;
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+.ib-reveal-reward {
+  align-items: center;
+  width: 100%;
+}
+.ib-reveal-reward .ib-reward-chips {
+  justify-content: center;
+}
+.ib-reveal-reward .ib-reward-items {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px;
+}
+.ib-reveal-reward .ib-reward-item {
+  width: var(--tile);
+}
+.ib-reveal-note {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+/* ── Narrow (390 px phones) ───────────────────────────────────────────── */
+@media (max-width: 520px) {
+  .ib-msg-head {
+    gap: 10px;
+    padding: 10px 10px 10px 9px;
+  }
+  .ib-msg-icon {
+    width: 34px;
+    height: 34px;
+  }
+  .ib-msg-title {
+    font-size: 15px;
+    white-space: normal;
+  }
+  .ib-msg-body {
+    padding: 0 10px 14px;
+  }
+  .ib-msg-meta {
+    gap: 0 10px;
+  }
+  .ib-msg-meta > * + *::before {
+    display: none;
+  }
+  .ib-redeem-input {
+    height: 42px;
+    padding: 0 10px;
+    font-size: 15px;
+    letter-spacing: 0.1em;
+  }
+  .ib-redeem-btn {
+    min-width: 86px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+  .ib-balance .ec-rolls small {
+    display: none;
+  }
+  .ib-chip-big {
+    font-size: 22px;
+  }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────── */
+.ib-reduced *,
+.ib-reduced *::before,
+.ib-reduced *::after {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ib-root *,
+  .ib-root *::before,
+  .ib-root *::after {
+    animation: none !important;
+  }
+}

@@ -1,61 +1,27 @@
 // Admin → Items: search a player's inventory (revoke, item history), grant
-// credits / free rolls, and MINT items — a catalog def with chosen qualities,
-// or a custom one-off (name, description, tint, effect, tier incl.
-// Unobtainable, bound or not). Session-only routes (docs/economy.md §7).
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+// credits / free rolls, and the item GENERATOR — any catalog def dressed with
+// qualities or as a custom one-off (name, description, tint, tier incl.
+// Unobtainable, bound or not), previewed live, minted straight into a player's
+// inventory. Session-only routes (docs/economy.md §7). The spec builder is
+// src/admin/ItemSpecEditor.tsx (the Codes / Gifts bundles reuse it).
+import { useCallback, useState } from 'react';
 import '../locker/locker.css';
 import './economy.css';
-import { ITEM_DEFS, itemDef } from '../game/items/catalog';
-import {
-  ITEM_SLOTS,
-  KS_EFFECTS,
-  KS_SHEENS,
-  TIERS,
-  TIER_META,
-  UNUSUAL_EFFECTS,
-  type ItemAttrs,
-  type ItemInstanceWire,
-  type Quality,
-  type Tier,
-} from '../game/items/types';
+import type { ItemInstanceWire } from '../game/items/types';
+import { ItemSpecEditor } from '../admin/ItemSpecEditor';
+import { PlayerLookup } from '../admin/PlayerLookup';
+import { draftToSpec, newDraft, type SpecDraft } from '../admin/spec-draft';
+import { Banner, Card, btnCls, dangerCls, inputCls, primaryCls, type Msg } from '../admin/ui';
 import { TIER_COLOR } from '../ui/rarity';
 import { econ, reasonText, type AdminInvResp, type ItemHistoryResp } from './api';
-import { SLOT_LABEL, instBaseName, instFullName, instTier, timeAgo } from './display';
+import { instFullName, instTags, instTier, timeAgo } from './display';
 import { InstTile, TagPills, TierChip } from './parts';
-import { instTags } from './display';
-
-const inputCls =
-  'rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60 placeholder:text-white/30';
-const btnCls =
-  'rounded-md border border-white/20 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-white/80 transition hover:border-cyan-400/60 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40';
-const dangerCls = 'rounded-md border border-rose-400/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.1em] text-rose-300 transition hover:bg-rose-400/10 disabled:opacity-40';
-
-function Card({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
-  return (
-    <section className='mb-6 rounded-lg border border-white/10 bg-white/[0.03] p-4'>
-      <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
-        <h2 className='font-display text-[13px] uppercase tracking-[0.16em] text-white/70'>{title}</h2>
-        {right}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Field({ label, children, wide }: { label: string; children: ReactNode; wide?: boolean }) {
-  return (
-    <label className={`flex flex-col gap-1 ${wide ? 'sm:col-span-2' : ''}`}>
-      <span className='text-[10px] uppercase tracking-[0.14em] text-white/40'>{label}</span>
-      {children}
-    </label>
-  );
-}
 
 export function AdminItemsTab() {
   const [player, setPlayer] = useState('');
   const [inv, setInv] = useState<AdminInvResp | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+  const [msg, setMsg] = useState<Msg>(null);
   const [busy, setBusy] = useState(false);
   const [hist, setHist] = useState<ItemHistoryResp | null>(null);
   const [grantC, setGrantC] = useState('');
@@ -123,7 +89,11 @@ export function AdminItemsTab() {
           </div>
         }
       >
-        {msg && <div className={`mb-3 rounded border px-3 py-2 text-[12px] ${msg.tone === 'ok' ? 'border-emerald-400/40 text-emerald-200' : 'border-rose-400/40 text-rose-200'}`}>{msg.text}</div>}
+        {msg && (
+          <div className='mb-3'>
+            <Banner msg={msg} />
+          </div>
+        )}
         {!inv ? (
           <div className='py-6 text-center text-[12px] text-white/35'>Search a player to see their items.</div>
         ) : (
@@ -183,7 +153,7 @@ export function AdminItemsTab() {
         )}
       </Card>
 
-      <MintForm defaultPlayer={inv?.player ?? player} onMinted={(who) => { if (inv && inv.player.toLowerCase() === who.toLowerCase()) void load(who, showAll); }} say={say} />
+      <MintForm defaultPlayer={inv?.player ?? ''} onMinted={(who) => { if (inv && inv.player.toLowerCase() === who.toLowerCase()) void load(who, showAll); }} />
 
       {hist && (
         <div className='fixed inset-0 z-50 grid place-items-center bg-black/70 p-4' role='dialog' aria-modal='true' aria-label='Item history' onClick={() => setHist(null)}>
@@ -213,185 +183,76 @@ export function AdminItemsTab() {
   );
 }
 
-// ── Mint ─────────────────────────────────────────────────────────────────────
+// ── Item generator ──────────────────────────────────────────────────────────
 
-const MINTABLE = ITEM_DEFS.filter((d) => !d.default && d.slot !== 'card' && d.slot !== 'title');
+type Minted = { at: number; who: string; items: ItemInstanceWire[] };
 
-function MintForm({ defaultPlayer, onMinted, say }: { defaultPlayer: string; onMinted: (who: string) => void; say: (t: 'ok' | 'err', s: string) => void }) {
+function MintForm({ defaultPlayer, onMinted }: { defaultPlayer: string; onMinted: (who: string) => void }) {
+  const [draft, setDraft] = useState<SpecDraft>(() => newDraft('hat.tophat'));
   const [target, setTarget] = useState('');
-  const [defId, setDefId] = useState('hat.tophat');
-  const [custom, setCustom] = useState(false);
-  const [name, setName] = useState('');
-  const [desc, setDesc] = useState('');
-  const [tier, setTier] = useState<Tier | ''>('');
-  const [tint, setTint] = useState('');
-  const [effect, setEffect] = useState('');
-  const [strange, setStrange] = useState(false);
-  const [kills, setKills] = useState('0');
-  const [sheen, setSheen] = useState('');
-  const [proFx, setProFx] = useState('');
-  const [festive, setFestive] = useState(false);
-  const [nameTag, setNameTag] = useState('');
-  const [wear, setWear] = useState('');
-  const [seed, setSeed] = useState('');
-  const [bound, setBound] = useState(false);
   const [count, setCount] = useState('1');
   const [busy, setBusy] = useState(false);
-
-  const def = itemDef(defId);
+  const [msg, setMsg] = useState<Msg>(null);
+  const [log, setLog] = useState<Minted[]>([]);
   const who = (target || defaultPlayer).trim();
-
-  const built = useMemo(() => {
-    const attrs: ItemAttrs = {};
-    const quality: Quality[] = [];
-    if (custom) {
-      if (name.trim()) attrs.customName = name.trim().slice(0, 40);
-      if (desc.trim()) attrs.customDesc = desc.trim().slice(0, 160);
-      if (/^#[0-9a-fA-F]{6}$/.test(tint)) attrs.tint = tint;
-    }
-    if (effect) {
-      attrs.effect = effect;
-      quality.push('unusual');
-    }
-    if (strange) {
-      attrs.kills = Math.max(0, Math.floor(Number(kills) || 0));
-      quality.push('strange');
-    }
-    if (sheen) {
-      attrs.sheen = sheen;
-      quality.push('killstreak');
-      if (proFx) {
-        attrs.ksEffect = proFx;
-        quality.push('professional');
-      }
-    }
-    if (festive) {
-      attrs.festive = true;
-      quality.push('festive');
-    }
-    if (nameTag.trim()) attrs.nameTag = nameTag.trim().slice(0, 24);
-    if (wear !== '') attrs.wear = Math.max(0, Math.min(1, Number(wear) || 0));
-    if (seed !== '') attrs.seed = Math.max(0, Math.min(999, Math.floor(Number(seed) || 0)));
-    const t: Tier | undefined = custom && tier ? tier : undefined;
-    if (custom && (attrs.customName || attrs.tint || t)) quality.push('admin');
-    return { attrs, quality, tier: t };
-  }, [custom, name, desc, tier, tint, effect, strange, kills, sheen, proFx, festive, nameTag, wear, seed]);
-
-  const preview: ItemInstanceWire = {
-    uid: 'preview',
-    def: defId,
-    mint: 1,
-    quality: built.quality,
-    attrs: built.attrs,
-    origin: 'admin',
-    tradable: !bound && (def?.tradable ?? true),
-    state: 'owned',
-    createdAt: Date.now(),
-    tier: built.tier,
-  };
+  const n = Math.max(1, Math.min(25, Math.floor(Number(count) || 1)));
 
   const mint = async () => {
-    if (!who) return say('err', 'Enter a player name (search above or type it here).');
+    if (!who) return setMsg({ tone: 'err', text: 'Pick a player to mint to.' });
     setBusy(true);
-    const r = await econ.adminMint({
-      player: who,
-      def: defId,
-      quality: built.quality,
-      attrs: built.attrs,
-      tier: built.tier,
-      bound,
-      count: Math.max(1, Math.min(25, Math.floor(Number(count) || 1))),
-    });
+    setMsg(null);
+    const spec = draftToSpec(draft);
+    const r = await econ.adminMint({ player: who, def: spec.def, quality: spec.quality, attrs: spec.attrs, tier: spec.tier, bound: spec.bound, count: n });
     setBusy(false);
-    if (!r.ok) return say('err', reasonText(r) + (r.reason ? ` (${r.reason})` : ''));
-    say('ok', `Minted ${r.items.length}× ${instFullName(r.items[0])} to ${who}.`);
+    if (!r.ok) return setMsg({ tone: 'err', text: r.status === 404 ? `No player named “${who}”.` : reasonText(r, 'admin') + (r.reason ? ` (${r.reason})` : '') });
+    setMsg({ tone: 'ok', text: `Minted ${r.items.length}× ${instFullName(r.items[0])} to ${who}.` });
+    setLog((l) => [{ at: Date.now(), who, items: r.items }, ...l].slice(0, 20));
     onMinted(who);
   };
 
   return (
-    <Card title='Mint an item'>
-      <div className='grid gap-6 lg:grid-cols-[1fr_240px]'>
-        <div className='grid gap-3 sm:grid-cols-2'>
-          <Field label='Player'>
-            <input className={inputCls} placeholder={defaultPlayer || 'Player name'} value={target} onChange={(e) => setTarget(e.target.value)} data-field='mint-player' />
-          </Field>
-          <Field label={custom ? 'Base def (the art / model)' : 'Item def'}>
-            <select className={inputCls} value={defId} onChange={(e) => setDefId(e.target.value)} data-field='mint-def'>
-              {ITEM_SLOTS.filter((s) => MINTABLE.some((d) => d.slot === s)).map((s) => (
-                <optgroup key={s} label={SLOT_LABEL[s]} className='bg-zinc-900'>
-                  {MINTABLE.filter((d) => d.slot === s).map((d) => (
-                    <option key={d.id} value={d.id} className='bg-zinc-900'>{d.name} · {TIER_META[d.tier].label}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </Field>
-          <label className='flex items-center gap-2 text-[12px] text-white/70 sm:col-span-2'>
-            <input type='checkbox' checked={custom} onChange={(e) => setCustom(e.target.checked)} data-field='mint-custom' /> Custom one-off (name, description, tint, tier override)
-          </label>
-          {custom && (
-            <>
-              <Field label='Name'><input className={inputCls} maxLength={40} value={name} onChange={(e) => setName(e.target.value)} placeholder={def?.name} data-field='mint-name' /></Field>
-              <Field label='Tier'>
-                <select className={inputCls} value={tier} onChange={(e) => setTier(e.target.value as Tier | '')} data-field='mint-tier'>
-                  <option value='' className='bg-zinc-900'>Def default ({def ? TIER_META[def.tier].label : '—'})</option>
-                  {TIERS.map((t) => <option key={t} value={t} className='bg-zinc-900'>{TIER_META[t].label}</option>)}
-                </select>
-              </Field>
-              <Field label='Description' wide><input className={inputCls} maxLength={160} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder={def?.blurb} data-field='mint-desc' /></Field>
-              <Field label='Tint (#rrggbb)'>
-                <span className='flex gap-2'>
-                  <input className={`${inputCls} flex-1`} value={tint} onChange={(e) => setTint(e.target.value)} placeholder='#ff4fd8' data-field='mint-tint' />
-                  <input type='color' aria-label='Tint colour' value={/^#[0-9a-fA-F]{6}$/.test(tint) ? tint : '#ffffff'} onChange={(e) => setTint(e.target.value)} className='h-[34px] w-10 cursor-pointer rounded border border-white/15 bg-transparent' />
-                </span>
-              </Field>
-            </>
-          )}
-          <Field label='Unusual effect'>
-            <select className={inputCls} value={effect} onChange={(e) => setEffect(e.target.value)} data-field='mint-effect'>
-              <option value='' className='bg-zinc-900'>None</option>
-              {UNUSUAL_EFFECTS.map((e) => <option key={e.id} value={e.id} className='bg-zinc-900'>{e.name}{e.taunt ? ' (taunt ok)' : ''}</option>)}
-            </select>
-          </Field>
-          <Field label='Name tag'><input className={inputCls} maxLength={24} value={nameTag} onChange={(e) => setNameTag(e.target.value)} /></Field>
-          <div className='flex items-end gap-3'>
-            <label className='flex items-center gap-2 text-[12px] text-white/70'><input type='checkbox' checked={strange} onChange={(e) => setStrange(e.target.checked)} /> Strange</label>
-            {strange && <input className={`${inputCls} w-24`} inputMode='numeric' value={kills} onChange={(e) => setKills(e.target.value)} aria-label='Kills' />}
-          </div>
-          <label className='flex items-center gap-2 self-end text-[12px] text-white/70'><input type='checkbox' checked={festive} onChange={(e) => setFestive(e.target.checked)} /> Festive</label>
-          <Field label='Killstreak sheen'>
-            <select className={inputCls} value={sheen} onChange={(e) => setSheen(e.target.value)}>
-              <option value='' className='bg-zinc-900'>None</option>
-              {KS_SHEENS.map((s) => <option key={s.id} value={s.id} className='bg-zinc-900'>{s.name}</option>)}
-            </select>
-          </Field>
-          <Field label='Professional effect'>
-            <select className={inputCls} value={proFx} onChange={(e) => setProFx(e.target.value)} disabled={!sheen}>
-              <option value='' className='bg-zinc-900'>None</option>
-              {KS_EFFECTS.map((s) => <option key={s.id} value={s.id} className='bg-zinc-900'>{s.name}</option>)}
-            </select>
-          </Field>
-          {def?.slot === 'finish' && (
-            <>
-              <Field label='Wear (0–1)'><input className={inputCls} inputMode='decimal' value={wear} onChange={(e) => setWear(e.target.value)} placeholder='0.05' /></Field>
-              <Field label='Pattern seed (0–999)'><input className={inputCls} inputMode='numeric' value={seed} onChange={(e) => setSeed(e.target.value)} placeholder='318' /></Field>
-            </>
-          )}
-          <div className='flex flex-wrap items-center gap-4 sm:col-span-2'>
-            <label className='flex items-center gap-2 text-[12px] text-white/70'><input type='checkbox' checked={bound} onChange={(e) => setBound(e.target.checked)} data-field='mint-bound' /> Bound (untradable)</label>
-            <label className='flex items-center gap-2 text-[12px] text-white/70'>Count <input className={`${inputCls} w-16`} inputMode='numeric' value={count} onChange={(e) => setCount(e.target.value)} data-field='mint-count' /></label>
-            <button type='button' className={`${btnCls} ml-auto border-cyan-400/50 text-cyan-200`} disabled={busy || !who} onClick={() => void mint()} data-action='admin-mint'>
-              {busy ? 'Minting…' : `Mint to ${who || '…'}`}
-            </button>
-          </div>
-        </div>
-        <div className='flex flex-col items-center gap-2'>
-          <div className='text-[10px] uppercase tracking-[0.14em] text-white/40'>Preview</div>
-          <div className='w-[200px]'><InstTile inst={preview} /></div>
-          <div className='text-center font-display text-[15px] uppercase leading-tight' style={{ color: TIER_COLOR[instTier(preview)].text }}>{instFullName(preview) || instBaseName(preview)}</div>
-          <TagPills tags={instTags(preview)} />
-        </div>
+    <Card title='Item generator' right={<button type='button' className={btnCls} onClick={() => setDraft(newDraft(draft.def))}>Reset attributes</button>}>
+      <ItemSpecEditor value={draft} onChange={setDraft} count={n} />
+      <div className='mt-5 flex flex-wrap items-end gap-3 border-t border-white/10 pt-4'>
+        <label className='flex min-w-[14rem] flex-1 flex-col gap-1 sm:max-w-xs'>
+          <span className='text-[10px] uppercase tracking-[0.14em] text-white/40'>Mint to player</span>
+          <PlayerLookup value={target} onChange={setTarget} placeholder={defaultPlayer || 'Search a player…'} field='mint-player' />
+        </label>
+        <label className='flex flex-col gap-1'>
+          <span className='text-[10px] uppercase tracking-[0.14em] text-white/40'>Count</span>
+          <input className={`${inputCls} w-20`} inputMode='numeric' value={count} onChange={(e) => setCount(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))} aria-label='Count (1–25)' data-field='mint-count' />
+        </label>
+        <button type='button' className={`${primaryCls} ml-auto`} disabled={busy || !who} onClick={() => void mint()} data-action='admin-mint'>
+          {busy ? 'Minting…' : `Mint ${n > 1 ? `${n}× ` : ''}to ${who || '…'}`}
+        </button>
       </div>
+      {msg && (
+        <div className='mt-3'>
+          <Banner msg={msg} />
+        </div>
+      )}
+      {log.length > 0 && (
+        <div className='mt-4'>
+          <div className='mb-2 text-[10px] uppercase tracking-[0.14em] text-white/40'>Minted this session</div>
+          <ul className='flex flex-col gap-1.5' data-mint-log>
+            {log.map((m) => (
+              <li key={`${m.at}-${m.items[0]?.uid}`} className='flex flex-wrap items-center gap-3 rounded border border-white/8 bg-black/20 px-3 py-2 font-mono text-[12px]'>
+                <InstTile inst={m.items[0]} size={56} fluid={false} label={false} />
+                <span className='min-w-0 flex-1'>
+                  <span className='font-display text-[14px] uppercase' style={{ color: TIER_COLOR[instTier(m.items[0])].text }}>
+                    {m.items.length > 1 ? `${m.items.length}× ` : ''}
+                    {instFullName(m.items[0])}
+                  </span>
+                  <span className='block text-[11px] text-white/40'>
+                    → {m.who} · #{m.items.map((i) => i.mint).join(', #')} · {m.items[0].tradable ? 'tradable' : 'bound'} · {timeAgo(m.at)}
+                  </span>
+                </span>
+                <span className='text-[10px] text-white/30'>{m.items.map((i) => i.uid).join(' ')}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Card>
   );
 }

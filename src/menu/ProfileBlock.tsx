@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { Account } from '../auth';
 import { sfxProps } from '../deck-core';
 import { Skeleton } from '../deck';
@@ -7,6 +8,18 @@ import { rankedStandingText } from '../ui/player-card-data';
 import { Credits, LevelEmblem, XpBar } from './Progress';
 import { xpFraction, type MenuProfile } from './road-data';
 import './menu.css';
+
+// Bumps (a new key) each time `n` rises — the credits flash when a gift or a
+// code lands. Never on first load.
+function useRiseKey(n: number | undefined): number {
+  const prev = useRef(n);
+  const [k, setK] = useState(0);
+  useEffect(() => {
+    if (n != null && prev.current != null && n > prev.current) setK((x) => x + 1);
+    prev.current = n;
+  }, [n]);
+  return k;
+}
 
 // Top-left identity strip: level emblem, name + title, the segmented XP bar
 // with numbers, credits. The whole strip opens the Career Road. Guests get
@@ -28,6 +41,7 @@ export function ProfileBlock({
   onOpenRoad: () => void;
   onLogin: () => void;
 }) {
+  const creditsKey = useRiseKey(profile?.credits);
   if (!account) {
     return (
       <div className='menu-profile clip-deck-sm'>
@@ -93,7 +107,7 @@ export function ProfileBlock({
               </>
             )}
           </span>
-          <Credits amount={profile.credits} />
+          <Credits key={creditsKey} amount={profile.credits} className={creditsKey ? 'menu-credits-bump' : ''} />
         </span>
       </span>
     </button>

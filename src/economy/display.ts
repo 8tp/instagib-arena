@@ -146,6 +146,8 @@ export function instTileSub(i: ItemInstanceWire): string {
 export const ORIGIN_LABEL: Record<ItemInstanceWire['origin'], string> = {
   case: 'Unboxed from a case',
   spin: 'Won on the Daily Spin',
+  code: 'Redeemed from a code',
+  gift: 'A gift from the Instagib team',
   admin: 'Granted by staff',
   road: 'Career Road reward',
   challenge: 'Challenge reward',
