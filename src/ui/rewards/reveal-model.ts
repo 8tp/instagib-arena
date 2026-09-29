@@ -4,6 +4,9 @@
 import type { ProgressionResp } from '../../app-types';
 import type { MatchResult } from '../../game/game';
 import { cosmeticById, type Rarity } from '../../game/cosmetics';
+import { itemDef } from '../../game/items/catalog';
+import type { ItemInstanceWire, Tier } from '../../game/items/types';
+import { tierOfRarity } from '../rarity';
 import {
   MAX_LEVEL,
   OFFLINE_XP_SCALE,
@@ -29,9 +32,11 @@ export type RevealLine = XpLine & { running: number; credits?: number };
 export type BarSegment = { level: number; from: number; to: number; levelUp: boolean };
 
 export type RevealCard =
-  | { kind: 'cosmetic'; key: string; level: number; id: string; rarity: Rarity }
+  // `tier` = the v3 tier colour; `rarity` its 4-bucket for stings / halo effects;
+  // `inst` = the bound instance the server minted for it (mint #, quality), if any.
+  | { kind: 'cosmetic'; key: string; level: number; id: string; rarity: Rarity; tier: Tier; inst?: ItemInstanceWire }
   | { kind: 'credits'; key: string; level: number; amount: number }
-  | { kind: 'case'; key: string; level: number };
+  | { kind: 'case'; key: string; level: number; count: number }; // free case roll(s)
 
 export type RevealModel = {
   saved: boolean; // false → guest: "you would have earned"
@@ -61,6 +66,11 @@ export type RevealModel = {
   challenges: ChallengeCompletion[];
   balance: number | null; // credit balance after the match (saved players only)
 };
+
+// 7 tiers → the 4-bucket the reveal's stings and halos are tuned to.
+export function rarityOfTier(t: Tier): Rarity {
+  return t === 'common' || t === 'uncommon' ? 'common' : t === 'rare' ? 'rare' : t === 'epic' ? 'epic' : 'legendary';
+}
 
 const RARITY_RANK: Record<Rarity, number> = { common: 0, rare: 1, epic: 2, legendary: 3 };
 export function rarityRank(r: Rarity): number {
@@ -174,15 +184,21 @@ export function buildRevealModel(
       ? [{ level: levelAfter, rewards: p.newUnlocks.map((id) => ({ type: 'cosmetic' as const, id })) }]
       : []);
   const cards: RevealCard[] = [];
+  const minted = (p as { newItems?: ItemInstanceWire[] }).newItems ?? [];
+  const usedInst = new Set<string>();
   for (const step of steps) {
     step.rewards.forEach((r, i) => {
       const key = `${step.level}:${i}`;
       if (r.type === 'cosmetic') {
-        cards.push({ kind: 'cosmetic', key, level: step.level, id: r.id, rarity: cosmeticById(r.id)?.rarity ?? 'common' });
+        const tier: Tier = itemDef(r.id)?.tier ?? tierOfRarity(cosmeticById(r.id)?.rarity ?? 'common');
+        // The server mints a bound instance per road item; match it by def (once each).
+        const inst = minted.find((m) => m.def === r.id && !usedInst.has(m.uid));
+        if (inst) usedInst.add(inst.uid);
+        cards.push({ kind: 'cosmetic', key, level: step.level, id: r.id, rarity: rarityOfTier(inst?.tier ?? tier), tier: inst?.tier ?? tier, inst });
       } else if (r.type === 'credits') {
         cards.push({ kind: 'credits', key, level: step.level, amount: r.amount });
       } else {
-        cards.push({ kind: 'case', key, level: step.level });
+        cards.push({ kind: 'case', key, level: step.level, count: r.count ?? 1 });
       }
     });
   }

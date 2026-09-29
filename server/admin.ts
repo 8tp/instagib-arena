@@ -33,6 +33,7 @@ import {
   type AccountInfo,
   type FeedbackStatus,
 } from './db';
+import { adminGrant, adminInventory, adminMint, adminRevoke, itemHistory } from './economy';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 
 export const adminRouter = Router();
@@ -142,10 +143,15 @@ adminRouter.post('/verify', (req, res) => {
   res.json({ ok: true, username: target.username, verified: value });
 });
 
-// Promote/demote an admin, by username.
+// Promote/demote an admin, by username. (A body carrying `credits` / `rolls`
+// is the economy grant instead — see grantEconomy below.)
 adminRouter.post('/grant', (req, res) => {
   if (denyToken(req, res)) return;
   const body = (req.body ?? {}) as Record<string, unknown>;
+  if (body.credits != null || body.rolls != null) {
+    grantEconomy(req, res);
+    return;
+  }
   const target = findAccountByName(cleanUsername(body.username).toLowerCase());
   if (!target) {
     res.status(404).json({ error: 'not_found' });
@@ -163,6 +169,80 @@ adminRouter.post('/grant', (req, res) => {
     ip: req.ip,
   });
   res.json({ ok: true, username: target.username, admin: value });
+});
+
+// ── Economy (docs/economy.md §7) ─────────────────────────────────────────────
+// Resolve `player` (username, case-insensitive; or an account id) to an account.
+function resolvePlayer(v: unknown): AccountInfo | undefined {
+  const s = cleanUsername(v);
+  if (!s) return undefined;
+  return findAccountByName(s.toLowerCase()) ?? findUserById(s);
+}
+
+// Grant (or take, with negatives) credits / free rolls. Session-only, audit-logged.
+function grantEconomy(req: Request, res: Response): void {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const target = resolvePlayer(body.player ?? body.username);
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  const r = adminGrant(admin.id, target.id, Number(body.credits) || 0, Number(body.rolls) || 0);
+  res.status(r.ok ? 200 : 400).json(r.ok ? { ...r, username: target.username } : r);
+}
+adminRouter.post('/economy/grant', (req, res) => {
+  if (denyToken(req, res)) return;
+  grantEconomy(req, res);
+});
+
+// Mint any def (optionally a custom one-off: customName / customDesc / tint /
+// effect / tier incl. unobtainable, bound or not) into a player's inventory.
+adminRouter.post('/items/mint', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const target = resolvePlayer(body.player);
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const admin = (req as AdminRequest).admin;
+  const r = adminMint(admin.id, {
+    player: target.id,
+    def: cleanUsername(body.def),
+    quality: body.quality,
+    attrs: body.attrs,
+    tier: body.tier,
+    bound: body.bound,
+    count: body.count,
+  });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+adminRouter.post('/items/revoke', (req, res) => {
+  if (denyToken(req, res)) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const admin = (req as AdminRequest).admin;
+  const r = adminRevoke(admin.id, cleanUsername(body.uid), typeof body.reason === 'string' ? body.reason : '');
+  res.status(r.ok ? 200 : r.error === 'not_found' ? 404 : 400).json(r);
+});
+
+adminRouter.get('/items/:uid/history', (req, res) => {
+  const h = itemHistory(String(req.params.uid));
+  if (!h) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json(h);
+});
+
+adminRouter.get('/inventory/:player', (req, res) => {
+  const target = resolvePlayer(req.params.player);
+  if (!target) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json({ player: target.username, id: target.id, ...adminInventory(target.id, req.query.all === '1') });
 });
 
 // Look up a player's current flags so the admin UI can show/toggle state.

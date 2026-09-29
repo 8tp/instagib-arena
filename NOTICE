@@ -8,11 +8,6 @@ GAME ASSETS are licensed SEPARATELY from the code and are NOT covered by the
 AGPL grant. Each asset retains the license under which it was obtained:
 
 ────────────────────────────────────────────────────────────────────────────
-3D models — hats (public/models/instagib/hats/)
-  From Poly Pizza (https://poly.pizza). Most are CC-BY-3.0 (used with
-  attribution); crown.glb is CC0. Full per-file credits:
-  public/models/instagib/hats/ATTRIBUTION.md
-
 Announcer voices — default "legacy" pack (public/sounds/instagib/)
   - "Announcer Kill Sounds" by Arkhados — CC-BY-3.0
   - "Classic Killstreak Announcer Voices" by Salatiel — CC-BY-SA-4.0

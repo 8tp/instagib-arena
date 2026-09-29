@@ -63,6 +63,11 @@ export class Mixer {
   private readonly wet: GainNode;
   private readonly duckGain: GainNode;
   private readonly mix: GainNode;
+  // Replay treatment (killcam / Play of the Match): SFX only (the announcer stays
+  // clean) → a fade gain + a low-pass that is transparent (20 kHz) until a replay
+  // begins, then closes to a slightly "played-back" tone.
+  private readonly replayGain: GainNode;
+  private readonly replayLP: BiquadFilterNode;
   private live: Voice[] = [];
   private room: RoomProfile | null = null;
   lowSpec = false;
@@ -94,6 +99,11 @@ export class Mixer {
     this.sendMid = g(0.2);
     this.sendHi = g(0.38);
     this.convolver = ctx.createConvolver();
+    this.replayGain = g(1);
+    this.replayLP = ctx.createBiquadFilter();
+    this.replayLP.type = 'lowpass';
+    this.replayLP.frequency.value = 20000;
+    this.replayLP.Q.value = 0.5;
 
     // Limiter: fast, high ratio. (Chrome's compressor applies its own makeup
     // gain of ~+3 dB with these settings — the preview measures through it.)
@@ -116,7 +126,7 @@ export class Mixer {
     this.sendMid.connect(this.reverbIn);
     this.sendHi.connect(this.reverbIn);
     this.reverbIn.connect(this.convolver).connect(this.wet).connect(this.sfxBus);
-    this.sfxBus.connect(this.mix);
+    this.sfxBus.connect(this.replayGain).connect(this.replayLP).connect(this.mix);
     this.announcerBus.connect(this.mix);
     this.mix.connect(lim).connect(clip).connect(this.out).connect(dest);
   }
@@ -241,6 +251,36 @@ export class Mixer {
     if (on === this.lowSpec) return;
     this.lowSpec = on;
     if (this.room) this.setRoom(this.room); // shorter IR on low-spec
+  }
+
+  /**
+   * Replay treatment on/off. On: the SFX bus fades in through a gentle low-pass
+   * and a touch more room; off: fades out, then the chain returns to fully
+   * transparent. `fade` is the boundary fade in seconds. Cosmetic only.
+   */
+  setReplay(on: boolean, fade = 0.4) {
+    const now = this.ctx.currentTime;
+    const gp = this.replayGain.gain;
+    const fp = this.replayLP.frequency;
+    const wp = this.wet.gain;
+    for (const p of [gp, fp, wp]) {
+      p.cancelScheduledValues(now);
+      p.setValueAtTime(p.value, now);
+    }
+    const wet = this.room?.wet ?? 0.25;
+    if (on) {
+      gp.setValueAtTime(0, now);
+      gp.linearRampToValueAtTime(1, now + fade);
+      fp.setTargetAtTime(6800, now, 0.15);
+      wp.setTargetAtTime(wet * 1.35, now, 0.2);
+    } else {
+      // Ease everything back to the transparent live chain: the replay gain returns to
+      // 1 (never to 0 — live SFX must be audible the instant the replay ends).
+      const t = Math.max(0.05, fade) / 3;
+      gp.setTargetAtTime(1, now, t);
+      fp.setTargetAtTime(20000, now, t);
+      wp.setTargetAtTime(wet, now, t);
+    }
   }
 
   /** Duck the ambience under an announcer line for `sec` seconds. */

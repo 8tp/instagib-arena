@@ -20,6 +20,8 @@ import { leaderboardRouter } from './leaderboard';
 import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
 import { feedbackRouter } from './feedback';
+import { economyRouter } from './economy-routes';
+import { startTradeSweep } from './trades';
 import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
@@ -166,6 +168,7 @@ app.use('/api', leaderboardRouter);
 app.use('/api', rankedRouter);
 app.use('/api', challengeRouter);
 app.use('/api', feedbackRouter);
+app.use('/api', economyRouter);
 app.use('/api/admin', adminRouter);
 
 // Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
@@ -346,6 +349,7 @@ const wsHeartbeat = setInterval(() => {
   }
 }, 15_000);
 wsHeartbeat.unref();
+startTradeSweep(); // expire stale trade offers (48 h)
 
 server.listen(port, host, () => {
   console.log(`> Instagib Arena server ready on http://${host}:${port}`);
