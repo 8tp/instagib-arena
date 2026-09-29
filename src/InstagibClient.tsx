@@ -118,7 +118,6 @@ import type {
   HudState,
   KillFlash,
   KillcamState,
-  MapVoteState,
   MedalTier,
   PlayerScore,
   PomState,
@@ -146,6 +145,8 @@ import { setCharacterFxQuality } from './game/character/gibs';
 import { setFxQuality } from './game/fx-pool';
 import { Locker } from './locker/Locker';
 import { MatchOverOverlay, OnlineMatchResults } from './ui/results';
+import { MapVoteOverlay } from './ui/MapVote';
+import { RankedResultOverlay } from './ui/RankedResult';
 import { PlayerCard } from './ui/player-card';
 import { buildCardPayload } from './ui/player-card-data';
 
@@ -1100,7 +1101,7 @@ function GameView({
         <PlayOfTheMatchOverlay pom={hud.pom} settings={settings} />
       )}
       {hud.vote && !onlineResults && !hud.pom && (
-        <MapVoteOverlay vote={hud.vote} onVote={voteForMap} />
+        <MapVoteOverlay vote={hud.vote} onVote={voteForMap} reducedEffects={settings.reducedEffects} />
       )}
       {onlineResults && !hud.pom && (
         <OnlineMatchResults
@@ -1157,6 +1158,7 @@ function GameView({
       )}
       {rankedResult && (
         <RankedResultOverlay
+          reducedEffects={settings.reducedEffects}
           result={rankedResult}
           progression={endProgression}
           onLobby={() => {
@@ -1671,72 +1673,6 @@ function PlayOfTheMatchOverlay({
         />
       </div>
     </div>
-  );
-}
-
-function MapVoteOverlay({
-  vote,
-  onVote,
-}: {
-  vote: MapVoteState;
-  onVote: (mapId: string) => void;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(t);
-  }, []);
-  const remainingSec = Math.max(0, (vote.endsAtClient - now) / 1000);
-  const totalVotes = Object.values(vote.counts).reduce((a, b) => a + b, 0);
-
-  return (
-    <ModalShell label='Vote next map' z='z-30' width='w-[520px]' backdrop='heavy' bodyClassName='gap-4'>
-      <div className='text-center'>
-        <div className='font-display text-2xl font-bold uppercase tracking-[0.2em] text-cyan-200'>
-          Vote next map
-        </div>
-        <div className='mt-1 text-[10px] uppercase tracking-[0.3em] text-white/45' aria-live='polite'>
-          {remainingSec.toFixed(0)}s · {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
-        </div>
-      </div>
-      <div className='flex flex-col gap-2.5'>
-        {vote.options.map((id) => {
-          const count = vote.counts[id] ?? 0;
-          const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
-          const mine = vote.myVote === id;
-          return (
-            <button
-              key={id}
-              type='button'
-              aria-pressed={mine}
-              onClick={() => onVote(id)}
-              {...sfxProps('uiConfirm')}
-              className={`clip-deck-sm relative overflow-hidden border px-4 py-3 text-left transition ${
-                mine
-                  ? 'border-emerald-400 bg-emerald-400/10'
-                  : 'border-white/15 bg-white/5 hover:bg-white/10'
-              }`}
-            >
-              <div
-                className='absolute inset-y-0 left-0 bg-cyan-400/15 transition-all'
-                style={{ width: `${pct}%` }}
-              />
-              <div className='relative flex items-center justify-between'>
-                <span className='font-display text-sm font-semibold uppercase tracking-[0.12em] text-white'>
-                  {mapLabel(id)}
-                </span>
-                <span className='text-xs tabular-nums text-white/70'>
-                  {count} · {pct}%
-                </span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-      <div className='text-center text-[10px] uppercase tracking-[0.2em] text-white/35'>
-        {vote.myVote ? 'Vote locked — you can change it' : 'Click a map to vote'}
-      </div>
-    </ModalShell>
   );
 }
 
@@ -3183,89 +3119,6 @@ type RankedLeaderEntry = {
 
 // Starting Elo for a brand-new ranked player (mirrors server RANKED_BASE_RATING).
 const RANKED_BASE = 1000;
-// Full-screen ranked end-of-match overlay: VICTORY/DEFEAT + the rating delta.
-function RankedResultOverlay({
-  result,
-  progression,
-  onLobby,
-}: {
-  result: RankedResult;
-  progression: ProgressionResp | null;
-  onLobby: () => void;
-}) {
-  const won = result.won;
-  const mine = result.rating ? (won ? result.rating.winner : result.rating.loser) : null;
-  const tier = mine ? rankedTier(mine.rating) : null;
-  const delta = mine?.delta ?? 0;
-  return (
-    <ModalShell
-      label={won ? 'Ranked duel — victory' : 'Ranked duel — defeat'}
-      tone={won ? 'emerald' : 'rose'}
-      z='z-[60]'
-      width='w-[420px]'
-      backdrop='heavy'
-      padded={false}
-      bodyClassName='gap-0'
-      footer={
-        <DeckButton onClick={onLobby} solid accent='cyan' center className='mx-auto'>
-          Back to lobby
-        </DeckButton>
-      }
-    >
-      <div className={`px-7 py-6 text-center ${won ? 'bg-emerald-400/10' : 'bg-rose-500/10'}`}>
-        <div
-          className={`font-display text-4xl font-bold uppercase tracking-[0.18em] ${won ? 'text-emerald-300' : 'text-rose-300'}`}
-        >
-          {won ? 'Victory' : 'Defeat'}
-        </div>
-        <div className='mt-1 text-[12px] uppercase tracking-[0.2em] text-white/45'>
-          Ranked Duel · {result.winnerFrags}–{result.loserFrags}
-          {result.forfeit && ' · forfeit'}
-        </div>
-      </div>
-      <div className='px-7 py-6'>
-        {mine ? (
-          <div className='text-center'>
-            <div className='deck-label'>New rating</div>
-            <div className='mt-1 flex items-center justify-center gap-3'>
-              <span className='font-display text-3xl font-bold tabular-nums' style={{ color: tier?.color }}>
-                {mine.rating}
-              </span>
-              <span
-                className={`font-mono text-lg tabular-nums ${delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}
-              >
-                {delta >= 0 ? '+' : ''}
-                {delta}
-              </span>
-            </div>
-            <div className='mt-1 text-[12px] text-white/55'>
-              {tier?.name} · ladder #{mine.rank}
-            </div>
-            {result.reduced && (
-              <div className='mt-2 text-[11px] text-amber-300/80'>
-                Reduced rating — repeat opponent
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className='text-center text-[12px] text-white/50'>Unranked result.</div>
-        )}
-        {progression && (progression.xpGained > 0 || progression.creditsGained > 0) && (
-          <div className='mt-4 text-center text-[12px] text-white/50'>
-            <span className='text-cyan-200'>+{progression.xpGained} XP</span>
-            {progression.creditsGained > 0 && (
-              <>
-                {' · '}
-                <span className='text-amber-200'>+{progression.creditsGained} credits</span>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </ModalShell>
-  );
-}
-
 // Ranked Duel lobby modal: your rank card, the queue, the ladder, and a side
 // panel of live ranked duels to spectate. Login-gated (a guest sees a prompt).
 function RankedModal({

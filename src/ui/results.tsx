@@ -9,9 +9,10 @@ import { prefersReducedMotion } from '../deck-core';
 import { playUi } from '../game/audio';
 import { PodiumScene, type PodiumWinner } from '../game/podium';
 import { DEFAULT_EMOTE, DEFAULT_HAT, EMOTES, HATS } from '../game/cosmetics';
-import { TEAM_NAMES } from '../game/constants';
+import { TEAM_COLORS, TEAM_NAMES } from '../game/constants';
 import { ordinal } from './match-info';
 import { RewardsPending, RewardsReveal } from './rewards/RewardsReveal';
+import './postgame.css';
 
 // Deterministic 32-bit hash (FNV-1a) so a given name always maps to the same
 // podium hat/emote when we don't know its real loadout (offline bots / remotes).
@@ -122,6 +123,172 @@ function isPlainYou(name: string): boolean {
   return name.trim().toLowerCase() === 'you';
 }
 
+// ── Personal bests (local, display-only: the server owns real records) ──────
+const PB_KEY = 'ig.postgame.pb.v1';
+type PbRecord = { kills: number; streak: number; headshots: number; acc: number; kd: number };
+
+function loadPb(): PbRecord | null {
+  try {
+    const raw = localStorage.getItem(PB_KEY);
+    return raw ? (JSON.parse(raw) as PbRecord) : null;
+  } catch {
+    return null;
+  }
+}
+
+function accOf(r: MatchResult): number {
+  return r.shotsFired > 0 ? Math.round((r.shotsHit / r.shotsFired) * 100) : 0;
+}
+function kdOf(r: MatchResult): number {
+  return r.deaths > 0 ? r.kills / r.deaths : r.kills;
+}
+
+// "You beat your best" flags for this match against the stored record. Nothing
+// is flagged on the very first recorded match (everything would be a "best").
+function usePersonalBests(result: MatchResult | null): Set<keyof PbRecord> {
+  const [prior] = useState(loadPb);
+  useEffect(() => {
+    if (!result) return;
+    const cur: PbRecord = {
+      kills: result.kills,
+      streak: result.bestStreak,
+      headshots: result.headshots,
+      acc: result.shotsFired >= 10 ? accOf(result) : 0,
+      kd: kdOf(result),
+    };
+    const next: PbRecord = prior
+      ? {
+          kills: Math.max(prior.kills, cur.kills),
+          streak: Math.max(prior.streak, cur.streak),
+          headshots: Math.max(prior.headshots, cur.headshots),
+          acc: Math.max(prior.acc, cur.acc),
+          kd: Math.max(prior.kd, cur.kd),
+        }
+      : cur;
+    try {
+      localStorage.setItem(PB_KEY, JSON.stringify(next));
+    } catch {
+      /* storage blocked: bests just aren't remembered */
+    }
+  }, [result, prior]);
+  return useMemo(() => {
+    const out = new Set<keyof PbRecord>();
+    if (!prior || !result) return out;
+    if (result.kills > prior.kills && result.kills > 0) out.add('kills');
+    if (result.bestStreak > prior.streak && result.bestStreak > 1) out.add('streak');
+    if (result.headshots > prior.headshots && result.headshots > 0) out.add('headshots');
+    if (result.shotsFired >= 10 && accOf(result) > prior.acc) out.add('acc');
+    if (kdOf(result) > prior.kd + 0.005 && result.kills > 0) out.add('kd');
+    return out;
+  }, [prior, result]);
+}
+
+type Tile = { key: keyof PbRecord | 'deaths'; label: string; value: string | number; sub?: string; tone?: string };
+
+// The personal performance card: your numbers for the match, with a gold PB
+// tag on any that beat your stored best. Tiles rise in one after another.
+function PerformanceCard({ result }: { result: MatchResult }) {
+  const pbs = usePersonalBests(result);
+  const hsPct = result.kills > 0 ? Math.round((result.headshots / result.kills) * 100) : 0;
+  const tiles: Tile[] = [
+    { key: 'kd', label: 'K/D ratio', value: kdOf(result).toFixed(2), sub: `${result.kills} / ${result.deaths}`, tone: 'text-cyan-100' },
+    { key: 'acc', label: 'Accuracy', value: `${accOf(result)}%`, sub: `${result.shotsHit} / ${result.shotsFired} hit` },
+    { key: 'streak', label: 'Best streak', value: result.bestStreak, sub: 'in a row' },
+    { key: 'headshots', label: 'Headshots', value: result.headshots, sub: `${hsPct}% of kills` },
+    { key: 'kills', label: 'Kills', value: result.kills, tone: 'text-emerald-200' },
+    { key: 'deaths', label: 'Deaths', value: result.deaths, tone: 'text-rose-200' },
+  ];
+  return (
+    <section aria-label='Your performance'>
+      <div className='pg-section-label pg-rise mb-2 [--pg-base:700ms]'>Your performance</div>
+      <div className='grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6'>
+        {tiles.map((t, i) => {
+          const pb = t.key !== 'deaths' && pbs.has(t.key);
+          const st = { '--i': i, '--pg-base': '800ms' } as CSSProperties;
+          return (
+            <div key={t.key} data-pb={pb ? '1' : '0'} className='pg-tile pg-rise' style={st}>
+              {pb && (
+                <span className='pg-pb' style={st}>
+                  PB
+                </span>
+              )}
+              <div className={`pg-tile-value ${t.tone ?? 'text-white'}`}>{t.value}</div>
+              <div className='pg-tile-label'>{t.label}</div>
+              {t.sub && <div className='pg-tile-sub truncate'>{t.sub}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const MEDAL = ['#fbbf24', '#cbd5e1', '#d6a06a'];
+
+// Full scoreboard: rank medals for the top 3, a frag-share bar behind each row,
+// team pips in TDM, K/D per player. Rows stagger in after the performance card.
+function Scoreboard({ scores, mode }: { scores: PlayerScore[]; mode: ResultsMode }) {
+  const top = Math.max(1, ...scores.map((s) => s.frags));
+  const cols = 'grid-cols-[1.75rem_1fr_3rem_3rem_3.25rem]';
+  return (
+    <section aria-label='Scoreboard'>
+      <div className='pg-section-label pg-rise mb-2 [--pg-base:950ms]'>Scoreboard</div>
+      <div className='overflow-hidden border border-white/10'>
+        <div className={`grid ${cols} gap-2 bg-white/5 px-3 py-1.5 text-[12px] text-white/50`}>
+          <span>#</span>
+          <span>Player</span>
+          <span className='text-right'>Kills</span>
+          <span className='text-right'>Deaths</span>
+          <span className='text-right'>K/D</span>
+        </div>
+        {scores.map((s, i) => {
+          const st = { '--i': i, '--pg-base': '1000ms' } as CSSProperties;
+          return (
+            <div
+              key={s.id}
+              className={`deck-tr pg-row pg-rise grid ${cols} items-center gap-2 px-3 py-[5px] text-sm ${
+                s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
+              }`}
+              style={st}
+            >
+              <span
+                aria-hidden='true'
+                className='pg-row-bar'
+                style={{ ...st, width: `${Math.max(4, (s.frags / top) * 100)}%` }}
+              />
+              <span>
+                {i < 3 ? (
+                  <span className='pg-medal' style={{ background: MEDAL[i] }}>
+                    {i + 1}
+                  </span>
+                ) : (
+                  <span className='tabular-nums text-white/45'>{i + 1}</span>
+                )}
+              </span>
+              <span className='flex min-w-0 items-center gap-2'>
+                {mode === 'tdm' && s.team != null && (
+                  <span
+                    aria-hidden='true'
+                    className='h-2 w-2 shrink-0 rounded-full'
+                    style={{ background: TEAM_COLORS[s.team] ?? '#888' }}
+                  />
+                )}
+                <span className='truncate'>{s.name}</span>
+                {s.isLocal && !isPlainYou(s.name) && <span className='rw-chip rw-chip-cyan shrink-0'>You</span>}
+              </span>
+              <span className='text-right tabular-nums'>{s.frags}</span>
+              <span className='text-right tabular-nums'>{s.deaths}</span>
+              <span className='text-right tabular-nums text-white/55'>
+                {(s.deaths > 0 ? s.frags / s.deaths : s.frags).toFixed(2)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // Shared results panel: the Victory/Defeat slam, the 3D top-3 podium, the full
 // scoreboard + match stats, the rewards reveal (a column beside the board on
 // wide screens, right under the podium on narrow ones), and a caller-supplied
@@ -147,7 +314,6 @@ function ResultsPanel({
   footer: ReactNode;
   onHoverChange?: (hovered: boolean) => void;
 } & RewardProps) {
-  const acc = result && result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
   // Stable winners identity so the 3D scene mounts once (not every HUD tick).
   const rosterKey = scores.slice(0, 3).map((s) => `${s.id}:${s.frags}:${s.hat ?? ''}:${s.emote ?? ''}`).join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -283,41 +449,10 @@ function ResultsPanel({
             )}
           </aside>
 
-          {/* Full scoreboard (all players, compact) + your match stats. */}
-          <div className='p-5 pt-3.5 [grid-area:board]'>
-            <div className='overflow-hidden border border-white/10'>
-              <div className='grid grid-cols-[2rem_1fr_3.5rem_3.5rem] gap-2 bg-white/5 px-3 py-1.5 text-[12px] text-white/50'>
-                <span>#</span>
-                <span>Player</span>
-                <span className='text-right'>Frags</span>
-                <span className='text-right'>Deaths</span>
-              </div>
-              {scores.map((s, i) => (
-                <div
-                  key={s.id}
-                  className={`deck-tr grid grid-cols-[2rem_1fr_3.5rem_3.5rem] gap-2 px-3 py-[5px] text-sm ${
-                    s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
-                  }`}
-                >
-                  <span className='tabular-nums text-white/45'>{i + 1}</span>
-                  <span className='flex min-w-0 items-center gap-2'>
-                    <span className='truncate'>{s.name}</span>
-                    {s.isLocal && !isPlainYou(s.name) && <span className='rw-chip rw-chip-cyan shrink-0'>You</span>}
-                  </span>
-                  <span className='text-right tabular-nums'>{s.frags}</span>
-                  <span className='text-right tabular-nums'>{s.deaths}</span>
-                </div>
-              ))}
-            </div>
-
-            {result && (
-              <div className='mt-3 grid grid-cols-4 gap-2 text-center'>
-                <MiniStat label='Kills' value={result.kills} />
-                <MiniStat label='Deaths' value={result.deaths} />
-                <MiniStat label='Best streak' value={result.bestStreak} />
-                <MiniStat label='Accuracy' value={`${acc}%`} />
-              </div>
-            )}
+          {/* Personal performance card, then the full scoreboard. */}
+          <div className='flex flex-col gap-4 p-5 pt-3.5 [grid-area:board]'>
+            {result && <PerformanceCard result={result} />}
+            <Scoreboard scores={scores} mode={mode} />
           </div>
         </div>
       </div>
