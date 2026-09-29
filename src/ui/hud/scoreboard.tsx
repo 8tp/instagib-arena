@@ -396,8 +396,8 @@ export const QuakeScoreboard = memo(function QuakeScoreboard({
   const offTeam = scores.filter((s) => s.team !== 0 && s.team !== 1);
 
   return (
-    <div className='hud-sb-veil absolute inset-0 z-30 flex items-center justify-center p-4'>
-      <div className='hud-sb flex max-h-[92%] w-[1040px] max-w-[96vw] flex-col'>
+    <div className='hud-sb-veil absolute inset-0 z-30 flex items-start justify-center px-4 pb-4 pt-[112px]'>
+      <div className='hud-sb flex max-h-full w-[1040px] max-w-[96vw] flex-col'>
         <SbHeader
           info={info}
           fallbackLine={fallbackLine}

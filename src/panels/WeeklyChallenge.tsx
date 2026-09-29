@@ -108,7 +108,7 @@ export function WeeklyChallengeModal({
           <div className='mt-1 font-display text-3xl font-bold uppercase leading-none tracking-[0.02em] text-white'>
             {info ? mapName : <Skeleton className='h-8 w-44' />}
           </div>
-          <p className='mt-2.5 max-w-md text-[12.5px] leading-relaxed text-white/60'>
+          <p className='font-sans mt-2.5 max-w-md text-[12.5px] leading-relaxed text-white/60'>
             Race seven bots to the frag cap. Beat them and your <span className='text-amber-200'>clear time</span> tops
             the week; lose the race and your kills count. Its own board, so it never touches your K/D.
           </p>
@@ -129,18 +129,18 @@ export function WeeklyChallengeModal({
                 <div className='mt-1 font-display text-3xl font-bold tabular-nums leading-none text-amber-200'>
                   {me.won ? fmtChallengeTime(me.timeMs) : `${me.kills} kills`}
                 </div>
-                <div className='mt-1.5 text-[11px] text-white/50'>
+                <div className='font-sans mt-1.5 text-[11px] text-white/65'>
                   Rank <span className='text-white/85'>#{me.rank}</span>
                   {me.won ? ' · cleared' : ' · not cleared yet'}
                 </div>
               </>
             ) : (
-              <div className='mt-1.5 text-[12px] leading-snug text-white/50'>
+              <div className='font-sans mt-1.5 text-[12px] leading-snug text-white/65'>
                 {account ? 'No run yet this week.' : 'Log in to save your score.'}
               </div>
             )}
           </div>
-          <DeckButton onClick={onPlay} solid accent='amber' center full>
+          <DeckButton onClick={onPlay} solid accent='emerald' center full>
             Play challenge
           </DeckButton>
         </div>

@@ -90,7 +90,7 @@ export function RankedResultOverlay({
       padded={false}
       bodyClassName='gap-0'
       footer={
-        <DeckButton onClick={onLobby} solid accent='cyan' center className='mx-auto'>
+        <DeckButton onClick={onLobby} solid accent='emerald' center className='mx-auto'>
           Back to lobby
         </DeckButton>
       }

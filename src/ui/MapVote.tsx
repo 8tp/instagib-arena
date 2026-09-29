@@ -59,7 +59,6 @@ export function MapVoteOverlay({
       <div className='pg-motion flex flex-col gap-4' data-reduced={reduced ? '1' : '0'}>
         <div className='flex items-end justify-between gap-4'>
           <div>
-            <div className='text-[11px] font-bold uppercase tracking-[0.3em] text-white/45'>Next up</div>
             <div className='font-display text-2xl font-bold uppercase leading-tight tracking-[0.16em] text-cyan-200'>
               Vote next map
             </div>
@@ -69,9 +68,9 @@ export function MapVoteOverlay({
               className={`font-display text-4xl font-bold leading-none tabular-nums ${urgent ? 'text-amber-300' : 'text-white'}`}
             >
               {remainingSec}
-              <span className='ml-0.5 text-base text-white/40'>s</span>
+              <span className='ml-0.5 text-base text-white/60'>s</span>
             </div>
-            <div className='mt-1 text-[11px] uppercase tracking-[0.2em] text-white/45'>
+            <div className='mt-1 font-sans text-[13px] text-white/65'>
               {totalVotes} {totalVotes === 1 ? 'vote' : 'votes'}
             </div>
           </div>
@@ -136,7 +135,7 @@ export function MapVoteOverlay({
           })}
         </div>
 
-        <div className='text-center text-[11px] uppercase tracking-[0.2em] text-white/40'>
+        <div className='text-center font-sans text-[13px] text-white/70'>
           {vote.myVote ? 'Vote locked — click another map to change it' : 'Click a map to vote'}
         </div>
       </div>

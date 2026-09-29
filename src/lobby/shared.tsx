@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { mapParts, mapShotStyle, useMapShot } from './helpers';
+import { useLevelshots } from '../ui/levelshot';
+import { mapParts, mapShotStyle } from './helpers';
 import './lobby.css';
 
 /* ── Tiny inline icons (stroke = currentColor) ──────────────────────────── */
@@ -73,17 +74,15 @@ export function MapCard({
   mapId,
   active,
   onPick,
-  render,
-  lowSpec,
+  shot,
 }: {
   mapId: string;
   active: boolean;
   onPick: () => void;
-  render?: boolean;
-  lowSpec?: boolean;
+  shot?: string; // levelshot data URL; the gradient shows until it is ready
 }) {
   const { name, tag } = mapParts(mapId);
-  const url = useMapShot(mapId, !!render && active, !!lowSpec);
+  const url = shot ?? null;
   return (
     <button
       type='button'
@@ -111,14 +110,14 @@ export function MapPicker({
   maps,
   value,
   onChange,
-  lowSpec,
 }: {
   label: string;
   maps: ReadonlyArray<{ id: string }>;
   value: string;
   onChange: (id: string) => void;
-  lowSpec?: boolean;
 }) {
+  // One offscreen render at a time, cached; the vote screen shares the cache.
+  const shots = useLevelshots(maps.map((m) => m.id));
   return (
     <div className='flex flex-col gap-2'>
       <div className='lb-field-label'>
@@ -127,7 +126,7 @@ export function MapPicker({
       </div>
       <div className='lb-maps' role='radiogroup' aria-label={label}>
         {maps.map((m) => (
-          <MapCard key={m.id} mapId={m.id} active={value === m.id} onPick={() => onChange(m.id)} render lowSpec={lowSpec} />
+          <MapCard key={m.id} mapId={m.id} active={value === m.id} onPick={() => onChange(m.id)} shot={shots[m.id]} />
         ))}
       </div>
     </div>

@@ -175,7 +175,7 @@ export function SpinTab({
             {canFree && <i className='sp-pip' aria-label='Free spin ready' />}
           </button>
           <button type='button' role='tab' aria-selected={mode === 'premium'} data-spin-tab='premium' className={`sp-mode ${mode === 'premium' ? 'is-sel is-prem' : ''}`} disabled={locked} onClick={() => { setMode('premium'); setWinId(null); }} {...sfxProps('tabSwitch')}>
-            Premium wheel · {fmtCredits(cost)}
+            Premium · {fmtCredits(cost)}
           </button>
         </div>
 
@@ -251,18 +251,20 @@ export function SpinTab({
             <ul className='sp-notes'>
               {mode === 'free' ? (
                 <>
-                  <li>Item wins are plain — no Unusual, Strange or Killstreak.</li>
+                  <li><span>Item wins are plain — no Unusual, Strange or Killstreak.</span></li>
                   <li>
-                    A <TicketGlyph size={14} /> free roll opens any standard case.
+                    <span>
+                      A <TicketGlyph size={14} /> free roll opens any standard case.
+                    </span>
                   </li>
                 </>
               ) : (
                 <>
-                  <li>Any number of spins per day. Duplicates are possible — salvage or sell them.</li>
-                  <li>Relic is the top prize; Unobtainables stay Vault-only.</li>
+                  <li><span>Any number of spins per day. Duplicates are possible — salvage or sell them.</span></li>
+                  <li><span>Relic is the top prize; Unobtainables stay Vault-only.</span></li>
                 </>
               )}
-              <li>The server picks the result before the wheel moves. Credits are earned in play, never bought.</li>
+              <li><span>The server picks the result before the wheel moves. Credits are earned in play, never bought.</span></li>
             </ul>
           </div>
         </section>

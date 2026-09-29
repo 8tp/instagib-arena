@@ -30,7 +30,7 @@ function Kpi({
     >
       <div className='deck-label'>{label}</div>
       <div className='pn-kpi-value mt-2'>{value}</div>
-      {sub && <div className='mt-1.5 text-[11px] tabular-nums text-white/45'>{sub}</div>}
+      {sub && <div className='font-sans mt-1.5 text-[11px] tabular-nums text-white/65'>{sub}</div>}
       {pct != null && (
         <div className='pn-kpi-bar' aria-hidden='true'>
           <span style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
@@ -129,7 +129,7 @@ export function StatsModal({ onClose }: { onClose: () => void }) {
               <div className='deck-bar mt-2 h-2.5'>
                 <div className='bg-gradient-to-r from-cyan-400 to-sky-300' style={{ width: `${xpPct}%` }} />
               </div>
-              <div className='mt-1.5 text-[11px] tabular-nums text-white/40'>
+              <div className='font-sans mt-1.5 text-[11px] tabular-nums text-white/65'>
                 {profile.xpForNext > 0
                   ? `${profile.xpIntoLevel} / ${profile.xpForNext} XP · ${profile.totalXp} total`
                   : `${profile.totalXp} XP total`}
@@ -145,7 +145,7 @@ export function StatsModal({ onClose }: { onClose: () => void }) {
                 <span className='pn-kpi-value text-[26px]'>{acc.toFixed(1)}</span>
                 <span className='font-mono text-[10px] text-white/40'>%</span>
               </Ring>
-              <div className='text-[11px] text-white/40'>best single match</div>
+              <div className='font-sans text-[11px] text-white/65'>best single match</div>
             </div>
             <Kpi label='Kills' value={stats.totalKills} sub={`${stats.totalDeaths} deaths`} />
             <Kpi label='K / D' value={kd} sub='lifetime ratio' accent='#67e8f9' />
@@ -175,7 +175,7 @@ export function StatsModal({ onClose }: { onClose: () => void }) {
                 <div className='deck-label !text-orange-200/60'>Best kill streak</div>
                 <div className='pn-kpi-value mt-1.5 !text-orange-100'>{stats.bestKillStreak}</div>
               </div>
-              <div className='text-right text-[11px] text-white/45'>kills without dying</div>
+              <div className='font-sans text-right text-[11px] text-white/65'>kills without dying</div>
             </div>
           </div>
 

@@ -283,7 +283,7 @@ export function arenaWall(seed: number, w = 2048, h = 768) {
 export type PlateSpec = { name: string; place: number; score: number; accent: string; you: boolean };
 export function namePlate(p: PlateSpec) {
   const W = 800;
-  const H = 250;
+  const H = 280;
   const [cv, c] = makeCanvas(W, H);
   const cut = 34;
   const shape = () => {
@@ -331,25 +331,25 @@ export function namePlate(p: PlateSpec) {
     c.font = '700 ' + fs + 'px ' + PODIUM_FONT;
   }
   if (c.measureText(nm).width > W - 92) nm = nm.slice(0, 10) + '…';
-  c.fillText(nm, 52, 128);
+  c.fillText(nm, 52, 122);
   c.fillStyle = p.accent;
-  c.font = '700 60px ' + PODIUM_FONT;
-  c.fillText(ord, 52, 214);
+  c.font = '700 88px ' + PODIUM_FONT;
+  c.fillText(ord, 52, 246);
   let x = 52 + c.measureText(ord).width + 22;
   c.fillStyle = 'rgba(255,255,255,0.3)';
-  c.fillRect(x - 11, 168, 3, 48);
+  c.fillRect(x - 11, 178, 3, 68);
   c.fillStyle = '#fff';
-  c.font = '700 60px ' + PODIUM_FONT;
-  c.fillText(String(p.score), x, 214);
+  c.font = '700 88px ' + PODIUM_FONT;
+  c.fillText(String(p.score), x, 246);
   x += c.measureText(String(p.score)).width + 12;
   c.fillStyle = 'rgba(255,255,255,0.5)';
-  c.font = '600 38px ' + PODIUM_FONT;
-  c.fillText(p.score === 1 ? 'FRAG' : 'FRAGS', x, 212);
+  c.font = '600 52px ' + PODIUM_FONT;
+  c.fillText(p.score === 1 ? 'FRAG' : 'FRAGS', x, 244);
   if (p.you) {
     c.textAlign = 'right';
     c.fillStyle = '#67e8f9';
-    c.font = '700 38px ' + PODIUM_FONT;
-    c.fillText('YOU', W - 44, 212);
+    c.font = '700 52px ' + PODIUM_FONT;
+    c.fillText('YOU', W - 44, 244);
   }
   return tex(cv, true, 8);
 }

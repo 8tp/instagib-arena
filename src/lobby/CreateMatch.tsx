@@ -179,7 +179,7 @@ export function CreateOnlineModal({
       }
     >
       <ModePicker value={mode} onChange={onChangeMode} />
-      <MapPicker label='Arena' maps={onlineMaps} value={mapId} onChange={setMapId} lowSpec={settings.lowSpec} />
+      <MapPicker label='Arena' maps={onlineMaps} value={mapId} onChange={setMapId} />
       <PlayersSlider
         label={isDuel ? 'Players' : 'Max players'}
         value={capacity}
@@ -253,7 +253,7 @@ export function CreateMatchModal({
       }
     >
       <ModePicker value={gameMode} onChange={setGameMode} labels={{ ffa: 'FFA', tdm: 'TDM', duel: 'Duel' }} />
-      <MapPicker label='Arena' maps={MAPS} value={mapId} onChange={setMapId} lowSpec={settings.lowSpec} />
+      <MapPicker label='Arena' maps={MAPS} value={mapId} onChange={setMapId} />
       <PlayersSlider
         label='Players'
         value={effPlayers}

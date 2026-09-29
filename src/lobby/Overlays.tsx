@@ -66,7 +66,7 @@ export function OnboardingModal({
           <DeckButton onClick={close} size='sm' center sound='uiBack'>
             Play as Guest
           </DeckButton>
-          <DeckButton onClick={onCreateAccount} solid accent='cyan' center>
+          <DeckButton onClick={onCreateAccount} solid accent='emerald' center>
             Create account
           </DeckButton>
         </>

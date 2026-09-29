@@ -1,6 +1,6 @@
 // End-of-match results: the Victory/Defeat slam, the 3D podium, the scoreboard,
 // match stats and the rewards reveal (offline + online variants).
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type UIEvent } from 'react';
 import type { MatchResult } from '../game/game';
 import type { PlayerScore } from '../game/types';
 import type { ProgressionResp, Settings } from '../app-types';
@@ -225,6 +225,13 @@ function PerformanceCard({ result }: { result: MatchResult }) {
 
 const MEDAL = ['#fbbf24', '#cbd5e1', '#d6a06a'];
 
+// Toggles the bottom fade cue on the scoreboard: shown until scrolled to the end.
+function onBoardScroll(e: UIEvent<HTMLDivElement>) {
+  const el = e.currentTarget;
+  const end = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+  el.parentElement?.setAttribute('data-end', end ? '1' : '0');
+}
+
 // Full scoreboard: rank medals for the top 3, a frag-share bar behind each row,
 // team pips in TDM, K/D per player. Rows stagger in after the performance card.
 function Scoreboard({ scores, mode }: { scores: PlayerScore[]; mode: ResultsMode }) {
@@ -233,8 +240,9 @@ function Scoreboard({ scores, mode }: { scores: PlayerScore[]; mode: ResultsMode
   return (
     <section aria-label='Scoreboard'>
       <div className='pg-section-label pg-rise mb-2 [--pg-base:950ms]'>Scoreboard</div>
-      <div className='overflow-hidden border border-white/10'>
-        <div className={`grid ${cols} gap-2 bg-white/5 px-3 py-1.5 text-[12px] text-white/50`}>
+      <div className='pg-board border border-white/10' data-more={scores.length > 5 ? '1' : '0'}>
+       <div className='pg-board-scroll deck-scroll' onScroll={onBoardScroll}>
+        <div className={`sticky top-0 z-10 grid ${cols} gap-2 bg-[#171a20] px-3 py-1.5 text-[12px] text-white/50`}>
           <span>#</span>
           <span>Player</span>
           <span className='text-right'>Kills</span>
@@ -284,6 +292,7 @@ function Scoreboard({ scores, mode }: { scores: PlayerScore[]; mode: ResultsMode
             </div>
           );
         })}
+       </div>
       </div>
     </section>
   );
@@ -404,7 +413,7 @@ function ResultsPanel({
       >
         {/* Header: the Victory / Defeat slam. */}
         <div
-          className='rw-shake relative overflow-hidden px-4 pb-3 pt-3.5 text-center sm:px-6'
+          className='rw-shake relative overflow-hidden px-4 pb-3 pt-4 text-center sm:px-6'
           style={{
             background: `radial-gradient(60% 150% at 50% 0%, ${tone.wash}, rgba(0,0,0,0.5) 72%)`,
             borderBottom: `1px solid ${tone.line}33`,
@@ -419,7 +428,7 @@ function ResultsPanel({
             Match complete
           </div>
           <div
-            className={`rw-slam font-display text-[1.85rem] font-bold uppercase leading-none tracking-[0.16em] sm:text-[2.75rem] sm:tracking-[0.22em] ${tone.text}`}
+            className={`rw-slam font-display text-[clamp(1.4rem,7.2vw,1.85rem)] font-bold uppercase leading-none tracking-[0.1em] sm:text-[2.75rem] sm:tracking-[0.22em] ${tone.text}`}
             style={{ textShadow: `0 3px 0 rgba(0,0,0,0.55), 0 0 28px ${tone.glow}` }}
           >
             {head.title}
@@ -442,7 +451,7 @@ function ResultsPanel({
           <aside
             aria-label='Rewards'
             style={{ '--pg-accent': tone.line } as CSSProperties}
-            className='pg-rewards border-b border-white/10 px-5 py-4 [grid-area:rewards] lg:border-b-0 lg:border-l'
+            className='pg-rewards border-b border-white/10 px-5 pb-6 pt-4 [grid-area:rewards] lg:border-b-0 lg:border-l'
           >
             {progression ? (
               <RewardsReveal
@@ -462,7 +471,7 @@ function ResultsPanel({
           </aside>
 
           {/* Personal performance card, then the full scoreboard. */}
-          <div className='flex flex-col gap-4 p-5 pt-3.5 [grid-area:board]'>
+          <div className='flex flex-col gap-3 px-5 pb-6 pt-3 [grid-area:board]'>
             {result && <PerformanceCard result={result} />}
             <Scoreboard scores={scores} mode={mode} />
           </div>
@@ -590,11 +599,11 @@ export function OnlineMatchResults({
       {...reward}
       footer={
         <div className='relative flex-1'>
-          <DeckButton onClick={onContinue} solid accent='cyan' center full>
+          <DeckButton onClick={onContinue} solid accent='emerald' center full>
             Continue to map vote{secs > 0 ? ` · ${secs}` : ''}
           </DeckButton>
           <div aria-hidden='true' className='pointer-events-none absolute inset-x-0 -bottom-1.5 h-[2px] bg-white/10'>
-            <div className='rw-countdown h-full bg-cyan-300' data-paused={hovered} style={barStyle} />
+            <div className='rw-countdown h-full bg-emerald-300' data-paused={hovered} style={barStyle} />
           </div>
           {hovered && (
             <div className='absolute -top-6 right-0 text-[12px] text-white/50'>Paused</div>

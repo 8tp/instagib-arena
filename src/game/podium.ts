@@ -643,7 +643,7 @@ export class PodiumScene {
       const plate = new THREE.Sprite(
         new THREE.SpriteMaterial({ map: plateTex, transparent: true, toneMapped: false, fog: false, opacity: this.reduced ? 1 : 0 }),
       );
-      plate.scale.set(1.7, 0.53, 1);
+      plate.scale.set(1.7, 0.595, 1);
       // Clear of overhead arms and hops (cheer jumps ~0.3 m with arms up).
       plate.position.set(0, 2.74, 0);
       // Always over the scene (confetti, shafts, motes) and never depth-hidden by a raised arm.
@@ -694,10 +694,10 @@ export class PodiumScene {
       // (plinths are 1.95 apart), grow a little when the frame is very narrow,
       // and are clamped inside the visible width.
       const asp = this.camera.aspect;
-      const base = asp < 2.6 ? 1.5 : 1.7;
+      const base = asp < 2.6 ? 1.6 : 1.88;
       const pk = THREE.MathUtils.clamp(1 + (1.7 - asp) * 0.35, 1, 1.25);
       const w = base * pk;
-      c.plate.scale.set(w, w * 0.312, 1);
+      c.plate.scale.set(w, w * 0.35, 1);
       const vw = this.camera.position.length() * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * asp - 0.08;
       const wx = THREE.MathUtils.clamp(c.x, -vw + w / 2, vw - w / 2) - c.x; // desired world offset
       c.plate.position.x = -wx; // the performer group is turned 180 degrees

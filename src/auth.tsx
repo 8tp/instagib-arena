@@ -205,7 +205,7 @@ export function LoginModal({
             onClick={() => void submit(close)}
             disabled={busy}
             solid
-            accent='cyan'
+            accent='emerald'
             center
           >
             {busy ? 'Working…' : register ? 'Create account' : 'Log in'}
@@ -236,7 +236,7 @@ export function LoginModal({
               <li className='pn-perk'>Appear on the leaderboards and play Ranked Duel</li>
             </ul>
           ) : (
-            <p className='border-b border-white/[0.07] pb-4 text-[12px] leading-relaxed text-white/50'>
+            <p className='font-sans border-b border-white/[0.07] pb-4 text-[12px] leading-relaxed text-white/65'>
               Log in to pick up your progress on any device.
             </p>
           )}

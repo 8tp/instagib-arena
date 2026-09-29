@@ -662,7 +662,15 @@ export function SettingsModal({
             </button>
           )}
         </div>
-        <div role='tablist' aria-label='Settings sections' aria-orientation='vertical' className='st-tabs' onKeyDown={onTabKey}>
+        <div role='tablist' aria-label='Settings sections' aria-orientation='vertical' className='st-tabs'
+          onKeyDown={onTabKey}
+          onScroll={(e) => {
+            // Edge fades (narrow layout): a cue only on the side with more tabs.
+            const el = e.currentTarget;
+            el.dataset.start = el.scrollLeft > 4 ? '0' : '1';
+            el.dataset.end = el.scrollWidth - el.scrollLeft - el.clientWidth < 4 ? '1' : '0';
+          }}
+        >
           {TABS.map((t) => {
             const active = !q && tab === t.id;
             const dirty = tabDirty(t.id);

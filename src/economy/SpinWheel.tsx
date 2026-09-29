@@ -23,6 +23,7 @@ export type WheelHandle = { spinTo: (id: string) => Promise<void> };
 const R = 188; // wedge radius
 const VB = 232; // viewBox half-extent
 const BULBS = 28;
+const HUB_R = 40; // hub cap radius
 const rad = (deg: number) => (deg * Math.PI) / 180;
 const pt = (deg: number, r: number): [number, number] => [Math.sin(rad(deg)) * r, -Math.cos(rad(deg)) * r];
 
@@ -172,7 +173,7 @@ export function SpinWheel({
             <stop offset='0.93' stopColor='#2a3040' />
             <stop offset='1' stopColor='#0c0f15' />
           </radialGradient>
-          <radialGradient id={`${uid}-hub`} cx='-8' cy='-10' r='46' gradientUnits='userSpaceOnUse'>
+          <radialGradient id={`${uid}-hub`} cx='-7' cy='-9' r='40' gradientUnits='userSpaceOnUse'>
             <stop offset='0' stopColor='#5b6478' />
             <stop offset='0.55' stopColor='#222836' />
             <stop offset='1' stopColor='#0b0e15' />
@@ -195,9 +196,12 @@ export function SpinWheel({
         <g ref={wheelRef}>
           {geo.map(({ w, a0, a1, mid, span }) => {
             const win = winId === w.id && !spinning;
-            const [lx, ly] = pt(mid, R * 0.9);
-            // Radial label along the wedge (reads outward-in from the rim).
-            const fs = span < 26 ? 15 : span < 44 ? 19 : 22;
+            const [lx, ly] = pt(mid, R * 0.93);
+            // Radial label along the wedge (reads outward-in from the rim). The
+            // size is capped so the text always ends clear of the hub cap.
+            const fs0 = span < 26 ? 15 : span < 44 ? 19 : 22;
+            const avail = R * 0.93 - (HUB_R + 8);
+            const fs = Math.min(fs0, avail / (Math.max(1, w.label.length) * 0.92));
             return (
               <g key={w.id} className={win ? 'sp-win' : undefined} style={{ ['--wc' as string]: w.edge }}>
                 <path d={wedgePath(a0, a1)} fill={`url(#${uid}-g-${w.id})`} stroke='rgba(6,8,12,0.85)' strokeWidth='2.5' strokeLinejoin='round' />
@@ -218,7 +222,7 @@ export function SpinWheel({
             );
           })}
           {/* inner ring shading */}
-          <circle r={R * 0.3} fill='none' stroke='rgba(0,0,0,0.35)' strokeWidth='2' />
+          <circle r={HUB_R + 6} fill='none' stroke='rgba(0,0,0,0.35)' strokeWidth='2' />
         </g>
 
         {/* Marquee bulbs (fixed) */}
@@ -227,8 +231,8 @@ export function SpinWheel({
         ))}
 
         {/* Hub cap */}
-        <circle r='46' fill={`url(#${uid}-hub)`} stroke={accent} strokeWidth='3' />
-        <circle r='38' fill='none' stroke='rgba(255,255,255,0.14)' strokeWidth='1.5' />
+        <circle r={HUB_R} fill={`url(#${uid}-hub)`} stroke={accent} strokeWidth='3' />
+        <circle r={HUB_R - 8} fill='none' stroke='rgba(255,255,255,0.14)' strokeWidth='1.5' />
         <text y='1' textAnchor='middle' dominantBaseline='central' className='sp-hub-text' fill={accent}>
           {hub}
         </text>

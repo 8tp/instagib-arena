@@ -375,10 +375,10 @@ export function LeaderboardModal({ onClose }: { onClose: () => void }) {
           </div>
 
           {!isRanked && sort === 'accuracy' && (
-            <p className='text-[11px] text-white/40'>Accuracy board needs at least 5 games played.</p>
+            <p className='font-sans text-[11px] text-white/65'>Accuracy board needs at least 5 games played.</p>
           )}
           {!isRanked && you && you.rank === 0 && sort === 'accuracy' && (
-            <p className='text-[11px] text-amber-200/75'>
+            <p className='font-sans text-[11px] text-amber-200/75'>
               Play {5 - you.entry.totalGames} more game{5 - you.entry.totalGames === 1 ? '' : 's'} to rank on accuracy.
             </p>
           )}

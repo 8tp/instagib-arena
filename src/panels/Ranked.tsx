@@ -43,11 +43,11 @@ function FormPips({ streak }: { streak: number }) {
   );
 }
 
-function Mini({ label, value }: { label: string; value: string | number }) {
+function Mini({ label, value, mono = false }: { label: string; value: string | number; mono?: boolean }) {
   return (
     <div className='min-w-0'>
       <div className='deck-label'>{label}</div>
-      <div className='mt-1 font-display text-lg font-bold tabular-nums leading-none text-white'>{value}</div>
+      <div className={`mt-1 text-lg font-bold tabular-nums leading-none text-white ${mono ? 'font-mono' : 'font-display'}`}>{value}</div>
     </div>
   );
 }
@@ -123,14 +123,14 @@ export function RankedModal({
   const winRate = games > 0 ? Math.round(((profile?.wins ?? 0) / games) * 100) : 0;
 
   return (
-    <ModalShell title='Ranked Duel' tone='fuchsia' size={account ? 'xl' : 'md'} onClose={onClose} bodyClassName='gap-4'>
+    <ModalShell title='Ranked Duel' tone='emerald' size={account ? 'xl' : 'md'} onClose={onClose} bodyClassName='gap-4'>
       {!account ? (
         <div className='flex flex-col items-center gap-4 py-4 text-center'>
           <RankEmblem color={RANKED_TIERS[RANKED_TIERS.length - 3].color} letter='?' size={72} />
           <p className='max-w-xs font-sans text-[13px] leading-relaxed text-white/60'>
             Ranked Duel is 1v1 on the Elo ladder. Your rating follows your account, so log in to play.
           </p>
-          <DeckButton onClick={onOpenLogin} solid accent='cyan' center>
+          <DeckButton onClick={onOpenLogin} solid accent='emerald' center>
             Log in to play ranked
           </DeckButton>
         </div>
@@ -201,8 +201,8 @@ export function RankedModal({
                   Searching… {elapsed}s
                 </DeckButton>
               ) : (
-                <DeckButton onClick={onQueue} solid accent='fuchsia' full center size='lg'>
-                  Find ranked match
+                <DeckButton onClick={onQueue} solid accent='emerald' full center size='lg' className='whitespace-nowrap'>
+                  Find match
                 </DeckButton>
               )}
               <div className='min-h-[1rem] text-center text-[11px] text-white/45'>
@@ -223,7 +223,7 @@ export function RankedModal({
             {/* Career line: record, win rate, peak, form. */}
             {!loading && (
               <div className='flex flex-wrap items-end gap-x-7 gap-y-3 border-t border-white/[0.08] pt-4 sm:col-span-2'>
-                <Mini label='Record' value={`${profile?.wins ?? 0}W ${profile?.losses ?? 0}L`} />
+                <Mini label='Record' value={`${profile?.wins ?? 0}W · ${profile?.losses ?? 0}L`} mono />
                 <Mini label='Win rate' value={games > 0 ? `${winRate}%` : '—'} />
                 <Mini label='Peak' value={profile?.peak ?? RANKED_BASE} />
                 <div className='ml-auto'>

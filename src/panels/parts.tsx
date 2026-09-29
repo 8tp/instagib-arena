@@ -102,7 +102,7 @@ export function PanelState({
         {err ? '!' : '—'}
       </span>
       <div className='font-display text-[13px] font-semibold uppercase tracking-[0.12em] text-white/80'>{title}</div>
-      {hint && <p className='max-w-xs text-[12px] leading-relaxed text-white/45'>{hint}</p>}
+      {hint && <p className='font-sans max-w-xs text-[12px] leading-relaxed text-white/65'>{hint}</p>}
       {action && (
         <DeckButton onClick={action.onClick} accent={err ? 'rose' : 'cyan'} size='sm' center className='mt-2'>
           {action.label}
@@ -177,7 +177,7 @@ export function Field({
         <div
           id={msgId}
           role={error ? 'alert' : undefined}
-          className={`text-[11px] leading-snug ${error ? 'text-rose-300' : 'text-white/40'}`}
+          className={`font-sans text-[11px] leading-snug ${error ? 'text-rose-300' : 'text-white/65'}`}
         >
           {error || hint}
         </div>

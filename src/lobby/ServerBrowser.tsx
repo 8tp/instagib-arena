@@ -4,7 +4,8 @@ import { sfxProps } from '../deck-core';
 import { NameBadges } from '../ui/badges';
 import type { GameMode } from '../game/constants';
 import type { ChatMessage, LobbyRoom, LobbyStatus, PresencePlayer, PresenceState } from '../game/net';
-import { CHAT_CLIENT_MAX_LEN, hueOf, mapParts, mapShotStyle, useMapShot } from './helpers';
+import { useLevelshots } from '../ui/levelshot';
+import { CHAT_CLIENT_MAX_LEN, hueOf, mapParts, mapShotStyle } from './helpers';
 import { IconAlert, IconChat, IconRadar, IconUsers } from './shared';
 import './lobby.css';
 
@@ -83,20 +84,21 @@ const MODE_FILTERS: ReadonlyArray<{ id: 'all' | GameMode; label: string }> = [
 
 function RoomCard({
   room: r,
+  shot,
   onJoin,
   onSpectate,
 }: {
   room: LobbyRoom;
+  shot?: string;
   onJoin: (r: LobbyRoom) => void;
   onSpectate: (r: LobbyRoom) => void;
 }) {
-  const shot = useMapShot(r.mapId);
   const { name: mapName } = mapParts(r.mapId);
   const pct = Math.min(100, Math.round((r.players / Math.max(1, r.capacity)) * 100));
   return (
     <li className='lb-room'>
       <div className='flex items-center gap-2.5'>
-        <div className='lb-room-shot' style={mapShotStyle(r.mapId, shot)} aria-hidden='true' />
+        <div className='lb-room-shot' style={mapShotStyle(r.mapId, shot ?? null)} aria-hidden='true' />
         <div className='min-w-0 flex-1'>
           <div className='truncate font-display text-[13px] font-semibold text-white'>{r.name}</div>
           <div className='mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px] uppercase tracking-[0.1em] text-white/50'>
@@ -159,6 +161,8 @@ export function OpenLobbies({
     () => rooms.filter((r) => (modeFilter === 'all' || r.mode === modeFilter) && (!hideFull || r.joinable)),
     [rooms, modeFilter, hideFull],
   );
+  const shotIds = useMemo(() => Array.from(new Set(shown.map((r) => r.mapId))), [shown]);
+  const shots = useLevelshots(shotIds);
   const filtering = modeFilter !== 'all' || hideFull;
   return (
     <>
@@ -223,7 +227,7 @@ export function OpenLobbies({
         ) : (
           <ul className='flex flex-col gap-2'>
             {shown.map((r) => (
-              <RoomCard key={r.id} room={r} onJoin={onJoin} onSpectate={onSpectate} />
+              <RoomCard key={r.id} room={r} shot={shots[r.mapId]} onJoin={onJoin} onSpectate={onSpectate} />
             ))}
           </ul>
         )}

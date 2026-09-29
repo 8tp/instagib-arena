@@ -12,6 +12,7 @@
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.55);
   background: rgba(255, 255, 255, 0.04);
+  white-space: nowrap;
   clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
   transition: color 0.15s, background 0.15s;
 }
@@ -110,7 +111,7 @@
 }
 .sp-hub-text {
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.08em;
   paint-order: stroke;
@@ -238,13 +239,17 @@
 }
 .sp-notes li {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 8px;
   margin-bottom: 4px;
+}
+.sp-notes li > span {
+  min-width: 0;
 }
 .sp-notes li::before {
   content: '';
   flex: none;
+  margin-top: 0.6em;
   width: 5px;
   height: 5px;
   background: var(--ca);
@@ -318,4 +323,33 @@
     padding: 9px 8px;
     font-size: 13px;
   }
+}
+
+/* Equal-width wheel toggle; on narrow screens the tabs share the row. */
+.ec-subtabs:has(.sp-mode) {
+  flex-wrap: nowrap;
+}
+.ec-subtabs .sp-mode {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+}
+@media (min-width: 720px) {
+  .ec-subtabs .sp-mode {
+    flex: 0 0 auto;
+  }
+}
+@media (max-width: 480px) {
+  .ec-subtabs .sp-mode {
+    padding-inline: 8px;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+  }
+}
+
+/* Inline ticket glyph inside a note: preflight makes svg display:block. */
+.sp-notes svg {
+  display: inline-block;
+  vertical-align: -3px;
+  margin-inline: 1px;
 }

@@ -893,7 +893,7 @@ canvas {
   box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.45);
 }
 .menu-item:disabled {
-  color: rgba(255, 255, 255, 0.28);
+  color: rgba(255, 255, 255, 0.46);
   cursor: not-allowed;
 }
 .menu-item-label {
@@ -909,7 +909,7 @@ canvas {
   font-family: var(--font-sans);
   font-size: 12.5px;
   white-space: nowrap;
-  color: rgba(255, 255, 255, 0.36);
+  color: rgba(255, 255, 255, 0.6);
   transition: color 0.12s;
 }
 .menu-item:hover:not(:disabled) .menu-item-sub,
@@ -917,7 +917,7 @@ canvas {
   color: var(--acc);
 }
 .menu-item:disabled .menu-item-sub {
-  color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .menu-link {
