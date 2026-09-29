@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS instagib_meta (
   add('econ_v3', 'econ_v3 INTEGER NOT NULL DEFAULT 0');
   add('legacy_unlocked', `legacy_unlocked TEXT NOT NULL DEFAULT '[]'`);
   add('equipped_items', `equipped_items TEXT NOT NULL DEFAULT '{}'`);
+  add('last_spin_day', `last_spin_day TEXT NOT NULL DEFAULT ''`);
   // Listings carry their item's def + quality (snapshot at list time) so price
   // history / suggested prices are an index range, not a scan of every sale.
   const mcols = new Set((sqlite.prepare(`PRAGMA table_info(instagib_market)`).all() as { name: string }[]).map((r) => r.name));
@@ -671,7 +672,7 @@ export function poolFor(c: CaseDef): ItemDef[] {
 // Defs for a rolled tier; empty tier falls to the nearest LOWER tier that has
 // items, then the nearest higher (catalog note). The Vault's Unobtainable roll
 // draws from the tradable Unobtainable defs.
-function defsForTier(c: CaseDef, tier: Tier, pool: ItemDef[]): { tier: Tier; defs: ItemDef[] } {
+export function defsForTier(c: CaseDef, tier: Tier, pool: ItemDef[]): { tier: Tier; defs: ItemDef[] } {
   const at = (t: Tier): ItemDef[] =>
     t === 'unobtainable' ? vaultUnobtainables().filter((d) => c.slots.includes(d.slot)) : pool.filter((d) => d.tier === t);
   const start = TIERS.indexOf(tier);

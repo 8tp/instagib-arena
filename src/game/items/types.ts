@@ -48,7 +48,7 @@ export type ItemAttrs = {
   tint?: string; // admin one-off tint '#rrggbb'
 };
 
-export type ItemOrigin = 'case' | 'admin' | 'road' | 'challenge' | 'founder' | 'title' | 'market' | 'trade' | 'legacy';
+export type ItemOrigin = 'case' | 'spin' | 'admin' | 'road' | 'challenge' | 'founder' | 'title' | 'market' | 'trade' | 'legacy';
 export type ItemState = 'owned' | 'listed' | 'traded' | 'salvaged' | 'revoked';
 
 // An owned item as sent to its owner (and in market/trade views).
@@ -107,6 +107,54 @@ export const CASES: readonly CaseDef[] = [
 ];
 
 // No pity (by design, like TF2/Krunker): fixed, published rates only.
+
+// ── Daily Spin (Krunker-style wheel) ─────────────────────────────────────────
+// FREE: one spin per UTC day per account — credits, a free case roll, or a
+// plain (no-quality) low-tier item. PREMIUM: pay credits, any number per day,
+// always an item (Uncommon floor) from every droppable slot, qualities rolled
+// exactly like a case. Unobtainables stay Vault-only. Rates are published.
+export type SpinSegment = {
+  id: string;
+  label: string;
+  odds: number; // probability (the segment list sums to 1)
+  reward: { type: 'credits'; amount: number } | { type: 'roll' } | { type: 'item'; tier: Tier };
+};
+export const SPIN_SLOTS: readonly ItemSlot[] = ['hat', 'face', 'back', 'finish', 'beam', 'finisher', 'spawn', 'emote'];
+export const SPIN = {
+  free: [
+    { id: 'c25', label: '25 ⛁', odds: 0.28, reward: { type: 'credits', amount: 25 } },
+    { id: 'common', label: 'Common item', odds: 0.28, reward: { type: 'item', tier: 'common' } },
+    { id: 'c50', label: '50 ⛁', odds: 0.2, reward: { type: 'credits', amount: 50 } },
+    { id: 'uncommon', label: 'Uncommon item', odds: 0.14, reward: { type: 'item', tier: 'uncommon' } },
+    { id: 'c150', label: '150 ⛁', odds: 0.04, reward: { type: 'credits', amount: 150 } },
+    { id: 'roll', label: 'Free case roll', odds: 0.04, reward: { type: 'roll' } },
+    { id: 'rare', label: 'Rare item', odds: 0.02, reward: { type: 'item', tier: 'rare' } },
+  ] as readonly SpinSegment[],
+  premiumCost: 500,
+  premium: { common: 0, uncommon: 0.5, rare: 0.3, epic: 0.14, legendary: 0.045, relic: 0.015, unobtainable: 0 } as Record<Tier, number>,
+} as const;
+export type SpinKind = 'free' | 'premium';
+export type SpinInfo = {
+  free: SpinSegment[];
+  premiumCost: number;
+  premiumOdds: Record<Tier, number>; // EFFECTIVE (after empty-tier fallback)
+  pool: Record<Tier, number>; // defs that can drop per tier (premium pool)
+  freeAvailable: boolean; // false for guests
+  nextFreeAt: number; // ms — next UTC midnight after the last free spin (0 = now)
+  credits: number;
+  freeRolls: number;
+};
+export type SpinResult =
+  | {
+      ok: true;
+      kind: SpinKind;
+      segment: string; // free: the SpinSegment id; premium: the tier
+      credits: number;
+      freeRolls: number;
+      nextFreeAt: number;
+      gained: { credits?: number; roll?: boolean; item?: ItemInstanceWire; tier?: Tier };
+    }
+  | { ok: false; error: 'guest' | 'bad_kind' | 'already_spun' | 'insufficient' | 'empty_pool'; need?: number; nextFreeAt?: number };
 
 // Quality roll chances per case roll (docs/economy.md §1).
 export const QUALITY_ODDS = {

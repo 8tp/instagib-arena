@@ -98,6 +98,16 @@ In: matches (existing formula), **daily challenges** (raised: 40–60 ⛁ + XP e
 (200–300 ⛁), Career Road credits + **free rolls** (road "case key" → 1 free roll), first win.
 Out: cases, market tax, listing fee. Salvage returns credits below case EV (~12%).
 
+## 3b. Daily Spin (Krunker-style wheel)
+`SPIN` in `src/game/items/types.ts`; server `server/spin.ts`; `GET/POST /api/spin {kind}`.
+- **Free** — one per UTC day per account (`instagib_stats.last_spin_day`). Segments:
+  25 ⛁ 28% · Common item 28% · 50 ⛁ 20% · Uncommon item 14% · 150 ⛁ 4% · free case roll 4% ·
+  Rare item 2%. Free-wheel items are plain (no unusual/strange/killstreak; finishes keep seed+wear).
+- **Premium** — 500 ⛁, unlimited. Always an item from every droppable slot, qualities rolled
+  like a case: Uncommon 50% · Rare 30% · Epic 14% · Legendary 4.5% · Relic 1.5%.
+  Salvage EV ≈ 62 ⛁ / 500 (12.5%, same as a standard case) — no arbitrage; Unobtainable stays Vault-only.
+- Items mint with origin `spin`. Odds published to everyone (guests see the wheel, sign in to spin).
+
 ## 4. Market (fixed-price listings)
 - List an owned tradable instance for a price ≥ floor (= tier salvage × 1.5, min 5) and ≤
   1,000,000. **Listing fee 2%** (min 1, non-refundable) + **sale tax 10%** (seller gets 90%).
@@ -106,6 +116,10 @@ Out: cases, market tax, listing fee. Salvage returns credits below case EV (~12%
 - Browse/filter by slot, tier, quality, effect; sort by price/newest. Per-def **price history**
   (last 50 sales) + **suggested price** (median of last 10 sales of the same def+quality).
 - Buy is one DB transaction: credits move, tax burned, item owner flips, events logged.
+
+Anti-abuse (security review): a seller receives ≤ 10,000 ⛁ / 24 h from sales; buyer and seller on
+the same (hashed) network can't deal; public market GETs are rate-limited per IP; suggested prices
+come from `def`/`quality` snapshotted on the listing row (indexed) and are memoised.
 
 ## 5. Trading (direct offers)
 - Offer = `{ to, giveItems[], giveCredits, getItems[], getCredits, note? }` (≤ 8 items per side).

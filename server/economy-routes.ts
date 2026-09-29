@@ -17,6 +17,7 @@ import {
   salvageItems,
 } from './economy';
 import { browse, buyListing, listItem, myListings, netHash, priceHistory, unlistItem } from './market';
+import { spin, spinInfo } from './spin';
 import { acceptTrade, cancelTrade, createOffer, declineTrade, listTrades, tradeGate } from './trades';
 
 export const economyRouter = Router();
@@ -109,6 +110,20 @@ economyRouter.post('/cases/open', (req, res) => {
   if (!id) return;
   const b = body(req);
   send(res, openCase(id, str(b.caseId), b.useRoll === true));
+});
+
+// ── Daily Spin ───────────────────────────────────────────────────────────────
+// Public: the wheel segments + premium odds are published to everyone.
+economyRouter.get('/spin', (req, res) => {
+  const id = accountId(req);
+  if (id) ensureOnboarded(id);
+  res.json(spinInfo(id));
+});
+
+economyRouter.post('/spin', (req, res) => {
+  const id = writer(req, res);
+  if (!id) return;
+  send(res, spin(id, body(req).kind));
 });
 
 // ── Market ───────────────────────────────────────────────────────────────────
