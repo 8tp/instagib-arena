@@ -139,7 +139,7 @@ export function StatsModal({ onClose }: { onClose: () => void }) {
 
           <div className='grid grid-cols-2 gap-3 sm:grid-cols-3'>
             {/* Accuracy ring spans two rows on wide layouts. */}
-            <div className='pn-card clip-deck-sm flex flex-col items-center justify-center gap-2 px-4 py-4 sm:row-span-2'>
+            <div className='pn-card clip-deck-sm flex flex-col items-center justify-center gap-2 px-4 py-4 max-sm:col-span-2 sm:row-span-2'>
               <div className='deck-label self-start'>Best accuracy</div>
               <Ring pct={acc} size={104} stroke={8}>
                 <span className='pn-kpi-value text-[26px]'>{acc.toFixed(1)}</span>

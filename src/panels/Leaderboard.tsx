@@ -201,7 +201,7 @@ export function LeaderboardModal({ onClose }: { onClose: () => void }) {
         you: e.id === youId,
         main: sort === 'kills' ? String(e.totalKills) : sort === 'wins' ? String(e.totalWins) : `${e.bestAccuracy.toFixed(1)}%`,
         mainLabel: sort === 'kills' ? 'kills' : sort === 'wins' ? 'wins' : 'accuracy',
-        sub: `${e.kd.toFixed(2)} K/D · ${e.totalGames} games`,
+        sub: `${e.kd.toFixed(2)} K/D`,
       }));
 
   const rankedEntryOf = (e: RankedLeaderEntry, i: number): Row => ({

@@ -113,7 +113,7 @@ export function WeeklyChallengeModal({
             the week; lose the race and your kills count. Its own board, so it never touches your K/D.
           </p>
           <div className='mt-4 grid grid-cols-3 gap-4 border-t border-white/[0.08] pt-3.5'>
-            <Rule label='Format' value={`${WEEKLY_CHALLENGE_BOTS + 1}-player FFA`} />
+            <Rule label='Players' value={`${WEEKLY_CHALLENGE_BOTS + 1} · FFA`} />
             <Rule label='Frag cap' value={String(fragLimit)} />
             <Rule label='Bots' value={`${WEEKLY_CHALLENGE_BOTS} ${WEEKLY_CHALLENGE_DIFFICULTY}`} />
           </div>

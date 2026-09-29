@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { GITHUB_NEW_ISSUE } from './links';
 import { DeckButton, ModalShell, SegButton, TextButton } from './deck';
+import { Field } from './panels/parts';
 
 // In-game feedback / bug report form. POSTs to /api/feedback (stored server-side,
 // surfaced in the /admin "Feedback" tab). Guests may submit; when the player is
@@ -14,6 +15,8 @@ const TYPES: { id: FeedbackType; label: string }[] = [
   { id: 'feature', label: 'Idea' },
   { id: 'general', label: 'General' },
 ];
+const TITLE_MIN = 3;
+const BODY_MIN = 10;
 
 const ERRORS: Record<string, string> = {
   bad_type: 'Pick a category.',
@@ -31,6 +34,7 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [touched, setTouched] = useState({ title: false, body: false });
 
   const submit = async () => {
     if (busy) return;
@@ -66,7 +70,8 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
           rel='noreferrer'
           className='text-[10px] tracking-[0.14em] text-white/35 transition hover:text-white/70'
         >
-          Prefer GitHub? ↗
+          <span className='max-sm:hidden'>Prefer GitHub? </span>
+          <span className='sm:hidden'>GitHub </span>↗
         </a>
       }
       footer={
@@ -79,12 +84,12 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
                 </TextButton>
                 <DeckButton
                   onClick={submit}
-                  disabled={busy || title.trim().length < 3 || body.trim().length < 10}
+                  disabled={busy || title.trim().length < TITLE_MIN || body.trim().length < BODY_MIN}
                   solid
                   accent='cyan'
                   center
                 >
-                  {busy ? '…' : 'Send'}
+                  {busy ? 'Sending…' : 'Send feedback'}
                 </DeckButton>
               </>
             )
@@ -93,63 +98,85 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
       {({ close }) =>
         sent ? (
           <div className='flex flex-col items-center py-6 text-center'>
-            <span className='font-display text-3xl text-emerald-300' aria-hidden='true'>
+            <span className='pn-emblem-ok' aria-hidden='true'>
               ✓
             </span>
-            <p className='mt-2 text-sm text-white/80'>Thanks — your feedback was sent.</p>
+            <p className='mt-4 font-display text-[15px] font-semibold uppercase tracking-[0.1em] text-white'>Feedback sent</p>
+            <p className='mt-1.5 max-w-xs text-[12px] leading-relaxed text-white/50'>
+              Thanks. It goes straight to the dev and helps decide what gets fixed next.
+            </p>
             <DeckButton onClick={close} solid accent='cyan' center className='mt-5' data-autofocus>
               Close
             </DeckButton>
           </div>
         ) : (
-          <>
-            <div className='flex flex-col gap-4'>
-              <div className='grid grid-cols-3 gap-1.5'>
-                {TYPES.map((t) => (
-                  <SegButton key={t.id} active={type === t.id} onClick={() => setType(t.id)}>
-                    {t.label}
-                  </SegButton>
-                ))}
-              </div>
-              <label className='flex flex-col gap-1.5'>
-                <span className='deck-label'>Title</span>
+          <form
+            className='flex flex-col gap-4'
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+          >
+            <div role='group' aria-label='Category' className='grid grid-cols-3 gap-1.5'>
+              {TYPES.map((t) => (
+                <SegButton key={t.id} active={type === t.id} onClick={() => setType(t.id)}>
+                  {t.label}
+                </SegButton>
+              ))}
+            </div>
+            <Field
+              label='Title'
+              counter={`${title.length}/120`}
+              error={touched.title && title.trim().length < TITLE_MIN ? 'Give it a short title (3+ characters).' : null}
+            >
+              {(p) => (
                 <input
+                  {...p}
                   autoFocus
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
+                  onBlur={() => title && setTouched((t) => ({ ...t, title: true }))}
                   onKeyDown={(e) => e.key === 'Enter' && submit()}
                   maxLength={120}
                   placeholder={type === 'bug' ? 'e.g. Rail missed at point blank' : 'One-line summary'}
                   className='deck-input'
                 />
-              </label>
-              <label className='flex flex-col gap-1.5'>
-                <span className='deck-label'>Details</span>
+              )}
+            </Field>
+            <Field
+              label='Details'
+              counter={`${body.length}/4000`}
+              error={touched.body && body.trim().length < BODY_MIN ? 'Add a few more details (10+ characters).' : null}
+              hint={type === 'bug' ? 'What happened, what you expected, and how to reproduce it.' : undefined}
+            >
+              {(p) => (
                 <textarea
+                  {...p}
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
+                  onBlur={() => body && setTouched((t) => ({ ...t, body: true }))}
                   maxLength={4000}
                   rows={5}
-                  placeholder={
-                    type === 'bug'
-                      ? 'What happened, what you expected, steps to reproduce, your browser…'
-                      : 'Tell us more…'
-                  }
+                  placeholder={type === 'bug' ? 'Steps, your browser, anything that helps…' : 'Tell us more…'}
                   className='deck-input resize-y text-[13px] leading-relaxed'
                 />
-              </label>
-              <p className='text-[11px] text-white/35'>
-                Goes straight to the dev. {playerName ? `Sent as ${playerName}.` : 'Log in first to attach your name.'}
-              </p>
-              {err && (
-                <div role='alert' className='text-[12px] text-rose-300'>
-                  {err}
-                </div>
               )}
-            </div>
-          </>
+            </Field>
+            <p className='text-[11px] text-white/35'>
+              {playerName ? `Sent as ${playerName}.` : 'Log in first to attach your name.'}
+            </p>
+            {err && (
+              <div
+                role='alert'
+                className='clip-deck-sm border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200'
+              >
+                {err}
+              </div>
+            )}
+          </form>
         )
-      }
+    }
     </ModalShell>
   );
 }

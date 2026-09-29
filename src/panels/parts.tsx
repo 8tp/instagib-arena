@@ -94,7 +94,7 @@ export function PanelState({
 }) {
   const err = tone === 'error';
   return (
-    <div role={err ? 'alert' : 'status'} className='flex flex-col items-center gap-2 px-4 py-10 text-center'>
+    <div role={err ? 'alert' : 'status'} className='flex flex-col items-center gap-2 px-4 py-8 text-center'>
       <span
         aria-hidden='true'
         className={`pn-state-glyph ${err ? 'border-rose-400/40 text-rose-300' : 'border-white/15 text-white/40'}`}

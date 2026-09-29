@@ -121,18 +121,22 @@ export default function Landing() {
           </div>
           <nav
             aria-label="External links"
-            className="flex items-center gap-5 text-[13px] text-white/55"
+            className="flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55 sm:gap-2"
           >
             {DISCORD_URL && (
-              <a href={DISCORD_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
+              <a href={DISCORD_URL} target="_blank" rel="noreferrer" className="px-2 py-1.5 transition hover:text-white/90">
                 Discord
               </a>
             )}
             {/* The codebase is open source (AGPL); keep it one click away. */}
-            <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="transition hover:text-white/90">
+            <a href={GITHUB_URL} target="_blank" rel="noreferrer" className="px-2 py-1.5 transition hover:text-white/90">
               Source ↗
             </a>
-            <button type="button" onClick={() => setShowFeedback(true)} className="transition hover:text-white/90">
+            <button
+              type="button"
+              onClick={() => setShowFeedback(true)}
+              className="deck-press clip-deck-sm border border-white/15 bg-white/[0.04] px-3 py-1.5 text-white/75 transition hover:border-cyan-300/60 hover:text-cyan-100"
+            >
               Feedback
             </button>
           </nav>
