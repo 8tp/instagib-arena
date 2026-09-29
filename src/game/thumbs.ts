@@ -528,6 +528,14 @@ const EMOTE_FRAME: Partial<Record<EmoteKind, number>> = {
   beckon: 0.5,
   slowclap: 0.33,
   flourish: 0.72,
+  takethel: 0.33,
+  tpose: 0.3,
+  crab: 0.5,
+  facepalm: 0.33,
+  micdrop: 0.34,
+  gg: 0.36,
+  pushups: 0.5,
+  teatime: 0.32,
 };
 // Each finisher's signature moment (seconds after the kill): the frame that
 // tells it apart — Nova's sphere, Singularity's pop, Derez's bands, Vaporize's

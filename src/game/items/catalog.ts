@@ -129,6 +129,10 @@ const LEGACY_TIER: Record<string, Tier> = {
   singularity: 'legendary', prism: 'relic',
   // spawns
   'emote.headbang': 'uncommon', 'emote.kneel': 'uncommon',
+  // emotes (v3.1 meme taunts)
+  'emote.facepalm': 'uncommon', 'emote.pushups': 'uncommon',
+  'emote.crab': 'rare', 'emote.gg': 'rare', 'emote.teatime': 'rare',
+  'emote.tpose': 'epic', 'emote.micdrop': 'epic', 'emote.takethel': 'legendary',
   'spawn.ring': 'uncommon', 'spawn.ember': 'rare', 'spawn.rift': 'epic',
 };
 
