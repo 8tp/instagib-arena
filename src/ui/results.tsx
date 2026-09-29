@@ -39,17 +39,17 @@ function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWi
     const emoteId = s.isLocal
       ? settings.emote
       : s.emote ?? emoteIds[(h >>> 4) % emoteIds.length] ?? DEFAULT_EMOTE;
-    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId, you: !!s.isLocal };
+    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId, you: !!s.isLocal, looks: s.isLocal ? settings.looks : undefined };
   });
 }
 
 // Mounts the Three.js podium scene on a canvas and tears it down on unmount.
-function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
+function PodiumResults({ winners, lowSpec, reduced }: { winners: PodiumWinner[]; lowSpec: boolean; reduced: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
-    const scene = new PodiumScene(canvas);
+    const scene = new PodiumScene(canvas, { lowSpec, reducedEffects: reduced });
     void scene.setWinners(winners);
     scene.start();
     const onResize = () => scene.resize();
@@ -58,7 +58,7 @@ function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
       window.removeEventListener('resize', onResize);
       scene.dispose();
     };
-  }, [winners]);
+  }, [winners, lowSpec, reduced]);
   return <canvas ref={ref} className='block h-full w-full' />;
 }
 
@@ -317,7 +317,7 @@ function ResultsPanel({
   // Stable winners identity so the 3D scene mounts once (not every HUD tick).
   const rosterKey = scores.slice(0, 3).map((s) => `${s.id}:${s.frags}:${s.hat ?? ''}:${s.emote ?? ''}`).join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote]);
+  const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote, settings.looks]);
   const reduced = settings.reducedEffects || prefersReducedMotion();
 
   // The reveal starts ~0.75 s after the panel (the header slam lands first);
@@ -404,16 +404,22 @@ function ResultsPanel({
       >
         {/* Header: the Victory / Defeat slam. */}
         <div
-          className='rw-shake relative overflow-hidden border-b border-white/10 px-6 pb-2.5 pt-3.5 text-center'
-          style={{ background: `radial-gradient(60% 140% at 50% 0%, ${tone.wash}, rgba(0,0,0,0.5) 70%)` }}
+          className='rw-shake relative overflow-hidden px-4 pb-3 pt-3.5 text-center sm:px-6'
+          style={{
+            background: `radial-gradient(60% 150% at 50% 0%, ${tone.wash}, rgba(0,0,0,0.5) 72%)`,
+            borderBottom: `1px solid ${tone.line}33`,
+          }}
         >
           <div
             aria-hidden='true'
             className='rw-flare pointer-events-none absolute inset-x-0 h-[2px]'
             style={{ top: 'calc(50% - 8px)', background: `linear-gradient(90deg, transparent, ${tone.line}, transparent)` }}
           />
+          <div className='rw-sub-in mb-1.5 font-display text-[10px] font-bold uppercase tracking-[0.42em] text-white/40'>
+            Match complete
+          </div>
           <div
-            className={`rw-slam font-display text-[2.75rem] font-bold uppercase leading-none tracking-[0.22em] ${tone.text}`}
+            className={`rw-slam font-display text-[1.85rem] font-bold uppercase leading-none tracking-[0.16em] sm:text-[2.75rem] sm:tracking-[0.22em] ${tone.text}`}
             style={{ textShadow: `0 3px 0 rgba(0,0,0,0.55), 0 0 28px ${tone.glow}` }}
           >
             {head.title}
@@ -422,15 +428,21 @@ function ResultsPanel({
         </div>
 
         <div className='grid [grid-template-areas:"podium"_"rewards"_"board"] lg:grid-cols-[minmax(0,1fr)_400px] lg:grid-rows-[auto_1fr] lg:[grid-template-areas:"podium_rewards"_"board_rewards"]'>
-          {/* Hero: the 3D podium of the top 3 (hats + emotes). */}
-          <div className='h-[240px] w-full bg-gradient-to-b from-[#161d29] to-[#0b0e14] [grid-area:podium] lg:h-[262px]'>
-            <PodiumResults winners={winners} />
+          {/* Hero: the 3D podium of the top 3 (full looks + emotes), framed as a
+              stage that fades into the panel below. */}
+          <div className='pg-stage [grid-area:podium]' data-tone={head.tone} style={{ '--pg-accent': tone.line } as CSSProperties}>
+            <PodiumResults winners={winners} lowSpec={!!settings.lowSpec} reduced={reduced} />
+            <div aria-hidden='true' className='pg-stage-vignette' />
+            <div aria-hidden='true' className='pg-stage-fade' />
+            <i aria-hidden='true' className='pg-corner pg-corner-tl' />
+            <i aria-hidden='true' className='pg-corner pg-corner-tr' />
           </div>
 
           {/* Rewards: the reveal (or its placeholder while the reply is in flight). */}
           <aside
             aria-label='Rewards'
-            className='border-b border-white/10 bg-white/[0.015] px-5 py-3.5 [grid-area:rewards] lg:border-b-0 lg:border-l'
+            style={{ '--pg-accent': tone.line } as CSSProperties}
+            className='pg-rewards border-b border-white/10 px-5 py-4 [grid-area:rewards] lg:border-b-0 lg:border-l'
           >
             {progression ? (
               <RewardsReveal
