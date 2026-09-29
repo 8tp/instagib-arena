@@ -54,6 +54,7 @@ type Performer = {
   plate: THREE.Sprite;
   plateA: number; // eased 0..1 fade-in
   plateAt: number; // seconds after which the plate fades in
+  x: number; // world x of the plinth
 };
 
 type Stage = { group: THREE.Group; y: number; delay: number; used: boolean };
@@ -645,9 +646,13 @@ export class PodiumScene {
       plate.scale.set(1.7, 0.53, 1);
       // Clear of overhead arms and hops (cheer jumps ~0.3 m with arms up).
       plate.position.set(0, 2.74, 0);
+      // Always over the scene (confetti, shafts, motes) and never depth-hidden by a raised arm.
+      plate.renderOrder = 20;
+      plate.material.depthTest = false;
+      plate.material.depthWrite = false;
       group.add(plate);
 
-      this.chars.push({ group, character, anim, hat, gear, gun, plate, plateA: this.reduced ? 1 : 0, plateAt: RISE_DELAY[idx] + 0.9 });
+      this.chars.push({ group, character, anim, hat, gear, gun, plate, plateA: this.reduced ? 1 : 0, plateAt: RISE_DELAY[idx] + 0.9, x: slot.x });
     }
   }
 
@@ -685,9 +690,17 @@ export class PodiumScene {
       const m = c.plate.material as THREE.SpriteMaterial;
       m.opacity = c.plateA;
       c.plate.position.y = 2.74 + (1 - c.plateA) * -0.25;
-      // Narrow viewports get proportionally larger plates so the type stays legible.
-      const pk = THREE.MathUtils.clamp(1 + (2.0 - this.camera.aspect) * 0.35, 1, 1.25);
-      c.plate.scale.set(1.7 * pk, 0.53 * pk, 1);
+      // Layout-aware: plates shrink in small frames so neighbours never touch
+      // (plinths are 1.95 apart), grow a little when the frame is very narrow,
+      // and are clamped inside the visible width.
+      const asp = this.camera.aspect;
+      const base = asp < 2.6 ? 1.5 : 1.7;
+      const pk = THREE.MathUtils.clamp(1 + (1.7 - asp) * 0.35, 1, 1.25);
+      const w = base * pk;
+      c.plate.scale.set(w, w * 0.312, 1);
+      const vw = this.camera.position.length() * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) * asp - 0.08;
+      const wx = THREE.MathUtils.clamp(c.x, -vw + w / 2, vw - w / 2) - c.x; // desired world offset
+      c.plate.position.x = -wx; // the performer group is turned 180 degrees
     }
     this.placeCamera(dt);
     if (!this.reduced) {
