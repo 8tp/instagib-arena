@@ -680,6 +680,7 @@ const LEGACY_SLOT_KEY: Record<ItemSlot, string> = {
   hat: 'hat',
   face: 'face',
   back: 'back',
+  dye: 'dye',
   emote: 'emote',
   card: 'card',
   nameColor: 'nameColor',

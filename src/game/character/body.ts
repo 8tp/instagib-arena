@@ -700,7 +700,48 @@ export type CharacterUniforms = {
   // Directional dissolve (vaporize's ash sheet): xyz = wind in rest model
   // space, w = weight of the directional term vs noise (0 = off).
   uDissolveDir: { value: THREE.Vector4 };
+  // ── Dye (dyes.ts). x = pattern (0 = plain uPlayer tint), y = speed, z = scale.
+  uDyeP: { value: THREE.Vector4 };
+  uDyeF: { value: THREE.Vector2 }; // finish override (roughness, metalness); −1 = keep
+  uDyeA: { value: THREE.Color };
+  uDyeB: { value: THREE.Color };
+  uDyeC: { value: THREE.Color };
+  uDyeTime: { value: number }; // SHARED by every character (DYE_TIME)
+  uDyeCalm: { value: number }; // SHARED (DYE_CALM): 1 = reduced effects — slow, no flicker
 };
+
+// Dye pattern → shader mode (0 = the plain tint path; solids never branch).
+export const DYE_MODE = {
+  solid: 0,
+  gradient: 1,
+  stripes: 2,
+  chrome: 3,
+  pearl: 4,
+  chroma: 5,
+  magma: 6,
+  hologram: 7,
+  aurora: 8,
+  circuit: 9,
+  spectre: 10,
+  void: 11,
+  nebula: 12,
+  horizon: 13,
+} as const;
+
+// One clock for every animated dye, advanced as bodies render (wall time, so
+// it is frame-rate independent and identical for everyone on screen).
+export const DYE_TIME = { value: 0 };
+export const DYE_CALM = { value: 0 };
+export function setDyeCalm(on: boolean): void {
+  DYE_CALM.value = on ? 1 : 0;
+}
+let dyeClockAt = -1;
+export function tickDyeClock(): void {
+  const now = performance.now();
+  if (now === dyeClockAt) return;
+  dyeClockAt = now;
+  DYE_TIME.value = (now / 1000) % 3600;
+}
 
 export const DEREZ_BANDS = 24;
 const VISOR_Y = 1.656; // rest-space centre of the visor band
@@ -808,7 +849,15 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'uniform vec3 uArcCol;',
         'uniform float uRainbow;',
         'uniform vec3 uFlash;',
+        'uniform vec4 uDyeP;',
+        'uniform vec2 uDyeF;',
+        'uniform vec3 uDyeA;',
+        'uniform vec3 uDyeB;',
+        'uniform vec3 uDyeC;',
+        'uniform float uDyeTime;',
+        'uniform float uDyeCalm;',
         NOISE_GLSL,
+        'vec3 igHue3(float h) { return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }',
       ].join('\n'),
     )
     .replace(
@@ -852,7 +901,59 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'float igEdgeRaw = 1.0 - smoothstep(igW * 0.6, igW * 1.8, igM);',
         // Bevel catch-light fades out with distance (sub-pixel noise at range).
         'float igEdge = igEdgeRaw * (1.0 - smoothstep(6.0, 14.0, length(vViewPosition)));',
-        'diffuseColor.rgb *= mix(vec3(1.0), uPlayer * 1.12, vMat.x);',
+        // ── Dye: the armour tint (uPlayer for plain skins / solid dyes), or a
+        // pattern keyed by uDyeP.x. Patterns ride rest space, so they stick to
+        // the plates like a texture. igDyeBody > 0 spreads the look over the
+        // under-suit too (void / spectre / magma / nebula / horizon).
+        'vec3 igTint = uPlayer * 1.12;',
+        'float igDM = uDyeP.x;',
+        'float igDT = uDyeTime * uDyeP.y * (1.0 - 0.85 * uDyeCalm);',
+        'float igDY = clamp(vRest.y / 1.85, 0.0, 1.0);',
+        'float igDyeRough = uDyeF.x;',
+        'float igDyeMetal = uDyeF.y;',
+        'float igDyeBody = 0.0;',
+        'float igDN = 0.0;',
+        'if (igDM > 0.5) {',
+        '  if (igDM < 1.5) igTint = mix(uDyeA, uDyeB, smoothstep(0.12, 0.92, igDY)) * 1.08;',
+        '  else if (igDM < 2.5) igTint = mix(uDyeA, uDyeB, step(0.5, fract((vRest.y + vRest.x * 0.8 + vRest.z * 0.3) * uDyeP.z))) * 1.08;',
+        '  else if (igDM < 3.5) { igTint = uDyeA; igDyeRough = 0.07; igDyeMetal = 1.0; }',
+        '  else if (igDM < 4.5) { igTint = uDyeA; igDyeRough = 0.2; igDyeMetal = 0.3; }',
+        '  else if (igDM < 5.5) igTint = igHue3(fract(igDY * 0.9 - igDT * 0.3 + vRest.x * 0.25)) * 1.05 + 0.05;',
+        '  else if (igDM < 6.5) {',
+        '    float igMn = igNoise(vRest * 7.0 + vec3(0.0, -igDT * 0.35, igDT * 0.1)) * 0.7 + igNoise(vRest * 15.0 - vec3(igDT * 0.2, 0.0, 0.0)) * 0.3;',
+        '    igDN = 1.0 - smoothstep(0.0, 0.08, abs(igMn - 0.5));',
+        '    igTint = mix(vec3(0.075, 0.05, 0.04), uDyeA * 0.7, igDN);',
+        '    igDyeRough = 0.8; igDyeMetal = 0.0; igDyeBody = 0.7;',
+        '  }',
+        '  else if (igDM < 7.5) { igTint = uDyeA * 0.32; igDyeRough = 0.18; igDyeMetal = 0.0; }',
+        '  else if (igDM < 8.5) {',
+        '    float igAn = igNoise(vRest * 2.2 + vec3(igDT * 0.15, 0.0, igDT * 0.1));',
+        '    igDN = 0.5 + 0.5 * sin(vRest.y * 5.0 + igAn * 5.0 - igDT * 0.9 + vRest.x * 2.0);',
+        '    igTint = mix(mix(uDyeB, uDyeA, igDN), uDyeC, smoothstep(0.58, 0.95, igAn));',
+        '  }',
+        '  else if (igDM < 9.5) {',
+        '    vec3 igG = abs(fract(vRest * 13.0) - 0.5);',
+        '    float igLine = 1.0 - smoothstep(0.035, 0.07, min(min(igG.x, igG.y), igG.z));',
+        '    float igPulse = fract(vRest.y * 1.3 - igDT * 0.55 + igHash(floor(vRest * 13.0)));',
+        '    igDN = igLine * (0.3 + 0.7 * smoothstep(0.8, 1.0, igPulse));',
+        '    igTint = mix(uDyeA, uDyeB * 0.8, igLine * 0.5);',
+        '    igDyeRough = 0.3; igDyeMetal = 0.5;',
+        '  }',
+        '  else if (igDM < 10.5) { igTint = uDyeA * 0.6; igDyeBody = 1.0; igDyeRough = 0.35; igDyeMetal = 0.0; }',
+        '  else if (igDM < 11.5) { igTint = vec3(0.012); igDyeBody = 1.0; igDyeRough = 0.95; igDyeMetal = 0.0; }',
+        '  else if (igDM < 12.5) {',
+        '    float igN1 = igNoise(vRest * 3.0 + vec3(igDT * 0.05, igDT * 0.03, 0.0));',
+        '    float igN2 = igNoise(vRest * 5.0 - vec3(0.0, igDT * 0.04, igDT * 0.05));',
+        '    igTint = uDyeA + uDyeB * smoothstep(0.45, 0.85, igN1) * 0.8 + uDyeC * smoothstep(0.5, 0.9, igN2) * 0.7;',
+        '    igDyeBody = 0.6; igDyeRough = 0.45; igDyeMetal = 0.1;',
+        '  }',
+        '  else { igTint = vec3(0.015); igDyeBody = 1.0; igDyeRough = 0.9; igDyeMetal = 0.0; }',
+        '}',
+        'diffuseColor.rgb *= mix(vec3(1.0), igTint, vMat.x);',
+        'if (igDyeBody > 0.0) diffuseColor.rgb = mix(diffuseColor.rgb, igTint, igDyeBody * (1.0 - vMat.x) * (1.0 - step(0.01, vMat.w)));',
+        'float igDyeW = max(vMat.x, igDyeBody * (1.0 - step(0.01, vMat.w)));',
+        'float igRough0 = igDyeRough >= 0.0 ? mix(vMat.y, igDyeRough, igDyeW) : vMat.y;',
+        'float igMetal0 = igDyeMetal >= 0.0 ? mix(vMat.z, igDyeMetal, igDyeW) : vMat.z;',
         'diffuseColor.rgb = mix(diffuseColor.rgb, min(diffuseColor.rgb * 1.7 + 0.1, vec3(1.0)), igEdge * 0.65);',
         // Gibs: the plates char as they burst.
         'diffuseColor.rgb *= 1.0 - 0.72 * uBurn;',
@@ -864,19 +965,20 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
     )
     .replace(
       '#include <roughnessmap_fragment>',
-      'float roughnessFactor = clamp(mix(vMat.y - igEdge * 0.15 + uBurn * 0.3 + igAsh * 0.6, 0.06, uCrystal), 0.05, 1.0);',
+      'float roughnessFactor = clamp(mix(igRough0 - igEdge * 0.15 + uBurn * 0.3 + igAsh * 0.6, 0.06, uCrystal), 0.05, 1.0);',
     )
-    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMat.z * (1.0 - 0.5 * uBurn) * (1.0 - igAsh) * (1.0 - uCrystal);')
+    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = igMetal0 * (1.0 - 0.5 * uBurn) * (1.0 - igAsh) * (1.0 - uCrystal);')
     .replace(
       '#include <lights_physical_fragment>',
       [
         '#include <lights_physical_fragment>',
         // Lacquer only on the painted plates; fabric sheen only on the suit.
         '#ifdef USE_CLEARCOAT',
-        'material.clearcoat = max(material.clearcoat * vMat.x * (1.0 - uBurn) * (1.0 - igAsh), uCrystal);',
+        // Matte dyes (and the void) drop the lacquer.
+        'material.clearcoat = max(material.clearcoat * vMat.x * (1.0 - uBurn) * (1.0 - igAsh) * (1.0 - step(0.7, igRough0) * igDyeW), uCrystal);',
         '#endif',
         '#ifdef USE_SHEEN',
-        'material.sheenColor *= (1.0 - vMat.x) * (1.0 - step(0.5, vMat.z)) * (1.0 - step(0.01, vMat.w)) * (1.0 - igAsh);',
+        'material.sheenColor *= (1.0 - vMat.x) * (1.0 - step(0.5, vMat.z)) * (1.0 - step(0.01, vMat.w)) * (1.0 - igAsh) * (1.0 - igDyeBody);',
         '#endif',
       ].join('\n'),
     )
@@ -904,10 +1006,43 @@ function injectCharacterShader(this: THREE.MeshPhysicalMaterial, shader: THREE.W
         'float igIsVisor = step(0.95, vMat.w);',
         'float igAlive = (1.0 - igAsh) * (1.0 - 0.7 * uCrystal) * (1.0 - 0.85 * uBurn);',
         'totalEmissiveRadiance += (igIsVisor * igVisor + (1.0 - igIsVisor) * uVisorEdge * vMat.w * 0.8) * igAlive;',
-        'totalEmissiveRadiance += uPlayer * (vMat.x * uLift) * igAlive;',
+        'totalEmissiveRadiance += min(igTint * 0.893, vec3(1.0)) * (vMat.x * uLift) * igAlive;',
         'float igFres = 1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);',
         'float igRim = igFres * igFres * (0.4 + 0.6 * igFres);',
-        'totalEmissiveRadiance += uRim * (igRim * uRimStr * (0.55 + 0.45 * vMat.x) * (1.0 - uBurn) * igAlive);',
+        'totalEmissiveRadiance += uRim * (igRim * uRimStr * (0.55 + 0.45 * igDyeW) * (1.0 - uBurn) * igAlive);',
+        // Dye glow. The dark patterns carry their own bright silhouette here
+        // (fairness: a dye may never be harder to see than a natural skin).
+        'if (igDM > 3.5) {',
+        '  vec3 igDE = vec3(0.0);',
+        '  float igFr2 = igFres * igFres;',
+        '  if (igDM < 4.5) igDE = igHue3(fract(igFres * 1.4 + vRest.y * 0.35)) * igFres * 0.55 * vMat.x;',
+        '  else if (igDM < 5.5) igDE = igTint * 0.3 * vMat.x;',
+        '  else if (igDM < 6.5) igDE = (mix(uDyeA, uDyeB, igDN * (0.6 + 0.4 * sin(igDT * 2.6 + vRest.y * 4.0))) * igDN * 2.0 + uDyeA * (0.05 + igFr2 * 0.9)) * igDyeW;',
+        '  else if (igDM < 7.5) {',
+        '    float igScan = pow(0.5 + 0.5 * sin(vRest.y * 150.0 - igDT * 7.0), 6.0);',
+        '    float igFlick = uDyeCalm > 0.5 ? 1.0 : 0.9 + 0.1 * step(0.35, fract(sin(floor(igDT * 11.0)) * 43758.5453));',
+        '    igDE = uDyeA * (igFres * 1.5 + igScan * 0.55 + 0.2) * igFlick * vMat.x;',
+        '  }',
+        '  else if (igDM < 8.5) igDE = igTint * (0.16 + 0.22 * igDN) * vMat.x;',
+        '  else if (igDM < 9.5) igDE = uDyeB * (igDN * 1.7 + 0.06 + igFr2 * 0.6) * vMat.x;',
+        '  else if (igDM < 10.5) {',
+        '    float igWisp = igNoise(vRest * vec3(6.0, 3.0, 6.0) - vec3(0.0, igDT * 0.9, 0.0));',
+        '    igDE = uDyeA * (igFr2 * 2.3 + smoothstep(0.55, 0.85, igWisp) * 0.5 + 0.24) * igDyeW;',
+        '  }',
+        '  else if (igDM < 11.5) igDE = uDyeB * (igFr2 * 1.7 + igEdgeRaw * 0.6) * igDyeW;',
+        '  else if (igDM < 12.5) {',
+        '    vec3 igSc = floor(vRest * 55.0);',
+        '    float igStar = step(0.972, igHash(igSc)) * (0.5 + 0.5 * sin(igDT * 3.0 + igHash(igSc + 7.0) * 40.0));',
+        '    igDE = (vec3(1.4) * igStar + igTint * 0.24 + (uDyeB + uDyeC) * 0.5 * igFr2 * 1.2) * igDyeW;',
+        '  }',
+        '  else {',
+        '    float igAng = atan(vRest.x, vRest.z);',
+        '    float igRing = smoothstep(0.55, 1.0, sin(igAng * 2.0 + vRest.y * 7.0 - igDT * 2.2));',
+        '    vec3 igPr = igHue3(fract(igAng * 0.159 + vRest.y * 0.4 - igDT * 0.25));',
+        '    igDE = (igPr * igRing * 1.3 + igPr * igFr2 * 1.5 + uDyeA * igEdgeRaw * 0.3) * igDyeW;',
+        '  }',
+        '  totalEmissiveRadiance += igDE * igAlive;',
+        '}',
         // Gib heat: glowing seams + silhouette, suit (the inside) smoulders.
         // Prism swaps the glow colour for a per-chunk rainbow.
         'vec3 igGlowCol = uGlowCol;',
@@ -981,6 +1116,13 @@ export function createCharacterMaterial(): { material: THREE.MeshPhysicalMateria
     uFlash: { value: new THREE.Color(0, 0, 0) },
     uKneeY: { value: -1e4 },
     uDissolveDir: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uDyeP: { value: new THREE.Vector4(0, 1, 1, 0) },
+    uDyeF: { value: new THREE.Vector2(-1, -1) },
+    uDyeA: { value: new THREE.Color(1, 1, 1) },
+    uDyeB: { value: new THREE.Color(1, 1, 1) },
+    uDyeC: { value: new THREE.Color(1, 1, 1) },
+    uDyeTime: DYE_TIME,
+    uDyeCalm: DYE_CALM,
   };
   const material = new THREE.MeshPhysicalMaterial({
     vertexColors: true,

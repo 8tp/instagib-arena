@@ -18,6 +18,7 @@ export type ItemSlot =
   | 'hat'
   | 'face'
   | 'back'
+  | 'dye' // armour colour / animated body skin (src/game/dyes.ts)
   | 'finish' // railgun skin
   | 'beam' // rail colour
   | 'finisher' // kill effect / death animation
@@ -28,7 +29,7 @@ export type ItemSlot =
   | 'title';
 
 export const ITEM_SLOTS: readonly ItemSlot[] = [
-  'hat', 'face', 'back', 'finish', 'beam', 'finisher', 'spawn', 'emote', 'card', 'nameColor', 'title',
+  'hat', 'face', 'back', 'dye', 'finish', 'beam', 'finisher', 'spawn', 'emote', 'card', 'nameColor', 'title',
 ];
 
 export type Quality = 'unusual' | 'strange' | 'festive' | 'killstreak' | 'professional' | 'founder' | 'admin';
@@ -97,11 +98,11 @@ const STD_ODDS: Record<Tier, number> = {
 export const CASES: readonly CaseDef[] = [
   { id: 'hat', name: 'Hat Case', blurb: 'Hats — with a shot at an Unusual.', cost: 150, slots: ['hat'], odds: STD_ODDS },
   { id: 'weapon', name: 'Weapon Case', blurb: 'Railgun finishes and rail beams. Strange and Killstreak variants.', cost: 150, slots: ['finish', 'beam'], odds: STD_ODDS },
-  { id: 'accessory', name: 'Accessory Case', blurb: 'Face gear, backpacks, wings, capes and name colours.', cost: 150, slots: ['face', 'back', 'nameColor'], odds: STD_ODDS },
+  { id: 'accessory', name: 'Accessory Case', blurb: 'Face gear, backpacks, wings, capes, dyes and name colours.', cost: 150, slots: ['face', 'back', 'dye', 'nameColor'], odds: STD_ODDS },
   { id: 'taunt', name: 'Taunt Case', blurb: 'Emotes, finishers and spawn effects. Unusual taunts drop here.', cost: 150, slots: ['emote', 'finisher', 'spawn'], odds: STD_ODDS },
   {
     id: 'vault', name: 'Vault Case', blurb: 'Everything, weighted up — and a whisper of Unobtainable.', cost: 600, premium: true,
-    slots: ['hat', 'face', 'back', 'finish', 'beam', 'finisher', 'spawn', 'emote'],
+    slots: ['hat', 'face', 'back', 'dye', 'finish', 'beam', 'finisher', 'spawn', 'emote'],
     odds: { common: 0.3, uncommon: 0.33, rare: 0.22, epic: 0.1, legendary: 0.04, relic: 0.0098, unobtainable: 0.0002 },
   },
 ];

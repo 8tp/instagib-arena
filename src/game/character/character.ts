@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { createCharacterMaterial, getBodyGeometry, resetDeathLook, type CharacterUniforms } from './body';
+import { DYE_MODE, createCharacterMaterial, getBodyGeometry, resetDeathLook, tickDyeClock, type CharacterUniforms } from './body';
+import type { DyeDef } from '../dyes';
 import { B, Rig, SOCKETS, type SocketName } from './rig';
 import { viewPos } from '../fx/fx-settings';
 
@@ -52,6 +53,7 @@ const WHITE = new THREE.Color(1, 1, 1);
 // Remember the viewer (finishers aim their debris away from them). Module
 // scope: one shared function for every combatant.
 function recordViewer(_r: THREE.WebGLRenderer, _s: THREE.Scene, cam: THREE.Camera): void {
+  tickDyeClock();
   const e = cam.matrixWorld.elements;
   viewPos.x = e[12];
   viewPos.y = e[13];
@@ -68,6 +70,7 @@ export class Character {
   readonly sockets: Record<SocketName, THREE.Object3D>;
   private readonly color = new THREE.Color();
   private mode: LookMode = 'natural';
+  private dye: DyeDef | null = null;
 
   constructor(opts: { castShadow?: boolean; colorHex?: string } = {}) {
     this.root.name = 'combatant';
@@ -130,6 +133,58 @@ export class Character {
     u.uRim.value.copy(this.color).lerp(WHITE, 0.15).multiplyScalar(1.15);
     u.uLift.value = mode === 'highlight' ? 0.55 : 0.22;
     u.uRimStr.value = mode === 'highlight' ? 1.6 : 1.15;
+    // A plain look carries no dye pattern (highlight / team colours win).
+    u.uDyeP.value.x = 0;
+    u.uDyeF.value.set(-1, -1);
+    this.dye = null;
+  }
+
+  // The natural look with a dye (dyes.ts): `null` = the name-keyed skin
+  // `skinHex`. Callers only use this when neither a TDM team colour nor the
+  // viewer's enemy highlight applies — those go through setLook and clear it.
+  wearDye(dye: DyeDef | null, skinHex: string): void {
+    if (!dye) {
+      this.setLook(skinHex, 'natural');
+      return;
+    }
+    this.setLook(dye.a, 'natural');
+    this.dye = dye;
+    const u = this.uniforms;
+    u.uDyeP.value.set(DYE_MODE[dye.pattern], dye.speed ?? 1, dye.scale ?? 1, 0);
+    u.uDyeA.value.set(dye.a);
+    u.uDyeB.value.set(dye.b ?? dye.a);
+    u.uDyeC.value.set(dye.c ?? dye.b ?? dye.a);
+    if (dye.finish === 'matte') u.uDyeF.value.set(0.8, 0.04);
+    else if (dye.finish === 'metal') u.uDyeF.value.set(0.26, 0.92);
+    // Dark / glowing patterns: a stronger, lighter rim + visor so the
+    // silhouette reads at least as well as a natural skin.
+    switch (dye.pattern) {
+      case 'void':
+      case 'horizon':
+        u.uRim.value.set(dye.b ?? '#e8f0ff').lerp(WHITE, 0.5).multiplyScalar(1.5);
+        u.uRimStr.value = 1.9;
+        u.uVisorEdge.value.set(dye.b ?? '#e8f0ff').multiplyScalar(2.2);
+        break;
+      case 'spectre':
+      case 'hologram':
+        u.uRim.value.set(dye.a).multiplyScalar(1.4);
+        u.uRimStr.value = 1.7;
+        break;
+      case 'magma':
+      case 'circuit':
+      case 'nebula':
+        u.uRim.value.set(dye.b ?? dye.a).lerp(WHITE, 0.2).multiplyScalar(1.3);
+        u.uRimStr.value = 1.6;
+        u.uVisorEdge.value.set(dye.b ?? dye.a).multiplyScalar(2.2);
+        break;
+      case 'chroma':
+        u.uRim.value.set('#ffffff').multiplyScalar(1.1);
+        break;
+    }
+  }
+
+  get dyeId(): string | null {
+    return this.dye?.id ?? null;
   }
 
   setCrestHidden(hidden: boolean): void {
