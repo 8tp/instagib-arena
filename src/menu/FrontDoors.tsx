@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { sfxProps } from '../deck-core';
 import { econ } from '../economy/api';
-import { SPIN_USED_EVENT, SPIN_TAB_KEY } from '../economy/spin-link';
+import { DAILY_CASE_USED_EVENT, LOCKER_TAB_KEY } from '../economy/daily-case';
 import { cosmeticById, hatById } from '../game/cosmetics';
 import { MAX_LEVEL } from '../game/progression';
 import { ItemTile } from '../ui/item-tile';
@@ -28,29 +28,29 @@ export function FrontDoors({
   onRoad: () => void;
   onLocker: () => void;
 }) {
-  // A free daily spin is waiting: one public GET on mount (logged-in players only).
-  const [freeSpin, setFreeSpin] = useState(false);
+  // The daily free case is ready: one GET on mount (logged-in players only).
+  const [freeCase, setFreeCase] = useState(false);
   useEffect(() => {
     if (guest) {
-      setFreeSpin(false);
+      setFreeCase(false);
       return;
     }
     let live = true;
-    void econ.spinInfo().then((r) => {
-      if (live && r.ok) setFreeSpin(!!r.freeAvailable);
+    void econ.cases().then((r) => {
+      if (live && r.ok) setFreeCase(!!r.dailyAvailable);
     });
-    const used = () => setFreeSpin(false);
-    window.addEventListener(SPIN_USED_EVENT, used);
+    const used = () => setFreeCase(false);
+    window.addEventListener(DAILY_CASE_USED_EVENT, used);
     return () => {
       live = false;
-      window.removeEventListener(SPIN_USED_EVENT, used);
+      window.removeEventListener(DAILY_CASE_USED_EVENT, used);
     };
   }, [guest]);
   const openLocker = () => {
-    // Deep-link: the Locker opens on the Spin tab (read once on its mount).
-    if (freeSpin) {
+    // Deep-link: the Locker opens on the Cases tab (read once on its mount).
+    if (freeCase) {
       try {
-        sessionStorage.setItem(SPIN_TAB_KEY, 'spin');
+        sessionStorage.setItem(LOCKER_TAB_KEY, 'cases');
       } catch {
         /* private mode — the hub alone is fine */
       }
@@ -89,14 +89,14 @@ export function FrontDoors({
         onClick={openLocker}
         {...sfxProps('uiClick')}
         className='menu-door clip-deck-sm'
-        aria-label={`Locker${freeSpin ? '. Free daily spin ready' : ''}${keys > 0 ? `. ${keys} free roll${keys === 1 ? '' : 's'}` : ''}`}
+        aria-label={`Locker${freeCase ? '. Free daily case ready' : ''}${keys > 0 ? `. ${keys} free roll${keys === 1 ? '' : 's'}` : ''}`}
       >
         <ItemTile id={wearing} size={52} label={false} />
         <span className='flex min-w-0 flex-1 flex-col gap-1'>
           <span className='menu-door-title'>Locker</span>
           <span className='truncate font-sans text-[13px] text-white/70'>Inventory · cases · market</span>
         </span>
-        {freeSpin && <span className='menu-door-spin' title='Your free daily spin is ready'>FREE SPIN</span>}
+        {freeCase && <span className='menu-door-spin' title='Your daily free case is ready'>FREE CASE</span>}
         {keys > 0 && (
           <span className='menu-door-keys' title={`${keys} free roll${keys === 1 ? '' : 's'} — open a case for free`}>
             <KeyGlyph size={15} /> {keys}

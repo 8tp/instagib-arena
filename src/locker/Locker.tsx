@@ -16,17 +16,15 @@ import { CasesTab } from '../economy/CasesTab';
 import { instSlot, instFullName } from '../economy/display';
 import { InventoryTab } from '../economy/InventoryTab';
 import { MarketTab } from '../economy/MarketTab';
-import { SPIN_TAB_KEY } from '../economy/spin-link';
-import { SpinTab } from '../economy/SpinTab';
+import { LOCKER_TAB_KEY } from '../economy/daily-case';
 import { Balance } from '../economy/parts';
 import { TradesTab } from '../economy/TradesTab';
 import { useEconomy } from '../economy/useEconomy';
 
-export type LockerTab = 'inventory' | 'cases' | 'spin' | 'market' | 'trades';
+export type LockerTab = 'inventory' | 'cases' | 'market' | 'trades';
 const TABS: { id: LockerTab; label: string }[] = [
   { id: 'inventory', label: 'Inventory' },
   { id: 'cases', label: 'Cases' },
-  { id: 'spin', label: 'Spin' },
   { id: 'market', label: 'Market' },
   { id: 'trades', label: 'Trades' },
 ];
@@ -34,11 +32,11 @@ const TABS: { id: LockerTab; label: string }[] = [
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-// The menu's FREE SPIN pip leaves a one-shot hint so the Locker opens on Spin.
+// The menu's FREE CASE pip leaves a one-shot hint so the Locker opens on Cases.
 // Read in the initialiser (StrictMode runs it twice), cleared in an effect.
 function takeDeepLink(): LockerTab | null {
   try {
-    return sessionStorage.getItem(SPIN_TAB_KEY) === 'spin' ? 'spin' : null;
+    return sessionStorage.getItem(LOCKER_TAB_KEY) === 'cases' ? 'cases' : null;
   } catch {
     return null;
   }
@@ -63,14 +61,12 @@ export function Locker({
   onClose,
   account,
   initialTab,
-  onLogin,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   onClose: () => void;
   account?: Account;
   initialTab?: LockerTab;
-  onLogin?: () => void; // guests: the Spin tab's "Sign in" CTA
 }) {
   const reduced = settings.reducedEffects || prefersReducedMotion();
   const narrow = useNarrow();
@@ -86,7 +82,7 @@ export function Locker({
 
   useEffect(() => {
     try {
-      sessionStorage.removeItem(SPIN_TAB_KEY);
+      sessionStorage.removeItem(LOCKER_TAB_KEY);
     } catch {
       /* ignore */
     }
@@ -234,17 +230,6 @@ export function Locker({
           loggedIn={loggedIn}
           reduced={reduced}
           lowSpec={settings.lowSpec}
-          onEquipItem={(item) => {
-            void econ.equip(instSlot(item), item.uid).then((ok) => ok && toast(`Equipped · ${instFullName(item)}`, { tone: 'ok', sound: 'equip' }));
-          }}
-        />
-      )}
-      {tab === 'spin' && (
-        <SpinTab
-          econ={econ}
-          loggedIn={loggedIn}
-          reduced={reduced}
-          onLogin={onLogin}
           onEquipItem={(item) => {
             void econ.equip(instSlot(item), item.uid).then((ok) => ok && toast(`Equipped · ${instFullName(item)}`, { tone: 'ok', sound: 'equip' }));
           }}

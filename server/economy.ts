@@ -19,6 +19,7 @@ import { ALL_COSMETICS, titleGrantsFrom } from '../src/game/cosmetics';
 import { levelForXp, roadRewardKind, roadStepsBetween, type RoadStep } from '../src/game/progression';
 import {
   CASES,
+  CURRENT_SEASON,
   ITEM_SLOTS,
   KS_EFFECTS,
   KS_SHEENS,
@@ -27,6 +28,9 @@ import {
   TIER_META,
   TIERS,
   UNUSUAL_EFFECTS,
+  nextUtcMidnight,
+  seasonName,
+  utcDayKey,
   type CaseDef,
   type CaseId,
   type ItemAttrs,
@@ -149,7 +153,8 @@ CREATE TABLE IF NOT EXISTS instagib_meta (
   add('econ_v3', 'econ_v3 INTEGER NOT NULL DEFAULT 0');
   add('legacy_unlocked', `legacy_unlocked TEXT NOT NULL DEFAULT '[]'`);
   add('equipped_items', `equipped_items TEXT NOT NULL DEFAULT '{}'`);
-  add('last_spin_day', `last_spin_day TEXT NOT NULL DEFAULT ''`);
+  add('last_spin_day', `last_spin_day TEXT NOT NULL DEFAULT ''`); // retired Daily Spin (kept: column drops need a rebuild)
+  add('last_daily_case', `last_daily_case TEXT NOT NULL DEFAULT ''`);
   // Listings carry their item's def + quality (snapshot at list time) so price
   // history / suggested prices are an index range, not a scan of every sale.
   const mcols = new Set((sqlite.prepare(`PRAGMA table_info(instagib_market)`).all() as { name: string }[]).map((r) => r.name));
@@ -754,42 +759,57 @@ export function rollCase(c: CaseDef, rng: Rng = defaultRng): CaseRoll | null {
   return { tier: rolled.tier, def, ...rollQualities(def, rolled.tier, rng) };
 }
 
-export type CaseOpenResult =
-  | { ok: true; item: ItemInstanceWire; tier: Tier; credits: number; freeRolls: number; usedRoll: boolean }
-  | { ok: false; error: 'guest' | 'unknown_case' | 'insufficient' | 'no_rolls' | 'roll_not_allowed' | 'empty_pool' };
+// How an open is paid for: credits, one banked free roll, or today's daily free case.
+export type CasePay = 'credits' | 'roll' | 'daily';
 
-export function openCase(playerId: string, caseId: string, useRoll: boolean): CaseOpenResult {
+export type CaseOpenResult =
+  | { ok: true; item: ItemInstanceWire; tier: Tier; credits: number; freeRolls: number; usedRoll: boolean; pay: CasePay; nextDailyAt: number }
+  | { ok: false; error: 'guest' | 'unknown_case' | 'insufficient' | 'no_rolls' | 'roll_not_allowed' | 'empty_pool' | 'daily_used'; nextDailyAt?: number };
+
+const lastDailyCase = (playerId: string): string =>
+  (q(`SELECT last_daily_case FROM instagib_stats WHERE player_id = ?`).get(playerId) as { last_daily_case: string } | undefined)?.last_daily_case ?? '';
+
+// 0 = the daily free case is available now; otherwise when it next is (UTC midnight).
+export function nextDailyCaseAt(playerId: string, now = Date.now()): number {
+  if (!playerId) return 0;
+  return lastDailyCase(playerId) === utcDayKey(now) ? nextUtcMidnight(now) : 0;
+}
+
+export function openCase(playerId: string, caseId: string, pay: CasePay, now = Date.now()): CaseOpenResult {
   if (!playerId) return { ok: false, error: 'guest' };
   const c = caseDef(caseId);
   if (!c) return { ok: false, error: 'unknown_case' };
   return sqlite.transaction((): CaseOpenResult => {
     ensureOnboarded(playerId);
     const st = econState(playerId);
-    if (useRoll) {
-      // A free roll opens any STANDARD case; the premium Vault needs credits.
+    if (pay === 'roll' || pay === 'daily') {
+      // Free opens (a banked roll or the daily case) are for STANDARD cases; the Vault needs credits.
       if (c.premium) return { ok: false, error: 'roll_not_allowed' };
-      if (st.freeRolls < 1) return { ok: false, error: 'no_rolls' };
+      if (pay === 'roll' && st.freeRolls < 1) return { ok: false, error: 'no_rolls' };
+      if (pay === 'daily' && lastDailyCase(playerId) === utcDayKey(now)) return { ok: false, error: 'daily_used', nextDailyAt: nextUtcMidnight(now) };
     } else if (st.credits < c.cost) return { ok: false, error: 'insufficient' };
     const roll = rollCase(c);
     if (!roll) return { ok: false, error: 'empty_pool' };
-    if (useRoll) addRolls(playerId, -1);
+    if (pay === 'roll') addRolls(playerId, -1);
+    else if (pay === 'daily') q(`UPDATE instagib_stats SET last_daily_case = ? WHERE player_id = ?`).run(utcDayKey(now), playerId);
     else addCredits(playerId, -c.cost);
+    const free = pay !== 'credits';
     const item = mintItem({
       owner: playerId,
       def: roll.def.id,
       quality: roll.quality,
       attrs: roll.attrs,
       origin: 'case',
-      meta: { case: c.id, free: useRoll },
+      meta: { case: c.id, free, pay, season: CURRENT_SEASON },
     });
     audit({
       event: 'case.open',
       actorId: playerId,
       targetId: item.uid,
-      detail: { case: c.id, def: item.def, tier: roll.tier, quality: item.quality, free: useRoll, cost: useRoll ? 0 : c.cost },
+      detail: { case: c.id, def: item.def, tier: roll.tier, quality: item.quality, free, pay, cost: free ? 0 : c.cost },
     });
     const after = econState(playerId);
-    return { ok: true, item, tier: roll.tier, credits: after.credits, freeRolls: after.freeRolls, usedRoll: useRoll };
+    return { ok: true, item, tier: roll.tier, credits: after.credits, freeRolls: after.freeRolls, usedRoll: pay === 'roll', pay, nextDailyAt: nextDailyCaseAt(playerId, now) };
   })();
 }
 
@@ -819,7 +839,7 @@ export type CaseInfo = {
   qualityOdds: Record<string, number>; // the quality chances that apply to this case's pool
 };
 
-export function casesInfo(): { cases: CaseInfo[]; qualityOdds: typeof QUALITY_ODDS } {
+export function casesInfo(): { cases: CaseInfo[]; qualityOdds: typeof QUALITY_ODDS; season: { id: number; name: string } } {
   const cases = CASES.map((c): CaseInfo => {
     const pool = poolFor(c);
     const count = {} as Record<Tier, number>;
@@ -854,7 +874,7 @@ export function casesInfo(): { cases: CaseInfo[]; qualityOdds: typeof QUALITY_OD
       qualityOdds: qo,
     };
   });
-  return { cases, qualityOdds: QUALITY_ODDS };
+  return { cases, qualityOdds: QUALITY_ODDS, season: { id: CURRENT_SEASON, name: seasonName(CURRENT_SEASON) } };
 }
 
 // ── Admin operations ─────────────────────────────────────────────────────────

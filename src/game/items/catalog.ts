@@ -17,7 +17,7 @@ import {
   TITLES,
   type Rarity,
 } from '../cosmetics';
-import type { ItemSlot, Tier } from './types';
+import { CURRENT_SEASON, type ItemSlot, type Tier } from './types';
 
 export type ItemDef = {
   id: string;
@@ -29,7 +29,10 @@ export type ItemDef = {
   default?: boolean; // everyone has it, virtual (not an instance)
   tradable: boolean; // false = bound (titles, staff, founder)
   inCases: boolean; // droppable from the matching case(s)
+  season?: number; // release season (docs/economy.md §Seasons) — absent = Season 0; read via seasonOf()
 };
+
+export const seasonOf = (d: Pick<ItemDef, 'season'>): number => d.season ?? 0;
 
 const fromRarity = (r: Rarity): Tier => (r === 'common' ? 'common' : r === 'rare' ? 'rare' : r === 'epic' ? 'epic' : 'legendary');
 
@@ -205,12 +208,12 @@ export function defaultDefs(): ItemDef[] {
 
 // Case pool for a set of slots: tradable, case-droppable defs.
 export function casePoolFor(slots: readonly ItemSlot[]): ItemDef[] {
-  return ITEM_DEFS.filter((d) => d.inCases && d.tradable && slots.includes(d.slot));
+  return ITEM_DEFS.filter((d) => d.inCases && d.tradable && seasonOf(d) === CURRENT_SEASON && slots.includes(d.slot));
 }
 
 // A rolled tier with no defs in the pool falls to the nearest LOWER tier that
 // has items (then the nearest higher). The Vault's Unobtainable roll draws from
 // tradable Unobtainable defs (never case-listed otherwise).
 export function vaultUnobtainables(): ItemDef[] {
-  return ITEM_DEFS.filter((d) => d.tier === 'unobtainable' && d.tradable);
+  return ITEM_DEFS.filter((d) => d.tier === 'unobtainable' && d.tradable && seasonOf(d) === CURRENT_SEASON);
 }
