@@ -246,7 +246,7 @@ const TURN_PX = 224;
 const TURN_MS = 4200; // one full turn
 const TURN_STORE = 'ig-turn:v1:';
 const TURN_STORE_IDX = 'ig-turn:v1:#idx';
-const TURN_STORE_MAX = 10; // a strip is ~100–300 KB: leave sessionStorage to the thumbs
+const TURN_STORE_MAX = 6; // a strip is ~120–250 KB: leave sessionStorage to the thumbs
 const TURN_MEM_MAX = 48;
 
 const turnCache = new Map<string, Turntable | null>(); // insertion order = LRU
@@ -591,17 +591,17 @@ async function buildGearSubject(slot: GearSlot, look: Look, mode: Mode): Promise
   const undo = mode === 'thumb' && slot === 'hat' && look.e ? silhouette(c.ch) : () => {};
   const top = gear.headTopY();
   const spin = mode === 'turn';
-  const hatWin = spin && slot === 'hat' ? headWindow(top, look.e ? 1.5 : 1.25) : null;
+  const hatWin = spin && slot === 'hat' ? headWindow(top, look.e ? 1.25 : 0.95) : null;
   const target =
     slot === 'face'
       ? new THREE.Vector3(0, 1.6, 0)
       : slot === 'back'
-        ? new THREE.Vector3(0, spin ? 1.15 : 1.22, 0)
+        ? new THREE.Vector3(0, 1.2, 0)
         : (hatWin?.target ?? new THREE.Vector3(0, Math.max(1.7, Math.min(2.4, top - 0.1)), 0));
   return {
     root: c.holder,
     target,
-    dist: hatWin?.dist ?? (slot === 'face' ? (spin ? 1.45 : 1.2) : slot === 'back' ? (spin ? 3.5 : 3.1) : look.e ? 1.5 : 1.35),
+    dist: hatWin?.dist ?? (slot === 'face' ? (spin ? 1.4 : 1.2) : slot === 'back' ? (spin ? 3.25 : 3.1) : look.e ? 1.5 : 1.35),
     elev: slot === 'back' ? 0.16 : 0.08,
     exposure: look.e ? 1.2 : 0.95,
     // Cloth, plumes and particles keep moving while it turns.
@@ -632,8 +632,8 @@ function buildDyeSubject(id: string, mode: Mode): Subject | null {
   const t0 = 40 + Math.random() * 20;
   return {
     root: c.holder,
-    target: new THREE.Vector3(0, mode === 'turn' ? 1.02 : 1.12, 0),
-    dist: mode === 'turn' ? 4.6 : 4.25,
+    target: new THREE.Vector3(0, mode === 'turn' ? 1.0 : 1.12, 0),
+    dist: mode === 'turn' ? 4.05 : 4.25,
     elev: 0.1,
     turn: {
       pose: (t) => {
@@ -691,7 +691,7 @@ async function buildSubject(s: Studio, t: Target, mode: Mode = 'thumb'): Promise
       const aim = box.getCenter(new THREE.Vector3()).addScaledVector(new THREE.Vector3(0, 1, 0), -size.y * 0.3);
       if (mode === 'turn') {
         // Worn: head and shoulders, turning.
-        const win = headWindow(bare ? 1.8 : box.max.y, look.e ? 1.5 : 1.25);
+        const win = headWindow(bare ? 1.8 : box.max.y, look.e ? 1.25 : 0.95);
         return {
           root: c.holder,
           target: win.target,
@@ -771,7 +771,7 @@ async function buildSubject(s: Studio, t: Target, mode: Mode = 'thumb'): Promise
       return {
         root,
         target: new THREE.Vector3(0.02, 0.02, 0),
-        dist: mode === 'turn' ? 3.1 : 2.25,
+        dist: mode === 'turn' ? 2.7 : 2.25,
         elev: mode === 'turn' ? 0.3 : 0.12,
         dispose: () => {
           // Shared geometry cache: free only this gun's materials.
@@ -813,7 +813,7 @@ async function buildSubject(s: Studio, t: Target, mode: Mode = 'thumb'): Promise
           dist: 5.6,
           elev: 0.12,
           turn: {
-            ms: 1900,
+            ms: 1700,
             spin: false,
             pose: (t) => {
               const step = 1 / 120;
@@ -861,7 +861,7 @@ async function buildSubject(s: Studio, t: Target, mode: Mode = 'thumb'): Promise
         return {
           root: c.holder,
           target: new THREE.Vector3(0, 1.1, 0),
-          dist: 5.6,
+          dist: 5.1,
           elev: 0.12,
           turn: {
             ms: 1700,

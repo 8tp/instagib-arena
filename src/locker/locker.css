@@ -383,6 +383,15 @@
   color: #a5f3fc;
   box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.45);
 }
+/* Secondary action (Preview): outlined, beside the solid CTA. */
+.lk-action-ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6edf7;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+.lk-action-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+}
 .lk-action-muted {
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.45);

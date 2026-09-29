@@ -2,9 +2,12 @@
 // the Locker grid + loadout rail, the end-of-match reward cards and the Career
 // Road. Rendered thumbnails come from game/thumbs.ts; slots without a 3D
 // subject (name colours, titles, cards) get a CSS treatment here instead.
-import type { CSSProperties, FocusEvent, HTMLAttributes, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
+import { useState, type CSSProperties, type FocusEvent, type HTMLAttributes, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { cardById, cosmeticById, nameColorById, titleById, type CatalogEntry, type CosmeticSource } from '../game/cosmetics';
+import { dyeById, dyeSwatchCss } from '../game/dyes';
 import { lookKey } from '../economy/look';
+import { TurntableLoading, TurntableSprite } from '../economy/turntable';
+import { useTurntable } from '../economy/use-turntable';
 import { itemDef, seasonOf } from '../game/items/catalog';
 import type { ItemSlot, Look, Tier } from '../game/items/types';
 import { TIER_COLOR, TIER_LABEL, isIridescent, tierOfRarity, useThumbnailState } from './rarity';
@@ -30,11 +33,13 @@ export function ItemTile({
   mint,
   badge,
   season = true,
+  turntable = false,
   onClick,
   onDoubleClick,
   onPointerEnter,
   onPointerLeave,
   onFocus,
+  onBlur,
   onKeyDown,
   tabIndex,
   rootProps,
@@ -59,12 +64,16 @@ export function ItemTile({
   mint?: number; // serial → "#37" chip
   badge?: ReactNode; // small chip, top-left (quality marks)
   season?: boolean; // release-season chip ("S0"), on by default for economy items
+  // Rotating 3D render (thumbs.ts turntable): 'hover' = while hovered / keyboard-
+  // focused, 'play' = always. Off under reduced effects (the caller decides).
+  turntable?: 'hover' | 'play' | false;
   label?: boolean;
   onClick?: () => void;
   onDoubleClick?: (e: MouseEvent<HTMLElement>) => void;
   onPointerEnter?: (e: PointerEvent<HTMLElement>) => void;
   onPointerLeave?: (e: PointerEvent<HTMLElement>) => void;
   onFocus?: (e: FocusEvent<HTMLElement>) => void;
+  onBlur?: (e: FocusEvent<HTMLElement>) => void;
   onKeyDown?: (e: KeyboardEvent<HTMLElement>) => void;
   tabIndex?: number;
   rootProps?: HTMLAttributes<HTMLElement> & Record<string, unknown>;
@@ -75,7 +84,12 @@ export function ItemTile({
   const tier: Tier = tierProp ?? def?.tier ?? tierOfRarity(item?.rarity ?? 'common');
   const c = TIER_COLOR[tier];
   const displayName = nameProp ?? def?.name ?? item?.name ?? id;
-  const { url: thumb, pending } = useThumbnailState(look ? lookKey(look) : id);
+  const key = look ? lookKey(look) : id;
+  const { url: thumb, pending } = useThumbnailState(key);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const { sheet, loading } = useTurntable(key, turntable === 'play' || (turntable === 'hover' && (hovered || focused)));
+  const isDye = (def?.slot ?? item?.slot) === 'dye';
   const interactive = !!onClick;
   const Tag = interactive ? 'button' : 'div';
   const lit = selected || equipped;
@@ -106,9 +120,24 @@ export function ItemTile({
       type={interactive ? 'button' : undefined}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      onPointerEnter={onPointerEnter}
-      onPointerLeave={onPointerLeave}
-      onFocus={onFocus}
+      onPointerEnter={(e) => {
+        if (turntable === 'hover' && e.pointerType !== 'touch') setHovered(true);
+        onPointerEnter?.(e);
+      }}
+      onPointerLeave={(e) => {
+        setHovered(false);
+        onPointerLeave?.(e);
+      }}
+      onFocus={(e) => {
+        // Keyboard focus only — a click's focus shouldn't keep a tile spinning
+        // after the pointer has moved on.
+        if (turntable === 'hover' && e.currentTarget.matches(':focus-visible')) setFocused(true);
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        setFocused(false);
+        onBlur?.(e);
+      }}
       onKeyDown={onKeyDown}
       tabIndex={tabIndex}
       data-rarity={tier}
@@ -150,14 +179,22 @@ export function ItemTile({
             src={thumb}
             alt=''
             draggable={false}
-            className='absolute inset-0 h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.05] motion-reduce:transition-none'
-            style={locked ? { filter: 'grayscale(0.55) brightness(0.62)' } : undefined}
+            className='absolute inset-0 h-full w-full object-cover transition-[transform,opacity] duration-200 ease-out group-hover:scale-[1.05] motion-reduce:transition-none'
+            style={{ ...(locked ? { filter: 'grayscale(0.55) brightness(0.62)' } : null), opacity: sheet ? 0 : 1 }}
           />
-        ) : pending ? (
+        ) : pending && !isDye ? (
           <span aria-hidden className='deck-skeleton absolute inset-[18%] opacity-40' />
         ) : (
           <Treatment item={item} id={id} locked={locked} color={c.edge} displayName={displayName} />
         )}
+        {sheet && (
+          <TurntableSprite
+            sheet={sheet}
+            className='transition-transform duration-200 ease-out group-hover:scale-[1.05] motion-reduce:transition-none'
+            style={locked ? { filter: 'grayscale(0.55) brightness(0.62)' } : undefined}
+          />
+        )}
+        {loading && !sheet && <TurntableLoading />}
         {/* Rarity bar along the bottom edge. */}
         <span aria-hidden className='absolute inset-x-0 bottom-0 h-[3px]' style={{ background: c.edge }} />
         {label && (
@@ -432,6 +469,14 @@ function Treatment({
       </span>
     );
   }
+  if (itemDef(id)?.slot === 'dye') {
+    // A glossy paint chip in the dye's pattern (Natural Skin: the skin palette).
+    return (
+      <span aria-hidden className='absolute inset-0 grid place-items-center pb-[12cqw]' style={dim}>
+        <DyeSwatch id={id} size='56%' />
+      </span>
+    );
+  }
   if (id.endsWith('.none')) {
     return (
       <span aria-hidden className='absolute inset-0 grid place-items-center pb-[12cqw]' style={{ color: `${color}88` }}>
@@ -461,6 +506,28 @@ function Treatment({
       style={{ color: `${color}88`, fontSize: '30cqw' }}
     >
       {displayName.slice(0, 1)}
+    </span>
+  );
+}
+
+// A dye as a lacquered disc: the pattern (dyeSwatchCss) under a specular
+// highlight and a soft rim — reads as paint, not as a flat colour square.
+export function DyeSwatch({ id, size, className = '' }: { id: string; size: number | string; className?: string }) {
+  return (
+    <span
+      className={`relative block shrink-0 rounded-full ${className}`}
+      style={{
+        width: size,
+        aspectRatio: '1 / 1',
+        background: dyeSwatchCss(dyeById(id)),
+        boxShadow: '0 6px 16px -4px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(255,255,255,0.22), inset 0 -8px 14px -6px rgba(0,0,0,0.55)',
+      }}
+    >
+      <span
+        aria-hidden
+        className='absolute inset-0 rounded-full'
+        style={{ background: 'radial-gradient(60% 45% at 34% 26%, rgba(255,255,255,0.55), rgba(255,255,255,0) 70%)' }}
+      />
     </span>
   );
 }

@@ -1,8 +1,8 @@
 // Cases: five cases, opened with credits or a free roll. Fixed, published
 // rates — the tier odds table AND the quality odds — are shown to everyone
 // (guests too). Opening runs the reel; results land in the inventory.
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { sfxProps, toast } from '../deck-core';
+import { useEffect, useMemo, useRef, useState, type FocusEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { sfxProps, toast, uiHover } from '../deck-core';
 import { CURRENT_SEASON, SEASONS, TIERS, TIER_META, type CaseId, type ItemInstanceWire } from '../game/items/types';
 import { prefetchThumbnails } from '../game/thumbs';
 import { ItemTile } from '../ui/item-tile';
@@ -15,8 +15,13 @@ import { CrateArt } from './CrateArt';
 import { fallbackCases, pct, poolOf, qualityRows } from './rates';
 import { fmtCredits } from './display';
 import { TicketGlyph } from '../menu/RewardTile';
+import { ItemHoverCard } from './ItemHoverCard';
+import { ItemPreviewModal, type PreviewSettings } from './ItemPreviewModal';
 import { Balance } from './parts';
+import { canPreview, previewOfDef, type PreviewItem } from './preview-item';
 import type { Econ } from './useEconomy';
+
+const CARD_HIDE_MS = 140; // grace to move the pointer from a tile onto its card
 
 const seasonLine = (id: number, name?: string): string => {
   const s = SEASONS.find((x) => x.id === id);
@@ -46,15 +51,37 @@ export function CasesTab({
   loggedIn,
   reduced,
   lowSpec = false,
+  settings,
   onEquipItem,
 }: {
   econ: Econ;
   loggedIn: boolean;
   reduced: boolean;
   lowSpec?: boolean;
+  settings: PreviewSettings; // your loadout + name, for "Preview on you"
   onEquipItem: (item: ItemInstanceWire) => void;
 }) {
   const [sel, setSel] = useState<CaseId>('hat');
+  // Pool hover card (mouse hover / keyboard focus on a "What's inside" tile)
+  // and the live preview modal.
+  const [card, setCard] = useState<{ id: string; rect: DOMRect } | null>(null);
+  const [preview, setPreview] = useState<PreviewItem | null>(null);
+  const hideTimer = useRef(0);
+  const showCard = (id: string, el: HTMLElement) => {
+    window.clearTimeout(hideTimer.current);
+    setCard({ id, rect: el.getBoundingClientRect() });
+  };
+  const hideCardSoon = () => {
+    window.clearTimeout(hideTimer.current);
+    hideTimer.current = window.setTimeout(() => setCard(null), CARD_HIDE_MS);
+  };
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
+  const openPreview = (id: string) => {
+    window.clearTimeout(hideTimer.current);
+    setCard(null);
+    const p = previewOfDef(id);
+    if (p && canPreview(id)) setPreview(p);
+  };
   const [busy, setBusy] = useState(false);
   const [reveal, setReveal] = useState<{ key: number; caseId: CaseId; res: OpenCaseResp; pay: CasePay } | null>(null);
   // Published rates: the server's effective odds (public call), with the shared
@@ -147,7 +174,7 @@ export function CasesTab({
   const dailyLeft = !daily.available && daily.nextAt > 0 ? fmtCountdown(daily.nextAt - now) : null;
 
   return (
-    <div className='ec-page deck-scroll'>
+    <div className='ec-page deck-scroll' onScroll={card ? () => setCard(null) : undefined}>
       <div className='ec-page-in'>
         <header className='ec-cases-head'>
           <div className='min-w-0'>
@@ -238,22 +265,55 @@ export function CasesTab({
           </div>
 
           <details className='ec-contents' open>
-            <summary>What’s inside · {pool.length} items</summary>
-            <div className='ec-contents-grid'>
+            <summary>
+              What’s inside · {pool.length} items <small className='ec-contents-hint'>hover to inspect · click to preview on you</small>
+            </summary>
+            <div className='ec-contents-grid' onPointerLeave={hideCardSoon}>
               {TIERS.filter((t) => counts[t] > 0)
                 .reverse()
                 .map((t) => (
                   <div key={t} className='ec-tier-row'>
                     <div className='ec-tier-label' style={{ color: TIER_COLOR[t].edge }}>{TIER_LABEL[t]}</div>
                     <div className='flex flex-wrap gap-1.5'>
-                      {pool.filter((d) => d.tier === t).map((d) => (
-                        <ItemTile key={d.id} id={d.id} size={72} label={false} tier={d.tier} rootProps={{ title: d.name }} />
-                      ))}
+                      {pool.map((d) =>
+                        d.tier !== t ? null : (
+                          <ItemTile
+                            key={d.id}
+                            id={d.id}
+                            size={72}
+                            label={false}
+                            tier={d.tier}
+                            selected={card?.id === d.id}
+                            onClick={canPreview(d.id) ? () => openPreview(d.id) : undefined}
+                            onPointerEnter={(e: ReactPointerEvent<HTMLElement>) => {
+                              if (e.pointerType === 'touch') return;
+                              uiHover(e);
+                              showCard(d.id, e.currentTarget);
+                            }}
+                            onPointerLeave={hideCardSoon}
+                            onFocus={(e: FocusEvent<HTMLElement>) => {
+                              if (e.currentTarget.matches(':focus-visible')) showCard(d.id, e.currentTarget);
+                            }}
+                            onBlur={() => setCard((cur) => (cur?.id === d.id ? null : cur))}
+                            rootProps={{ 'data-pool': d.id, 'aria-label': `${d.name}, ${TIER_LABEL[d.tier]}. Preview on you` }}
+                          />
+                        ),
+                      )}
                     </div>
                   </div>
                 ))}
             </div>
           </details>
+          {card && (
+            <ItemHoverCard
+              id={card.id}
+              anchor={card.rect}
+              reduced={reduced}
+              onPreview={() => openPreview(card.id)}
+              onEnter={() => window.clearTimeout(hideTimer.current)}
+              onLeave={hideCardSoon}
+            />
+          )}
 
           <div className='ec-rates'>
             <div>
@@ -313,6 +373,7 @@ export function CasesTab({
           item={reveal.res.item}
           reduced={reduced}
           lowSpec={lowSpec}
+          previewSettings={settings}
           pay={reveal.pay}
           credits={econ.credits}
           freeRolls={econ.freeRolls}
@@ -335,6 +396,7 @@ export function CasesTab({
           }}
         />
       )}
+      {preview && <ItemPreviewModal item={preview} settings={settings} onClose={() => setPreview(null)} />}
     </div>
   );
 }

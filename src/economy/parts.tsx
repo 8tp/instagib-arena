@@ -86,9 +86,11 @@ export const InstTile = memo(function InstTile({
   label = true,
   onPick,
   onHover,
+  spin = false,
   rootProps,
 }: {
   inst: ItemInstanceWire;
+  spin?: boolean; // hover / keyboard focus plays the item's turntable
   label?: boolean;
   size?: number;
   fluid?: boolean;
@@ -122,6 +124,7 @@ export const InstTile = memo(function InstTile({
       dot={dot}
       label={label}
       hint={price ?? 'none'}
+      turntable={spin ? 'hover' : false}
       tabIndex={tabbable === undefined ? undefined : tabbable ? 0 : -1}
       onClick={onPick ? () => onPick(inst) : undefined}
       onPointerEnter={onHover ? (e) => { uiHover(e); onHover(inst); } : undefined}
@@ -145,6 +148,7 @@ export const DefTile = memo(function DefTile({
   tabbable,
   onPick,
   onHover,
+  spin = false,
 }: {
   entry: Entry;
   selected?: boolean;
@@ -152,12 +156,14 @@ export const DefTile = memo(function DefTile({
   tabbable?: boolean;
   onPick: (e: Entry) => void;
   onHover: (e: Entry) => void;
+  spin?: boolean;
 }) {
   return (
     <ItemTile
       id={entry.def.id}
       fluid
       tier={entry.def.tier}
+      turntable={spin && !entry.def.default ? 'hover' : false}
       selected={selected}
       equipped={equipped}
       locked={entry.locked}

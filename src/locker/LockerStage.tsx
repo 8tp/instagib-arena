@@ -3,6 +3,7 @@
 // keeps above the combatant's head. Everything else (details, card showcase,
 // celebrations) is passed in as overlay children.
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { holdStagePause, useStagePaused } from '../economy/preview-bus';
 import { CharacterPreview, type PreviewCosmetics } from '../game/character-preview';
 
 export type StageNameplate = { name: string; color: string; title: string };
@@ -17,6 +18,8 @@ export function LockerStage({
   nameplate,
   pulseKey,
   replayKey,
+  modal = false,
+  className = '',
   children,
 }: {
   cos: PreviewCosmetics;
@@ -28,28 +31,37 @@ export function LockerStage({
   nameplate: StageNameplate | null;
   pulseKey: number; // bump → celebrate() (spawn ring at the feet)
   replayKey: number; // bump → restart the current loop
+  // The item-preview modal's stage: while mounted it pauses every other stage
+  // (one live preview at a time) and is never paused itself.
+  modal?: boolean;
+  className?: string;
   children?: ReactNode; // overlays drawn above the canvas
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const plateRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<CharacterPreview | null>(null);
-  const initial = useRef({ cos, lowSpec, tint, watermark });
+  const initial = useRef({ cos, lowSpec, tint, watermark, modal });
   const [dragged, setDragged] = useState(false);
+  const paused = useStagePaused() && !modal;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const unpause = initial.current.modal ? holdStagePause() : null;
     let preview: CharacterPreview;
     try {
       preview = new CharacterPreview(canvas, initial.current.cos, { lowSpec: initial.current.lowSpec });
     } catch {
+      unpause?.();
       return; // no WebGL — the stage stays an empty backdrop, the grid still works
     }
     previewRef.current = preview;
     preview.enableOrbit(canvas);
     preview.setBackdrop({ tint: initial.current.tint, label: initial.current.watermark });
     preview.setAnchor(plateRef.current);
-    preview.start();
+    if (!pausedRef.current) preview.start();
     // Track the canvas box itself (layout changes, responsive stacking), rAF-
     // debounced to coalesce bursts.
     let pending = 0;
@@ -63,8 +75,16 @@ export function LockerStage({
       ro.disconnect();
       preview.dispose();
       previewRef.current = null;
+      unpause?.();
     };
   }, []);
+
+  useEffect(() => {
+    const p = previewRef.current;
+    if (!p) return;
+    if (paused) p.stop();
+    else p.start();
+  }, [paused]);
 
   useEffect(() => {
     previewRef.current?.setCosmetics(cos);
@@ -96,7 +116,7 @@ export function LockerStage({
   };
 
   return (
-    <div className='lk-stage'>
+    <div className={`lk-stage ${className}`}>
       <canvas
         ref={canvasRef}
         className='lk-canvas'

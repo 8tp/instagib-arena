@@ -13,7 +13,7 @@ import { DEFAULT_LOADOUT, ITEM_DEFS, itemDef } from '../game/items/catalog';
 import { TIER_META, strangeRank, STRANGE_RANKS, wearName, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
 import { prefetchThumbnails } from '../game/thumbs';
 import { LockerStage, type StageNameplate } from '../locker/LockerStage';
-import { ItemTile } from '../ui/item-tile';
+import { DyeSwatch, ItemTile } from '../ui/item-tile';
 import { PlayerCard, CardStatsEditor } from '../ui/player-card';
 import { buildCardPayload, rankedStandingText } from '../ui/player-card-data';
 import { TIER_COLOR } from '../ui/rarity';
@@ -32,7 +32,9 @@ import {
   instTier,
   salvageValue,
 } from './display';
+import { ItemPreviewModal } from './ItemPreviewModal';
 import { DefTile, InstTile, TagPills, TierChip, type Entry } from './parts';
+import { canPreview, previewOfDef, previewOfInst, type PreviewItem } from './preview-item';
 import { ALL_SLOTS, SLOT_GROUPS, SLOT_VIEW, previewCosmetics } from './slots';
 import { loadSeen, saveSeen } from './seen';
 import type { Econ } from './useEconomy';
@@ -132,6 +134,7 @@ export function InventoryTab({
   const [pulseKey, setPulseKey] = useState(0);
   const [replayKey, setReplayKey] = useState(0);
   const [stamp, setStamp] = useState(0);
+  const [preview, setPreview] = useState<PreviewItem | null>(null);
   const [newUids, setNewUids] = useState<ReadonlySet<string>>(() => new Set());
   const seenRef = useRef<Set<string> | null>(null);
   const owner = account?.username ?? 'guest';
@@ -332,6 +335,7 @@ export function InventoryTab({
       onSell={onSell}
       onTrade={onTrade}
       onViewListings={onViewListings}
+      onPreview={(e) => setPreview(e.inst ? previewOfInst(e.inst) : previewOfDef(e.def.id))}
       guest={econ.status === 'guest'}
     />
   );
@@ -443,10 +447,11 @@ export function InventoryTab({
                         price={e.inst.state === 'listed' ? <ListedChip /> : undefined}
                         onPick={onPickInst}
                         onHover={onHoverInst}
+                        spin={!reduced}
                         rootProps={{ role: 'option', 'aria-selected': sel?.key === e.key, 'data-state': equippedKey(e) ? 'equipped' : e.inst.state }}
                       />
                     ) : (
-                      <DefTile key={e.key} entry={e} selected={sel?.key === e.key} equipped={equippedKey(e)} tabbable={sel?.key === e.key || (!sel && idx === 0)} onPick={onPick} onHover={onHoverEntry} />
+                      <DefTile key={e.key} entry={e} selected={sel?.key === e.key} equipped={equippedKey(e)} tabbable={sel?.key === e.key || (!sel && idx === 0)} onPick={onPick} onHover={onHoverEntry} spin={!reduced} />
                     ),
                   )}
             </div>
@@ -461,7 +466,7 @@ export function InventoryTab({
               <h4 className='ec-section'>{slot === 'card' ? 'Cards' : 'Collection'} <small>{slot === 'card' ? 'unlocked by Career level — not tradable' : 'unlocked / earned — not tradable'}</small></h4>
               <div className='lk-grid' role='listbox' aria-label='Level-unlocked cards' onKeyDown={onTileArrows} onPointerLeave={() => setHover(null)}>
                 {shown.coll.map((e) => (
-                  <DefTile key={e.key} entry={e} selected={sel?.key === e.key} equipped={equippedKey(e)} tabbable={false} onPick={onPick} onHover={onHoverEntry} />
+                  <DefTile key={e.key} entry={e} selected={sel?.key === e.key} equipped={equippedKey(e)} tabbable={false} onPick={onPick} onHover={onHoverEntry} spin={!reduced} />
                 ))}
               </div>
             </>
@@ -474,6 +479,7 @@ export function InventoryTab({
         </div>
         {!narrow && details}
       </section>
+      {preview && <ItemPreviewModal item={preview} settings={settings} onClose={() => setPreview(null)} />}
     </div>
   );
 }
@@ -506,6 +512,8 @@ const RailTile = memo(function RailTile({
         tier={inst ? instTier(inst) : undefined}
         name={inst ? instBaseName(inst) : undefined}
         look={inst ? (instLook(inst).e ? { d: inst.def, e: instLook(inst).e } : undefined) : undefined}
+        // A worn dye reads small on a rail-sized body: its paint chip in the corner too.
+        badge={slot === 'dye' && eq.id !== DEFAULT_LOADOUT.dye ? <DyeSwatch id={eq.id} size={16} /> : undefined}
         selected={active}
         dot={hasNew}
         tabIndex={active ? 0 : -1}
@@ -538,6 +546,7 @@ function Details({
   onSell,
   onTrade,
   onViewListings,
+  onPreview,
   guest,
 }: {
   entry: Entry | null;
@@ -553,6 +562,7 @@ function Details({
   onSell: (uid: string) => void;
   onTrade: (uid: string) => void;
   onViewListings: () => void;
+  onPreview: (e: Entry) => void;
   guest: boolean;
 }) {
   if (loading || !entry) {
@@ -610,6 +620,11 @@ function Details({
             {busy ? 'Equipping…' : 'Equip'}
           </button>
         )}
+        {canPreview(entry.def.id) && (
+          <button type='button' className='lk-action lk-action-ghost' data-action='preview' onClick={() => onPreview(entry)} {...sfxProps('uiClick')} title='Open a live 3D preview on your character'>
+            <EyeGlyph /> Preview
+          </button>
+        )}
         {inst && inst.state === 'owned' && (
           <div className='ec-actions'>
             {inst.tradable && (
@@ -633,6 +648,15 @@ function Details({
         )}
       </div>
     </div>
+  );
+}
+
+function EyeGlyph() {
+  return (
+    <svg width={18} height={18} viewBox='0 0 24 24' aria-hidden='true' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinejoin='round'>
+      <path d='M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z' />
+      <circle cx='12' cy='12' r='3' />
+    </svg>
   );
 }
 

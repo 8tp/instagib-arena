@@ -25,7 +25,9 @@ import { CASE_HUE } from './case-hue';
 import { CrateArt } from './CrateArt';
 import { SLOT_LABEL, defSeason, effectName, fmtCredits, instBaseName, instPrefixParts, instSlot, instTags, instTier, sheenInfo, thumbLook } from './display';
 import { lookKey } from './look';
+import { ItemPreviewModal, type PreviewSettings } from './ItemPreviewModal';
 import { QualityMarks, TagPills, TierChip } from './parts';
+import { canPreview, previewOfInst } from './preview-item';
 import { buildReel, reelDuration, reelPos, reelProfile, reelVel, type ReelCell } from './reel-motion';
 import { HoldFx, RevealFx, type FxOrigin } from './RevealFx';
 
@@ -103,6 +105,7 @@ export function CaseReveal({
   item,
   reduced,
   lowSpec = false,
+  previewSettings,
   pay,
   credits,
   freeRolls,
@@ -116,6 +119,7 @@ export function CaseReveal({
   item: ItemInstanceWire;
   reduced: boolean;
   lowSpec?: boolean;
+  previewSettings?: PreviewSettings; // enables "Preview on you"
   pay: CasePay;
   credits: number;
   freeRolls: number;
@@ -146,6 +150,9 @@ export function CaseReveal({
   const [origin, setOrigin] = useState<FxOrigin | null>(null);
   const [skipped, setSkipped] = useState(false);
   const [crateAt, setCrateAt] = useState<FxOrigin | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  // Once the reveal juice has settled, the hero turns on its turntable.
+  const [autoSpin, setAutoSpin] = useState(false);
   const vpRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
@@ -359,7 +366,12 @@ export function CaseReveal({
     const r = heroRef.current?.getBoundingClientRect();
     if (r) setOrigin({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
     const t = window.setTimeout(() => cardRef.current?.querySelector<HTMLElement>('[data-action=reveal-equip]')?.focus({ preventScroll: true }), 460);
-    return () => window.clearTimeout(t);
+    const spinAt = window.setTimeout(() => setAutoSpin(true), tier === 'unobtainable' ? 2600 : 1500);
+    return () => {
+      window.clearTimeout(t);
+      window.clearTimeout(spinAt);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   const revealed = phase === 'reveal';
@@ -465,7 +477,15 @@ export function CaseReveal({
                 <div className='ec-rv-floor' aria-hidden />
                 <div ref={heroRef} className='ec-rv-hero'>
                   <div className='ec-rv-hero-in'>
-                    <ItemTile id={item.def} size={heroSize} tier={tier} look={look} label={false} season={false} />
+                    <ItemTile
+                      id={item.def}
+                      size={heroSize}
+                      tier={tier}
+                      look={look}
+                      label={false}
+                      season={false}
+                      turntable={fx ? (autoSpin && !previewing ? 'play' : 'hover') : false}
+                    />
                   </div>
                 </div>
               </div>
@@ -512,6 +532,11 @@ export function CaseReveal({
                 <button type='button' className='lk-action lk-action-equip' data-action='reveal-equip' {...sfxProps('none')} onClick={() => { onEquip(item); close(); }}>
                   Equip now
                 </button>
+                {previewSettings && canPreview(item.def) && (
+                  <button type='button' className='lk-action lk-action-ghost' data-action='reveal-preview' {...sfxProps('uiClick')} onClick={() => setPreviewing(true)}>
+                    Preview
+                  </button>
+                )}
                 <button type='button' className='lk-action lk-action-buy' data-action='open-again' disabled={!againPay} {...sfxProps('none')} onClick={onAgain}>
                   {againText}
                 </button>
@@ -524,6 +549,7 @@ export function CaseReveal({
           {revealed && fx && origin && (!skipped || rank >= 2 || unusual) && (
             <RevealFx tier={tier} unusual={unusual} origin={origin} lowSpec={lowSpec} name={instBaseName(item)} />
           )}
+          {previewing && previewSettings && <ItemPreviewModal item={previewOfInst(item)} settings={previewSettings} onClose={() => setPreviewing(false)} />}
         </div>
       )}
     </ModalShell>
