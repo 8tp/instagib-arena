@@ -60,6 +60,7 @@ import {
 } from './constants';
 import { EffectsManager, prewarmFx } from './effects';
 import { prewarmGuns } from './gun/prewarm';
+import { prewarmPodiumTextures } from './podium-textures';
 import { setRailBeamsReduced, type RailBeamMode } from './fx/rail-beam';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
@@ -638,6 +639,9 @@ export class Game {
     // other's probe material after it's gone). Best-effort — never throws.
     void prewarmFx(this.renderer, this.scene, this.camera)
       .then(() => (this.disposed ? undefined : prewarmGuns(this.postFx, { lowSpec: this.lowSpec })))
+      // The results podium's procedural textures (session-cached): drawn now,
+      // one per task, so the end-of-match screen only wraps finished canvases.
+      .then(() => (this.disposed || this.training ? undefined : prewarmPodiumTextures()))
       .catch(() => {});
     this.player = new Player(this.map.spawn);
     // Gibs bounce on the real floor under the victim (closure reads the current map).

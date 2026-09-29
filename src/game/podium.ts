@@ -9,7 +9,18 @@ import { Character, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun } from './character/gun';
 import { WornGearCtor, type GearLike } from '../economy/gear';
 import type { Loadout } from './items/types';
-import { PODIUM_FONT, arenaWall, brushedMetal, darkMarble, namePlate, numeralPlate, radialGlow, stageFloor } from './podium-textures';
+import {
+  PODIUM_FONT,
+  PODIUM_GLOW_STOPS,
+  PODIUM_MEDAL_BASE,
+  arenaWall,
+  brushedMetal,
+  darkMarble,
+  namePlate,
+  numeralPlate,
+  radialGlow,
+  stageFloor,
+} from './podium-textures';
 
 // End-of-match podium: the top-3 players on plinths (1st tallest, center),
 // wearing their full look (hat / face / back + unusual) and playing their
@@ -18,7 +29,7 @@ import { PODIUM_FONT, arenaWall, brushedMetal, darkMarble, namePlate, numeralPla
 // from the match scene. Everything is procedural (canvas textures + shaders).
 
 const MEDAL = [0xffd24a, 0xcdd6e0, 0xd08a4a]; // gold / silver / bronze (place 1/2/3)
-const MEDAL_BASE = ['#b98a22', '#8d97a6', '#94592b']; // brushed cap tints
+const MEDAL_BASE = PODIUM_MEDAL_BASE; // brushed cap tints (prewarmed by podium-textures)
 const STEP_H = 0.14; // the shared base step the plinths stand on
 // (x position, plinth height above the step) for places 1, 2, 3.
 const SLOTS: ReadonlyArray<{ x: number; h: number }> = [
@@ -42,7 +53,15 @@ export type PodiumWinner = {
   looks?: Loadout; // full equipped looks (hat / face / back + unusual) when known
 };
 
-export type PodiumOptions = { lowSpec?: boolean; reducedEffects?: boolean };
+export type PodiumOptions = {
+  lowSpec?: boolean;
+  reducedEffects?: boolean;
+  // Called once, when the first frame is on the canvas (the host fades it in).
+  onFirstFrame?: () => void;
+};
+
+// Yield to the browser between build stages so none of them is a long task.
+const nextTask = () => new Promise<void>((r) => setTimeout(r, 0));
 
 type Performer = {
   group: THREE.Group; // outer group on the plinth (position + facing)
@@ -99,12 +118,16 @@ export class PodiumScene {
   private t = 0; // scene time (seconds since start)
   private disposed = false;
   private gen = 0; // setWinners generation (a slow font load must not clobber a newer call)
-  // Shader warm-up gate (see start()): draw only once compileAsync has finished
-  // for everything currently in the scene; bumping contentGen re-arms it.
+  // Build + shader warm-up gates (see build() / start()): nothing is drawn until
+  // the stage is built and compileAsync has finished for it; performers are
+  // compiled on their own before they join (setWinners).
+  private readonly built: Promise<void>;
+  private isBuilt = false;
   private ready = false;
-  private warm: Promise<void> | null = null;
-  private contentGen = 0;
+  private warm: Promise<unknown> | null = null;
+  private readonly onFirstFrame: (() => void) | null;
   private reflector: Reflector | null = null;
+  private drawn = false; // first frame presented
   private readonly owned: Array<{ dispose(): void }> = [];
   private readonly low: boolean;
   private readonly reduced: boolean;
@@ -145,7 +168,14 @@ export class PodiumScene {
     this.resize();
     this.scene.background = null;
     this.scene.fog = new THREE.FogExp2(0x0a101c, 0.05);
+    this.onFirstFrame = opts.onFirstFrame ?? null;
+    this.built = this.build();
+  }
 
+  // The stage, in a few short tasks (the results panel keeps painting meanwhile).
+  private async build(): Promise<void> {
+    await nextTask();
+    if (this.disposed) return;
     // Image-based fill so brushed metal and painted armour read as materials.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -153,15 +183,19 @@ export class PodiumScene {
     this.scene.environmentIntensity = 0.5;
     pmrem.dispose();
     this.owned.push(env);
-
+    await nextTask();
+    if (this.disposed) return;
     this.buildLights();
     this.buildBackdrop();
     this.buildStage();
+    await nextTask();
+    if (this.disposed) return;
     this.buildPlinths();
     this.buildAtmosphere();
     this.placeCamera(0);
     // Numerals use the display face: redraw once it has loaded.
     this.applyNumerals();
+    this.isBuilt = true;
     void this.fontsReady().then(() => {
       if (!this.disposed) this.applyNumerals();
     });
@@ -266,11 +300,7 @@ export class PodiumScene {
       this.rings.push(m);
     }
     // Warm glow behind the champion.
-    const glowTex = radialGlow(256, [
-      [0, 'rgba(255,214,120,0.9)'],
-      [0.4, 'rgba(255,190,90,0.22)'],
-      [1, 'rgba(255,170,60,0)'],
-    ]);
+    const glowTex = radialGlow(256, PODIUM_GLOW_STOPS);
     const glowMat = new THREE.SpriteMaterial({
       map: glowTex,
       blending: THREE.AdditiveBlending,
@@ -608,6 +638,7 @@ export class PodiumScene {
     const gen = ++this.gen;
     this.clearChars();
     await this.fontsReady();
+    await this.built;
     if (this.disposed || gen !== this.gen) return;
     const used = new Set(winners.slice(0, 3).map((w) => Math.max(0, Math.min(2, w.place - 1))));
     this.stages.forEach((st, i) => {
@@ -617,10 +648,13 @@ export class PodiumScene {
     for (const w of winners.slice(0, 3)) {
       const idx = Math.max(0, Math.min(2, w.place - 1));
       const slot = SLOTS[idx];
+      // One performer per task, built off-stage and compiled before joining, so
+      // neither the build nor a first-draw shader compile lands on one frame.
+      if (this.chars.length > 0) await nextTask();
+      if (this.disposed || gen !== this.gen) return;
       const group = new THREE.Group();
       group.position.set(0, slot.h, 0);
       group.rotation.y = Math.PI; // the combatant faces -Z; turn to face the camera (+Z)
-      this.stages[idx].group.add(group);
 
       const character = new Character({ colorHex: skinColorFor(w.name) });
       group.add(character.root);
@@ -659,26 +693,28 @@ export class PodiumScene {
       plate.material.depthWrite = false;
       group.add(plate);
 
-      this.chars.push({ group, character, anim, hat, gear, gun, plate, plateA: this.reduced ? 1 : 0, plateAt: RISE_DELAY[idx] + 0.9, x: slot.x });
+      const performer: Performer = { group, character, anim, hat, gear, gun, plate, plateA: this.reduced ? 1 : 0, plateAt: RISE_DELAY[idx] + 0.9, x: slot.x };
+      this.chars.push(performer); // owned from here (clearChars/dispose free it)
+      await this.compileFor(group).catch(() => undefined);
+      if (this.disposed || gen !== this.gen) return;
+      this.stages[idx].group.add(group);
     }
-    // New performers: compile their programs before the next draw.
-    this.contentGen++;
-    this.ready = false;
   }
 
-  // Compile every program the first draw will use, off the main thread: the
-  // main pass, plus the mirror pass (it draws the scene into its own half-float
-  // target, which needs different program variants).
-  private compileAll(): Promise<unknown> {
+  // Compile every program `obj` (the scene, or a performer about to join it)
+  // will draw with, off the main thread: the main pass, plus the mirror pass
+  // (it draws into its own half-float target, which needs other variants).
+  private compileFor(obj: THREE.Object3D): Promise<unknown> {
     const r = this.renderer;
-    const jobs: Promise<unknown>[] = [r.compileAsync(this.scene, this.camera)];
+    const compile = () => (obj === this.scene ? r.compileAsync(this.scene, this.camera) : r.compileAsync(obj, this.camera, this.scene));
+    const jobs: Promise<unknown>[] = [compile()];
     const refl = this.reflector;
     if (refl) {
       const prev = r.getRenderTarget();
       refl.visible = false; // the mirror never draws itself
       r.setRenderTarget(refl.getRenderTarget());
       try {
-        jobs.push(r.compileAsync(this.scene, this.camera));
+        jobs.push(compile());
       } finally {
         r.setRenderTarget(prev);
         refl.visible = true;
@@ -697,18 +733,15 @@ export class PodiumScene {
       this.clock.last = now;
       // This scene has its own GL context, so nothing is compiled yet: the first
       // draw would block the main thread on every program (~0.4 s at match end).
-      // Compile off-thread first (compileAsync) and only start drawing — and the
-      // choreography clock — once the programs are ready; new performers
-      // (setWinners) re-arm this. The canvas simply stays blank meanwhile.
+      // Once the stage is built, compile off-thread (compileAsync) and only start
+      // drawing — and the choreography clock — when the programs are ready. The
+      // canvas stays blank meanwhile (the host fades it in on the first frame).
       if (!this.ready) {
-        if (!this.warm) {
-          const content = this.contentGen;
-          this.warm = this.compileAll()
+        if (this.isBuilt && !this.warm) {
+          this.warm = this.compileFor(this.scene)
             .catch(() => undefined)
             .then(() => {
-              this.warm = null;
-              // Performers arrived mid-compile: the next tick compiles them too.
-              if (content === this.contentGen) this.ready = true;
+              this.ready = true;
             });
         }
         this.raf = requestAnimationFrame(tick);
@@ -717,6 +750,11 @@ export class PodiumScene {
       this.t += dt;
       this.update(dt);
       this.renderer.render(this.scene, this.camera);
+      if (!this.drawn) {
+        this.drawn = true;
+        if (import.meta.env.DEV) performance.mark('ig:podium-frame'); // perf harness
+        this.onFirstFrame?.();
+      }
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
