@@ -3122,6 +3122,7 @@ export class Game {
         hat: this.localHat,
         emote: this.localEmote,
         title: titleById(this.localTitle).text,
+        nameColor: this.localNameColor,
       },
     ];
     if (this.bots) {
@@ -3181,6 +3182,7 @@ export class Game {
           hat: r.hat,
           emote: r.emote,
           title: r.titleText ?? titleById(r.title).text,
+          nameColor: r.nameColor,
           ping: r.ping,
           admin: r.admin,
           verified: r.verified,

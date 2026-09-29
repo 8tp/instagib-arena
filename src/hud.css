@@ -23,6 +23,8 @@
   --hud-slide: calc(12px * var(--hud-motion));
   --hud-pop: calc(1 + 0.15 * var(--hud-motion));
   --hud-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --hud-radius: 6px;
+  --hud-line: rgba(255, 255, 255, 0.08);
   /* The HUD never affects layout outside itself and clips to the viewport. */
   contain: layout paint;
 }
@@ -385,40 +387,70 @@
    is information only: cyan = you, rose = you died, amber = streak/headshot,
    team red/blue in TDM. */
 
+/* Shared glass panel: every small HUD plate (score boxes, killfeed, toasts,
+   mini-leaderboard, pills) uses this one surface so the HUD reads as a set.
+   Blur is light and drops out under reduced effects. */
+@layer components {
+.hud-panel {
+  background: linear-gradient(180deg, rgba(14, 20, 30, 0.72), rgba(6, 9, 14, 0.74));
+  border: 1px solid var(--hud-line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--hud-radius, 6px);
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(6px) saturate(1.15);
+}
+.hud-reduced .hud-panel {
+  backdrop-filter: none;
+}
+}
+/* Small caps label used on every plate. */
+.hud-kicker {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
 /* Score boxes (top-centre): you vs the best other player, or Red vs Blue. */
 .hud-sbox {
   display: flex;
-  min-width: 5.5rem;
+  min-width: 5.75rem;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 0.25rem 0.9rem 0.35rem;
-  background: rgba(4, 6, 9, 0.6);
+  padding: 0.3rem 0.95rem 0.4rem;
   border-top: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
 }
 .hud-sbox-self {
-  background: rgba(6, 46, 56, 0.72);
+  background: linear-gradient(180deg, rgba(8, 62, 74, 0.8), rgba(5, 30, 38, 0.8));
   border-top-color: #67e8f9;
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.35),
+    0 0 18px rgba(103, 232, 249, 0.14);
 }
 .hud-sbox-red {
-  background: rgba(70, 12, 14, 0.66);
+  background: linear-gradient(180deg, rgba(96, 16, 20, 0.8), rgba(46, 8, 10, 0.8));
   border-top-color: #ff5a5a;
 }
 .hud-sbox-blue {
-  background: rgba(12, 30, 72, 0.66);
+  background: linear-gradient(180deg, rgba(16, 42, 100, 0.8), rgba(8, 20, 50, 0.8));
   border-top-color: #5a9bff;
 }
 .hud-sbox-num {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 2.15rem;
+  font-size: 2.2rem;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: #fff;
   text-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
 }
 .hud-sbox-label {
-  margin-top: 0.1rem;
+  margin-top: 0.15rem;
   max-width: 7.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -434,15 +466,15 @@
   color: #a5f3fc;
 }
 .hud-sbox-limit {
-  margin-top: 3px;
-  background: rgba(0, 0, 0, 0.5);
-  padding: 1px 0.6rem;
+  margin-top: 4px;
+  padding: 1px 0.7rem;
+  border-radius: 999px;
   font-family: var(--font-mono);
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.55);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
@@ -464,25 +496,39 @@
   text-shadow: 0 2px 0 rgba(0, 0, 0, 0.45);
 }
 
-/* Killfeed rows: one hard-edged strip each, the rail glyph between names. */
+/* Killfeed chips: glass strip, killer → victim with the rail glyph between.
+   You = cyan glow, you died = rose, headshot / mid-air carry a coloured tag. */
 .hud-kf {
   display: flex;
-  height: 1.65rem;
+  height: 1.85rem;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0 0.7rem;
-  background: rgba(3, 5, 8, 0.6);
+  gap: 0.55rem;
+  padding: 0 0.35rem 0 0.75rem;
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 600;
+  color: #d7e6f5;
+}
+.hud-kf-glyph {
+  color: #22d3ee;
 }
 .hud-kf-you {
-  background: rgba(6, 42, 50, 0.78);
-  box-shadow: inset 2px 0 0 #67e8f9;
+  background: linear-gradient(90deg, rgba(8, 74, 88, 0.88), rgba(6, 34, 42, 0.86));
+  border-color: rgba(103, 232, 249, 0.5);
+  box-shadow:
+    0 0 14px rgba(103, 232, 249, 0.22),
+    inset 3px 0 0 #67e8f9;
 }
 .hud-kf-died {
-  background: rgba(52, 8, 16, 0.72);
-  box-shadow: inset 2px 0 0 #fb7185;
+  background: linear-gradient(90deg, rgba(88, 14, 26, 0.86), rgba(40, 8, 14, 0.84));
+  border-color: rgba(251, 113, 133, 0.45);
+  box-shadow: inset 3px 0 0 #fb7185;
+}
+.hud-kf-died .hud-kf-glyph {
+  color: #fb7185;
+}
+.hud-kf-headshot .hud-kf-glyph {
+  color: #fbbf24;
 }
 .hud-kf-name {
   max-width: 9.5rem;
@@ -492,7 +538,7 @@
   color: rgba(255, 255, 255, 0.95);
 }
 .hud-kf-victim {
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(255, 255, 255, 0.66);
 }
 .hud-kf-self {
   color: #a5f3fc;
@@ -501,9 +547,14 @@
   color: #fecdd3;
 }
 .hud-kf-tag {
-  padding: 1px 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px 2px 5px;
+  margin-right: 1px;
+  border-radius: 4px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.12em;
 }
@@ -599,24 +650,178 @@
   }
 }
 
-/* Tab scoreboard: a solid game sheet over a light veil (no blur). */
+/* Tab scoreboard: a full-width glass card over a light veil. The veil is a
+   flat dim (no blur over the whole frame); the card carries its own light
+   blur, dropped under reduced effects. Rows are static, so the only motion is
+   the card's 140 ms rise and the duel frag tick. */
 .hud-sb-veil {
-  background: rgba(0, 0, 0, 0.42);
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0.55));
   animation: hud-fade-in 90ms ease-out both;
 }
 .hud-sb {
-  background: rgba(6, 8, 11, 0.93);
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(13, 19, 29, 0.94), rgba(5, 8, 12, 0.95));
   border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(10px);
+  animation: hud-rise-in calc(140ms * var(--hud-motion)) var(--hud-ease-out) both;
 }
+.hud-reduced .hud-sb {
+  backdrop-filter: none;
+}
+.hud-sb::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #22d3ee 20%, #67e8f9 50%, #22d3ee 80%, transparent);
+  opacity: 0.85;
+}
+
+/* Header */
+.hud-sb-header {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.35rem 1.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.06), transparent);
+}
+.hud-sb-kicker {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #67e8f9;
+}
+.hud-sb-kicker-sm {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.hud-sb-modechip {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: #22d3ee;
+  color: #03181c;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+.hud-sb-map {
+  margin-top: 0.4rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2.6rem;
+  line-height: 0.92;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.hud-sb-limit {
+  width: 11rem;
+  padding-bottom: 0.15rem;
+}
+.hud-sb-limit-bar {
+  margin-top: 0.35rem;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.hud-sb-limit-bar > span,
+.hud-sb-acc-bar > span {
+  display: block;
+  height: 100%;
+  transform-origin: 0% 50%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #22d3ee, #a5f3fc);
+}
+.hud-sb-legend {
+  position: absolute;
+  top: 0.7rem;
+  right: 1.1rem;
+  display: flex;
+  gap: 0.8rem;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.hud-sb-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.hud-sb-legend i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.hud-sb-p-good {
+  color: #6ee7b7;
+}
+.hud-sb-p-ok {
+  color: #fcd34d;
+}
+.hud-sb-p-bad {
+  color: #fda4af;
+}
+
+/* Team tug-of-war strip under the header (TDM). */
+.hud-sb-tug {
+  display: flex;
+  height: 4px;
+  gap: 2px;
+}
+.hud-sb-tug > span {
+  flex-basis: 0;
+}
+
+/* Team blocks */
+.hud-sb-team {
+  margin-top: 0.75rem;
+}
+.hud-sb-team:first-child {
+  margin-top: 0.25rem;
+}
+.hud-sb-team-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--team) 22%, transparent), transparent 85%);
+  box-shadow: inset 3px 0 0 var(--team);
+}
+
+/* Grid */
 .hud-sb-grid {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 4rem 4rem 4rem 4rem;
+  grid-template-columns: 2.6rem minmax(0, 1fr) 4.2rem 3.6rem 3.6rem 5rem 3.6rem;
   column-gap: 0.75rem;
   align-items: center;
-  padding: 0 0.75rem;
+  padding: 0 0.85rem;
 }
-.hud-sb-grid.hud-sb-ping {
-  grid-template-columns: 2rem minmax(0, 1fr) 4.5rem 4rem 4rem 4rem 4rem 3.5rem;
+.hud-sb-grid.hud-sb-has-ping {
+  grid-template-columns: 2.6rem minmax(0, 1fr) 4.2rem 3.6rem 3.6rem 5rem 3.6rem 5rem;
 }
 .hud-sb-head {
   padding-top: 0.6rem;
@@ -629,18 +834,118 @@
   color: rgba(255, 255, 255, 0.4);
 }
 .hud-sb-row {
-  min-height: 2.6rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  min-height: 3rem;
+  overflow: hidden;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.hud-sb-row > *:not(.hud-sb-fill) {
+  position: relative;
+}
+.hud-sb-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0% 50%;
+  background: #67e8f9;
+  opacity: 0.09;
+  pointer-events: none;
 }
 .hud-sb-self {
-  background: rgba(34, 211, 238, 0.1);
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.16), rgba(34, 211, 238, 0.05));
   box-shadow: inset 3px 0 0 #67e8f9;
+}
+.hud-sb-self .hud-sb-fill {
+  opacity: 0.12;
+}
+
+.hud-sb-rank {
+  justify-self: center;
+  min-width: 1.6rem;
+  padding: 1px 0;
+  border-radius: 5px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.4);
+}
+.hud-sb-rank-1 {
+  background: #fbbf24;
+  color: #1c1003;
+}
+.hud-sb-rank-2 {
+  background: #cbd5e1;
+  color: #0f172a;
+}
+.hud-sb-rank-3 {
+  background: #d08a55;
+  color: #1f0f04;
+}
+
+.hud-sb-av {
+  --av: #94a3b8;
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--av) 40%, #0a0f16), color-mix(in srgb, var(--av) 14%, #05080c));
+  border: 1px solid color-mix(in srgb, var(--av) 55%, transparent);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--av);
+}
+.hud-sb-av-lg {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 10px;
+  font-size: 2.4rem;
+}
+.hud-sb-title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+.hud-sb-tag {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.hud-sb-tag-you {
+  background: rgba(103, 232, 249, 0.2);
+  color: #a5f3fc;
+  border: 1px solid rgba(103, 232, 249, 0.45);
+}
+.hud-sb-tag-bot {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+}
+.hud-sb-tag-guest {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.42);
+}
+.hud-sb-tag-fire {
+  background: #fbbf24;
+  color: #1c1003;
 }
 .hud-sb-frags {
   text-align: right;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 1.45rem;
+  font-size: 1.6rem;
   font-variant-numeric: tabular-nums;
   color: #fff;
 }
@@ -649,17 +954,129 @@
   font-family: var(--font-mono);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(255, 255, 255, 0.68);
 }
-.hud-sb-fire {
-  background: #fbbf24;
-  padding: 0 4px;
+.hud-sb-acc {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.hud-sb-acc-bar {
+  width: 100%;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.hud-sb-ping-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.hud-sb-foot {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: space-between;
+  padding: 0.65rem 1.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Duel face-off */
+.hud-sb-duel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 1rem;
+  padding: 0.75rem 0.25rem 0.5rem;
+}
+.hud-sb-duel-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 1.25rem 1rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+}
+.hud-sb-duel-me {
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.14), rgba(34, 211, 238, 0.02));
+  border-color: rgba(103, 232, 249, 0.35);
+}
+.hud-sb-duel-foe {
+  background: linear-gradient(180deg, rgba(251, 113, 133, 0.12), rgba(251, 113, 133, 0.02));
+  border-color: rgba(251, 113, 133, 0.3);
+}
+.hud-sb-duel-frags {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 5.5rem;
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.7);
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.4);
+}
+.hud-sb-duel-lead .hud-sb-duel-frags {
+  color: #fff;
+  text-shadow:
+    0 4px 0 rgba(0, 0, 0, 0.4),
+    0 0 28px rgba(255, 255, 255, 0.25);
+}
+.hud-sb-duel-stats {
+  display: flex;
+  width: 100%;
+  justify-content: space-around;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.hud-sb-duel-stats > span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   font-family: var(--font-mono);
   font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: #1c1003;
+  color: rgba(255, 255, 255, 0.4);
+}
+.hud-sb-duel-stats b {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.88);
+}
+.hud-sb-duel-vs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.hud-sb-duel-vs span {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2rem;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.35);
+}
+.hud-sb-duel-vs em {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
   white-space: nowrap;
 }
 
