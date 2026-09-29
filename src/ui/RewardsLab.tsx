@@ -35,7 +35,11 @@ import {
   type ChallengeCompletion,
   type XpLine,
 } from '../game/progression';
+import type { MapVoteState } from '../game/types';
+import type { RankedResult } from '../game/net';
 import { MatchOverOverlay, OnlineMatchResults } from './results';
+import { MapVoteOverlay } from './MapVote';
+import { RankedResultOverlay } from './RankedResult';
 import { buildRevealModel, buildTimeline } from './rewards/reveal-model';
 
 type LabCase = 'levelup' | 'multi' | 'catchup' | 'guest' | 'offline' | 'plain' | 'legacy';
@@ -234,8 +238,49 @@ function HudTickerLab({ hold, reduced }: { hold?: number; reduced: boolean }) {
   );
 }
 
+// ?view=vote|ranked|rankedloss: the map vote / ranked result overlays with fake state.
+function OverlayLab({ view }: { view: string }) {
+  const [vote, setVote] = useState<MapVoteState>(() => ({
+    options: ['causeway', 'reactor', 'lounge'],
+    endsAtClient: Date.now() + 18000,
+    durationMs: 25000,
+    counts: { causeway: 2, reactor: 4, lounge: 1 },
+    myVote: 'lounge',
+  }));
+  const won = view !== 'rankedloss';
+  const side = (rating: number, delta: number) => ({ id: 'x', userName: 'Wraith', rating, delta, rank: 42 });
+  const ranked: RankedResult = {
+    won,
+    forfeit: false,
+    reduced: false,
+    winnerName: 'Wraith',
+    loserName: 'Razor',
+    winnerFrags: 15,
+    loserFrags: 9,
+    fragLimit: 15,
+    rating: won
+      ? { winner: side(1418, 27), loser: side(1300, -27) }
+      : { winner: side(1500, 20), loser: side(1391, -21) },
+  };
+  return (
+    <div className='fixed inset-0 bg-[radial-gradient(circle_at_50%_30%,#1a2230,#07090d)] text-white'>
+      {view === 'vote' ? (
+        <MapVoteOverlay vote={vote} onVote={(id) => setVote((v) => ({ ...v, myVote: id }))} />
+      ) : (
+        <RankedResultOverlay
+          result={ranked}
+          progression={{ xpGained: 310, creditsGained: 60 } as ProgressionResp}
+          onLobby={() => {}}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function RewardsLab() {
   const q = useMemo(() => new URLSearchParams(window.location.search), []);
+  const view = q.get('view');
+  if (view === 'vote' || view === 'ranked' || view === 'rankedloss') return <OverlayLab view={view} />;
   if (q.get('hud') === '1') {
     return <HudTickerLab hold={q.get('hold') !== null ? Number(q.get('hold')) : undefined} reduced={q.get('reduced') === '1'} />;
   }

@@ -1,0 +1,201 @@
+/* ── Post-match sequencing: performance card + scoreboard reveal ─────────────
+   Everything here is a CSS animation staggered by --i (no React state, no
+   per-frame work). Motion scales with --rw-motion, which .rw-root sets to 0
+   for reducedEffects / prefers-reduced-motion: things then simply fade. The
+   .rw-skip rule in rewards.css collapses the delays on click / Space. */
+.pg-rise {
+  animation: pg-rise 460ms var(--rw-ease, ease-out) both;
+  animation-delay: calc(var(--pg-base, 0ms) + var(--i, 0) * 55ms);
+}
+@keyframes pg-rise {
+  from {
+    opacity: 0;
+    transform: translateY(calc(14px * var(--rw-motion, 1)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.pg-section-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display, inherit);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.pg-section-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.18), transparent);
+}
+
+/* Performance tiles */
+.pg-tile {
+  position: relative;
+  padding: 9px 12px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 0 100%);
+}
+.pg-tile[data-pb='1'] {
+  border-color: rgba(251, 191, 36, 0.5);
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.13), rgba(251, 191, 36, 0.02));
+}
+.pg-tile-value {
+  font-family: var(--font-display, inherit);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.pg-tile-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.5);
+}
+.pg-tile-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+.pg-pb {
+  position: absolute;
+  top: 6px;
+  right: 14px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: #1a1204;
+  background: #fbbf24;
+  padding: 1px 5px;
+  animation: pg-pb-pop 520ms var(--rw-snap, ease-out) both;
+  animation-delay: calc(var(--pg-base, 0ms) + var(--i, 0) * 55ms + 380ms);
+}
+@keyframes pg-pb-pop {
+  from {
+    opacity: 0;
+    transform: scale(calc(1 + 0.9 * var(--rw-motion, 1)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Scoreboard rows: frag-share bar behind the row */
+.pg-row {
+  position: relative;
+  isolation: isolate;
+}
+.pg-row-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: -1;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.16), rgba(34, 211, 238, 0));
+  transform-origin: 0 50%;
+  animation: pg-bar 700ms var(--rw-ease, ease-out) both;
+  animation-delay: calc(var(--pg-base, 0ms) + var(--i, 0) * 55ms + 120ms);
+}
+@keyframes pg-bar {
+  from {
+    transform: scaleX(calc(1 - var(--rw-motion, 1)));
+  }
+}
+.pg-medal {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #0a0d13;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+}
+
+/* Map vote cards (outside .rw-root, so they carry their own motion scale). */
+.pg-motion {
+  --rw-motion: 1;
+  --rw-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --rw-snap: cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+.pg-motion[data-reduced='1'] {
+  --rw-motion: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pg-motion {
+    --rw-motion: 0;
+  }
+}
+.pg-vote-card {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #0c1017;
+  transition:
+    transform 160ms var(--rw-ease, ease-out),
+    border-color 160ms,
+    box-shadow 160ms;
+  animation: pg-rise 420ms var(--rw-ease, ease-out) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+.pg-vote-card:hover {
+  transform: translateY(calc(-2px * var(--rw-motion, 1)));
+  border-color: rgba(103, 232, 249, 0.6);
+}
+.pg-vote-card[aria-pressed='true'] {
+  border-color: #34d399;
+  box-shadow:
+    0 0 0 1px #34d399,
+    0 0 24px rgba(52, 211, 153, 0.35);
+}
+.pg-vote-card[data-lead='1']:not([aria-pressed='true']) {
+  border-color: rgba(251, 191, 36, 0.55);
+}
+.pg-vote-fill {
+  transition: width 400ms var(--rw-ease, ease-out);
+}
+.pg-vote-art {
+  aspect-ratio: 16 / 9;
+  background-size: cover;
+  background-position: center;
+}
+
+/* Ranked badge pop */
+.pg-rank-badge {
+  animation: pg-badge 700ms var(--rw-snap, ease-out) both;
+  animation-delay: 250ms;
+}
+@keyframes pg-badge {
+  from {
+    opacity: 0;
+    transform: scale(calc(1 + 0.8 * var(--rw-motion, 1))) rotate(calc(-12deg * var(--rw-motion, 1)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Vote countdown drain */
+.pg-drain {
+  width: 100%;
+  transform-origin: 0 50%;
+  animation-name: pg-drain;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+@keyframes pg-drain {
+  to {
+    transform: scaleX(0);
+  }
+}
