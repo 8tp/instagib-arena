@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { CharacterAnimator } from './character-anim';
+import { DYE_TIME } from './character/body';
 import { Character } from './character/character';
 import { attachRailgun, disposeRailgun } from './character/gun';
 import { EffectsManager } from './effects';
 import { emoteClip } from './emotes';
+import { dyeById } from './dyes';
 import { disposeFxContext, getFxContext, peekFxContext } from './fx-pool';
 import { WornHat } from './hats';
 import { HAS_GEAR, WornGearCtor, type GearSlot } from '../economy/gear';
@@ -45,6 +47,11 @@ import {
 //    load, a throw) is never cached, so a later request retries.
 //  • Slots with no 3D subject (name colours, titles, cards, announcers) return
 //    null: ItemTile draws a CSS treatment for those.
+//  • Turntables (getTurntable): on demand only (a hover / focus), the subject
+//    spun a full turn — or played through its clip / FX — as ONE horizontal
+//    sprite strip, rendered by the same studio in a single job that jumps the
+//    queue (at most one queued at a time) and yields between frame chunks.
+//    Tiles play the strip with a CSS steps() animation; cached like thumbs.
 // Transparent background — the tile's rarity gradient shows through.
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -60,7 +67,9 @@ const FACE_CAMERA = Math.PI;
 const cache = new Map<string, string | null>();
 const pending = new Map<string, Promise<string | null>>();
 const failed = new Set<string>(); // failed this session (shown as no-thumbnail until re-requested)
-type Job = { id: string; resolve: (url: string | null) => void; tries: number };
+type Job =
+  | { kind: 'thumb'; id: string; resolve: (url: string | null) => void; tries: number }
+  | { kind: 'turn'; id: string; resolve: (t: Turntable | null) => void; tries: number };
 
 // A transient failure: never cached; the job may be retried.
 class ThumbFailure extends Error {}
@@ -94,7 +103,12 @@ function targetOf(key: string): Target {
 const WEARABLE = new Set(['hat', 'face', 'back']);
 function renderableTarget(t: Target): boolean {
   if (t.def && WEARABLE.has(t.def.slot) && !t.def.default && HAS_GEAR) return true;
+  if (t.def?.slot === 'dye') return !!dyeById(t.id);
   return renderable(t.entry);
+}
+// Which get a turntable (the rail beam is one static shot: its FX is the item).
+function turntableTarget(t: Target): boolean {
+  return renderableTarget(t) && t.entry?.slot !== 'railColor';
 }
 
 // Which catalog items get a rendered thumbnail.
@@ -144,7 +158,7 @@ export function getThumbnail(id: string): Promise<string | null> {
   let p = pending.get(id);
   if (!p) {
     failed.delete(id); // a fresh request retries an earlier failure
-    p = new Promise<string | null>((resolve) => queue.push({ id, resolve, tries: 0 }));
+    p = new Promise<string | null>((resolve) => queue.push({ kind: 'thumb', id, resolve, tries: 0 }));
     pending.set(id, p);
     void pump();
   }
@@ -157,10 +171,12 @@ export function prefetchThumbnails(ids: readonly string[], front = false): void 
   for (const id of ids) void getThumbnail(id);
   if (!front) return;
   const want = new Set(ids);
-  const first = queue.filter((j) => want.has(j.id));
-  const rest = queue.filter((j) => !want.has(j.id));
+  // A queued turntable (the player is hovering it) stays at the very front.
+  const turns = queue.filter((j) => j.kind === 'turn');
+  const first = queue.filter((j) => j.kind === 'thumb' && want.has(j.id));
+  const rest = queue.filter((j) => j.kind === 'thumb' && !want.has(j.id));
   queue.length = 0;
-  queue.push(...first, ...rest);
+  queue.push(...turns, ...first, ...rest);
 }
 
 // True while a thumbnail is queued or rendering (tiles show a quiet
@@ -189,6 +205,10 @@ async function pump() {
   }
   while (queue.length) {
     const job = queue.shift()!;
+    if (job.kind === 'turn') {
+      await runTurnJob(job);
+      continue;
+    }
     let url: string | null = null;
     try {
       url = await renderThumb(job.id);
@@ -214,6 +234,134 @@ async function pump() {
   running = false;
   releaseTimer = setTimeout(release, IDLE_RELEASE_MS);
 }
+
+// ── Turntables ───────────────────────────────────────────────────────────────
+
+// A horizontal strip of `frames` square frames (TURN_PX each), looping every
+// `ms`. `spin`: a full turn of the subject; otherwise a clip / FX sequence.
+export type Turntable = { url: string; frames: number; ms: number; spin: boolean };
+
+const TURN_FRAMES = 36;
+const TURN_PX = 224;
+const TURN_MS = 4200; // one full turn
+const TURN_STORE = 'ig-turn:v1:';
+const TURN_STORE_IDX = 'ig-turn:v1:#idx';
+const TURN_STORE_MAX = 10; // a strip is ~100–300 KB: leave sessionStorage to the thumbs
+const TURN_MEM_MAX = 48;
+
+const turnCache = new Map<string, Turntable | null>(); // insertion order = LRU
+const turnPending = new Map<string, { p: Promise<Turntable | null>; refs: number; started: boolean }>();
+
+function turnStoreGet(key: string): Turntable | null {
+  try {
+    const raw = sessionStorage.getItem(TURN_STORE + key);
+    if (!raw) return null;
+    const t = JSON.parse(raw) as Turntable;
+    return t && typeof t.url === 'string' && t.frames > 0 ? t : null;
+  } catch {
+    return null;
+  }
+}
+function turnStoreSet(key: string, t: Turntable) {
+  try {
+    const idx = (JSON.parse(sessionStorage.getItem(TURN_STORE_IDX) ?? '[]') as string[]).filter((k) => k !== key);
+    idx.push(key);
+    while (idx.length > TURN_STORE_MAX) sessionStorage.removeItem(TURN_STORE + idx.shift()!);
+    sessionStorage.setItem(TURN_STORE + key, JSON.stringify(t));
+    sessionStorage.setItem(TURN_STORE_IDX, JSON.stringify(idx));
+  } catch {
+    /* quota / privacy mode — the memory cache still works */
+  }
+}
+function turnRemember(key: string, t: Turntable) {
+  turnCache.delete(key);
+  turnCache.set(key, t);
+  while (turnCache.size > TURN_MEM_MAX) turnCache.delete(turnCache.keys().next().value!);
+}
+
+// Whether this item (a cosmetic id or Look key) has a turntable at all.
+export function hasTurntable(key: string): boolean {
+  return typeof document !== 'undefined' && !studioFailed && turntableTarget(targetOf(key));
+}
+
+// Synchronous cache peek.
+export function peekTurntable(key: string): Turntable | null {
+  const hit = turnCache.get(key);
+  if (hit) return hit;
+  const stored = turnStoreGet(key);
+  if (stored) turnRemember(key, stored);
+  return stored;
+}
+
+// Ask for a turntable (a hover / focus intent). It jumps the thumbnail queue;
+// `release()` when the intent ends: a job that hasn't started yet is dropped
+// (resolving null) once nobody holds it, so sweeping the pointer across a grid
+// never leaves a backlog of spins. Failures aren't cached (a later hover retries).
+export function requestTurntable(key: string): { promise: Promise<Turntable | null>; release: () => void } {
+  const hit = peekTurntable(key);
+  if (hit) return { promise: Promise.resolve(hit), release: () => {} };
+  if (!hasTurntable(key)) return { promise: Promise.resolve(null), release: () => {} };
+  let entry = turnPending.get(key);
+  if (!entry) {
+    let resolve!: (t: Turntable | null) => void;
+    const p = new Promise<Turntable | null>((r) => (resolve = r));
+    entry = { p, refs: 0, started: false };
+    turnPending.set(key, entry);
+    // One spin queued at a time: an older, unstarted one nobody holds goes.
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const j = queue[i];
+      if (j.kind === 'turn' && (turnPending.get(j.id)?.refs ?? 0) <= 0) {
+        queue.splice(i, 1);
+        turnPending.delete(j.id);
+        j.resolve(null);
+      }
+    }
+    queue.unshift({ kind: 'turn', id: key, resolve, tries: 0 });
+    void pump();
+  }
+  entry.refs++;
+  const e = entry;
+  let released = false;
+  return {
+    promise: e.p,
+    release: () => {
+      if (released) return;
+      released = true;
+      e.refs--;
+      if (e.refs > 0 || e.started) return;
+      const i = queue.findIndex((j) => j.kind === 'turn' && j.id === key);
+      if (i < 0) return;
+      const [j] = queue.splice(i, 1);
+      turnPending.delete(key);
+      j.resolve(null);
+    },
+  };
+}
+
+async function runTurnJob(job: Extract<Job, { kind: 'turn' }>) {
+  const entry = turnPending.get(job.id);
+  if (entry) entry.started = true;
+  let t: Turntable | null = null;
+  try {
+    t = await renderTurntable(job.id);
+  } catch (err) {
+    if (err instanceof ThumbFailure && err.message === 'context-lost' && job.tries < 1) {
+      job.tries++;
+      queue.unshift(job);
+      return;
+    }
+    console.warn(`[thumbs] turntable ${job.id} failed`, err);
+  }
+  if (t) {
+    turnRemember(job.id, t);
+    turnStoreSet(job.id, t);
+  }
+  turnPending.delete(job.id);
+  job.resolve(t);
+}
+
+// A macrotask hop between frame chunks (keeps input and the live stage smooth).
+const nextTask = () => new Promise<void>((r) => setTimeout(r, 0));
 
 // ── The shared studio ────────────────────────────────────────────────────────
 
@@ -327,8 +475,16 @@ type Subject = {
   // Advance any simulation before the shot (called once, after the subject
   // is in the scene).
   settle?: () => void;
+  // Turntable behaviour (turn mode): by default the root spins a full turn
+  // about Y over TURN_MS. `pose(t, dt)` advances the subject to loop time t
+  // (clips, FX, cloth) before each frame; `spin: false` keeps it still.
+  turn?: { ms?: number; spin?: boolean; pose?: (t: number, dt: number) => void };
   dispose: () => void;
 };
+
+// thumb = the still for tiles; turn = a turntable, framed to show the item
+// ON a combatant (no silhouette, a little more body) so it reads as worn.
+type Mode = 'thumb' | 'turn';
 
 // A neutral combatant, facing the camera (optionally turned `turn` radians),
 // posed at `t` seconds into `clip` (the breathing idle by default).
@@ -408,8 +564,15 @@ function stepEffects(s: Studio, seconds: number, extra?: (dt: number) => void) {
   }
 }
 
+// Head-and-shoulders window for worn headgear (turn mode): the head sits in a
+// `win`-metre window whose top clears the hat.
+function headWindow(top: number, win: number): { target: THREE.Vector3; dist: number } {
+  const t = Math.max(1.65 + 0.4 * win, top + 0.14);
+  return { target: new THREE.Vector3(0, t - win / 2, 0), dist: win / 2 / Math.tan((30 * Math.PI) / 360) };
+}
+
 // A face / back / new-def hat via the shared wearable builders.
-async function buildGearSubject(slot: GearSlot, look: Look): Promise<Subject | null> {
+async function buildGearSubject(slot: GearSlot, look: Look, mode: Mode): Promise<Subject | null> {
   if (!WornGearCtor) return null;
   const turn = slot === 'back' ? Math.PI - 0.55 : slot === 'face' ? -0.28 : -0.42;
   const c = combatant(turn, 'idle', 0.6, HAT_SKIN);
@@ -417,20 +580,24 @@ async function buildGearSubject(slot: GearSlot, look: Look): Promise<Subject | n
   gear.setLook(slot, look);
   // Cloth / plumes / unusual particles settle for a second before the shot.
   for (let i = 0; i < 60; i++) gear.update(1 / 60);
-  const undo = slot === 'hat' && look.e ? silhouette(c.ch) : () => {};
+  const undo = mode === 'thumb' && slot === 'hat' && look.e ? silhouette(c.ch) : () => {};
   const top = gear.headTopY();
+  const spin = mode === 'turn';
+  const hatWin = spin && slot === 'hat' ? headWindow(top, look.e ? 1.5 : 1.25) : null;
   const target =
     slot === 'face'
       ? new THREE.Vector3(0, 1.6, 0)
       : slot === 'back'
-        ? new THREE.Vector3(0, 1.22, 0)
-        : new THREE.Vector3(0, Math.max(1.7, Math.min(2.4, top - 0.1)), 0);
+        ? new THREE.Vector3(0, spin ? 1.15 : 1.22, 0)
+        : (hatWin?.target ?? new THREE.Vector3(0, Math.max(1.7, Math.min(2.4, top - 0.1)), 0));
   return {
     root: c.holder,
     target,
-    dist: slot === 'face' ? 1.2 : slot === 'back' ? 3.1 : look.e ? 1.5 : 1.35,
+    dist: hatWin?.dist ?? (slot === 'face' ? (spin ? 1.45 : 1.2) : slot === 'back' ? (spin ? 3.5 : 3.1) : look.e ? 1.5 : 1.35),
     elev: slot === 'back' ? 0.16 : 0.08,
     exposure: look.e ? 1.2 : 0.95,
+    // Cloth, plumes and particles keep moving while it turns.
+    turn: { pose: (_t, dt) => gear.update(dt) },
     dispose: () => {
       gear.dispose();
       undo();
@@ -439,9 +606,43 @@ async function buildGearSubject(slot: GearSlot, look: Look): Promise<Subject | n
   };
 }
 
-async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
+// A combatant wearing a dye: full body, 3/4, idle. Animated dyes run off the
+// shared wall clock (DYE_TIME); a turntable pins it per frame instead, so the
+// strip plays the pattern at the speed it runs in-game.
+function buildDyeSubject(id: string, mode: Mode): Subject | null {
+  const dye = dyeById(id);
+  if (!dye) return null;
+  const c = combatant(-0.5, 'idle', 0.6, THUMB_SKIN);
+  c.ch.wearDye(dye, THUMB_SKIN);
+  let pinned: number | null = null;
+  const mesh = c.ch.mesh;
+  const before = mesh.onBeforeRender;
+  mesh.onBeforeRender = function (this: THREE.Object3D, ...a: Parameters<THREE.Object3D['onBeforeRender']>) {
+    before.apply(this, a);
+    if (pinned !== null) DYE_TIME.value = pinned;
+  };
+  const t0 = 40 + Math.random() * 20;
+  return {
+    root: c.holder,
+    target: new THREE.Vector3(0, mode === 'turn' ? 1.02 : 1.12, 0),
+    dist: mode === 'turn' ? 4.6 : 4.25,
+    elev: 0.1,
+    turn: {
+      pose: (t) => {
+        pinned = t0 + t;
+      },
+    },
+    dispose: () => {
+      mesh.onBeforeRender = before;
+      disposeCombatant(c);
+    },
+  };
+}
+
+async function buildSubject(s: Studio, t: Target, mode: Mode = 'thumb'): Promise<Subject | null> {
   const { look } = t;
-  if (t.def && WEARABLE.has(t.def.slot) && !t.def.default && HAS_GEAR) return buildGearSubject(t.def.slot as GearSlot, look);
+  if (t.def && WEARABLE.has(t.def.slot) && !t.def.default && HAS_GEAR) return buildGearSubject(t.def.slot as GearSlot, look, mode);
+  if (t.def?.slot === 'dye') return buildDyeSubject(t.id, mode);
   const entry = t.entry!;
   switch (entry.slot) {
     case 'hat': {
@@ -451,7 +652,7 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
       if (look.e) hat.setUnusual(legacyUnusualFor(look.e, UNUSUALS));
       // The hat is the subject: a dark silhouette head (no white mannequin
       // dome competing) and the camera fitted so the hat fills ~60%.
-      const undo = silhouette(c.ch);
+      const undo = mode === 'thumb' ? silhouette(c.ch) : () => {};
       c.holder.updateMatrixWorld(true);
       const box = new THREE.Box3();
       const tmp = new THREE.Box3();
@@ -480,6 +681,25 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
       // silhouette — hence the generous fill.
       const size = box.getSize(new THREE.Vector3());
       const aim = box.getCenter(new THREE.Vector3()).addScaledVector(new THREE.Vector3(0, 1, 0), -size.y * 0.3);
+      if (mode === 'turn') {
+        // Worn: head and shoulders, turning.
+        const win = headWindow(bare ? 1.8 : box.max.y, look.e ? 1.5 : 1.25);
+        return {
+          root: c.holder,
+          target: win.target,
+          dist: win.dist,
+          elev: 0.08,
+          exposure: look.e ? 1.2 : undefined,
+          settle: () => {
+            for (let i = 0; i < 60; i++) hat.update(1 / 60);
+          },
+          turn: { pose: (_t, dt) => hat.update(dt) },
+          dispose: () => {
+            hat.dispose();
+            disposeCombatant(c);
+          },
+        };
+      }
       return {
         root: c.holder,
         target: aim,
@@ -519,6 +739,7 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
           // Unusuals only simulate while seeded — step ~1 s in.
           for (let i = 0; i < 60; i++) hat.update(1 / 60);
         },
+        turn: { pose: (_t, dt) => hat.update(dt) },
         dispose: () => {
           hat.dispose();
           undo();
@@ -535,11 +756,15 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
       pivot.rotation.set(0.32, -1.02, 0.18);
       pivot.position.set(0, 0, 0);
       gun.setCharge(1);
+      // Turntable: spin a level gun about the vertical (the 3/4 tilt would
+      // wobble), pulled back so the side-on barrel fits.
+      if (mode === 'turn') pivot.rotation.set(0.12, -1.02, 0);
+      const root = mode === 'turn' ? new THREE.Group().add(pivot) : pivot;
       return {
-        root: pivot,
+        root,
         target: new THREE.Vector3(0.02, 0.02, 0),
-        dist: 2.25,
-        elev: 0.12,
+        dist: mode === 'turn' ? 3.1 : 2.25,
+        elev: mode === 'turn' ? 0.3 : 0.12,
         dispose: () => {
           // Shared geometry cache: free only this gun's materials.
           gun.dispose();
@@ -569,6 +794,36 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
       const style = entry.id as KillEffectStyle;
       const skin = FINISHER_SKIN[entry.rarity] ?? '#27b8ff';
       const c = combatant(0.3, 'idle', 0.6, skin);
+      if (mode === 'turn') {
+        // The kill as a loop: a beat standing, the burst + death, the gibs
+        // flying — stepped at 120 Hz between frames.
+        let simT = 0;
+        let fired = false;
+        return {
+          root: c.holder,
+          target: new THREE.Vector3(0, 1.05, 0),
+          dist: 5.6,
+          elev: 0.12,
+          turn: {
+            ms: 1900,
+            spin: false,
+            pose: (t) => {
+              const step = 1 / 120;
+              while (simT + step <= t + 1e-9) {
+                if (!fired && simT >= 0.3) {
+                  s.effects.spawnKillBurst(s.scene, new THREE.Vector3(0, 0.95, 0), false, style, new THREE.Color(skin));
+                  c.anim.die({ y: 0 }, style);
+                  fired = true;
+                }
+                c.anim.updateStatic(step);
+                s.effects.step(step, s.scene);
+                simT += step;
+              }
+            },
+          },
+          dispose: () => disposeCombatant(c),
+        };
+      }
       return {
         root: c.holder,
         target: new THREE.Vector3(0, 1.05, 0),
@@ -590,6 +845,37 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
     case 'spawnEffect': {
       const c = combatant(0.2);
       const style = spawnEffectById(entry.id).style;
+      if (mode === 'turn') {
+        // Materialise on a loop (as the live preview's spawn view): the burst
+        // flares, the body scales in inside it, then stands.
+        let simT = 0;
+        let fired = false;
+        return {
+          root: c.holder,
+          target: new THREE.Vector3(0, 1.1, 0),
+          dist: 5.6,
+          elev: 0.12,
+          turn: {
+            ms: 1700,
+            spin: false,
+            pose: (t) => {
+              const step = 1 / 120;
+              while (simT + step <= t + 1e-9) {
+                if (!fired && simT >= 0.06) {
+                  s.effects.spawnInBurst(s.scene, new THREE.Vector3(0, 0, 0), style);
+                  fired = true;
+                }
+                s.effects.step(step, s.scene);
+                simT += step;
+              }
+              const u = Math.max(0, Math.min(1, (t - 0.14) / 0.22));
+              c.ch.root.visible = u > 0;
+              c.ch.root.scale.set(1, u >= 1 ? 1 : 0.15 + 0.85 * (u * u * (3 - 2 * u)), 1);
+            },
+          },
+          dispose: () => disposeCombatant(c),
+        };
+      }
       return {
         root: c.holder,
         target: new THREE.Vector3(0, 1.05, 0),
@@ -606,11 +892,21 @@ async function buildSubject(s: Studio, t: Target): Promise<Subject | null> {
       const kind = emoteById(entry.id).kind;
       const c = combatant(0.28, kind, (EMOTE_FRAME[kind] ?? 0.4) * emoteClip(kind).duration);
       const gun = kind === 'flourish' ? attachRailgun(c.ch) : null;
+      const dur = emoteClip(kind).duration;
       return {
         root: c.holder,
-        target: new THREE.Vector3(0, 1.12, 0),
-        dist: 4.25,
+        target: new THREE.Vector3(0, mode === 'turn' ? 1.05 : 1.12, 0),
+        dist: mode === 'turn' ? 4.7 : 4.25,
         elev: 0.08,
+        // Turntable: the whole clip at a fixed 3/4 (clips loop seamlessly).
+        turn: {
+          ms: Math.round(dur * 1000),
+          spin: false,
+          pose: (t) => {
+            c.anim.setEmoteTime(t % dur, 1);
+            c.anim.updateStatic(0);
+          },
+        },
         dispose: () => {
           disposeRailgun(gun);
           disposeCombatant(c);
@@ -643,10 +939,10 @@ function assertAlive(s: Studio) {
   }
 }
 
-const toBlob = (cv: HTMLCanvasElement) =>
+const toBlob = (cv: HTMLCanvasElement, quality = 0.9) =>
   new Promise<Blob>((resolve, reject) => {
     // WebP keeps alpha and is small; browsers without it hand back PNG.
-    cv.toBlob((b) => (b ? resolve(b) : reject(new ThumbFailure('encode failed'))), 'image/webp', 0.9);
+    cv.toBlob((b) => (b ? resolve(b) : reject(new ThumbFailure('encode failed'))), 'image/webp', quality);
   });
 
 const toDataUrl = (b: Blob) =>
@@ -664,12 +960,18 @@ const toDataUrl = (b: Blob) =>
 // only the non-additive geometry (its coverage) — and final alpha = max(that
 // coverage, the pixel's brightest channel), colour un-premultiplied by it.
 async function capture(s: Studio, cam: THREE.Camera): Promise<string> {
+  return toDataUrl(await toBlob(frameCanvas(s, cam)));
+}
+
+// Draw one frame; returns the canvas holding it with correct alpha — the
+// WebGL canvas itself (preserveDrawingBuffer: toBlob / drawImage read the
+// frame just drawn) or, for glow FX, the fixed-up 2D canvas.
+function frameCanvas(s: Studio, cam: THREE.Camera): HTMLCanvasElement {
   const gl = s.renderer.getContext();
   if (!hasGlowFx(s.scene)) {
     s.renderer.render(s.scene, cam);
     assertAlive(s);
-    // preserveDrawingBuffer: toBlob snapshots the frame we just drew.
-    return toDataUrl(await toBlob(s.renderer.domElement));
+    return s.renderer.domElement;
   }
   s.px.fill(0);
   s.mask.fill(0);
@@ -717,7 +1019,7 @@ async function capture(s: Studio, cam: THREE.Camera): Promise<string> {
     }
   }
   ctx.putImageData(img, 0, 0);
-  return toDataUrl(await toBlob(s.out));
+  return s.out;
 }
 
 // Dolly the camera along its view line until the box's larger projected side
@@ -754,19 +1056,7 @@ async function renderThumb(id: string): Promise<string | null> {
   }
   try {
     s.scene.add(subj.root);
-    const cam = s.camera;
-    const elev = subj.elev ?? 0.1;
-    const azim = subj.azim ?? 0;
-    cam.fov = subj.fov ?? 30;
-    cam.position.set(
-      subj.target.x + Math.sin(azim) * Math.cos(elev) * subj.dist,
-      subj.target.y + Math.sin(elev) * subj.dist,
-      subj.target.z + Math.cos(azim) * Math.cos(elev) * subj.dist,
-    );
-    cam.lookAt(subj.target);
-    cam.updateProjectionMatrix();
-    if (subj.fitBox) fitCamera(cam, subj.fitBox, subj.target, subj.fill ?? 0.6);
-    s.renderer.toneMappingExposure = subj.exposure ?? 0.95;
+    const cam = placeCamera(s, subj);
     subj.root.updateMatrixWorld(true);
     subj.settle?.();
     // Compile off the main thread where the browser allows it, then render in
@@ -779,6 +1069,81 @@ async function renderThumb(id: string): Promise<string | null> {
     await idle();
     if (studio !== s) throw new ThumbFailure('context-lost');
     return await capture(s, cam);
+  } finally {
+    s.scene.remove(subj.root);
+    subj.dispose();
+    peekFxContext(s.scene)?.clear();
+  }
+}
+
+// Aim the studio camera at a subject (see Subject).
+function placeCamera(s: Studio, subj: Subject): THREE.PerspectiveCamera {
+  const cam = s.camera;
+  const elev = subj.elev ?? 0.1;
+  const azim = subj.azim ?? 0;
+  cam.fov = subj.fov ?? 30;
+  cam.position.set(
+    subj.target.x + Math.sin(azim) * Math.cos(elev) * subj.dist,
+    subj.target.y + Math.sin(elev) * subj.dist,
+    subj.target.z + Math.cos(azim) * Math.cos(elev) * subj.dist,
+  );
+  cam.lookAt(subj.target);
+  cam.updateProjectionMatrix();
+  if (subj.fitBox) fitCamera(cam, subj.fitBox, subj.target, subj.fill ?? 0.6);
+  s.renderer.toneMappingExposure = subj.exposure ?? 0.95;
+  return cam;
+}
+
+// One strip: TURN_FRAMES frames of the subject turning (or its clip / FX),
+// each drawn into its cell as soon as it renders, a macrotask hop every few
+// frames. ~36 small renders + one encode: a few hundred ms, off the hot path.
+async function renderTurntable(key: string): Promise<Turntable | null> {
+  const target = targetOf(key);
+  if (!turntableTarget(target)) return null;
+  const s = getStudio();
+  if (!s) return null;
+  const subj = await buildSubject(s, target, 'turn');
+  if (!subj) return null;
+  if (studio !== s) {
+    subj.dispose();
+    throw new ThumbFailure('context-lost');
+  }
+  const n = TURN_FRAMES;
+  const turn = subj.turn ?? {};
+  const ms = turn.ms ?? TURN_MS;
+  const spin = turn.spin !== false;
+  try {
+    s.scene.add(subj.root);
+    const cam = placeCamera(s, subj);
+    subj.root.updateMatrixWorld(true);
+    subj.settle?.();
+    try {
+      await s.renderer.compileAsync(s.scene, cam);
+    } catch {
+      /* compile inline on render */
+    }
+    if (studio !== s) throw new ThumbFailure('context-lost');
+    const sheet = document.createElement('canvas');
+    sheet.width = TURN_PX * n;
+    sheet.height = TURN_PX;
+    const ctx = sheet.getContext('2d');
+    if (!ctx) throw new ThumbFailure('no 2d context');
+    ctx.imageSmoothingQuality = 'high';
+    const baseYaw = subj.root.rotation.y;
+    const dt = ms / 1000 / n;
+    for (let i = 0; i < n; i++) {
+      // Clockwise seen from above: the subject turns its right side to us first.
+      if (spin) subj.root.rotation.y = baseYaw - (i / n) * Math.PI * 2;
+      turn.pose?.(i * dt, dt);
+      subj.root.updateMatrixWorld(true);
+      ctx.drawImage(frameCanvas(s, cam), 0, 0, SIZE, SIZE, i * TURN_PX, 0, TURN_PX, TURN_PX);
+      if (i % 6 === 5) {
+        await nextTask();
+        if (studio !== s) throw new ThumbFailure('context-lost');
+      }
+    }
+    const url = await toDataUrl(await toBlob(sheet, 0.82));
+    return { url, frames: n, ms, spin };
   } finally {
     s.scene.remove(subj.root);
     subj.dispose();
