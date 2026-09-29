@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './auth';
 import { AdminItemsTab } from './economy/AdminItems';
+import { AdminCodesTab } from './admin/AdminCodes';
+import { AdminGiftsTab } from './admin/AdminGifts';
 
 // ── API shapes (mirror server/db.ts) ─────────────────────────────────────────
 type MetricsWindow = { matches: number; activePlayers: number; newAccounts: number; logins: number };
@@ -258,7 +260,7 @@ const COLORS = {
   fuchsia: '#e879f9',
 } as const;
 
-type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'items' | 'feedback';
+type Tab = 'overview' | 'activity' | 'retention' | 'matches' | 'players' | 'items' | 'codes' | 'gifts' | 'feedback';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
@@ -266,6 +268,8 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'matches', label: 'Matches' },
   { id: 'players', label: 'Players' },
   { id: 'items', label: 'Items' },
+  { id: 'codes', label: 'Codes' },
+  { id: 'gifts', label: 'Gifts' },
   { id: 'feedback', label: 'Feedback' },
 ];
 
@@ -1007,6 +1011,8 @@ export default function AdminDashboard() {
         {tab === 'matches' && <MatchesTab />}
         {tab === 'players' && <PlayersTab />}
         {tab === 'items' && <AdminItemsTab />}
+        {tab === 'codes' && <AdminCodesTab />}
+        {tab === 'gifts' && <AdminGiftsTab />}
         {tab === 'feedback' && <FeedbackTab />}
       </div>
     </div>

@@ -3,7 +3,7 @@
 // (sticky for the tab) every call is answered by an in-memory mock (./mock.ts)
 // that mirrors the same shapes, so the screens can be developed and
 // screenshotted without a server.
-import type { CaseDef, CaseId, ItemAttrs, ItemInstanceWire, ItemSlot, Loadout, Quality, Tier } from '../game/items/types';
+import type { CaseDef, CaseId, InboxMessageWire, ItemAttrs, ItemInstanceWire, ItemSlot, Loadout, Quality, RedeemCodeWire, RewardBundle, Tier } from '../game/items/types';
 
 // slot → token: an instance uid, or `def:<id>` for a default / entitlement.
 export type Equipped = Partial<Record<ItemSlot, string>>;
@@ -113,6 +113,18 @@ export type MintBody = {
 export type ItemEvent = { id: number; uid: string; ts: number; kind: string; from: string; to: string; meta: unknown };
 export type ItemHistoryResp = { item: ItemInstanceWire; owner: string; events: ItemEvent[] };
 
+// Redeem codes + inbox (docs/economy.md §7b).
+export type Granted = { credits: number; rolls: number; items: ItemInstanceWire[] };
+export type InboxSummary = { unread: number; unclaimed: number };
+export type InboxResp = InboxSummary & { messages: InboxMessageWire[] };
+export type ClaimResp = { message: InboxMessageWire; granted: Granted; credits: number; freeRolls: number };
+export type RedeemResp = { code: string; granted: Granted; credits: number; freeRolls: number; messageId: number };
+export type CreateCodeBody = { code?: string; reward: RewardBundle; maxUses?: number; expiresAt?: number; minLevel?: number; note?: string };
+export type GiftBody = { player?: string; all?: boolean; title: string; body?: string; reward?: RewardBundle; expiresAt?: number };
+export type Redemption = { player: string; at: number };
+// Admin player lookup (the metrics players endpoint, trimmed to what a picker needs).
+export type PlayerHit = { id: string; userName: string; level: number; lastSeen: number; admin?: boolean };
+
 export type Res<T> = (T & { ok: true }) | { ok: false; status: number; reason?: string; error?: string; need?: number };
 
 export function mockOn(): boolean {
@@ -191,6 +203,12 @@ export const econ = {
   offer: (b: OfferBody) => call<{ trade?: Trade }>('POST', '/api/trades/offer', b, (m) => m.offer(b)),
   tradeAct: (id: Trade['id'], act: 'accept' | 'decline' | 'cancel') => call<{ trade?: Trade }>('POST', `/api/trades/${id}/${act}`, {}, (m) => m.tradeAct(id, act)),
   playerInventory: (name: string) => call<PlayerInvResp>('GET', `/api/players/${encodeURIComponent(name)}/inventory`, undefined, (m) => m.playerInventory(name)),
+  // Inbox + redeem codes (logged-in players)
+  inbox: () => call<InboxResp>('GET', '/api/inbox', undefined, (m) => m.inbox()),
+  inboxSummary: () => call<InboxSummary>('GET', '/api/inbox?summary=1', undefined, (m) => m.inboxSummary()),
+  inboxRead: (id: number | 'all') => call<object>('POST', `/api/inbox/${id}/read`, {}, (m) => m.inboxRead(id)),
+  inboxClaim: (id: number) => call<ClaimResp>('POST', `/api/inbox/${id}/claim`, {}, (m) => m.inboxClaim(id)),
+  redeem: (code: string) => call<RedeemResp>('POST', '/api/codes/redeem', { code }, (m) => m.redeem(code)),
   // Admin (session-only routes)
   adminInventory: (player: string, all = false) =>
     call<AdminInvResp>('GET', `/api/admin/inventory/${encodeURIComponent(player)}${all ? '?all=1' : ''}`, undefined, (m) => m.adminInventory(player, all)),
@@ -199,12 +217,114 @@ export const econ = {
   adminGrant: (player: string, credits?: number, rolls?: number) =>
     call<{ credits: number; freeRolls: number; username?: string }>('POST', '/api/admin/economy/grant', { player, credits, rolls }, (m) => m.adminGrant(player, credits, rolls)),
   adminHistory: (uid: string) => call<ItemHistoryResp>('GET', `/api/admin/items/${uid}/history`, undefined, (m) => m.adminHistory(uid)),
+  adminCodes: () => call<{ codes: RedeemCodeWire[] }>('GET', '/api/admin/codes', undefined, (m) => m.adminCodes()),
+  adminCreateCode: (b: CreateCodeBody) => call<{ code: RedeemCodeWire }>('POST', '/api/admin/codes', b, (m) => m.adminCreateCode(b)),
+  adminCodeActive: (code: string, active: boolean) =>
+    call<{ code: RedeemCodeWire }>('POST', `/api/admin/codes/${encodeURIComponent(code)}/active`, { active }, (m) => m.adminCodeActive(code, active)),
+  adminCodeRedemptions: (code: string) =>
+    call<{ redemptions: Redemption[] }>('GET', `/api/admin/codes/${encodeURIComponent(code)}/redemptions`, undefined, (m) => m.adminCodeRedemptions(code)),
+  adminGift: (b: GiftBody) => call<{ sent: number }>('POST', '/api/admin/gifts', b, (m) => m.adminGift(b)),
+  adminValidateReward: (reward: RewardBundle) => call<object>('POST', '/api/admin/rewards/validate', { reward }, (m) => m.adminValidateReward(reward)),
+  adminFindPlayers: (q: string) =>
+    call<{ players: PlayerHit[] }>('GET', `/api/admin/metrics/players${qs({ sort: 'recent', limit: 8, q })}`, undefined, (m) => m.adminFindPlayers(q)),
+  adminAccountCount: () =>
+    call<{ overview: { totalAccounts: number } }>('GET', '/api/admin/metrics/overview', undefined, (m) => m.adminAccountCount()),
 };
 
+// Where an error came from, for the codes that mean different things in
+// different places (`not_found`, `level`, `expired`, `profanity`).
+export type ReasonCtx = 'code' | 'inbox' | 'admin';
+
+// Copy for an admin item-spec error (`item_<code>` inside a reward bundle, or
+// the bare code from a direct mint). Null = not an item-spec error.
+function itemSpecText(code: string): string | null {
+  switch (code) {
+    case 'unknown_def':
+      return 'Unknown item — pick one from the catalog.';
+    case 'not_an_item':
+      return 'That item is a default or an unlock (card / title) — it can’t be minted.';
+    case 'bad_effect':
+      return 'Unknown unusual effect.';
+    case 'bad_sheen':
+      return 'Unknown killstreak sheen.';
+    case 'bad_ksEffect':
+      return 'Unknown professional killstreak effect.';
+    case 'bad_tint':
+      return 'Tint must be a #rrggbb colour.';
+    case 'bad_tier':
+      return 'Unknown tier.';
+    case 'profanity_customName':
+      return 'The custom name was flagged — keep it clean.';
+    case 'profanity_customDesc':
+      return 'The custom description was flagged — keep it clean.';
+    case 'profanity_nameTag':
+      return 'The name tag was flagged — keep it clean.';
+    default:
+      return null;
+  }
+}
+
 // Human copy for the server's error codes.
-export function reasonText(r: { status: number; reason?: string; error?: string; need?: number }): string {
+export function reasonText(r: { status: number; reason?: string; error?: string; need?: number }, ctx?: ReasonCtx): string {
   const n = r.need != null ? r.need.toLocaleString() : '';
-  switch (r.reason ?? r.error) {
+  const code = r.reason ?? r.error ?? '';
+  // Codes whose meaning depends on the screen.
+  if (ctx === 'code') {
+    if (code === 'not_found') return 'That code doesn’t exist — check the spelling.';
+    if (code === 'level') return `This code unlocks at Level ${r.need ?? '?'} — keep playing!`;
+    if (code === 'expired') return 'This code has expired.';
+  }
+  if (ctx === 'inbox') {
+    if (code === 'not_found') return 'That message is gone.';
+    if (code === 'expired') return 'This gift has expired.';
+  }
+  if (ctx === 'admin' && code === 'profanity') return 'That text was flagged by the filter — reword it.';
+  if (code.startsWith('item_')) {
+    const t = itemSpecText(code.slice(5));
+    if (t) return `Item: ${t}`;
+  }
+  const spec = itemSpecText(code);
+  if (spec) return spec;
+  switch (code) {
+    // Redeem codes + inbox
+    case 'already_redeemed':
+      return 'You’ve already redeemed this code.';
+    case 'used_up':
+      return 'This code has been fully claimed — too slow this time.';
+    case 'expired':
+      return 'That has expired.';
+    case 'inactive':
+      return 'This code is no longer active.';
+    case 'bad_code':
+      return 'Codes are 3–32 letters, numbers and dashes.';
+    case 'too_many_attempts':
+      return 'Too many tries — wait a few minutes, then try again.';
+    case 'claimed':
+      return 'Already claimed — check your Locker.';
+    case 'nothing':
+      return 'Nothing to claim on this message.';
+    case 'stale_reward':
+      return 'This reward is out of date and couldn’t be granted — contact staff.';
+    case 'empty_reward':
+      return 'A reward needs credits, free rolls or at least one item.';
+    case 'bad_credits':
+      return 'Credits must be a whole number from 0 to 1,000,000.';
+    case 'bad_rolls':
+      return 'Free rolls must be a whole number from 0 to 1,000.';
+    case 'bad_items':
+      return 'Up to 10 items per reward.';
+    case 'code_taken':
+      return 'That code already exists — pick another.';
+    case 'bad_max_uses':
+      return 'Max uses must be 0 (unlimited) or a whole number.';
+    case 'bad_expiry':
+      return 'The expiry must be in the future.';
+    case 'bad_min_level':
+      return 'Min level must be a whole number from 0 to 1,000.';
+    case 'no_title':
+      return 'Give the message a title.';
+    case 'bad_request':
+      return 'That request was malformed.';
     case 'insufficient':
     case 'insufficient_fee':
       return r.need != null ? `Not enough credits (need ⛁ ${n}).` : 'Not enough credits.';
