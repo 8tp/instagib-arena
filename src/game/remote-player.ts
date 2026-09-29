@@ -235,7 +235,27 @@ export class RemotePlayer {
 
   private setPlateHidden(hidden: boolean) {
     this.plateHidden = hidden;
-    this.nameSprite.visible = !hidden;
+    this.nameSprite.visible = !hidden && !this.plateSuppressed;
+  }
+
+  // Replay framing: a compact plate (`k` × the live size) so first-person
+  // cinematics aren't crowded by labels; `setPlateSuppressed` turns it off for
+  // good (respawns inside the clip don't bring it back).
+  private plateScale = 1;
+  private plateSuppressed = false;
+  setPlateScale(k: number) {
+    this.plateScale = k > 0 ? k : 1;
+    this.applyPlateScale();
+  }
+  setPlateSuppressed(off: boolean) {
+    this.plateSuppressed = off;
+    this.nameSprite.visible = !this.plateHidden && !off;
+  }
+  private applyPlateScale() {
+    const k = this.plateScale;
+    const img = (this.nameSprite.material as THREE.SpriteMaterial).map?.image as { height?: number } | undefined;
+    const h = img?.height ?? 64;
+    this.nameSprite.scale.set(2.0 * k, 0.5 * (h / 64) * k, 1);
   }
 
   // Hide this avatar because the local viewer is spectating it in first person
@@ -502,7 +522,8 @@ export class RemotePlayer {
     this.group.remove(this.nameSprite);
     this.nameSprite = makeNameSprite(this.name, this.appliedNameColor, this.titleText);
     this.nameSprite.position.y = BOT_HEIGHT + 0.35 + (this.titleText ? 0.13 : 0);
-    this.nameSprite.visible = !this.plateHidden;
+    this.nameSprite.visible = !this.plateHidden && !this.plateSuppressed;
+    if (this.plateScale !== 1) this.applyPlateScale();
     this.group.add(this.nameSprite);
   }
 
