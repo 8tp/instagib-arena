@@ -11,6 +11,8 @@ import {
   KS_SHEENS,
   MARKET,
   QUALITY_ODDS,
+  SPIN,
+  SPIN_SLOTS,
   TIERS,
   TIER_META,
   TRADE,
@@ -21,6 +23,9 @@ import {
   type ItemSlot,
   type Loadout,
   type Quality,
+  type SpinInfo,
+  type SpinKind,
+  type SpinResult,
   type Tier,
 } from '../game/items/types';
 import type {
@@ -573,4 +578,97 @@ export function adminHistory(uid: string): Promise<Res<ItemHistoryResp>> {
     { id: 3, uid, ts: it.createdAt + 7200_000, kind: 'sale', from: 'Kestrel', to: ME, meta: { price: 120 } },
   ];
   return delay(ok({ item: it, owner: ME, events: ev }), 80);
+}
+
+// ── Daily Spin ───────────────────────────────────────────────────────────────
+// ?mockSpin=used starts with today's free spin already taken (countdown state);
+// ?mockSpinSeg=<segment id> forces the free result; ?mockTier=<tier> the premium one.
+const utcDay = (t: number): string => new Date(t).toISOString().slice(0, 10);
+const nextMidnight = (t: number): number => {
+  const d = new Date(t);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+};
+const qparam = (k: string): string | null => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get(k));
+let spinDay = qparam('mockSpin') === 'used' ? utcDay(Date.now()) : '';
+const spinPool = () => casePoolFor(SPIN_SLOTS);
+function spinPoolCounts(): Record<Tier, number> {
+  const pool = spinPool();
+  return Object.fromEntries(TIERS.map((t) => [t, t === 'unobtainable' ? 0 : pool.filter((d) => d.tier === t).length])) as Record<Tier, number>;
+}
+function spinEffective(): Record<Tier, number> {
+  const count = spinPoolCounts();
+  const out = Object.fromEntries(TIERS.map((t) => [t, 0])) as Record<Tier, number>;
+  for (const t of TIERS) {
+    if (SPIN.premium[t] <= 0) continue;
+    let i = TIERS.indexOf(t);
+    while (i > 0 && count[TIERS[i]] === 0) i--;
+    out[TIERS[i]] += SPIN.premium[t];
+  }
+  return out;
+}
+export function spinInfo(): Promise<Res<SpinInfo>> {
+  ensure();
+  const now = Date.now();
+  const used = spinDay === utcDay(now);
+  return delay(
+    ok({ free: SPIN.free.map((s) => ({ ...s })), premiumCost: SPIN.premiumCost, premiumOdds: spinEffective(), pool: spinPoolCounts(), freeAvailable: !used, nextFreeAt: used ? nextMidnight(now) : 0, credits: S.credits, freeRolls: S.freeRolls }),
+    60,
+  );
+}
+export function spin(kind: SpinKind): Promise<Res<Extract<SpinResult, { ok: true }>>> {
+  ensure();
+  const now = Date.now();
+  const gained: Extract<SpinResult, { ok: true }>['gained'] = {};
+  let segment: string;
+  const pool = spinPool();
+  const mint = (def: ItemDef, over: Partial<ItemInstanceWire>): ItemInstanceWire => {
+    const it = make(def.id, { ...over, origin: 'spin', createdAt: now });
+    S.items.push(it);
+    log(it.uid, 'mint', { meta: { spin: kind } });
+    return { ...it };
+  };
+  const fromTier = (tier: Tier): { def: ItemDef; tier: Tier } => {
+    let i = TIERS.indexOf(tier);
+    let list = pool.filter((d) => d.tier === TIERS[i]);
+    while (list.length === 0 && i > 0) list = pool.filter((d) => d.tier === TIERS[--i]);
+    return { def: list[Math.floor(Math.random() * list.length)], tier: TIERS[i] };
+  };
+  if (kind === 'free') {
+    if (spinDay === utcDay(now)) return delay({ ok: false, status: 400, reason: 'already_spun', error: 'already_spun' } as Res<never>);
+    const forced = SPIN.free.find((s) => s.id === qparam('mockSpinSeg'));
+    let seg = forced ?? SPIN.free[0];
+    if (!forced) {
+      let r = Math.random();
+      for (const s of SPIN.free) {
+        r -= s.odds;
+        if (r < 0) {
+          seg = s;
+          break;
+        }
+      }
+    }
+    segment = seg.id;
+    if (seg.reward.type === 'credits') {
+      S.credits += seg.reward.amount;
+      gained.credits = seg.reward.amount;
+    } else if (seg.reward.type === 'roll') {
+      S.freeRolls++;
+      gained.roll = true;
+    } else {
+      const w = fromTier(seg.reward.tier);
+      gained.item = mint(w.def, w.def.slot === 'finish' ? { attrs: { seed: Math.floor(Math.random() * 1000), wear: Math.random() } } : {});
+      gained.tier = w.tier;
+    }
+    spinDay = utcDay(now);
+  } else {
+    if (S.credits < SPIN.premiumCost) return delay({ ok: false, status: 400, reason: 'insufficient', error: 'insufficient', need: SPIN.premiumCost } as Res<never>);
+    const forced = qparam('mockTier') as Tier | null;
+    const w = fromTier(forced && TIERS.includes(forced) ? forced : rollTier(spinEffective()));
+    const { quality, attrs } = rollQualities(w.def, qparam('mockLucky') ? () => 0.001 : Math.random);
+    S.credits -= SPIN.premiumCost;
+    gained.item = mint(w.def, { quality, attrs });
+    gained.tier = w.tier;
+    segment = w.tier;
+  }
+  return delay(ok({ kind, segment, credits: S.credits, freeRolls: S.freeRolls, nextFreeAt: spinDay === utcDay(now) ? nextMidnight(now) : 0, gained }), 200);
 }
