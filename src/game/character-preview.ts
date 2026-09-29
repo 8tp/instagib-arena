@@ -8,6 +8,7 @@ import { CharacterAnimator } from './character-anim';
 import { Character, SKIN_PALETTE, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { RAIL_COOLDOWN } from './constants';
+import { dyeById } from './dyes';
 import { EffectsManager } from './effects';
 import { getFxContext } from './fx-pool';
 import { buildRailgun, type RailgunModel } from './weapon-model';
@@ -457,9 +458,24 @@ export class CharacterPreview {
 
   // ── Build ──────────────────────────────────────────────────────────────────
 
+  // The armour: your name-keyed skin, or the worn dye over it. The preview is
+  // always the natural look (no team colour / enemy highlight here).
+  private skinKey = '';
+  private applySkin() {
+    const ch = this.character;
+    if (!ch) return;
+    const skin = skinColorFor(this.cos.skinSeed || savedName() || 'you');
+    const dyeId = this.cos.looks?.dye?.d ?? '';
+    const key = `${skin}|${dyeId}`;
+    if (key === this.skinKey) return;
+    this.skinKey = key;
+    ch.wearDye(dyeById(dyeId), skin);
+  }
+
   private buildCharacter() {
     const ch = new Character({ colorHex: skinColorFor(this.cos.skinSeed || savedName() || 'you') });
     this.character = ch;
+    this.applySkin();
     this.subject.add(ch.root);
     this.anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     this.hat = new WornHat(ch.sockets.headTop);
@@ -607,6 +623,7 @@ export class CharacterPreview {
       // Changing the finish while switching → the view build picks it up.
       this.applyView();
     }
+    this.applySkin();
     if (this.gear) this.syncGear(prev);
     else if (this.hat) {
       if (cos.hatId !== prev.hatId) void this.hat.setHat(cos.hatId).then(() => this.measureHat());
