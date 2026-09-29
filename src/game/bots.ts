@@ -24,6 +24,7 @@ import {
 import { movePlayer, rayAabb, type ArenaMap } from './map';
 import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
+import { dyeById } from './dyes';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { floorBelow, type GibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
@@ -1119,15 +1120,16 @@ export class Bot {
     // Gait, aim, gun hold, jumps/landings and gibs live in the animator — the
     // same one remote players use.
     this.anim = new CharacterAnimator(ch, { driveYaw: true, holdGun: true });
+    this.resolveLook();
   }
 
-  // Armour colour: TDM team colour > the viewer's enemy highlight > own skin.
+  // Armour colour: TDM team colour > the viewer's enemy highlight > own dye / skin.
   private resolveLook() {
     const ch = this.character;
     if (!ch) return;
     if (this.teamLook) ch.setLook(this.teamLook, 'natural');
     else if (this.highlight) ch.setLook(this.highlight, 'highlight');
-    else ch.setLook(skinColorFor(this.state.name), 'natural');
+    else ch.wearDye(dyeById(this.loadout.dye?.d), skinColorFor(this.state.name));
   }
 
   private installFallback() {

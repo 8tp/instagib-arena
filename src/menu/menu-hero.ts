@@ -18,6 +18,7 @@
 import * as THREE from 'three';
 import { CharacterAnimator } from '../game/character-anim';
 import { Character, skinColorFor } from '../game/character/character';
+import { dyeById } from '../game/dyes';
 import { attachRailgun, disposeRailgun } from '../game/character/gun';
 import { emoteById, railgunFinishById } from '../game/cosmetics';
 import { emoteClip } from '../game/emotes';
@@ -36,6 +37,12 @@ export type HeroLoadout = {
 };
 
 // Where the hero stands: a rect in canvas CSS pixels plus the canvas size.
+// The hero's accent colour (rim light, halo): the equipped dye's primary
+// colour, else the name-keyed skin.
+function heroColor(l: HeroLoadout): string {
+  return dyeById(l.looks?.dye?.d)?.a ?? skinColorFor(l.seed || 'you');
+}
+
 export type HeroFrame = { x: number; y: number; w: number; h: number; vw: number; vh: number };
 
 export function sameLoadout(a: HeroLoadout | null, b: HeroLoadout | null): boolean {
@@ -127,7 +134,7 @@ export class MenuHero {
 
   constructor(loadout: HeroLoadout, env: THREE.Texture | null, opts: { still?: boolean } = {}) {
     this.loadout = { ...loadout };
-    this.color.set(skinColorFor(loadout.seed || 'you'));
+    this.color.set(heroColor(loadout));
     const scene = this.scene;
     scene.environment = env; // the arena's PMREM room (owned + freed by the stage)
     scene.environmentIntensity = 0.16;
@@ -226,6 +233,7 @@ export class MenuHero {
 
     // The combatant.
     this.character = new Character({ colorHex: `#${this.color.getHexString()}`, castShadow: false });
+    this.character.wearDye(dyeById(loadout.looks?.dye?.d), skinColorFor(loadout.seed || 'you'));
     this.holder.add(this.character.root);
     this.holder.rotation.y = FACE_CAMERA + REST_YAW;
     scene.add(this.holder);
@@ -268,9 +276,9 @@ export class MenuHero {
     if (this.disposed || sameLoadout(this.loadout, l)) return;
     const prev = this.loadout;
     this.loadout = { ...l };
-    if (l.seed !== prev.seed) {
-      this.color.set(skinColorFor(l.seed || 'you'));
-      this.character.setLook(this.color);
+    if (l.seed !== prev.seed || l.looks?.dye?.d !== prev.looks?.dye?.d) {
+      this.color.set(heroColor(l));
+      this.character.wearDye(dyeById(l.looks?.dye?.d), skinColorFor(l.seed || 'you'));
       this.applyColor();
     }
     if (l.looks) {

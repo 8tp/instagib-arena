@@ -161,14 +161,14 @@ export class Character {
     switch (dye.pattern) {
       case 'void':
       case 'horizon':
-        u.uRim.value.set(dye.b ?? '#e8f0ff').lerp(WHITE, 0.5).multiplyScalar(1.5);
-        u.uRimStr.value = 1.9;
+        u.uRim.value.set(dye.b ?? '#e8f0ff').lerp(WHITE, 0.5).multiplyScalar(1.3);
+        u.uRimStr.value = 1.25;
         u.uVisorEdge.value.set(dye.b ?? '#e8f0ff').multiplyScalar(2.2);
         break;
       case 'spectre':
       case 'hologram':
-        u.uRim.value.set(dye.a).multiplyScalar(1.4);
-        u.uRimStr.value = 1.7;
+        u.uRim.value.set(dye.a).multiplyScalar(1.3);
+        u.uRimStr.value = 1.3;
         break;
       case 'magma':
       case 'circuit':
