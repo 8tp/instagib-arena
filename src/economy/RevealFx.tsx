@@ -77,7 +77,7 @@ function plan(tier: Tier, unusual: boolean): Emit[] {
       break;
     case 'unobtainable':
       out.push({ n: 70, colors: IRI, shape: 'streak', speed: [500, 1400], life: [0.6, 1.3], size: [2, 3.6], drag: 2.2, g: 160 });
-      out.push({ n: 170, colors: IRI, shape: 'star', speed: [0, 0], life: [1.2, 2.4], size: [2.5, 6], storm: true, delay: [0, 1.4] });
+      out.push({ n: 170, colors: IRI, shape: 'star', speed: [0, 0], life: [0.9, 1.7], size: [2.5, 6], storm: true, delay: [0, 0.8] });
       break;
     default:
       break;
@@ -246,6 +246,7 @@ export function RevealFx({ tier, unusual, origin, lowSpec, name }: { tier: Tier;
       )}
       {tier === 'unobtainable' && (
         <>
+          <div className='ecfx-settle' />
           <div className='ecfx-takeover' />
           <div className='ecfx-title'>
             <span className='ecfx-title-kicker'>You unboxed</span>

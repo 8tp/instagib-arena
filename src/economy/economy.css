@@ -1192,7 +1192,7 @@
   animation: ec-kicker 560ms cubic-bezier(0.2, 1.3, 0.4, 1) both;
 }
 .ec-rv-unobtainable.is-reveal:not(.is-reduced) .ec-rv-status span {
-  animation-delay: 1.05s;
+  animation-delay: 1.3s;
 }
 @keyframes ec-kicker {
   from {
@@ -1967,7 +1967,7 @@
 .ec-rv-unobtainable:not(.is-reduced) .ec-rv-spent,
 .ec-rv-unobtainable:not(.is-reduced) .ec-rv-actions,
 .ec-rv-unobtainable:not(.is-reduced) .ec-rv-unusual {
-  animation-delay: 1.2s;
+  animation-delay: 1.15s;
 }
 /* Reduced effects: the information, none of the motion. */
 .ec-rv.is-reduced .ec-rv-card *,
@@ -2033,7 +2033,7 @@
   box-shadow:
     inset 0 0 80px 14px #ff4fd8,
     inset 0 0 220px 40px rgba(46, 230, 214, 0.35);
-  animation-duration: 3.2s;
+  animation-duration: 1.8s;
 }
 @keyframes ecfx-edge {
   0% {
@@ -2132,7 +2132,7 @@
   mix-blend-mode: screen;
   opacity: 0;
   animation:
-    ecfx-take 2.1s ease-out both,
+    ecfx-take 1.3s ease-out both,
     ec-rot 4s linear infinite;
 }
 .ecfx-takeover::after {
@@ -2146,14 +2146,15 @@
   0% {
     opacity: 1;
   }
-  15% {
-    opacity: 0.7;
+  18% {
+    opacity: 0.6;
   }
-  40% {
-    opacity: 0.32;
+  55% {
+    opacity: 0.18;
   }
   100% {
     opacity: 0;
+    visibility: hidden;
   }
 }
 @keyframes ecfx-white {
@@ -2181,7 +2182,7 @@
     0 -1px 0 rgba(255, 79, 216, 0.5),
     0 1px 0 rgba(46, 230, 214, 0.5);
   opacity: 0;
-  animation: ecfx-title 2.2s cubic-bezier(0.2, 0.9, 0.3, 1) 0.1s both;
+  animation: ecfx-title 1.45s cubic-bezier(0.2, 0.9, 0.3, 1) 0.1s both;
 }
 .ecfx-title-kicker {
   font-family: var(--font-display);
@@ -2214,25 +2215,48 @@
   text-transform: uppercase;
   color: #fff0fc;
 }
+/* Slams in, holds, then flies up and shrinks away towards the card's own
+   "UNOBTAINABLE" kicker (which fades in as it arrives), leaving the card clear. */
 @keyframes ecfx-title {
   0% {
     opacity: 0;
     scale: 1.7;
   }
-  12% {
+  14% {
     opacity: 1;
     scale: 0.97;
   }
-  18% {
+  20% {
     scale: 1;
   }
-  78% {
+  66% {
     opacity: 1;
-    scale: 1.03;
+    scale: 1.02;
+    translate: 0 -50%;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.8, 0.4);
   }
   100% {
     opacity: 0;
-    scale: 1.05;
+    scale: 0.3 0.2;
+    translate: 0 calc(-50% - 24vh);
+    visibility: hidden;
+  }
+}
+/* What the takeover settles into: a dark iridescent vignette that stays. */
+.ecfx-settle {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 70% 62% at 50% 50%, transparent 55%, rgba(14, 3, 30, 0.6));
+  box-shadow:
+    inset 0 0 90px 6px rgba(255, 79, 216, 0.3),
+    inset 0 0 220px 30px rgba(124, 92, 255, 0.18),
+    inset 0 -60px 160px -40px rgba(46, 230, 214, 0.22);
+  opacity: 0;
+  animation: ecfx-settle 900ms ease-out 1.1s both;
+}
+@keyframes ecfx-settle {
+  to {
+    opacity: 1;
   }
 }
 /* The hold before a Legendary+ reveal: the world falls away from the reel. */
@@ -2316,4 +2340,45 @@
 }
 .ec-rv.is-reduced .ec-rv-hero::after {
   display: none;
+}
+
+/* Reveal dialog frame in the tier colour: a hint on low tiers, full from
+   Legendary up. (Overrides ModalShell's amber tone once the card is out.) */
+.ec-rv-frame-common {
+  --frame: rgba(176, 183, 195, 0.3);
+  --frame-glow: rgba(176, 183, 195, 0.12);
+}
+.ec-rv-frame-uncommon {
+  --frame: rgba(94, 196, 107, 0.4);
+  --frame-glow: rgba(94, 196, 107, 0.16);
+}
+.ec-rv-frame-rare {
+  --frame: rgba(75, 141, 255, 0.55);
+  --frame-glow: rgba(75, 141, 255, 0.24);
+}
+.ec-rv-frame-epic {
+  --frame: rgba(168, 85, 247, 0.7);
+  --frame-glow: rgba(168, 85, 247, 0.3);
+}
+.ec-rv-frame-legendary {
+  --frame: #f59e0b;
+  --frame-glow: rgba(245, 158, 11, 0.45);
+}
+.ec-rv-frame-relic {
+  --frame: #ef4444;
+  --frame-glow: rgba(239, 68, 68, 0.5);
+}
+.ec-rv-frame-unobtainable {
+  --frame: #ff4fd8;
+  --frame-glow: rgba(255, 79, 216, 0.5);
+}
+.ec-rv-frame {
+  border-color: var(--frame) !important;
+  transition: border-color 400ms ease-out;
+}
+.ec-rv-frame > .deck-rule-draw {
+  background: linear-gradient(90deg, var(--frame), rgba(255, 255, 255, 0.1), transparent) !important;
+}
+.ec-rv-framed {
+  box-shadow: 0 0 60px -12px var(--frame-glow) !important;
 }

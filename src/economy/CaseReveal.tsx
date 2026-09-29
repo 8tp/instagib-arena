@@ -400,6 +400,10 @@ export function CaseReveal({
       backdrop='heavy'
       scroll
       openSound='none'
+      // The frame takes the tier's colour once the item is out (never before:
+      // an early tint would leak the result mid-spin).
+      className={revealed ? `ec-rv-frame ec-rv-frame-${tier}` : ''}
+      panelClassName={revealed ? `ec-rv-framed ec-rv-frame-${tier}` : ''}
       onClose={revealed ? onClose : undefined}
     >
       {({ close }) => (
