@@ -48,7 +48,7 @@ export type ItemAttrs = {
   tint?: string; // admin one-off tint '#rrggbb'
 };
 
-export type ItemOrigin = 'case' | 'spin' | 'admin' | 'road' | 'challenge' | 'founder' | 'title' | 'market' | 'trade' | 'legacy';
+export type ItemOrigin = 'case' | 'spin' | 'code' | 'gift' | 'admin' | 'road' | 'challenge' | 'founder' | 'title' | 'market' | 'trade' | 'legacy';
 export type ItemState = 'owned' | 'listed' | 'traded' | 'salvaged' | 'revoked';
 
 // An owned item as sent to its owner (and in market/trade views).
@@ -258,3 +258,42 @@ export function qualityPrefix(q: readonly Quality[], attrs: ItemAttrs): string {
   else if (q.includes('killstreak')) parts.push('Killstreak');
   return parts.join(' ');
 }
+
+// ── Redeem codes + inbox (docs/economy.md §7b) ───────────────────────────────
+// A reward bundle: what a code grants, or what an inbox gift carries.
+export type RewardItemSpec = { def: string; quality?: Quality[]; attrs?: ItemAttrs; tier?: Tier; bound?: boolean };
+export type RewardBundle = { credits?: number; rolls?: number; items?: RewardItemSpec[] };
+export const REWARD_LIMITS = { credits: 1_000_000, rolls: 1000, items: 10 } as const;
+
+export type InboxKind = 'gift' | 'code' | 'system';
+export type InboxMessageWire = {
+  id: number;
+  kind: InboxKind;
+  title: string;
+  body: string;
+  sender: string; // display name, e.g. "Instagib Staff"
+  createdAt: number;
+  readAt: number; // 0 = unread
+  claimedAt: number; // 0 = attachments not yet claimed (or none)
+  expiresAt: number; // 0 = never
+  reward: RewardBundle; // attachments (preview before claiming; what was granted after)
+  granted: ItemInstanceWire[]; // minted instances once claimed
+};
+
+// Admin view of a code.
+export type RedeemCodeWire = {
+  code: string;
+  reward: RewardBundle;
+  note: string;
+  maxUses: number; // 0 = unlimited
+  uses: number;
+  expiresAt: number; // 0 = never
+  minLevel: number;
+  active: boolean;
+  createdBy: string;
+  createdAt: number;
+};
+
+export type RedeemResult =
+  | { ok: true; code: string; granted: { credits: number; rolls: number; items: ItemInstanceWire[] }; credits: number; freeRolls: number; messageId: number }
+  | { ok: false; error: 'guest' | 'bad_code' | 'not_found' | 'expired' | 'inactive' | 'used_up' | 'already_redeemed' | 'level' | 'too_many_attempts'; need?: number };

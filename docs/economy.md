@@ -145,6 +145,21 @@ Admin API + dashboard tab: search a player's inventory; mint any def with chosen
 (or a custom one-off: name, description, tint, effect, tier incl. Unobtainable, bound or not);
 grant credits / free rolls; revoke an item (state `revoked`, logged); view an item's provenance.
 
+## 7b. Redeem codes + inbox
+Server `server/rewards.ts`; types `RewardBundle` / `InboxMessageWire` / `RedeemCodeWire` / `RedeemResult`.
+- **Reward bundle** — `{credits?, rolls?, items?: [{def, quality?, attrs?, tier?, bound?}]}` (≤1M ⛁, ≤1000 rolls,
+  ≤10 items). Validated at creation (`prepareBundle` → `prepareAdminItem`) and re-validated at grant time.
+- **Codes** (`instagib_codes`, `instagib_code_redemptions`) — admin creates (custom `A-Z0-9-` 3–32 chars, or a random
+  `XXXX-XXXX-XXXX`), with max uses (0 = ∞), expiry, min level, note; can deactivate. A player redeems once
+  (`POST /api/codes/redeem {code}`): credits/rolls/items (origin `code`) granted in ONE transaction + an inbox receipt.
+  Brute-force guard: 10 failed attempts / 10 min per account and per IP.
+- **Inbox** (`instagib_inbox`) — `GET /api/inbox` (`?summary=1` → unread/unclaimed counts),
+  `POST /api/inbox/:id/read` (`all` ok), `POST /api/inbox/:id/claim` (attachments minted, origin `gift`, once).
+  Kinds: `gift` (claimable), `code` (receipt), `system` (text only).
+- **Admin** — `GET/POST /api/admin/codes`, `POST /api/admin/codes/:code/active`, `GET /api/admin/codes/:code/redemptions`,
+  `POST /api/admin/gifts {player | all:true, title, body, reward?, expiresAt?}`, `POST /api/admin/rewards/validate`.
+  Staff defs are always bound. Everything is audited.
+
 ## 8. In-game taunts
 Taunt key (default `G`) plays your equipped emote in-match: the camera swings to a third-person
 orbit around you for the clip, you can't fire while taunting (movement locked for the clip,

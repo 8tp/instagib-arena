@@ -18,6 +18,7 @@ import {
   salvageItems,
 } from './economy';
 import { browse, buyListing, listItem, myListings, netHash, priceHistory, unlistItem } from './market';
+import { claimMessage, inboxCounts, inboxOf, markRead, redeemCode } from './rewards';
 import { acceptTrade, cancelTrade, createOffer, declineTrade, listTrades, tradeGate } from './trades';
 
 export const economyRouter = Router();
@@ -121,6 +122,39 @@ economyRouter.post('/cases/open', (req, res) => {
   // `pay`: 'credits' | 'roll' | 'daily' (legacy clients send useRoll).
   const pay = b.pay === 'daily' || b.pay === 'roll' || b.pay === 'credits' ? b.pay : b.useRoll === true ? 'roll' : 'credits';
   send(res, openCase(id, str(b.caseId), pay));
+});
+
+// ── Inbox + redeem codes ─────────────────────────────────────────────────────
+economyRouter.get('/inbox', (req, res) => {
+  const id = reader(req, res);
+  if (!id) return;
+  res.json(req.query.summary === '1' ? inboxCounts(id) : inboxOf(id));
+});
+economyRouter.post('/inbox/:id/read', (req, res) => {
+  const id = writer(req, res);
+  if (!id) return;
+  const raw = str(req.params.id);
+  send(res, markRead(id, raw === 'all' ? 'all' : parseInt(raw, 10)));
+});
+economyRouter.post('/inbox/:id/claim', (req, res) => {
+  const id = writer(req, res);
+  if (!id) return;
+  try {
+    send(res, claimMessage(id, parseInt(str(req.params.id), 10)));
+  } catch (err) {
+    console.error('[inbox] claim failed', err);
+    res.status(400).json({ ok: false, error: 'stale_reward' });
+  }
+});
+economyRouter.post('/codes/redeem', (req, res) => {
+  const id = writer(req, res);
+  if (!id) return;
+  try {
+    send(res, redeemCode(id, body(req).code, rateKeyFor(req) + '|' + (req.ip ?? '')));
+  } catch (err) {
+    console.error('[codes] redeem failed', err);
+    res.status(400).json({ ok: false, error: 'stale_reward' });
+  }
 });
 
 // ── Market ───────────────────────────────────────────────────────────────────

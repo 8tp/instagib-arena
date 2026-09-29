@@ -14,6 +14,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import path from 'node:path';
 import type { Statement } from 'better-sqlite3';
 import { databasePath, sqlite } from './sqlite';
+import { ensureRewardsSchema } from './rewards';
 import { containsProfanity } from './profanity';
 import { ALL_COSMETICS, titleGrantsFrom } from '../src/game/cosmetics';
 import { levelForXp, roadRewardKind, roadStepsBetween, type RoadStep } from '../src/game/progression';
@@ -931,12 +932,16 @@ function cleanAdminAttrs(raw: unknown, tier: unknown): { attrs: StoredAttrs; err
 
 export type AdminMintResult = { ok: true; items: ItemInstanceWire[] } | { ok: false; error: string };
 
-export function adminMint(actor: string, i: AdminMintInput): AdminMintResult {
-  const def = itemDef(i.def);
+// A validated admin item spec (for a direct mint, a redeem code or an inbox gift):
+// the def exists and is an instance item, attrs are sanitised, qualities derived
+// from attrs, staff gear forced bound.
+export type PreparedItem = { def: string; quality: Quality[]; attrs: StoredAttrs; bound: boolean };
+export type ItemSpecInput = { def?: unknown; quality?: unknown; attrs?: unknown; tier?: unknown; bound?: unknown };
+
+export function prepareAdminItem(i: ItemSpecInput): { ok: true; item: PreparedItem } | { ok: false; error: string } {
+  const def = typeof i.def === 'string' ? itemDef(i.def) : undefined;
   if (!def) return { ok: false, error: 'unknown_def' };
   if (def.default || ENTITLEMENT_SLOTS.has(def.slot)) return { ok: false, error: 'not_an_item' };
-  const owner = i.player;
-  if (!q(`SELECT 1 FROM instagib_users WHERE id = ?`).get(owner)) return { ok: false, error: 'no_player' };
   const { attrs, error } = cleanAdminAttrs(i.attrs, i.tier);
   if (error) return { ok: false, error };
   const qIn = Array.isArray(i.quality) ? (i.quality.filter((x) => (QUALITIES as readonly unknown[]).includes(x)) as Quality[]) : [];
@@ -951,24 +956,26 @@ export function adminMint(actor: string, i: AdminMintInput): AdminMintResult {
   if (attrs.customName || attrs.customDesc || attrs.tint || attrs.tier) quality.add('admin');
   if (quality.has('strange') && attrs.kills == null) attrs.kills = 0;
   const bound = i.bound === true || (STAFF_INSTANCE_DEFS as readonly string[]).includes(def.id); // staff gear never reaches the market
+  return { ok: true, item: { def: def.id, quality: [...quality], attrs, bound } };
+}
+
+// Mint a prepared spec (call inside the caller's transaction).
+export function mintPrepared(owner: string, p: PreparedItem, origin: ItemOrigin, actor: string, meta: unknown): ItemInstanceWire {
+  return mintItem({ owner, def: p.def, quality: [...p.quality], attrs: { ...p.attrs }, origin, tradable: !p.bound, actor, meta });
+}
+
+export function adminMint(actor: string, i: AdminMintInput): AdminMintResult {
+  const prep = prepareAdminItem(i);
+  if (!prep.ok) return prep;
+  const spec = prep.item;
+  const owner = i.player;
+  if (!q(`SELECT 1 FROM instagib_users WHERE id = ?`).get(owner)) return { ok: false, error: 'no_player' };
   const n = Math.max(1, Math.min(25, Math.floor(Number(i.count) || 1)));
   return sqlite.transaction((): AdminMintResult => {
     ensureOnboarded(owner);
     const items: ItemInstanceWire[] = [];
-    for (let k = 0; k < n; k++)
-      items.push(
-        mintItem({
-          owner,
-          def: def.id,
-          quality: [...quality],
-          attrs,
-          origin: 'admin',
-          tradable: !bound, // an admin can make ANY def tradable (or bind it)
-          actor,
-          meta: { admin: actor },
-        }),
-      );
-    audit({ event: 'admin.mint', actorId: actor, targetId: owner, detail: { def: def.id, n, quality: [...quality], bound, attrs, uids: items.map((x) => x.uid) } });
+    for (let k = 0; k < n; k++) items.push(mintPrepared(owner, spec, 'admin', actor, { admin: actor }));
+    audit({ event: 'admin.mint', actorId: actor, targetId: owner, detail: { def: spec.def, n, quality: spec.quality, bound: spec.bound, attrs: spec.attrs, uids: items.map((x) => x.uid) } });
     return { ok: true, items };
   })();
 }
@@ -1099,6 +1106,7 @@ function backupBeforeFirstMigration(now: number): void {
 export function initEconomy(h: Hooks): void {
   hooks = h;
   ensureEconomySchema();
+  ensureRewardsSchema();
   const now = Date.now();
   backupBeforeFirstMigration(now);
   q(`INSERT OR IGNORE INTO instagib_meta (k, v) VALUES ('econ_v3_at', ?)`).run(String(now));

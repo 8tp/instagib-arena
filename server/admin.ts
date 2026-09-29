@@ -34,6 +34,7 @@ import {
   type FeedbackStatus,
 } from './db';
 import { adminGrant, adminInventory, adminMint, adminRevoke, itemHistory } from './economy';
+import { adminCodeRedemptions, adminCreateCode, adminListCodes, adminSendGift, adminSetCodeActive, prepareBundle } from './rewards';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 
 export const adminRouter = Router();
@@ -216,6 +217,45 @@ adminRouter.post('/items/mint', (req, res) => {
     bound: body.bound,
     count: body.count,
   });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+// ── Redeem codes + inbox gifts ───────────────────────────────────────────────
+adminRouter.get('/codes', (_req, res) => {
+  res.json({ codes: adminListCodes() });
+});
+adminRouter.get('/codes/:code/redemptions', (req, res) => {
+  res.json({ redemptions: adminCodeRedemptions(req.params.code) });
+});
+adminRouter.post('/codes', (req, res) => {
+  if (denyToken(req, res)) return;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const r = adminCreateCode((req as AdminRequest).admin.id, { code: b.code, reward: b.reward, maxUses: b.maxUses, expiresAt: b.expiresAt, minLevel: b.minLevel, note: b.note });
+  res.status(r.ok ? 200 : 400).json(r);
+});
+adminRouter.post('/codes/:code/active', (req, res) => {
+  if (denyToken(req, res)) return;
+  const r = adminSetCodeActive((req as unknown as AdminRequest).admin.id, String(req.params.code), ((req.body ?? {}) as Record<string, unknown>).active);
+  res.status(r.ok ? 200 : r.error === 'not_found' ? 404 : 400).json(r);
+});
+// Validate a reward bundle without saving (the GUI's live check).
+adminRouter.post('/rewards/validate', (req, res) => {
+  const r = prepareBundle(((req.body ?? {}) as Record<string, unknown>).reward);
+  res.status(r.ok ? 200 : 400).json(r.ok ? { ok: true } : r);
+});
+adminRouter.post('/gifts', (req, res) => {
+  if (denyToken(req, res)) return;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  let playerId: string | undefined;
+  if (b.all !== true) {
+    const target = resolvePlayer(b.player);
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'not_found' });
+      return;
+    }
+    playerId = target.id;
+  }
+  const r = adminSendGift((req as AdminRequest).admin.id, { playerId, all: b.all === true, title: b.title, body: b.body, reward: b.reward, expiresAt: b.expiresAt });
   res.status(r.ok ? 200 : 400).json(r);
 });
 
