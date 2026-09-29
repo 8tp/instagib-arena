@@ -1,6 +1,6 @@
 // End-of-match results: the Victory/Defeat slam, the 3D podium, the scoreboard,
 // match stats and the rewards reveal (offline + online variants).
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type UIEvent } from 'react';
 import type { MatchResult } from '../game/game';
 import type { PlayerScore } from '../game/types';
 import type { ProgressionResp, Settings } from '../app-types';
@@ -9,9 +9,10 @@ import { prefersReducedMotion } from '../deck-core';
 import { playUi } from '../game/audio';
 import { PodiumScene, type PodiumWinner } from '../game/podium';
 import { DEFAULT_EMOTE, DEFAULT_HAT, EMOTES, HATS } from '../game/cosmetics';
-import { TEAM_NAMES } from '../game/constants';
+import { TEAM_COLORS, TEAM_NAMES } from '../game/constants';
 import { ordinal } from './match-info';
 import { RewardsPending, RewardsReveal } from './rewards/RewardsReveal';
+import './postgame.css';
 
 // Deterministic 32-bit hash (FNV-1a) so a given name always maps to the same
 // podium hat/emote when we don't know its real loadout (offline bots / remotes).
@@ -38,17 +39,17 @@ function buildPodiumWinners(scores: PlayerScore[], settings: Settings): PodiumWi
     const emoteId = s.isLocal
       ? settings.emote
       : s.emote ?? emoteIds[(h >>> 4) % emoteIds.length] ?? DEFAULT_EMOTE;
-    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId, you: !!s.isLocal };
+    return { place: i + 1, name: s.name, score: s.frags, hatId, emoteId, you: !!s.isLocal, looks: s.isLocal ? settings.looks : undefined };
   });
 }
 
 // Mounts the Three.js podium scene on a canvas and tears it down on unmount.
-function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
+function PodiumResults({ winners, lowSpec, reduced }: { winners: PodiumWinner[]; lowSpec: boolean; reduced: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
-    const scene = new PodiumScene(canvas);
+    const scene = new PodiumScene(canvas, { lowSpec, reducedEffects: reduced });
     void scene.setWinners(winners);
     scene.start();
     const onResize = () => scene.resize();
@@ -57,7 +58,7 @@ function PodiumResults({ winners }: { winners: PodiumWinner[] }) {
       window.removeEventListener('resize', onResize);
       scene.dispose();
     };
-  }, [winners]);
+  }, [winners, lowSpec, reduced]);
   return <canvas ref={ref} className='block h-full w-full' />;
 }
 
@@ -122,6 +123,181 @@ function isPlainYou(name: string): boolean {
   return name.trim().toLowerCase() === 'you';
 }
 
+// ── Personal bests (local, display-only: the server owns real records) ──────
+const PB_KEY = 'ig.postgame.pb.v1';
+type PbRecord = { kills: number; streak: number; headshots: number; acc: number; kd: number };
+
+function loadPb(): PbRecord | null {
+  try {
+    const raw = localStorage.getItem(PB_KEY);
+    return raw ? (JSON.parse(raw) as PbRecord) : null;
+  } catch {
+    return null;
+  }
+}
+
+function accOf(r: MatchResult): number {
+  return r.shotsFired > 0 ? Math.round((r.shotsHit / r.shotsFired) * 100) : 0;
+}
+function kdOf(r: MatchResult): number {
+  return r.deaths > 0 ? r.kills / r.deaths : r.kills;
+}
+
+// "You beat your best" flags for this match against the stored record. Nothing
+// is flagged on the very first recorded match (everything would be a "best").
+function usePersonalBests(result: MatchResult | null): Set<keyof PbRecord> {
+  const [prior] = useState(loadPb);
+  useEffect(() => {
+    if (!result) return;
+    const cur: PbRecord = {
+      kills: result.kills,
+      streak: result.bestStreak,
+      headshots: result.headshots,
+      acc: result.shotsFired >= 10 ? accOf(result) : 0,
+      kd: kdOf(result),
+    };
+    const next: PbRecord = prior
+      ? {
+          kills: Math.max(prior.kills, cur.kills),
+          streak: Math.max(prior.streak, cur.streak),
+          headshots: Math.max(prior.headshots, cur.headshots),
+          acc: Math.max(prior.acc, cur.acc),
+          kd: Math.max(prior.kd, cur.kd),
+        }
+      : cur;
+    try {
+      localStorage.setItem(PB_KEY, JSON.stringify(next));
+    } catch {
+      /* storage blocked: bests just aren't remembered */
+    }
+  }, [result, prior]);
+  return useMemo(() => {
+    const out = new Set<keyof PbRecord>();
+    if (!prior || !result) return out;
+    if (result.kills > prior.kills && result.kills > 0) out.add('kills');
+    if (result.bestStreak > prior.streak && result.bestStreak > 1) out.add('streak');
+    if (result.headshots > prior.headshots && result.headshots > 0) out.add('headshots');
+    if (result.shotsFired >= 10 && accOf(result) > prior.acc) out.add('acc');
+    if (kdOf(result) > prior.kd + 0.005 && result.kills > 0) out.add('kd');
+    return out;
+  }, [prior, result]);
+}
+
+type Tile = { key: keyof PbRecord | 'deaths'; label: string; value: string | number; sub?: string; tone?: string };
+
+// The personal performance card: your numbers for the match, with a gold PB
+// tag on any that beat your stored best. Tiles rise in one after another.
+function PerformanceCard({ result }: { result: MatchResult }) {
+  const pbs = usePersonalBests(result);
+  const hsPct = result.kills > 0 ? Math.round((result.headshots / result.kills) * 100) : 0;
+  const tiles: Tile[] = [
+    { key: 'kd', label: 'K/D ratio', value: kdOf(result).toFixed(2), sub: `${result.kills} / ${result.deaths}`, tone: 'text-cyan-100' },
+    { key: 'acc', label: 'Accuracy', value: `${accOf(result)}%`, sub: `${result.shotsHit} / ${result.shotsFired} hit` },
+    { key: 'streak', label: 'Best streak', value: result.bestStreak, sub: 'in a row' },
+    { key: 'headshots', label: 'Headshots', value: result.headshots, sub: `${hsPct}% of kills` },
+    { key: 'kills', label: 'Kills', value: result.kills, tone: 'text-emerald-200' },
+    { key: 'deaths', label: 'Deaths', value: result.deaths, tone: 'text-rose-200' },
+  ];
+  return (
+    <section aria-label='Your performance'>
+      <div className='pg-section-label pg-rise mb-2 [--pg-base:700ms]'>Your performance</div>
+      <div className='grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6'>
+        {tiles.map((t, i) => {
+          const pb = t.key !== 'deaths' && pbs.has(t.key);
+          const st = { '--i': i, '--pg-base': '800ms' } as CSSProperties;
+          return (
+            <div key={t.key} data-pb={pb ? '1' : '0'} className='pg-tile pg-rise' style={st}>
+              {pb && (
+                <span className='pg-pb' style={st}>
+                  PB
+                </span>
+              )}
+              <div className={`pg-tile-value ${t.tone ?? 'text-white'}`}>{t.value}</div>
+              <div className='pg-tile-label'>{t.label}</div>
+              {t.sub && <div className='pg-tile-sub truncate'>{t.sub}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const MEDAL = ['#fbbf24', '#cbd5e1', '#d6a06a'];
+
+// Toggles the bottom fade cue on the scoreboard: shown until scrolled to the end.
+function onBoardScroll(e: UIEvent<HTMLDivElement>) {
+  const el = e.currentTarget;
+  const end = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+  el.parentElement?.setAttribute('data-end', end ? '1' : '0');
+}
+
+// Full scoreboard: rank medals for the top 3, a frag-share bar behind each row,
+// team pips in TDM, K/D per player. Rows stagger in after the performance card.
+function Scoreboard({ scores, mode }: { scores: PlayerScore[]; mode: ResultsMode }) {
+  const top = Math.max(1, ...scores.map((s) => s.frags));
+  const cols = 'grid-cols-[1.75rem_1fr_3rem_3rem_3.25rem]';
+  return (
+    <section aria-label='Scoreboard'>
+      <div className='pg-section-label pg-rise mb-2 [--pg-base:950ms]'>Scoreboard</div>
+      <div className='pg-board border border-white/10' data-more={scores.length > 5 ? '1' : '0'}>
+       <div className='pg-board-scroll deck-scroll' onScroll={onBoardScroll}>
+        <div className={`sticky top-0 z-10 grid ${cols} gap-2 bg-[#171a20] px-3 py-1.5 text-[12px] text-white/50`}>
+          <span>#</span>
+          <span>Player</span>
+          <span className='text-right'>Kills</span>
+          <span className='text-right'>Deaths</span>
+          <span className='text-right'>K/D</span>
+        </div>
+        {scores.map((s, i) => {
+          const st = { '--i': i, '--pg-base': '1000ms' } as CSSProperties;
+          return (
+            <div
+              key={s.id}
+              className={`deck-tr pg-row pg-rise grid ${cols} items-center gap-2 px-3 py-[5px] text-sm ${
+                s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
+              }`}
+              style={st}
+            >
+              <span
+                aria-hidden='true'
+                className='pg-row-bar'
+                style={{ ...st, width: `${Math.max(4, (s.frags / top) * 100)}%` }}
+              />
+              <span>
+                {i < 3 ? (
+                  <span className='pg-medal' style={{ background: MEDAL[i] }}>
+                    {i + 1}
+                  </span>
+                ) : (
+                  <span className='tabular-nums text-white/45'>{i + 1}</span>
+                )}
+              </span>
+              <span className='flex min-w-0 items-center gap-2'>
+                {mode === 'tdm' && s.team != null && (
+                  <span
+                    aria-hidden='true'
+                    className='h-2 w-2 shrink-0 rounded-full'
+                    style={{ background: TEAM_COLORS[s.team] ?? '#888' }}
+                  />
+                )}
+                <span className='truncate'>{s.name}</span>
+                {s.isLocal && !isPlainYou(s.name) && <span className='rw-chip rw-chip-cyan shrink-0'>You</span>}
+              </span>
+              <span className='text-right tabular-nums'>{s.frags}</span>
+              <span className='text-right tabular-nums'>{s.deaths}</span>
+              <span className='text-right tabular-nums text-white/55'>
+                {(s.deaths > 0 ? s.frags / s.deaths : s.frags).toFixed(2)}
+              </span>
+            </div>
+          );
+        })}
+       </div>
+      </div>
+    </section>
+  );
+}
+
 // Shared results panel: the Victory/Defeat slam, the 3D top-3 podium, the full
 // scoreboard + match stats, the rewards reveal (a column beside the board on
 // wide screens, right under the podium on narrow ones), and a caller-supplied
@@ -147,11 +323,10 @@ function ResultsPanel({
   footer: ReactNode;
   onHoverChange?: (hovered: boolean) => void;
 } & RewardProps) {
-  const acc = result && result.shotsFired > 0 ? Math.round((result.shotsHit / result.shotsFired) * 100) : 0;
   // Stable winners identity so the 3D scene mounts once (not every HUD tick).
   const rosterKey = scores.slice(0, 3).map((s) => `${s.id}:${s.frags}:${s.hat ?? ''}:${s.emote ?? ''}`).join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote]);
+  const winners = useMemo(() => buildPodiumWinners(scores, settings), [rosterKey, settings.hat, settings.emote, settings.looks]);
   const reduced = settings.reducedEffects || prefersReducedMotion();
 
   // The reveal starts ~0.75 s after the panel (the header slam lands first);
@@ -238,16 +413,22 @@ function ResultsPanel({
       >
         {/* Header: the Victory / Defeat slam. */}
         <div
-          className='rw-shake relative overflow-hidden border-b border-white/10 px-6 pb-2.5 pt-3.5 text-center'
-          style={{ background: `radial-gradient(60% 140% at 50% 0%, ${tone.wash}, rgba(0,0,0,0.5) 70%)` }}
+          className='rw-shake relative overflow-hidden px-4 pb-3 pt-4 text-center sm:px-6'
+          style={{
+            background: `radial-gradient(60% 150% at 50% 0%, ${tone.wash}, rgba(0,0,0,0.5) 72%)`,
+            borderBottom: `1px solid ${tone.line}33`,
+          }}
         >
           <div
             aria-hidden='true'
             className='rw-flare pointer-events-none absolute inset-x-0 h-[2px]'
             style={{ top: 'calc(50% - 8px)', background: `linear-gradient(90deg, transparent, ${tone.line}, transparent)` }}
           />
+          <div className='rw-sub-in mb-1.5 font-display text-[10px] font-bold uppercase tracking-[0.42em] text-white/40'>
+            Match complete
+          </div>
           <div
-            className={`rw-slam font-display text-[2.75rem] font-bold uppercase leading-none tracking-[0.22em] ${tone.text}`}
+            className={`rw-slam font-display text-[clamp(1.4rem,7.2vw,1.85rem)] font-bold uppercase leading-none tracking-[0.1em] sm:text-[2.75rem] sm:tracking-[0.22em] ${tone.text}`}
             style={{ textShadow: `0 3px 0 rgba(0,0,0,0.55), 0 0 28px ${tone.glow}` }}
           >
             {head.title}
@@ -256,15 +437,21 @@ function ResultsPanel({
         </div>
 
         <div className='grid [grid-template-areas:"podium"_"rewards"_"board"] lg:grid-cols-[minmax(0,1fr)_400px] lg:grid-rows-[auto_1fr] lg:[grid-template-areas:"podium_rewards"_"board_rewards"]'>
-          {/* Hero: the 3D podium of the top 3 (hats + emotes). */}
-          <div className='h-[240px] w-full bg-gradient-to-b from-[#161d29] to-[#0b0e14] [grid-area:podium] lg:h-[262px]'>
-            <PodiumResults winners={winners} />
+          {/* Hero: the 3D podium of the top 3 (full looks + emotes), framed as a
+              stage that fades into the panel below. */}
+          <div className='pg-stage [grid-area:podium]' data-tone={head.tone} style={{ '--pg-accent': tone.line } as CSSProperties}>
+            <PodiumResults winners={winners} lowSpec={!!settings.lowSpec} reduced={reduced} />
+            <div aria-hidden='true' className='pg-stage-vignette' />
+            <div aria-hidden='true' className='pg-stage-fade' />
+            <i aria-hidden='true' className='pg-corner pg-corner-tl' />
+            <i aria-hidden='true' className='pg-corner pg-corner-tr' />
           </div>
 
           {/* Rewards: the reveal (or its placeholder while the reply is in flight). */}
           <aside
             aria-label='Rewards'
-            className='border-b border-white/10 bg-white/[0.015] px-5 py-3.5 [grid-area:rewards] lg:border-b-0 lg:border-l'
+            style={{ '--pg-accent': tone.line } as CSSProperties}
+            className='pg-rewards border-b border-white/10 px-5 pb-6 pt-4 [grid-area:rewards] lg:border-b-0 lg:border-l'
           >
             {progression ? (
               <RewardsReveal
@@ -283,41 +470,10 @@ function ResultsPanel({
             )}
           </aside>
 
-          {/* Full scoreboard (all players, compact) + your match stats. */}
-          <div className='p-5 pt-3.5 [grid-area:board]'>
-            <div className='overflow-hidden border border-white/10'>
-              <div className='grid grid-cols-[2rem_1fr_3.5rem_3.5rem] gap-2 bg-white/5 px-3 py-1.5 text-[12px] text-white/50'>
-                <span>#</span>
-                <span>Player</span>
-                <span className='text-right'>Frags</span>
-                <span className='text-right'>Deaths</span>
-              </div>
-              {scores.map((s, i) => (
-                <div
-                  key={s.id}
-                  className={`deck-tr grid grid-cols-[2rem_1fr_3.5rem_3.5rem] gap-2 px-3 py-[5px] text-sm ${
-                    s.isLocal ? 'deck-tr-you text-cyan-100' : 'text-white/80'
-                  }`}
-                >
-                  <span className='tabular-nums text-white/45'>{i + 1}</span>
-                  <span className='flex min-w-0 items-center gap-2'>
-                    <span className='truncate'>{s.name}</span>
-                    {s.isLocal && !isPlainYou(s.name) && <span className='rw-chip rw-chip-cyan shrink-0'>You</span>}
-                  </span>
-                  <span className='text-right tabular-nums'>{s.frags}</span>
-                  <span className='text-right tabular-nums'>{s.deaths}</span>
-                </div>
-              ))}
-            </div>
-
-            {result && (
-              <div className='mt-3 grid grid-cols-4 gap-2 text-center'>
-                <MiniStat label='Kills' value={result.kills} />
-                <MiniStat label='Deaths' value={result.deaths} />
-                <MiniStat label='Best streak' value={result.bestStreak} />
-                <MiniStat label='Accuracy' value={`${acc}%`} />
-              </div>
-            )}
+          {/* Personal performance card, then the full scoreboard. */}
+          <div className='flex flex-col gap-3 px-5 pb-6 pt-3 [grid-area:board]'>
+            {result && <PerformanceCard result={result} />}
+            <Scoreboard scores={scores} mode={mode} />
           </div>
         </div>
       </div>
@@ -443,11 +599,11 @@ export function OnlineMatchResults({
       {...reward}
       footer={
         <div className='relative flex-1'>
-          <DeckButton onClick={onContinue} solid accent='cyan' center full>
+          <DeckButton onClick={onContinue} solid accent='emerald' center full>
             Continue to map vote{secs > 0 ? ` · ${secs}` : ''}
           </DeckButton>
           <div aria-hidden='true' className='pointer-events-none absolute inset-x-0 -bottom-1.5 h-[2px] bg-white/10'>
-            <div className='rw-countdown h-full bg-cyan-300' data-paused={hovered} style={barStyle} />
+            <div className='rw-countdown h-full bg-emerald-300' data-paused={hovered} style={barStyle} />
           </div>
           {hovered && (
             <div className='absolute -top-6 right-0 text-[12px] text-white/50'>Paused</div>

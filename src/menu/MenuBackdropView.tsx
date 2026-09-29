@@ -25,6 +25,7 @@ export function MenuBackdropView({
   heroSlot,
   heroHover = false,
   heroEmote = 0,
+  bloomScale = 0.8,
 }: {
   active?: boolean;
   still?: boolean;
@@ -36,6 +37,7 @@ export function MenuBackdropView({
   heroSlot?: RefObject<HTMLElement | null>;
   heroHover?: boolean;
   heroEmote?: number;
+  bloomScale?: number; // player's Bloom intensity setting (0..1.5)
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -45,6 +47,7 @@ export function MenuBackdropView({
   const onMapRef = useRef(onMap);
   const heroRef = useRef(hero);
   const hoverRef = useRef(heroHover);
+  const bloomRef = useRef(bloomScale);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -75,6 +78,7 @@ export function MenuBackdropView({
             if (import.meta.env.DEV) (window as unknown as { __menuBackdrop?: MenuBackdrop }).__menuBackdrop = bd;
             bd.setActive(activeRef.current);
             bd.setHeroHover(hoverRef.current);
+            bd.setBloomScale(bloomRef.current);
             setReady(true);
           } catch (err) {
             // No WebGL (or it failed to init): the CSS ground behind stays.
@@ -108,6 +112,11 @@ export function MenuBackdropView({
     hoverRef.current = heroHover;
     backdropRef.current?.setHeroHover(heroHover);
   }, [heroHover]);
+
+  useEffect(() => {
+    bloomRef.current = bloomScale;
+    backdropRef.current?.setBloomScale(bloomScale);
+  }, [bloomScale, ready]);
 
   useEffect(() => {
     if (heroEmote > 0) backdropRef.current?.heroEmote();

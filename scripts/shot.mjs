@@ -186,7 +186,7 @@ async function main() {
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     })()`);
-    if (mode !== 'ffa') await clickByText(`^${mode === 'tdm' ? 'TDM' : 'Duel'}$`);
+    if (mode !== 'ffa') await clickByText(`^${mode === 'tdm' ? 'TDM' : 'Duel'}\\b`); // mode cards carry a blurb after the name
     await sleep(300);
     await clickByText('^start match');
     await sleep(settle);

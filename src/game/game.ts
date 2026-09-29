@@ -60,7 +60,7 @@ import {
 } from './constants';
 import { EffectsManager, prewarmFx } from './effects';
 import { prewarmGuns } from './gun/prewarm';
-import { setRailBeamsReduced } from './fx/rail-beam';
+import { setRailBeamsReduced, type RailBeamMode } from './fx/rail-beam';
 import { TrainingRange, type TrainingStats } from './training';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, setMapBuildQuality, type ArenaMap } from './map';
@@ -89,6 +89,7 @@ import {
   railColorById,
   railgunFinishById,
   spawnEffectById,
+  killEffectById,
   SPAWN_EFFECTS,
   KILL_EFFECTS,
   titleById,
@@ -97,9 +98,14 @@ import {
 import { NetClient, type KillEvent, type ChatMessage, type RankedResult } from './net';
 import { Player } from './player';
 import { RemotePlayer } from './remote-player';
+import { applyFinishLook, asV3, emoteKindOfLook, kitInfo, loadoutTokens } from './look-runtime';
+import { makeReplaySfx } from './replay-audio';
+import { emoteClip, type AnyEmoteKind } from './emotes';
+import type { ItemSlot, Loadout, Look } from './items/types';
 import {
   MatchRecorder,
   ReplayPlayer,
+  buildReplayActor,
   type ReplayPose,
   type HighlightClip,
   type ReplayOptions,
@@ -117,6 +123,22 @@ const KILLCAM_DIST = 5; // metres from the killer
 const KILLCAM_HEIGHT = 1.6; // metres above the killer's centre (mild down-angle)
 const KILLCAM_FOV = 68; // narrower than gameplay FOV → cinematic zoom
 
+// First-person killcam (CoD style): the last moments before your death replayed
+// through the KILLER's eyes with their gun, ending on the shot that got you. It
+// runs inside the unchanged KILLCAM_DURATION_SEC: the lead-in plays at real
+// speed, then time eases into a brief slow-mo across the kill (match-time
+// seconds below) and holds the frame after it until you respawn.
+const KILLCAM_POV_SLOW_SCALE = 0.4; // slow-mo speed across the kill
+const KILLCAM_POV_SLOW_IN = 0.14; // slow-mo starts this long before the kill…
+const KILLCAM_POV_RAMP = 0.1; // …after easing down over this long
+const KILLCAM_POV_POST = 0.24; // match-time shown after the kill
+const KILLCAM_POV_TAIL = 0.12; // wall-clock margin so the kill lands before respawn
+const KILLCAM_POV_MIN_LEAD = 0.5; // less lead-in than this → orbit cam instead
+// Replay bodies parked for reuse between killcams / the PotG (one per player),
+// pre-built one at a time in live play every REPLAY_WARM_SEC.
+const REPLAY_ACTOR_POOL_MAX = 16;
+const REPLAY_WARM_SEC = 0.5;
+
 // One stage of the end-of-match cinematic (slow-mo finale, then Play of Match).
 type ReplaySegment = { kind: 'finale' | 'potg'; clip: HighlightClip; opts: ReplayOptions };
 import {
@@ -130,7 +152,7 @@ import {
 } from './renderer';
 import { buildRailgun, setRailgunReducedEffects, type RailgunModel } from './weapon-model';
 import { POS_FLAG_HOLD } from './netcodec';
-import { localRail } from './fx/rail-state';
+import { liveViewmodelMuzzle, localRail } from './fx/rail-state';
 import { ViewmodelMotion } from './viewmodel-motion';
 import type {
   AABB,
@@ -242,6 +264,25 @@ const MEDAL_PRIORITY: Record<Medal, number> = {
   'mid-air':       15,
 };
 
+// Taunt camera: a third-person orbit around your own body for one emote loop.
+const TAUNT_ORBIT_RADIUS = 1.3; // metres (kept short so it can't scout around cover)
+const TAUNT_MAX_SWING = 1.15; // rad either side of straight-behind: no full rear view
+const TAUNT_ORBIT_RISE = 0.55; // camera height above the body centre
+const TAUNT_ORBIT_SPEED = 0.9; // rad/s of the sweep phase (eased in)
+const TAUNT_OUT_SEC = 0.45; // the camera returns to your eyes over the last stretch
+const TAUNT_COOLDOWN_MS = 3000;
+const TAUNT_WALL_MARGIN = 0.35; // keep the camera this far off any wall
+type TauntState = {
+  kind: AnyEmoteKind;
+  look: Look | undefined;
+  t: number;
+  dur: number;
+  blend: number; // 0 = your eyes, 1 = full orbit
+  orbit: number; // radians travelled round the body
+  dist: number; // smoothed, wall-clamped orbit distance
+  cancelled: boolean; // jumped out: movement is yours again, the camera is returning
+};
+
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -347,6 +388,28 @@ export class Game {
   // When set, buildViewmodel() uses this finish (the watched player's gun skin)
   // instead of the local player's; cleared outside spectator mode.
   private viewmodelFinishOverride: string | null = null;
+  private liftedPlate: { setPlateLift(m: number): void } | null = null;
+  private tauntHidden: THREE.Object3D[] = []; // opponents hidden from the taunt camera this frame
+  private replayVmActive = false; // the viewmodel is showing the replay star's gun
+  private replayVmStreak = -1;
+  // Built viewmodel guns kept for reuse, keyed by custom-model key ('' = the
+  // standard gun): a replay star's custom gun (and swapping back to yours)
+  // doesn't rebuild — or recompile — each killcam. Detached, never drawn.
+  private vmSpares = new Map<string, RailgunModel>();
+  // A freshly built gun is hidden until its programs have compiled
+  // (compileAsync), so the swap never stalls a frame on a shader compile.
+  private vmWarming = false;
+  private vmWarmToken = 0;
+  // First-person killcam replay (see KILLCAM_POV_*), null = orbit cam / alive.
+  private killcamReplay: ReplayPlayer | null = null;
+  private killcamKillT = 0; // recorder time of the kill being replayed
+  private killcamHitId = 0; // bumps on the replayed kill (HUD hit-marker + slow-mo flash)
+  // Live bodies hidden for the frame while a replay draws its own actors.
+  private replayHidden: THREE.Object3D[] = [];
+  // Replay bodies kept between replays (see ReplayDeps.acquireActor), detached
+  // from the scene while parked; oldest freed past REPLAY_ACTOR_POOL_MAX.
+  private replayActorPool = new Map<string, RemotePlayer>();
+  private replayWarmAccum = 0;
   private posSendAccumMs = 0;
   // 64Hz simulation tick clock stamped on every position upload (see
   // net.sendPosition / BIN_POS_TICK) so the server replays our motion on our
@@ -435,6 +498,7 @@ export class Game {
   private tmpRight = new THREE.Vector3();
   private tmpUp = new THREE.Vector3();
   private tmpBeamOrigin = new THREE.Vector3();
+  private tmpReplayMuzzle = new THREE.Vector3();
   private readonly tmpBotMuzzle = new THREE.Vector3();
 
   // Railgun viewmodel (first-person), parented to the camera. Quake-centered low
@@ -455,6 +519,35 @@ export class Game {
   private localSpawnEffect: string = DEFAULT_SPAWN_EFFECT; // spawn-in burst (broadcast)
   private localTitle: string = DEFAULT_TITLE; // earned title flair under the name (broadcast)
   private botAlive = new Map<string, boolean>(); // prev alive-state per bot (spawn fx edge)
+  // ── v3 Looks + killstreak/strange runtime ──
+  private localLooks: Loadout | undefined = undefined; // resolved equipped Looks (Settings.looks)
+  private localTokens: string[] | undefined = undefined;
+  private localUidsKey = ''; // dedupe of the loadout we last told the server
+  private strangeBase: number | null = null; // equipped Strange finish's kills before this match
+  private vmStreakShown = -1;
+  private vmStrangeShown = -2;
+  // Killstreak of every OTHER combatant (net ids / bot ids), from kill events.
+  private readonly streaks = new Map<string, number>();
+  // ── Taunt (in-game emote) ──
+  private taunt: TauntState | null = null;
+  private tauntBody: RemotePlayer | null = null; // your own 3rd-person body, shown during a taunt only
+  private tauntCooldownUntil = 0; // performance.now() ms
+  private tauntCode = 'KeyG';
+  private inspectCode = 'KeyF';
+  private readonly tauntKeyHandler = (e: KeyboardEvent) => {
+    if (e.repeat) return;
+    if (e.code === this.tauntCode) this.tryTaunt();
+    else if (e.code === this.inspectCode) this.tryInspect();
+  };
+  // Weapon inspect (first-person gun look-over): the HUD card listens.
+  private inspectShown = false;
+  private lastShotMs = -1e9;
+  private inspectListener: ((active: boolean, strangeKills: number | null) => void) | null = null;
+  private readonly tmpM4 = new THREE.Matrix4();
+  private readonly tmpQ1 = new THREE.Quaternion();
+  private readonly tmpQ2 = new THREE.Quaternion();
+  private readonly tmpV3 = new THREE.Vector3();
+  private readonly tmpV3b = new THREE.Vector3();
   private localHat: string = DEFAULT_HAT; // equipped hat (broadcast to remotes)
   private localUnusual: string = DEFAULT_UNUSUAL; // equipped unusual effect
   private localEmote: string = DEFAULT_EMOTE; // equipped podium emote (broadcast to remotes)
@@ -576,6 +669,7 @@ export class Game {
 
     this.resizeHandler = () => this.handleResize();
     window.addEventListener('resize', this.resizeHandler);
+    window.addEventListener('keydown', this.tauntKeyHandler);
     this.handleResize();
     this.emitHud();
   }
@@ -603,6 +697,8 @@ export class Game {
 
   setKeybinds(binds: Record<KeybindAction, string>) {
     this.input.setBindings(binds);
+    this.tauntCode = binds.taunt || '';
+    this.inspectCode = binds.inspect || '';
   }
 
   // ── In-game chat (online only) ────────────────────────────────────────
@@ -708,6 +804,11 @@ export class Game {
   setPostFx(opts: Partial<PostFxOptions>) {
     this.postFxPrefs = { ...this.postFxPrefs, ...opts };
     this.applyPostFx();
+  }
+
+  // Bloom intensity multiplier (Settings → Video), on top of the Bloom toggle.
+  setBloomScale(k: number) {
+    this.postFx.setBloomScale(k);
   }
 
   private applyPostFx() {
@@ -909,13 +1010,41 @@ export class Game {
     // Spectators show the WATCHED player's finish; normal play shows the local one.
     const finishId = this.viewmodelFinishOverride ?? this.localRailgunFinish;
     const finish = railgunFinishById(isRailgunFinish(finishId) ? finishId : DEFAULT_RAILGUN_FINISH).data;
+    const norm = (v: unknown) => (!v || v === 'default' || v === 'standard' ? '' : String(v));
+    const wantKey = norm((finish as { model?: string }).model);
+    const hadGun = !!this.viewmodelRail;
     if (this.viewmodelRail) {
-      this.viewmodelRail.setFinish(finish); // recolour only — the geometry is shared
-      return;
+      // Same gun model → recolour in place (geometry shared). A finish with a
+      // different (custom) model swaps guns: the current one is parked as a
+      // spare (reused on the way back — replays swap to the star's gun and back).
+      if (norm(this.viewmodelRail.modelKey) === wantKey) {
+        this.viewmodelRail.setFinish(finish);
+        this.applyViewmodelV3(true);
+        return;
+      }
+      if (this.viewmodel) this.postFx.viewmodel.camera.remove(this.viewmodel);
+      this.stashViewmodel(this.viewmodelRail);
+      this.viewmodelRail = null;
     }
-    const vm = buildRailgun(finish);
+    const spare = this.vmSpares.get(wantKey);
+    if (spare) this.vmSpares.delete(wantKey);
+    const vm = spare ?? buildRailgun(finish);
+    if (spare) vm.setFinish(finish);
     this.viewmodelRail = vm;
     vm.setLowSpec(this.lowSpec);
+    // A brand-new build (not the first gun, which the match-load prewarm
+    // covers) stays hidden until its programs compile off the frame.
+    const token = ++this.vmWarmToken;
+    this.vmWarming = false;
+    if (!spare && hadGun) {
+      this.vmWarming = true;
+      void this.postFx
+        .prewarm(vm.group, 'viewmodel')
+        .catch(() => undefined)
+        .then(() => {
+          if (token === this.vmWarmToken) this.vmWarming = false;
+        });
+    }
     this.viewmodel = vm.group;
     this.viewmodel.scale.setScalar(VIEWMODEL_SCALE);
     this.viewmodelGlow = vm.glow;
@@ -924,6 +1053,294 @@ export class Game {
     // Drawn in the viewmodel layer (after the world, depth cleared) so the gun
     // never clips into walls; its camera mirrors the world camera every frame.
     this.postFx.viewmodel.camera.add(this.viewmodel);
+    this.applyViewmodelV3(true);
+  }
+
+  // Park a detached viewmodel gun for reuse (at most two spares; the oldest is
+  // freed). Its quality overlays are reset by whoever reuses it (applyFinishLook).
+  private stashViewmodel(vm: RailgunModel) {
+    const key = !vm.modelKey || vm.modelKey === 'default' || vm.modelKey === 'standard' ? '' : vm.modelKey;
+    this.vmSpares.get(key)?.dispose();
+    this.vmSpares.delete(key);
+    this.vmSpares.set(key, vm);
+    while (this.vmSpares.size > 2) {
+      const [oldKey, old] = this.vmSpares.entries().next().value as [string, RailgunModel];
+      old.dispose();
+      this.vmSpares.delete(oldKey);
+    }
+  }
+
+  // Economy v3: the resolved equipped Looks (drive the finish's sheen / festive /
+  // strange counter here, and what the taunt body wears) + the equipped item
+  // instance ids, which the server validates and turns into the Looks everyone
+  // else sees. Legacy per-slot setters still run for un-migrated consumers.
+  setLooks(
+    looks: Loadout | undefined,
+    uids?: Partial<Record<ItemSlot, string>>,
+    strangeKills?: number | null,
+  ) {
+    this.localLooks = looks;
+    this.strangeBase = typeof strangeKills === 'number' ? strangeKills : null;
+    const tokens = looks || uids ? loadoutTokens(looks, uids) : undefined;
+    const key = tokens ? tokens.join(',') : '';
+    if (key !== this.localUidsKey) {
+      this.localUidsKey = key;
+      this.localTokens = tokens;
+      this.net?.setLocalLoadout(tokens);
+    }
+    this.applyViewmodelV3(true);
+  }
+
+  // Push the finish Look + this life's streak + the Strange counter onto the
+  // first-person gun. The setters are the VFX track's (optional until merged).
+  private applyViewmodelV3(force = false) {
+    const vm = this.viewmodelRail;
+    if (!vm || this.viewmodelFinishOverride) return;
+    const streak = this.medals.currentStreak;
+    const frags = this.net ? this.net.localFrags : this.playerFrags;
+    const strange = this.strangeBase === null ? null : this.strangeBase + frags;
+    if (force) {
+      applyFinishLook(vm, this.localLooks?.finish);
+      this.vmStreakShown = -1;
+      this.vmStrangeShown = -2;
+    }
+    if (streak !== this.vmStreakShown) {
+      this.vmStreakShown = streak;
+      asV3(vm).setStreak?.(streak);
+    }
+    const sk = strange ?? -1;
+    if (sk !== this.vmStrangeShown) {
+      this.vmStrangeShown = sk;
+      asV3(vm).setStrangeKills?.(strange);
+    }
+  }
+
+  // ── Weapon inspect ──────────────────────────────────────────────────────
+  // Inspect key: swing the first-person railgun up and turn it to show the side
+  // and top (viewmodel-motion.ts). Purely cosmetic and never a disadvantage:
+  // firing, zooming, dying or taunting cancels it at once, and it won't start in
+  // the first 0.2 s after a shot.
+  setInspectListener(fn: ((active: boolean, strangeKills: number | null) => void) | null) {
+    this.inspectListener = fn;
+  }
+
+  private currentStrangeKills(): number | null {
+    if (this.strangeBase === null) return null;
+    return this.strangeBase + (this.net ? this.net.localFrags : this.playerFrags);
+  }
+
+  tryInspect(): boolean {
+    if (this.spectator || !this.locked || this.matchOver || this.vote || this.killcam || this.replay) return false;
+    if (this.chatOpen || this.taunt || this.hideViewmodel || this.viewmodelMotion.inspecting) return false;
+    if (performance.now() - this.lastShotMs < 200) return false;
+    if (this.wantZoom) return false;
+    this.viewmodelMotion.startInspect(this.reducedEffects);
+    return true;
+  }
+
+  // ── Taunts ──────────────────────────────────────────────────────────────
+  // Taunt key: play your equipped emote in-match. The camera swings out to a
+  // third-person orbit around your body (wall-clamped along the line from your
+  // eyes, so it never shows anything you couldn't have seen from where you
+  // stand), you can't fire, movement is locked for the clip, jump cancels.
+  // Returns whether a taunt started. 3 s cooldown.
+  tryTaunt(): boolean {
+    if (this.spectator || !this.locked || this.matchOver || this.vote || this.killcam || this.replay) return false;
+    if (this.chatOpen || this.taunt || this.inCountdown) return false;
+    if (!this.player.onGround) return false;
+    const now = performance.now();
+    if (now < this.tauntCooldownUntil) return false;
+    if (!this.botModel) return false; // the combatant model isn't loaded yet
+    const look = this.localLooks?.emote ?? { d: this.localEmote };
+    return this.startTaunt(emoteKindOfLook(look), look, now);
+  }
+
+  private startTaunt(kind: AnyEmoteKind, look: Look | undefined, now: number): boolean {
+    if (!this.botModel) return false;
+    this.viewmodelMotion.cancelInspect(true);
+    let body = this.tauntBody;
+    if (!body) {
+      body = new RemotePlayer('local-taunt', this.playerName, this.scene, this.botModel);
+      body.hidePlate();
+      body.setLocalShown(false);
+      this.tauntBody = body;
+    }
+    body.team = this.localTeam;
+    this.applyRemoteColor(body);
+    // Dress the body in what you have equipped (Looks when the hub provides them).
+    const p = this.player.pos;
+    body.apply(this.localSnapshot(), 0);
+    body.group.position.set(p.x, p.y, p.z);
+    const dur = emoteClip(kind).duration;
+    body.setStreak(this.medals.currentStreak);
+    body.playTaunt(kind, look, dur);
+    this.tauntCooldownUntil = now + TAUNT_COOLDOWN_MS;
+    this.taunt = { kind, look, t: 0, dur, blend: 0, orbit: 0, dist: 0, cancelled: false };
+    this.net?.sendTaunt();
+    this.recorder.logTaunt('you', look);
+    return true;
+  }
+
+  // The local player as a RemotePlayer snapshot (cosmetics only) so the taunt
+  // body resolves its look exactly like everyone else's view of you.
+  private localSnapshot() {
+    const p = this.player.pos;
+    return {
+      id: 'local-taunt',
+      name: this.playerName,
+      pos: { x: p.x, y: p.y, z: p.z },
+      yaw: this.player.yaw,
+      pitch: 0,
+      frags: 0,
+      deaths: 0,
+      invulnMs: 0,
+      team: this.localTeam,
+      hat: this.localHat,
+      unusual: this.localUnusual,
+      emote: this.localEmote,
+      nameColor: this.localNameColor,
+      spawnEffect: this.localSpawnEffect,
+      title: this.localTitle,
+      railColor: this.net?.localRailColor ?? 'rail.cyan',
+      railgunFinish: this.localRailgunFinish,
+      crosshair: '',
+      looks: this.localLooks,
+      ping: 0,
+      admin: false,
+      verified: false,
+      receivedAt: 0,
+    };
+  }
+
+  // Jump out of a taunt: movement is yours again this tick; the camera glides home.
+  private cancelTaunt() {
+    if (this.taunt) this.taunt.cancelled = true;
+  }
+
+  private abortTaunt() {
+    if (!this.taunt) return;
+    this.taunt = null;
+    this.tauntBody?.endTaunt();
+    this.tauntBody?.setLocalShown(false);
+  }
+
+  // Third-person orbit for the taunt, blended over the first-person camera that
+  // render() just set. (ex,ey,ez) is the eye; dt is the real frame time.
+  private applyTauntCamera(ex: number, ey: number, ez: number) {
+    const T = this.taunt;
+    if (!T) return;
+    const dt = this.frameDt;
+    T.t += dt;
+    const leaving = T.cancelled || T.t >= T.dur - TAUNT_OUT_SEC;
+    // Ranked / Duel: the emote still plays for everyone else, but YOUR camera never
+    // leaves first person.
+    const camOff = this.ranked || (this.net ? this.netMode : this.botMode) === 'duel';
+    T.blend += ((leaving || camOff ? 0 : 1) - T.blend) * (1 - Math.exp(-(leaving ? 12 : 6) * dt));
+    T.orbit += dt * TAUNT_ORBIT_SPEED * Math.min(1, T.t / 0.6);
+    const s = T.blend * T.blend * (3 - 2 * T.blend);
+    // Orbit centre = body centre; start behind you, sweep round the side.
+    const cx = ex;
+    const cy = ey - EYE_HEIGHT + 1.0;
+    const cz = ez;
+    // Sweep behind → side → behind (never round to the front, which would look back
+    // over what's behind you).
+    const th = this.player.yaw + TAUNT_MAX_SWING * Math.sin(T.orbit);
+    const dx = cx + Math.sin(th) * TAUNT_ORBIT_RADIUS - ex;
+    const dy = cy + TAUNT_ORBIT_RISE - ey;
+    const dz = cz + Math.cos(th) * TAUNT_ORBIT_RADIUS - ez;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const nx = dx / len;
+    const ny = dy / len;
+    const nz = dz / len;
+    // Line of sight from the EYE: never farther than the nearest wall along the
+    // way (shrinks instantly, grows back smoothly — so it can't poke through).
+    // Sphere sweep: each wall box is inflated by the margin and the eye→camera ray
+    // tested against it, so the camera can't graze a corner or slip through a crack.
+    // t === 0 means the eye is already inside the inflated box (hugging a wall):
+    // the camera stays at the eye (allowed 0), never passes through.
+    const d = { x: nx, y: ny, z: nz };
+    const o = { x: ex, y: ey, z: ez };
+    const M = TAUNT_WALL_MARGIN;
+    let allowed = len;
+    for (const b of this.map.boxes) {
+      const t = rayAabb(o, d, {
+        min: { x: b.min.x - M, y: b.min.y - M, z: b.min.z - M },
+        max: { x: b.max.x + M, y: b.max.y + M, z: b.max.z + M },
+      });
+      if (t !== null && t < allowed) allowed = Math.max(0, t);
+    }
+    if (T.blend > 0.02) this.hideUnseenFromEye(ex, ey, ez);
+    T.dist = allowed < T.dist ? allowed : T.dist + (allowed - T.dist) * (1 - Math.exp(-10 * dt));
+    const reach = T.dist * s;
+    const cam = this.camera;
+    this.tmpQ1.copy(cam.quaternion); // the first-person view (set just before this call)
+    this.tmpV3.set(ex + nx * reach, ey + ny * reach, ez + nz * reach);
+    // Look at the body from the orbit point.
+    this.tmpV3b.set(cx, cy + 0.35, cz);
+    this.tmpM4.lookAt(this.tmpV3, this.tmpV3b, cam.up);
+    this.tmpQ2.setFromRotationMatrix(this.tmpM4);
+    cam.position.copy(this.tmpV3);
+    cam.quaternion.slerpQuaternions(this.tmpQ1, this.tmpQ2, s);
+    // Your body appears once the camera has pulled clear of it, and leaves as it returns.
+    const body = this.tauntBody;
+    if (body) {
+      // Pinned against a wall the camera collapses to your eyes: don't draw the body over the lens.
+      body.setLocalShown(s > 0.3 && reach > 0.7);
+      const p = this.player.pos;
+      body.driveLocal(p.x, p.y, p.z, this.player.yaw, dt);
+    }
+    if (T.t >= T.dur || (T.cancelled && T.blend < 0.02)) {
+      this.taunt = null;
+      body?.endTaunt();
+      body?.setLocalShown(false);
+    }
+  }
+
+  // Killcam: raise the killer's nameplate above their unusual crown (reset after).
+  private liftKillerPlate(t: { setPlateLift(m: number): void } | null, looks?: Loadout) {
+    if (this.liftedPlate && this.liftedPlate !== t) this.liftedPlate.setPlateLift(0);
+    this.liftedPlate = t;
+    t?.setPlateLift(looks?.hat?.e ? 0.75 : 0.2);
+  }
+
+  // FAIRNESS: the taunt camera must never reveal anything the first-person eye
+  // couldn't see. Any opponent with no clear line from the EYE to head, chest or
+  // feet is hidden for this frame (restored right after the draw), so the orbit
+  // can't scout around corners or through gaps.
+  private hideUnseenFromEye(ex: number, ey: number, ez: number) {
+    const check = (g: THREE.Object3D) => {
+      if (!g.visible) return;
+      const p = g.position;
+      for (const dy of [0.25, 1.0, 1.7]) {
+        const dx = p.x - ex;
+        const dyy = p.y + dy - ey;
+        const dz = p.z - ez;
+        const dist = Math.hypot(dx, dyy, dz);
+        if (dist < 1e-3) return;
+        const dir = { x: dx / dist, y: dyy / dist, z: dz / dist };
+        let blocked = false;
+        for (const b of this.map.boxes) {
+          const t = rayAabb({ x: ex, y: ey, z: ez }, dir, b);
+          if (t !== null && t > 0 && t < dist - 0.05) { blocked = true; break; }
+        }
+        if (!blocked) return; // seen from the eye
+      }
+      g.visible = false;
+      this.tauntHidden.push(g);
+    };
+    for (const rp of this.remotePlayers.values()) check(rp.group);
+    if (this.bots) for (const b of this.bots.bots) check(b.group);
+  }
+
+  // Someone else taunted: play their emote clip on their body (+ aura).
+  private handleNetTaunt(id: string, look: Look | undefined) {
+    if (id === this.net?.clientId) return; // ours already plays locally
+    const rp = this.remotePlayers.get(id);
+    if (!rp) return;
+    const l = look ?? this.net?.remotes.get(id)?.looks?.emote;
+    const kind = emoteKindOfLook(l);
+    rp.playTaunt(kind, l, emoteClip(kind).duration);
+    this.recorder.logTaunt(id, l);
   }
 
   // Equipped railgun finish (gun skin) — recolors the local viewmodel and is
@@ -1174,10 +1591,19 @@ export class Game {
     this.tickFn = null;
     this.input.detach();
     window.removeEventListener('resize', this.resizeHandler);
+    window.removeEventListener('keydown', this.tauntKeyHandler);
+    this.tauntBody?.dispose(this.scene);
+    this.tauntBody = null;
     this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.replay?.dispose();
     this.replay = null;
+    this.killcamReplay?.dispose();
+    this.killcamReplay = null;
+    // (After the replays above hand their bodies back.) Parked bodies are off
+    // the scene graph, so disposeScene() below would miss them.
+    for (const a of this.replayActorPool.values()) a.dispose(this.scene);
+    this.replayActorPool.clear();
     this.replaySegments = [];
     this.replaySegIdx = 0;
     this.pom = null;
@@ -1200,6 +1626,8 @@ export class Game {
     this.disposeScene();
     this.postFx.dispose();
     this.viewmodelRail?.dispose();
+    for (const spare of this.vmSpares.values()) spare.dispose();
+    this.vmSpares.clear();
     // Drop the viewmodel muzzle link (fx/rail-state.ts) so the module-level
     // ref can't keep this disposed Game's scene alive in the menu.
     localRail.muzzle = null;
@@ -1299,8 +1727,10 @@ export class Game {
           onProgression: (p) => this.onNetEvent({ type: 'progression', progression: p }),
           onChat: (m) => this.handleNetChat(m),
           onBeam: (b) => this.handleNetBeam(b),
+          onTaunt: (id, look) => this.handleNetTaunt(id, look),
         },
       });
+      if (this.localUidsKey) this.net.setLocalLoadout(this.localTokens);
       this.net.connect();
     } else if (!this.wantMultiplayer && this.net) {
       this.net.dispose();
@@ -1390,10 +1820,19 @@ export class Game {
     const railId = b.id ? this.net?.cosmeticsOf(b.id)?.railColor : undefined;
     const rc = railColorById(railId && isRailColor(railId) ? railId : DEFAULT_RAIL_COLOR);
     const c = rc.data;
-    this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
+    if (!this.killcamReplay) this.weapon.spawnBeam(origin, end, this.scene, c.core, c.helix, this.map, rc.mode);
+    // Recorded so replays (killcam from this shooter's eyes, Play of the Match)
+    // redraw other players' rails too, not just yours and the bots'.
+    if (b.id && !this.spectator) {
+      this.recorder.logShot({
+        origin: { x: b.ox, y: b.oy, z: b.oz },
+        end: { x: b.ex, y: b.ey, z: b.ez },
+        killerId: this.replayId(b.id),
+      });
+    }
     if (b.id) this.remotePlayers.get(b.id)?.notifyFire(c.helix); // their 3rd-person gun flashes + recharges
     // Their discharge flash at the muzzle, in their rail colour.
-    if (!b.id || !this.remotePlayers.get(b.id)) this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
+    if (!this.killcamReplay && (!b.id || !this.remotePlayers.get(b.id))) this.effects.spawnMuzzleFlash(this.scene, origin, c.core, end.clone().sub(origin));
     if (this.spectator && b.id === this.spectatedId) {
       this.spectatedShotMs = performance.now();
       this.viewmodelRail?.notifyFire();
@@ -1482,11 +1921,13 @@ export class Game {
     // The clip is normally done by the time the vote resolves; finish it
     // defensively (no-op if not playing) so a fresh match starts clean.
     this.finishPlayOfMatch();
+    this.stopKillcamReplay();
     this.recorder.reset();
     // New match on the winning map: reset local medal/streak + per-run stats
     // (server resets the authoritative scoreboard; HUD reads it from snapshots).
     // Done AFTER handleVoteStart already submitted the finished match's stats.
     this.medals = new MedalTracker();
+    this.streaks.clear();
     this.playerFrags = 0;
     this.playerDeaths = 0;
     if (this.net) {
@@ -1681,6 +2122,17 @@ export class Game {
         (this.net || this.localWarmupArmed)
       ) {
         this.recorder.tick(dt, () => this.sampleReplayFrame());
+        if (!this.killcam) this.warmReplayActors(dt);
+      }
+      // First-person killcam: drive the replay (it owns the camera) on the
+      // speed curve; it ends with the killcam (respawn, map change, reset).
+      const kr = this.killcamReplay;
+      if (kr) {
+        if (!this.killcam || this.recorder.frames.length === 0) this.stopKillcamReplay();
+        else {
+          kr.setSpeed(this.killcamSpeed(kr.currentT, this.killcamKillT));
+          kr.update(dt);
+        }
       }
     }
     // Skip GL work while the WebGL context is lost (GPU reset / driver hiccup)
@@ -1792,6 +2244,7 @@ export class Game {
         );
       }
       rp.setInvuln(snap.invulnMs);
+      rp.setStreak(this.streaks.get(id) ?? 0);
       // Their footsteps / jumps / landings, heard where they are.
       this.motionSfx.sample(id, snap.pos.x, snap.pos.y, snap.pos.z, nowSec, true);
       this.heardFootfalls(id, rp.footfalls, snap.pos.x, snap.pos.y, snap.pos.z);
@@ -1806,6 +2259,15 @@ export class Game {
   // every other id passes through unchanged.
   private replayId(netId: string): string {
     return this.net && netId === this.net.clientId ? 'you' : netId;
+  }
+
+  // What the killer was holding, for the killcam card: their gun (with Killstreak /
+  // Festive / Professional qualities) and finisher, from their equipped Looks.
+  private killerKitOf(killerId: string): { weapon: string; finisher: string } | undefined {
+    const looks = this.net?.remotes.get(killerId)?.looks ?? this.bots?.bots.find((b) => b.state.id === killerId)?.loadout;
+    if (!looks) return undefined;
+    const fin = this.replayFinisher(killerId);
+    return { weapon: kitInfo(looks).weapon, finisher: fin === DEFAULT_KILL_EFFECT ? '' : killEffectById(fin).name };
   }
 
   // The finisher a replayed kill plays: yours, a bot's stable one, or the one
@@ -1833,6 +2295,7 @@ export class Game {
       unusual: this.localUnusual,
       nameColor: this.localNameColor,
       team: this.localTeam,
+      looks: this.localLooks,
     });
     poses['you'] = {
       x: this.player.pos.x,
@@ -1854,6 +2317,7 @@ export class Game {
         unusual: snap?.unusual ?? 'unusual.none',
         nameColor: snap?.nameColor ?? 'name.default',
         team: rp.team,
+        looks: snap?.looks,
       });
       poses[id] = {
         x: rp.group.position.x,
@@ -1878,13 +2342,14 @@ export class Game {
           unusual: 'unusual.none',
           nameColor: 'name.default',
           team: null,
+          looks: b.loadout,
         });
         poses[id] = {
           x: b.state.pos.x,
           y: b.state.pos.y,
           z: b.state.pos.z,
           yaw: b.getFacing() + Math.PI,
-          pitch: 0, // bots don't track a persistent look pitch
+          pitch: b.getAimPitch(), // aim pitch while engaged (a killcam rides these eyes)
           visible: b.state.alive,
         };
       }
@@ -1968,7 +2433,7 @@ export class Game {
     // Always drain the accumulator so a held-but-not-applied delta (dead/paused/
     // match over) can't pile up and snap the view when control resumes.
     const look = this.input.consumeLook();
-    if (!this.locked || this.matchOver || this.killcam !== null || this.replay) return;
+    if (!this.locked || this.matchOver || this.killcam !== null || this.replay || (this.taunt && !this.taunt.cancelled)) return;
     this.player.yaw -= look.yawDelta;
     this.player.pitch -= look.pitchDelta;
     if (this.player.pitch < -PITCH_LIMIT) this.player.pitch = -PITCH_LIMIT;
@@ -1995,7 +2460,19 @@ export class Game {
     if (!this.locked || this.matchOver) return;
     this.elapsed += dt;
 
-    const input = this.input.consume();
+    let input = this.input.consume();
+    // Taunting: movement + fire are locked for the clip (gravity still applies);
+    // jump cancels it and hands the controls straight back.
+    const tauntLock = this.taunt !== null && !this.taunt.cancelled && this.taunt.t < this.taunt.dur;
+    if (tauntLock) {
+      if (input.jumpPressed) this.cancelTaunt();
+      else {
+        input = {
+          ...input, forward: false, back: false, left: false, right: false, jump: false, jumpPressed: false,
+          dash: false, dashPressed: false, boost: false, boostPressed: false, fire: false, firePressed: false, zoom: false,
+        };
+      }
+    }
     this.wantZoom = input.zoom;
     if (input.chatPressed) this.openChat(); // open the composer (guards inside)
     const dead = this.killcam !== null;
@@ -2077,6 +2554,7 @@ export class Game {
         const p = b.state.pos;
         this.motionSfx.sample(b.state.id, p.x, p.y, p.z, this.elapsed, b.state.alive);
         this.heardFootfalls(b.state.id, b.footfalls, p.x, p.y, p.z);
+        b.setStreak(this.streaks.get(b.state.id) ?? 0);
       }
       // During the countdown bots are frozen (no intents); afterwards they frag.
       if (!this.inCountdown) for (const intent of intents) this.handleBotShot(intent);
@@ -2106,7 +2584,8 @@ export class Game {
     }
     this.weaponWasReady = ready;
 
-    if (input.firePressed && !dead && !this.inCountdown) this.handleFire();
+    // A cancelled taunt (jump) hands aim and fire back at once, while the camera glides home.
+    if (input.firePressed && !dead && !this.inCountdown && !(this.taunt && !this.taunt.cancelled)) this.handleFire();
 
     // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
     // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
@@ -2261,6 +2740,7 @@ export class Game {
       end: { x: result.end.x, y: result.end.y, z: result.end.z },
       killerId: 'you',
     });
+    this.lastShotMs = performance.now();
     this.audio.play('fire', 0.55);
     if (!trainingShot) this.audio.chargeStart(this.weapon.cooldown); // coils recharge hum
     this.addShake(SHAKE_FIRE);
@@ -2356,6 +2836,7 @@ export class Game {
         this.killEffectStyle,
       );
       bot.kill(this.killEffectStyle);
+      this.streaks.delete(bot.state.id);
       this.recorder.logKill({
         killerId: 'you',
         victimId: bot.state.id,
@@ -2464,13 +2945,13 @@ export class Game {
     // above stays on the eye line), so the flash sits on the claw it came from.
     const shooter = this.bots?.bots.find((b) => b.state.id === intent.botId);
     const visible = shooter?.gunMuzzle(this.tmpBotMuzzle) ?? origin;
-    this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
+    if (!this.killcamReplay) this.weapon.spawnBeam(visible, end, this.scene, undefined, undefined, this.map);
     // A bot holding a gun flashes its own muzzle claw; the world flash is only
     // the fallback (a gunless capsule).
-    if (!shooter?.gunMuzzle(this.tmpBotMuzzle)) this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
+    if (!this.killcamReplay && !shooter?.gunMuzzle(this.tmpBotMuzzle)) this.effects.spawnMuzzleFlash(this.scene, visible, undefined, dir);
     shooter?.notifyFire(RAIL_HELIX_COLOR);
     this.recorder.logShot({
-      origin: { x: origin.x, y: origin.y, z: origin.z },
+      origin: { x: visible.x, y: visible.y, z: visible.z }, // the beam as drawn (gun muzzle)
       end: { x: end.x, y: end.y, z: end.z },
       killerId: intent.botId,
     });
@@ -2483,7 +2964,7 @@ export class Game {
 
     // Landed on someone (instagib = every hit is a kill) → count for accuracy.
     this.botShotsHit.set(intent.botId, (this.botShotsHit.get(intent.botId) ?? 0) + 1);
-    this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
+    if (!this.killcamReplay) this.effects.spawnHitFlash(this.scene, end, 0xffd1d8);
     this.recorder.logKill({
       killerId: intent.botId,
       victimId: victimKind === 'player' ? 'you' : victimId,
@@ -2497,7 +2978,9 @@ export class Game {
       const victim = this.bots?.bots.find((b) => b.state.id === victimId);
       if (victim) {
         const finisher = this.botFinisher(intent.botId);
-        this.spawnKillEffect(
+        // (While your first-person killcam plays, live world FX stay off: the
+        // camera is in the replay, where they'd be ghosts at the wrong time.)
+        if (!this.killcamReplay) this.spawnKillEffect(
           new THREE.Vector3(victim.state.pos.x, victim.centerY(), victim.state.pos.z),
           false,
           finisher,
@@ -2515,6 +2998,14 @@ export class Game {
       });
     }
     this.botFrags.set(intent.botId, (this.botFrags.get(intent.botId) ?? 0) + 1);
+    this.streaks.set(intent.botId, (this.streaks.get(intent.botId) ?? 0) + 1);
+    this.streaks.delete(victimId);
+    // Now and then a bot celebrates a frag with its emote (solo variety).
+    // Purely visual (the bot keeps moving and shooting) and the roll is always taken,
+    // so the sim — and the weekly challenge — never depends on reducedEffects.
+    if (Math.random() < 0.07 && shooter?.taunt()) {
+      this.recorder.logTaunt(intent.botId, shooter.loadout.emote);
+    }
     this.checkMatchEnd();
   }
 
@@ -2544,6 +3035,7 @@ export class Game {
     this.addShake(SHAKE_DEATH);
     if (!this.reducedEffects) this.damageFlash = 1;
     this.medals.onDeath();
+    this.viewmodelMotion.cancelInspect(true);
     this.playerDeaths += 1;
     // Invuln spans the killcam plus a short grace once you respawn.
     this.localRespawnInvuln = KILLCAM_DURATION_SEC + LOCAL_RESPAWN_INVULN_SEC;
@@ -2554,12 +3046,15 @@ export class Game {
       deathPos,
       remaining: KILLCAM_DURATION_SEC,
       total: KILLCAM_DURATION_SEC,
+      killerKit: this.killerKitOf(killerId),
     };
     if (bot) {
       this.killcamLookAt.set(bot.state.pos.x, bot.centerY(), bot.state.pos.z);
     } else {
       this.killcamLookAt.set(deathPos.x, deathPos.y + 1.5, deathPos.z);
     }
+    // The kill is already logged (handleBotShot) — replay it from the bot's eyes.
+    this.startKillcamReplay(killerId);
     this.pushKillfeed({
       killer: killerName,
       killerLocal: false,
@@ -2655,12 +3150,21 @@ export class Game {
       segments.push({
         kind: 'finale',
         clip: finale,
-        opts: { timeScale: FINALE_TIME_SCALE, freezeSec: FINALE_FREEZE_SEC },
+        // The freeze holds on the final blow's line (aimHoldAfter), not a turn after it.
+        opts: { timeScale: FINALE_TIME_SCALE, freezeSec: FINALE_FREEZE_SEC, aimHoldAfter: finale.kills[0]?.t },
       });
     }
     const potg = this.recorder.selectHighlight('you');
     if (potg) segments.push({ kind: 'potg', clip: potg, opts: {} });
     if (segments.length === 0) return false;
+
+    // Dying to the match-ending blow leaves a killcam running; the cinematic
+    // replaces it (its gating hid the replay star's gun for the whole finale).
+    this.stopKillcamReplay();
+    if (this.killcam) {
+      this.killcam = null;
+      this.liftKillerPlate(null);
+    }
 
     // Hide the live world — the replay renders its own actors on the real map.
     for (const rp of this.remotePlayers.values()) rp.group.visible = false;
@@ -2677,9 +3181,14 @@ export class Game {
   // Spin up the ReplayPlayer for one cinematic segment and surface its overlay.
   private startReplaySegment(i: number) {
     const seg = this.replaySegments[i];
-    const replay = this.makeReplayPlayer();
+    const replay = this.makeReplayPlayer('potg');
     replay.start(seg.clip, this.recorder, seg.opts);
     this.replay = replay;
+    // Replay audio treatment (soft low-pass, slow-mo pitch, boundary fade) + the
+    // star's gun in first person.
+    this.audio.replayBegin(seg.opts.timeScale ?? 1, i === 0 ? 0.4 : 0.2);
+    this.setReplayViewmodel(seg.clip.starId);
+    const starLooks = seg.clip.starId === 'you' ? this.localLooks : this.recorder.profiles.get(seg.clip.starId)?.looks;
     this.pom = {
       phase: seg.kind,
       won: this.endWon,
@@ -2690,7 +3199,54 @@ export class Game {
       total: replay.totalWall,
       hitId: 0,
       hitHeadshot: false,
+      killTotal: seg.clip.kills.filter((k) => k.killerId === seg.clip.starId).length,
+      crosshairCode: this.starCrosshair(seg.clip.starId),
+      kit: this.starKit(seg.clip.starId, starLooks),
     };
+  }
+
+  // The Play of the Match title card's setup summary. The finisher comes from the
+  // same source the replay's kills use (recorded Look → server-stamped → bot's).
+  private starKit(starId: string, looks: Loadout | undefined) {
+    const kit = kitInfo(looks, starId === 'you' ? this.currentStrangeKills() : null);
+    const fin = starId === 'you' ? this.killEffectStyle : this.replayFinisher(starId);
+    return { ...kit, finisher: fin === DEFAULT_KILL_EFFECT ? '' : killEffectById(fin).name };
+  }
+
+  // The star's first-person gun for a replay segment: their finish (model, sheen,
+  // festive) instead of yours; your own gun when you're the star. Restored by
+  // restoreReplayViewmodel() when the cinematic ends.
+  private setReplayViewmodel(starId: string) {
+    if (starId === 'you') {
+      this.restoreReplayViewmodel();
+      this.replayVmActive = true; // streak from the replay is driven per frame
+      this.replayVmStreak = -1;
+      return;
+    }
+    const looks = this.recorder.profiles.get(starId)?.looks;
+    const id = looks?.finish?.d;
+    const finishId = id && isRailgunFinish(id) ? id : DEFAULT_RAILGUN_FINISH;
+    this.replayVmActive = true;
+    if (finishId !== this.viewmodelFinishOverride) {
+      this.viewmodelFinishOverride = finishId;
+      this.buildViewmodel();
+    }
+    const vm = this.viewmodelRail;
+    if (vm) {
+      applyFinishLook(vm, looks?.finish);
+      asV3(vm).setStrangeKills?.(null);
+    }
+    this.replayVmStreak = -1;
+  }
+
+  private restoreReplayViewmodel() {
+    if (!this.replayVmActive) return;
+    this.replayVmActive = false;
+    if (this.viewmodelFinishOverride !== null) {
+      this.viewmodelFinishOverride = null;
+      this.buildViewmodel();
+    }
+    this.applyViewmodelV3(true);
   }
 
   // Current segment finished: advance to the next, or end the whole cinematic.
@@ -2708,36 +3264,222 @@ export class Game {
     }
   }
 
-  private makeReplayPlayer(): ReplayPlayer {
+  // `kind` picks where the star's kills are surfaced (the PotG overlay's hit
+  // marker + kill ticks, or the killcam's) and whether the announcer calls
+  // multi-kills (not over your own death).
+  private makeReplayPlayer(kind: 'potg' | 'killcam'): ReplayPlayer {
     return new ReplayPlayer({
       scene: this.scene,
       camera: this.camera,
       botModel: this.botModel,
-      spawnBeam: (o, e) =>
-        this.weapon.spawnBeam(
-          new THREE.Vector3(o.x, o.y, o.z),
-          new THREE.Vector3(e.x, e.y, e.z),
-          this.scene,
-          undefined,
-          undefined,
-          this.map,
-        ),
+      // Each shooter's rail in their colour; the star's leaves the barrel of the
+      // first-person gun on screen (the recorded origin when it isn't drawn).
+      spawnBeam: (o, e, shooterId, star) => {
+        const c = this.railColorsOf(shooterId);
+        const from = star && liveViewmodelMuzzle(this.tmpReplayMuzzle)
+          ? this.tmpReplayMuzzle.clone()
+          : new THREE.Vector3(o.x, o.y, o.z);
+        this.weapon.spawnBeam(from, new THREE.Vector3(e.x, e.y, e.z), this.scene, c.core, c.helix, this.map, c.mode);
+      },
       spawnMuzzleFlash: (at) =>
         this.effects.spawnMuzzleFlash(this.scene, new THREE.Vector3(at.x, at.y, at.z)),
-      spawnKillEffect: (at, headshot, killerId) => this.spawnKillEffect(at, headshot, this.replayFinisher(killerId)),
+      starViewmodel: true,
+      plates: 'small',
+      acquireActor: (id, name) => this.acquireReplayActor(id, name),
+      releaseActor: (actor) => this.releaseReplayActor(actor),
+      // The killer's recorded finisher (their Look) decides the burst.
+      spawnKillEffect: (at, headshot, _killerId, finisher) => this.spawnKillEffect(at, headshot, finisher),
       finisherFor: (killerId) => this.replayFinisher(killerId),
+      // A respawn in the clip plays that actor's own spawn-in effect.
+      spawnIn: (at, id) => {
+        if (!this.reducedEffects) this.effects.spawnInBurst(this.scene, at, spawnEffectById(id).style);
+      },
       reducedEffects: () => this.reducedEffects,
-      // Each star kill in the clip flashes a crosshair hit-marker + a soft cue so
-      // it reads as "they just fragged someone" during the cinematic.
+      // Replay audio: shots, frags + finishers, movement (see replay-audio.ts).
+      sfx: makeReplaySfx(this.audio, { announcer: kind === 'potg' }),
+      // The star's own body drives the first-person viewmodel: the two-stage fire
+      // kick + muzzle bloom, the coils' discharge + glow pop, hop and landing dip.
+      onStarEvent: (ev, strength) => {
+        if (ev === 'fire') {
+          this.viewmodelMotion.onFire();
+          this.viewmodelRail?.notifyFire();
+          if (this.viewmodelGlow) this.viewmodelGlow.emissiveIntensity = 4.5;
+        } else if (ev === 'jump' || ev === 'airjump') this.viewmodelMotion.onJump();
+        else if (ev === 'land') this.viewmodelMotion.onLand(strength);
+      },
+      // Each star kill in the clip flashes a crosshair hit-marker so it reads as
+      // "they just fragged someone" (the sound is the replay sfx's).
       onStarKill: (headshot) => {
-        if (this.pom) {
+        if (kind === 'potg' && this.pom) {
           this.pom.hitId += 1;
           this.pom.hitHeadshot = headshot;
+        } else if (kind === 'killcam' && this.killcam) {
+          this.killcamHitId += 1;
+          this.killcam.hitId = this.killcamHitId;
+          this.killcam.hitHeadshot = headshot;
         }
-        this.audio.play(headshot ? 'headshot' : 'hit', 0.6);
         this.emitHud();
       },
     });
+  }
+
+  // A replay shooter's rail colours: yours, or (online) the colour the server
+  // echoes for that player — the same source their live beams use. Bots fire
+  // the stock rail live, so they do here too.
+  private railColorsOf(id: string): { core: number; helix: number; mode?: RailBeamMode } {
+    if (id === 'you') return this.weapon.beamColors;
+    const rid = this.net?.cosmeticsOf(id)?.railColor;
+    const rc = railColorById(rid && isRailColor(rid) ? rid : DEFAULT_RAIL_COLOR);
+    return { core: rc.data.core, helix: rc.data.helix, mode: rc.mode };
+  }
+
+  // A replay star's crosshair share-code: an online player's echoed reticle;
+  // '' (the viewer's own) for you and for bots, which have none.
+  private starCrosshair(id: string): string {
+    return id === 'you' ? '' : this.net?.cosmeticsOf(id)?.crosshair ?? '';
+  }
+
+  // ── First-person killcam ───────────────────────────────────────────────────
+
+  // Replay the kill that just ended your life from the killer's eyes (their
+  // gun, finish and crosshair), if the recording covers it: the kill must be
+  // the latest logged one, and the killer must have been seen alive for a
+  // meaningful lead-in. Otherwise the orbit cam (render) stays as the fallback.
+  private startKillcamReplay(killerId: string) {
+    this.stopKillcamReplay();
+    const kc = this.killcam;
+    if (!kc || this.spectator || this.training || this.matchOver || this.vote || this.replay) return;
+    if (killerId === 'you') return;
+    const rec = this.recorder;
+    const k = rec.kills[rec.kills.length - 1];
+    if (!k || k.victimId !== 'you' || k.killerId !== killerId || rec.durationSec - k.t > 0.6) return;
+    const frames = rec.frames;
+    // Recording must be live up to the kill (it stops at its frame cap).
+    if (frames.length < 4 || frames[frames.length - 1].t < k.t - 0.1) return;
+    if (!frames[frames.length - 1].poses[killerId]) return;
+
+    // Wall budget: the slow-mo stretch (ease-in, the kill, the tail) is fixed,
+    // the rest of KILLCAM_DURATION_SEC is real-time lead-in.
+    const reduced = this.reducedEffects;
+    const slowFrom = reduced ? 0 : KILLCAM_POV_SLOW_IN + KILLCAM_POV_RAMP;
+    let slowWall = 0;
+    if (reduced) slowWall = KILLCAM_POV_POST;
+    else {
+      const n = 32;
+      const du = KILLCAM_POV_RAMP / n;
+      for (let i = 0; i < n; i++) slowWall += du / this.killcamSpeed(k.t - slowFrom + (i + 0.5) * du, k.t);
+      slowWall += (KILLCAM_POV_SLOW_IN + KILLCAM_POV_POST) / KILLCAM_POV_SLOW_SCALE;
+    }
+    const lead = KILLCAM_DURATION_SEC - KILLCAM_POV_TAIL - slowWall;
+    let startT = Math.max(frames[0].t, k.t - slowFrom - lead);
+    // The killer must be alive through the lead-in: start after their respawn.
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const f = frames[i];
+      if (f.t > k.t) continue;
+      if (f.t < startT) break;
+      const p = f.poses[killerId];
+      if (!p || !p.visible) {
+        startT = frames[i + 1]?.t ?? k.t;
+        break;
+      }
+    }
+    if (k.t - startT < KILLCAM_POV_MIN_LEAD) return;
+
+    const replay = this.makeReplayPlayer('killcam');
+    replay.start(
+      { starId: killerId, starName: kc.killerName, label: 'KILLCAM', startT, endT: k.t + KILLCAM_POV_POST, kills: [k] },
+      rec,
+      // Hold the frame after the kill until you respawn (the killcam timer ends it).
+      { freezeSec: KILLCAM_DURATION_SEC, aimHoldAfter: k.t },
+    );
+    this.killcamReplay = replay;
+    this.killcamKillT = k.t;
+    this.shake = 0; // the death shake belongs to your body, not the killer's view
+    // Live rails still in flight (the one that just got you among them) would
+    // hang in the replay as ghosts ahead of their time: clear them.
+    this.weapon.disposeAll(this.scene);
+    this.setReplayViewmodel(killerId);
+    kc.pov = true;
+    kc.crosshairCode = this.starCrosshair(killerId);
+    kc.hitId = 0;
+    this.emitHud();
+  }
+
+  // Replay speed at match-time `t` for a kill at `killT`: real time, easing into
+  // the slow-mo KILLCAM_POV_SLOW_IN before the kill and staying slow after it.
+  private killcamSpeed(t: number, killT: number): number {
+    if (this.reducedEffects) return 1;
+    const u = t - (killT - KILLCAM_POV_SLOW_IN - KILLCAM_POV_RAMP);
+    if (u <= 0) return 1;
+    const x = Math.min(1, u / KILLCAM_POV_RAMP);
+    const e = x * x * (3 - 2 * x);
+    return 1 + (KILLCAM_POV_SLOW_SCALE - 1) * e;
+  }
+
+  private stopKillcamReplay() {
+    const kr = this.killcamReplay;
+    if (!kr) return;
+    kr.dispose();
+    this.killcamReplay = null;
+    if (this.killcam) this.killcam.pov = false;
+    // The PotG (if it is taking over) installs its own star's gun right after.
+    if (!this.replay) this.restoreReplayViewmodel();
+  }
+
+  // A parked replay body for `id` (same name, same model tier), back in the
+  // scene — or null, and the replay builds one.
+  private acquireReplayActor(id: string, name: string): RemotePlayer | null {
+    const a = this.replayActorPool.get(id);
+    if (!a) return null;
+    this.replayActorPool.delete(id);
+    if (a.name !== name || a.hasModel() !== !!this.botModel) {
+      a.dispose(this.scene);
+      return null;
+    }
+    this.scene.add(a.group);
+    return a;
+  }
+
+  // Idle warm-up: every REPLAY_WARM_SEC of live play, dress one body for a
+  // player the recorder has seen and park it — so even your first killcam of
+  // the match finds everyone's body (and custom gun) already built instead of
+  // building them all on the death frame.
+  private warmReplayActors(dt: number) {
+    this.replayWarmAccum += dt;
+    if (this.replayWarmAccum < REPLAY_WARM_SEC) return;
+    this.replayWarmAccum = 0;
+    if (!this.botModel || this.replayActorPool.size >= REPLAY_ACTOR_POOL_MAX) return;
+    for (const [id, profile] of this.recorder.profiles) {
+      if (this.replayActorPool.has(id)) continue;
+      this.releaseReplayActor(buildReplayActor(profile, this.scene, this.botModel));
+      return;
+    }
+  }
+
+  private releaseReplayActor(actor: RemotePlayer) {
+    actor.group.visible = false;
+    this.scene.remove(actor.group);
+    const prev = this.replayActorPool.get(actor.id);
+    if (prev && prev !== actor) prev.dispose(this.scene);
+    this.replayActorPool.delete(actor.id);
+    this.replayActorPool.set(actor.id, actor);
+    while (this.replayActorPool.size > REPLAY_ACTOR_POOL_MAX) {
+      const [oldId, old] = this.replayActorPool.entries().next().value as [string, RemotePlayer];
+      old.dispose(this.scene);
+      this.replayActorPool.delete(oldId);
+    }
+  }
+
+  // While a replay draws its own actors, the live bodies (remotes, bots) must
+  // not show through — hidden for this frame's draw, restored right after.
+  private hideLiveBodiesForReplay() {
+    const hide = (g: THREE.Object3D) => {
+      if (!g.visible) return;
+      g.visible = false;
+      this.replayHidden.push(g);
+    };
+    for (const rp of this.remotePlayers.values()) hide(rp.group);
+    if (this.bots) for (const b of this.bots.bots) hide(b.group);
   }
 
   // End the whole cinematic (finished or skipped): tear down the replay, restore
@@ -2751,6 +3493,8 @@ export class Game {
     this.replaySegments = [];
     this.replaySegIdx = 0;
     this.pom = null;
+    this.audio.replayEnd(0.5);
+    this.restoreReplayViewmodel();
     for (const rp of this.remotePlayers.values()) rp.group.visible = true;
     if (this.bots) for (const b of this.bots.bots) b.group.visible = b.state.alive;
     const done = this.pomOnDone;
@@ -2837,7 +3581,10 @@ export class Game {
         ? ev.finisher
         : DEFAULT_KILL_EFFECT;
     if (!iAmKiller) this.finisherSeen.set(ev.killerId, finisher);
-    this.spawnKillEffect(burstAt, ev.headshot, finisher);
+    // Killstreaks for the third-person sheen / eyes (yours is the medal tracker's).
+    if (!iAmKiller) this.streaks.set(ev.killerId, (this.streaks.get(ev.killerId) ?? 0) + 1);
+    this.streaks.delete(ev.victimId);
+    if (!this.killcamReplay) this.spawnKillEffect(burstAt, ev.headshot, finisher);
 
     if (iAmKiller) {
       // Killer: trust the server-authoritative score (next snapshot will
@@ -2896,6 +3643,7 @@ export class Game {
       this.addShake(SHAKE_DEATH);
       if (!this.reducedEffects) this.damageFlash = 1;
       this.medals.onDeath();
+      this.viewmodelMotion.cancelInspect(true);
       this.playerDeaths += 1;
       const killer = this.remotePlayers.get(ev.killerId);
       this.killcam = {
@@ -2905,6 +3653,7 @@ export class Game {
         remaining: KILLCAM_DURATION_SEC,
         total: KILLCAM_DURATION_SEC,
         killerCard: ev.killerCard,
+        killerKit: this.killerKitOf(ev.killerId),
       };
       // Initialize the killcam's smoothed look-at near the killer's
       // current position so we don't whip from origin on the first
@@ -2948,6 +3697,8 @@ export class Game {
       killerName: ev.killerName,
       victimName: ev.victimName,
     });
+    // Your death: now that the kill is logged, replay it from the killer's eyes.
+    if (iAmVictim && this.killcam) this.startKillcamReplay(this.replayId(ev.killerId));
   }
 
   private pushKillfeed(
@@ -3042,6 +3793,7 @@ export class Game {
       this.killcam.remaining -= dt;
       if (this.killcam.remaining <= 0) {
         this.killcam = null;
+        this.liftKillerPlate(null);
         this.playLocalSpawnEffect(); // you materialize at your new spawn
         this.maybeAnnounceSpawn(); // occasional deploy/encouragement line
       }
@@ -3122,6 +3874,7 @@ export class Game {
         hat: this.localHat,
         emote: this.localEmote,
         title: titleById(this.localTitle).text,
+        nameColor: this.localNameColor,
       },
     ];
     if (this.bots) {
@@ -3181,6 +3934,7 @@ export class Game {
           hat: r.hat,
           emote: r.emote,
           title: r.titleText ?? titleById(r.title).text,
+          nameColor: r.nameColor,
           ping: r.ping,
           admin: r.admin,
           verified: r.verified,
@@ -3250,6 +4004,7 @@ export class Game {
       killFlash: this.killFlash ? { ...this.killFlash } : null,
       damageFlash: this.damageFlash,
       killcam: this.killcam ? { ...this.killcam } : null,
+      taunting: this.taunt !== null,
       showScoreboard: this.input.scoreboardHeld,
       matchOver: this.matchOver ? { won: this.matchWon } : null,
       netStatus: this.net?.status ?? 'off',
@@ -3354,9 +4109,10 @@ export class Game {
   }
 
   private render() {
-    if (this.replay) {
-      // Play of the Match: the ReplayPlayer owns the camera (positioned in its
-      // update() earlier this frame), so leave it untouched here.
+    if (this.taunt && (this.killcam || this.matchOver || this.vote || this.replay || this.spectator)) this.abortTaunt();
+    if (this.replay || this.killcamReplay) {
+      // Play of the Match / first-person killcam: the ReplayPlayer owns the
+      // camera (positioned in its update() earlier this frame).
     } else if (this.spectator) {
       // First-person spectator: ride the watched player's eyes + aim. Their pose
       // comes from the interpolated remote snapshot (pitch is transmitted), so we
@@ -3378,6 +4134,7 @@ export class Game {
       const killerBot = killer
         ? null
         : this.bots?.bots.find((b) => b.state.id === this.killcam!.killerId);
+      this.liftKillerPlate(killer ?? killerBot ?? null, killer ? this.net?.remotes.get(killer.id ?? '')?.looks : killerBot?.loadout);
       const targetX = killer
         ? killer.group.position.x
         : killerBot
@@ -3444,10 +4201,11 @@ export class Game {
       // viewKick is a transient upward view-punch on fire — visual only, so it
       // never alters the authoritative aim (player.pitch).
       this.camera.rotation.set(this.player.pitch - this.viewKick, this.player.yaw, 0, 'YXZ');
+      if (this.taunt) this.applyTauntCamera(cx, cy + EYE_HEIGHT, cz);
     }
     // Screen shake: jitter the camera position, decaying each frame. (Skipped
     // during the PoM replay — the ReplayPlayer owns the camera.)
-    if (!this.replay && this.shake > 1e-4) {
+    if (!this.replay && !this.killcamReplay && this.shake > 1e-4) {
       this.camera.position.x += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.y += (Math.random() * 2 - 1) * this.shake;
       this.camera.position.z += (Math.random() * 2 - 1) * this.shake;
@@ -3459,7 +4217,8 @@ export class Game {
     // zoom-out back to gameplay when the killcam ends.
     const zooming =
       this.wantZoom && this.locked && !this.killcam && !this.matchOver && !this.vote && !this.replay;
-    const targetFov = this.killcam ? KILLCAM_FOV : zooming ? this.zoomFov : this.baseFov;
+    // (The first-person killcam keeps the gameplay FOV: it should read as their screen.)
+    const targetFov = this.killcam && !this.killcamReplay ? KILLCAM_FOV : zooming ? this.zoomFov : this.baseFov;
     if (Math.abs(this.camera.fov - targetFov) > 0.01) {
       this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-18 * this.frameDt));
       this.camera.updateProjectionMatrix();
@@ -3480,7 +4239,8 @@ export class Game {
     this.viewKick *= Math.exp(-11.9 * fdt); // ≈ 0.82/frame at 60fps
     if (this.viewmodelGlow) {
       const g = 1 - Math.exp(-11.9 * fdt); // ≈ 0.18/frame approach at 60fps
-      this.viewmodelGlow.emissiveIntensity += (0.8 - this.viewmodelGlow.emissiveIntensity) * g;
+      // (Inspect holds the coils glowing so the whole gun reads.)
+      this.viewmodelGlow.emissiveIntensity += ((this.viewmodelMotion.inspecting ? 2.2 : 0.8) - this.viewmodelGlow.emissiveIntensity) * g;
     }
     // Viewmodel: show while actively playing in first person, OR while watching a
     // player in first-person spectator POV (so you see THEIR gun skin). The
@@ -3488,21 +4248,41 @@ export class Game {
     // two-stage fire kick / zoom tuck / idle breathing on top of the base
     // position + the user's offset (viewmodel-motion.ts; all exp/spring-smoothed
     // on real dt, so the feel is identical at 60fps and uncapped).
+    this.applyViewmodelV3();
+    if (this.viewmodelMotion.inspecting !== this.inspectShown) {
+      this.inspectShown = this.viewmodelMotion.inspecting;
+      this.inspectListener?.(this.inspectShown, this.currentStrangeKills());
+    }
     if (this.viewmodel) {
       const specSnap =
         this.spectator && this.spectatedId ? this.net?.remotes.get(this.spectatedId) : null;
       const specPov = !!specSnap;
+      // A replay (Play of the Match / the first-person killcam) shows the star's
+      // gun even while you're dead — only the orbit killcam hides it. A freshly
+      // built gun waits for its shaders (vmWarming) instead of stalling a frame.
+      const rp = this.replay ?? this.killcamReplay;
       this.viewmodel.visible =
-        !this.hideViewmodel && (this.locked || specPov) && !this.killcam && !this.replay;
+        !this.hideViewmodel && !this.vmWarming && (this.locked || specPov || !!rp) && (!this.killcam || !!rp) && !this.taunt;
+      if (rp && this.viewmodelRail) {
+        // Replay: the star's killstreak drives the gun's sheen as it climbs…
+        const n = rp.starStreak;
+        if (n !== this.replayVmStreak) {
+          this.replayVmStreak = n;
+          asV3(this.viewmodelRail).setStreak?.(n);
+        }
+        // …and the coils recharge from the star's last shot (match time, so
+        // slow motion slows the refill too).
+        this.viewmodelRail.setCharge(Math.min(1, rp.starSinceShot / RAIL_COOLDOWN));
+      }
       // Local first person feeds full movement state; spectator POV gets only the
       // watched player's look (idle + sway); killcam/replay coast to rest.
       const localPov = !this.spectator && !this.killcam && !this.replay;
       const p = this.player;
       const pose = this.viewmodelMotion.update({
         dt: fdt,
-        yaw: specSnap ? specSnap.yaw : p.yaw,
-        pitch: specSnap ? specSnap.pitch : p.pitch,
-        groundSpeed: localPov ? Math.hypot(p.vel.x, p.vel.z) : 0,
+        yaw: rp ? rp.camYawNow : specSnap ? specSnap.yaw : p.yaw,
+        pitch: rp ? rp.camPitchNow : specSnap ? specSnap.pitch : p.pitch,
+        groundSpeed: localPov ? Math.hypot(p.vel.x, p.vel.z) : rp ? rp.starGroundSpeed : 0,
         lateralSpeed: localPov ? p.vel.x * Math.cos(p.yaw) - p.vel.z * Math.sin(p.yaw) : 0,
         grounded: localPov ? p.onGround : true,
         zoom: zoomT,
@@ -3530,7 +4310,7 @@ export class Game {
       // Cosmetic landing dip on the camera (≤ 1.5°, zero under reduced effects),
       // added after the aim rotation was set above. The shot direction reads
       // player.pitch/yaw, never the camera, so aim is untouched.
-      if (localPov && pose.camPitch !== 0) this.camera.rotation.x += pose.camPitch;
+      if (localPov && !this.taunt && pose.camPitch !== 0) this.camera.rotation.x += pose.camPitch;
     }
     // Track the HRTF audio listener to the (now finalized) camera so spatial
     // sounds — other players' rail fire etc. — pan to where they actually are.
@@ -3544,7 +4324,12 @@ export class Game {
     // vignette follows reduced-effects each frame; the sun's shadow box is
     // re-centred under the (now finalized) camera inside render().
     this.postFx.muteVignette(this.reducedEffects);
+    if (this.replay || this.killcamReplay) this.hideLiveBodiesForReplay();
     this.postFx.render();
+    for (const g of this.tauntHidden) g.visible = true;
+    this.tauntHidden.length = 0;
+    for (const g of this.replayHidden) g.visible = true;
+    this.replayHidden.length = 0;
   }
 
   private handleResize() {

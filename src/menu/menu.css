@@ -160,17 +160,23 @@
   color: rgba(255, 255, 255, 0.7);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
-.menu-root .menu-item:disabled .menu-item-sub {
-  color: rgba(255, 255, 255, 0.3);
+.menu-root .menu-item:disabled {
+  color: rgba(255, 255, 255, 0.46); /* label only: large text, >= 3:1 */
 }
-/* The quiet nav row: sentence case, 14px. */
+.menu-root .menu-item:disabled .menu-item-sub {
+  color: rgba(255, 255, 255, 0.6); /* description stays readable (>= 4.5:1) */
+}
+/* The quiet nav row: same caps display face as the rows above, smaller. */
 .menu-root .menu-link {
-  font-family: var(--font-sans);
+  font-family: var(--font-display);
   font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  text-transform: none;
-  color: rgba(255, 255, 255, 0.62);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+.menu-root .menu-link:hover {
+  color: #fff;
 }
 .menu-dock .deck-tab {
   font-size: 12px;
@@ -432,6 +438,42 @@
   text-transform: uppercase;
   color: #fff;
 }
+/* "FREE SPIN" pip on the Locker door (a free daily spin is waiting). */
+.menu-door-spin {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.35rem;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  background: rgba(52, 224, 122, 0.16);
+  padding: 0.2rem 0.5rem;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #6df0a4;
+  white-space: nowrap;
+}
+.menu-door-spin::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34e07a;
+  box-shadow: 0 0 8px #34e07a;
+  animation: menu-spin-pip 1.4s ease-in-out infinite;
+}
+@keyframes menu-spin-pip {
+  50% {
+    transform: scale(1.4);
+    opacity: 0.65;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-door-spin::before {
+    animation: none;
+  }
+}
 .menu-door-keys {
   display: inline-flex;
   flex: none;
@@ -627,7 +669,7 @@ button.menu-reward:focus-visible {
   padding: 0.45rem 0.9rem 0.15rem;
   font-family: var(--font-sans);
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.62);
 }
 .menu-ch-group b {
   font-size: 13px;

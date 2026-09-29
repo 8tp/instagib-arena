@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { WornHat } from './hats';
+import { WornGearCtor, type GearLike } from '../economy/gear';
+import { lookKey } from '../economy/look';
+import type { Loadout } from './items/types';
 import { CharacterAnimator } from './character-anim';
 import { Character, SKIN_PALETTE, skinColorFor } from './character/character';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
@@ -43,6 +46,8 @@ export type PreviewView =
   | 'full'
   | 'head'
   | 'crown'
+  | 'face' // close-up on the visor / mask
+  | 'back' // rear three-quarter at the torso
   | 'identity'
   | 'finisher'
   | 'spawn';
@@ -61,6 +66,9 @@ export type PreviewCosmetics = {
   spawnEffect?: string; // spawn-effect cosmetic id (spawn view)
   // Accessibility: slower loops, instant camera cuts, no celebration bursts.
   reducedEffects?: boolean;
+  // Economy v3: the Looks to wear (hat / face / back go to the wearable
+  // builders when present; the legacy hatId/unusualId fields are the fallback).
+  looks?: Loadout;
 };
 
 export type PreviewOptions = {
@@ -84,6 +92,8 @@ const FRAMES: Record<PreviewView, Framing> = {
   full: { tx: 0, ty: 1.0, tz: 0, dist: 4.7, elev: 0.3, fov: 30 },
   head: { tx: 0, ty: 1.52, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
   crown: { tx: 0, ty: 1.66, tz: 0, dist: 2.4, elev: 0.1, fov: 30 },
+  face: { tx: 0, ty: 1.58, tz: 0, dist: 1.55, elev: 0.04, fov: 30 },
+  back: { tx: 0, ty: 1.2, tz: 0, dist: 3.5, elev: 0.14, fov: 30 },
   character: { tx: 0, ty: 1.66, tz: 0, dist: 2.05, elev: 0.1, fov: 30 },
   identity: { tx: 0, ty: 1.3, tz: 0, dist: 4.4, elev: 0.1, fov: 30 },
   emote: { tx: 0, ty: 1.08, tz: 0, dist: 5.3, elev: 0.25, fov: 30 },
@@ -208,6 +218,9 @@ export class CharacterPreview {
   private character: Character | null = null;
   private anim: CharacterAnimator | null = null;
   private hat: WornHat | null = null;
+  private gear: GearLike | null = null;
+  private baseYaw = 0; // view-dependent turn (back view shows the rear 3/4)
+  private baseYawTarget = 0;
   private emoteGun: AttachedRailgun | null = null;
   private emoteGunFinish = '';
   // Finisher dummy (lazy).
@@ -449,8 +462,26 @@ export class CharacterPreview {
     this.subject.add(ch.root);
     this.anim = new CharacterAnimator(ch, { driveYaw: false, holdGun: false });
     this.hat = new WornHat(ch.sockets.headTop);
-    void this.hat.setHat(this.cos.hatId).then(() => this.measureHat());
-    this.hat.setUnusual(this.cos.unusualId);
+    if (WornGearCtor) {
+      // Wearable builders own hat / face / back (and the unusual on the hat).
+      this.gear = new WornGearCtor(ch);
+      this.syncGear(undefined);
+    } else {
+      void this.hat.setHat(this.cos.hatId).then(() => this.measureHat());
+      this.hat.setUnusual(this.cos.unusualId);
+    }
+  }
+
+  private syncGear(prev: PreviewCosmetics | undefined) {
+    const g = this.gear;
+    if (!g) return;
+    for (const slot of ['hat', 'face', 'back'] as const) {
+      const now = this.cos.looks?.[slot];
+      const before = prev?.looks?.[slot];
+      if (prev && (now ? lookKey(now) : '') === (before ? lookKey(before) : '')) continue;
+      g.setLook(slot, now ?? null);
+    }
+    this.measureHat();
   }
 
   private ensureDummy() {
@@ -548,6 +579,8 @@ export class CharacterPreview {
     }
     this.loopT = 0;
     this.spawnFired = false;
+    this.baseYawTarget = v === 'back' ? -2.55 : 0; // rear 3/4 (subject faces +Z after FACE_CAMERA)
+    if (first) this.baseYaw = this.baseYawTarget;
     // Each new framing starts facing the camera; the subject spin resets.
     if (!first) {
       this.yaw = 0;
@@ -566,7 +599,8 @@ export class CharacterPreview {
       // Changing the finish while switching → the view build picks it up.
       this.applyView();
     }
-    if (this.hat) {
+    if (this.gear) this.syncGear(prev);
+    else if (this.hat) {
       if (cos.hatId !== prev.hatId) void this.hat.setHat(cos.hatId).then(() => this.measureHat());
       if (cos.unusualId !== prev.unusualId) this.hat.setUnusual(cos.unusualId);
     }
@@ -615,7 +649,7 @@ export class CharacterPreview {
   }
 
   private anchorAllowed() {
-    return this.view === 'identity' || this.view === 'full' || this.view === 'head' || this.view === 'crown' || this.view === 'character';
+    return this.view === 'identity' || this.view === 'full' || this.view === 'head' || this.view === 'crown' || this.view === 'character' || this.view === 'face';
   }
 
   // Equip / unlock flourish: a spawn ring at the combatant's feet.
@@ -749,6 +783,11 @@ export class CharacterPreview {
 
   // World height of the worn hat's top (bare helmet: the crest).
   private measureHat() {
+    if (this.gear) {
+      const y = this.gear.headTopY();
+      this.hatTopY = y > 1.5 ? Math.min(2.6, y) : 1.8;
+      return;
+    }
     const socket = this.character?.sockets.headTop;
     if (!socket || this.disposed) return;
     socket.updateWorldMatrix(true, true);
@@ -802,7 +841,8 @@ export class CharacterPreview {
     this.swayW += (swayTarget - this.swayW) * (1 - Math.exp(-1.2 * dt));
     const amp = this.view === 'character' ? 0.7 : this.view === 'head' || this.view === 'crown' ? 0.42 : this.view === 'weapon' ? 0.3 : 0.2;
     const sway = this.cos.reducedEffects ? 0 : Math.sin(this.t * 0.5) * amp * this.swayW;
-    this.subject.rotation.y = FACE_CAMERA + this.yaw + sway;
+    this.baseYaw += (this.baseYawTarget - this.baseYaw) * (this.cos.reducedEffects ? 1 : 1 - Math.exp(-5 * dt));
+    this.subject.rotation.y = FACE_CAMERA + this.baseYaw + this.yaw + sway;
     // The gun points its barrel to screen-right and a little into depth.
     this.gunPivot.rotation.set(0.06, -0.58 + this.yaw + sway, 0.03);
   }
@@ -844,6 +884,7 @@ export class CharacterPreview {
     else if (this.view === 'weapon') this.stepWeapon(dt, slow);
     if (this.view !== 'weapon' && this.view !== 'finisher') this.anim?.updateStatic(dt);
     this.hat?.update(dt);
+    this.gear?.update(dt);
     if (this.dummy?.root.visible) this.dummyAnim?.updateStatic(dt);
     this.effects.step(dt, this.scene);
     this.placeAnchor();
@@ -942,6 +983,7 @@ export class CharacterPreview {
     this.orbitOff?.();
     this.orbitOff = null;
     this.hat?.dispose();
+    this.gear?.dispose();
     disposeRailgun(this.emoteGun);
     this.emoteGun = null;
     this.anim?.dispose();

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { DeckButton, DeckTab, ModalShell, TextButton } from './deck';
+import { Field } from './panels/parts';
 
 // Client auth: guest by default, optional account. The session lives in an
 // httpOnly cookie set by the server, so the client only holds the username (or
@@ -84,20 +85,39 @@ export function useAuth(): AuthApi {
   return { account, ready, login, register, logout };
 }
 
-const ERRORS: Record<string, string> = {
-  bad_username: 'Username must be 3–20 letters, numbers, or _',
-  bad_password: 'Password must be at least 6 characters',
-  taken: 'That username is taken',
-  reserved: 'That username is reserved — pick another',
-  profane: 'That username isn’t allowed — pick another',
-  invalid: 'Wrong username or password',
-  rate_limited: 'Too many attempts — wait a minute',
-  network: 'Network error — try again',
+// Server error code → which field it belongs to + the message. Anything not
+// field-specific (wrong password, rate limit, network) shows as a form alert.
+const ERRORS: Record<string, { field?: 'username' | 'password'; text: string }> = {
+  bad_username: { field: 'username', text: 'Use 3–20 letters, numbers, or underscores.' },
+  bad_password: { field: 'password', text: 'Use at least 6 characters.' },
+  taken: { field: 'username', text: 'That username is taken.' },
+  reserved: { field: 'username', text: 'That username is reserved. Pick another.' },
+  profane: { field: 'username', text: 'That username isn’t allowed. Pick another.' },
+  invalid: { text: 'Wrong username or password.' },
+  rate_limited: { text: 'Too many attempts. Wait a minute and try again.' },
+  network: { text: 'Network error. Check your connection and try again.' },
 };
+
+// Mirrors server/auth.ts (the server stays authoritative).
+const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
+type FieldErrors = { username?: string; password?: string; email?: string };
+
+function validate(mode: 'login' | 'register', username: string, password: string, email: string): FieldErrors {
+  const e: FieldErrors = {};
+  const u = username.trim();
+  if (!u) e.username = 'Enter a username.';
+  else if (mode === 'register' && !USERNAME_RE.test(u)) e.username = 'Use 3–20 letters, numbers, or underscores.';
+  if (!password) e.password = 'Enter a password.';
+  else if (mode === 'register' && password.length < 6) e.password = 'Use at least 6 characters.';
+  if (mode === 'register' && email.trim() && !/^\S+@\S+\.\S+$/.test(email.trim())) e.email = 'That doesn’t look like an email address.';
+  return e;
+}
 
 // Login / Register sheet. `mode` is the initial tab. Deck ModalShell (fixed:
 // it opens over the lobby root and over onboarding) with the two modes as a
 // tab row under the title; Escape / backdrop / "Stay a guest" all dismiss.
+// Fields validate on blur and on submit; server errors land on the field they
+// belong to (or as a form-level alert for wrong password / rate limit).
 export function LoginModal({
   auth,
   onClose,
@@ -111,21 +131,44 @@ export function LoginModal({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
-  const [err, setErr] = useState<string | null>(null);
+  const [showPw, setShowPw] = useState(false);
+  const [touched, setTouched] = useState<Partial<Record<keyof FieldErrors, boolean>>>({});
+  const [serverErr, setServerErr] = useState<{ field?: 'username' | 'password'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const formId = useId();
+  const formRef = useRef<HTMLFormElement>(null);
+
+  const errors = validate(mode, username, password, email);
+  const shown = (k: keyof FieldErrors): string | null =>
+    (touched[k] ? errors[k] : undefined) ??
+    (serverErr?.field === k ? serverErr.text : undefined) ??
+    null;
+  const touch = (k: keyof FieldErrors) => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
 
   const submit = async (close: () => void) => {
     if (busy) return;
+    setTouched({ username: true, password: true, email: true });
+    const bad = (['username', 'password', 'email'] as const).find((k) => errors[k]);
+    if (bad) {
+      formRef.current?.querySelector<HTMLInputElement>(`[name="${bad}"]`)?.focus();
+      return;
+    }
     setBusy(true);
-    setErr(null);
+    setServerErr(null);
     const code =
       mode === 'login'
         ? await auth.login(username.trim(), password)
         : await auth.register(username.trim(), password, email.trim());
     setBusy(false);
-    if (code) setErr(ERRORS[code] ?? 'Something went wrong');
-    else close();
+    if (code) {
+      const e = ERRORS[code] ?? { text: 'Something went wrong. Try again.' };
+      setServerErr(e);
+      if (e.field) formRef.current?.querySelector<HTMLInputElement>(`[name="${e.field}"]`)?.focus();
+    } else close();
   };
+
+  const formLevelErr = serverErr && !serverErr.field ? serverErr.text : null;
+  const register = mode === 'register';
 
   return (
     <ModalShell
@@ -133,6 +176,7 @@ export function LoginModal({
       onClose={onClose}
       fixed
       z='z-[70]'
+      size='sm'
       header={
         <div role='tablist' aria-label='Account mode' className='-mx-2 -mt-1 -mb-3 flex'>
           {(['register', 'login'] as const).map((m) => (
@@ -141,7 +185,8 @@ export function LoginModal({
               active={mode === m}
               onClick={() => {
                 setMode(m);
-                setErr(null);
+                setServerErr(null);
+                setTouched({});
               }}
             >
               {m === 'register' ? 'Create account' : 'Log in'}
@@ -154,69 +199,124 @@ export function LoginModal({
           <TextButton onClick={close} sound='uiBack'>
             Stay a guest
           </TextButton>
-          <DeckButton onClick={() => submit(close)} disabled={busy} solid accent='cyan' center>
-            {busy ? '…' : mode === 'register' ? 'Create account' : 'Log in'}
+          <DeckButton
+            type='submit'
+            form={formId}
+            onClick={() => void submit(close)}
+            disabled={busy}
+            solid
+            accent='emerald'
+            center
+          >
+            {busy ? 'Working…' : register ? 'Create account' : 'Log in'}
           </DeckButton>
         </>
       )}
     >
       {({ close }) => (
-        <>
-          <div className='flex flex-col gap-4'>
-            <p className='text-[12px] leading-relaxed text-white/50'>
-              {mode === 'register'
-                ? 'Create an account to save your XP, levels, credits, and cosmetics, and climb the leaderboards. Email is optional (for password recovery).'
-                : 'Log in to pick up your progress on any device.'}
+        <form
+          id={formId}
+          ref={formRef}
+          noValidate
+          className='flex flex-col gap-4'
+          onSubmit={(e) => {
+            e.preventDefault();
+          }}
+          onKeyDown={(e) => {
+            // Enter in a field submits (the footer button owns click).
+            if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
+              e.preventDefault();
+              void submit(close);
+            }
+          }}
+        >
+          {register ? (
+            <ul className='flex flex-col gap-1.5 border-b border-white/[0.07] pb-4'>
+              <li className='pn-perk'>Keep your XP, levels, credits and cosmetics on any device</li>
+              <li className='pn-perk'>Appear on the leaderboards and play Ranked Duel</li>
+            </ul>
+          ) : (
+            <p className='font-sans border-b border-white/[0.07] pb-4 text-[12px] leading-relaxed text-white/65'>
+              Log in to pick up your progress on any device.
             </p>
-            <label className='flex flex-col gap-1.5'>
-              <span className='deck-label'>Username</span>
+          )}
+
+          <Field label='Username' error={shown('username')} hint={register ? '3–20 letters, numbers or _' : undefined}>
+            {(p) => (
               <input
+                {...p}
+                name='username'
                 autoFocus
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submit(close)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  if (serverErr?.field === 'username') setServerErr(null);
+                }}
+                onBlur={() => username && touch('username')}
                 maxLength={20}
                 autoComplete='username'
-                placeholder='3–20 letters, numbers, _'
+                autoCapitalize='off'
+                spellCheck={false}
                 className='deck-input'
               />
-            </label>
-            <label className='flex flex-col gap-1.5'>
-              <span className='deck-label'>Password</span>
-              <input
-                type='password'
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submit(close)}
-                maxLength={200}
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                placeholder='At least 6 characters'
-                className='deck-input'
-              />
-            </label>
-            {mode === 'register' && (
-              <label className='flex flex-col gap-1.5'>
-                <span className='deck-label'>
-                  Email <span className='text-white/30'>(optional)</span>
-                </span>
+            )}
+          </Field>
+
+          <Field label='Password' error={shown('password')} hint={register ? 'At least 6 characters' : undefined}>
+            {(p) => (
+              <div className='relative'>
                 <input
+                  {...p}
+                  name='password'
+                  type={showPw ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (serverErr?.field === 'password') setServerErr(null);
+                  }}
+                  onBlur={() => password && touch('password')}
+                  maxLength={200}
+                  autoComplete={register ? 'new-password' : 'current-password'}
+                  className='deck-input pr-16'
+                />
+                <button
+                  type='button'
+                  onClick={() => setShowPw((v) => !v)}
+                  aria-pressed={showPw}
+                  className='absolute inset-y-0 right-0 px-3 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45 transition hover:text-white/85'
+                >
+                  {showPw ? 'Hide' : 'Show'}
+                </button>
+              </div>
+            )}
+          </Field>
+
+          {register && (
+            <Field label='Email' optional error={shown('email')} hint='Only used for password recovery'>
+              {(p) => (
+                <input
+                  {...p}
+                  name='email'
                   type='email'
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submit(close)}
+                  onBlur={() => email && touch('email')}
                   autoComplete='email'
-                  placeholder='for password recovery'
                   className='deck-input'
                 />
-              </label>
-            )}
-            {err && (
-              <div role='alert' className='text-[12px] text-rose-300'>
-                {err}
-              </div>
-            )}
-          </div>
-        </>
+              )}
+            </Field>
+          )}
+
+          {formLevelErr && (
+            <div
+              role='alert'
+              className='clip-deck-sm border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-200'
+            >
+              {formLevelErr}
+            </div>
+          )}
+        </form>
       )}
     </ModalShell>
   );

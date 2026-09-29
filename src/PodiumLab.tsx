@@ -1,26 +1,37 @@
 import { useEffect, useRef } from 'react';
 import { PodiumScene, type PodiumWinner } from './game/podium';
 import { EMOTES } from './game/cosmetics';
+import type { Loadout } from './game/items/types';
 
 // Dev-only verification harness for the end-of-match podium. Visit /podiumlab to
 // see the 3-pedestal scene with assorted hats + every emote, without playing a
 // full match (pointer-lock is blocked headless). Not linked anywhere in the UI.
 // URL params (for screenshots): ?e1=emote.flex&e2=emote.salute&e3=emote.beckon
-// &h1=hat.crown&h2=…&h3=… (emote/hat ids for places 1–3).
+// &h1=hat.crown&h2=…&h3=… (emote/hat ids for places 1–3); &low=1 (lowSpec tier) &reduced=1 (reducedEffects).
 const MOCK: PodiumWinner[] = [
   { place: 1, name: 'Champion', score: 25, hatId: 'hat.hardhat', emoteId: 'emote.cheer' },
   { place: 2, name: 'Runner-Up', score: 21, hatId: 'hat.propeller', emoteId: 'emote.dance' },
   { place: 3, name: 'Bronze', score: 18, hatId: 'hat.tophat', emoteId: 'emote.wave' },
 ];
 
+const FULL_LOOKS: Record<number, Loadout> = {
+  1: { face: { d: 'face.shades' }, back: { d: 'back.jetpack' } },
+  2: { face: { d: 'face.monocle' }, back: { d: 'back.quiver' } },
+  3: { face: { d: 'face.cyber' }, back: { d: 'back.katana' } },
+};
+
 function winnersFromUrl(): PodiumWinner[] {
   const q = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   if (!q) return MOCK;
-  return MOCK.map((m) => ({
-    ...m,
-    emoteId: q.get(`e${m.place}`) ?? m.emoteId,
-    hatId: q.get(`h${m.place}`) ?? m.hatId,
-  }));
+  return MOCK.map((m) => {
+    const hatId = q.get(`h${m.place}`) ?? m.hatId;
+    // Full looks (hat + face + back) by default; ?plain=1 = hat-only legacy path.
+    const looks =
+      q.get('plain') === '1'
+        ? undefined
+        : { hat: { d: hatId }, ...(FULL_LOOKS[m.place] ?? {}) };
+    return { ...m, emoteId: q.get(`e${m.place}`) ?? m.emoteId, hatId, looks };
+  });
 }
 
 export default function PodiumLab() {
@@ -30,7 +41,8 @@ export default function PodiumLab() {
     const canvas = ref.current;
     if (!canvas) return;
     const base = winnersFromUrl();
-    const scene = new PodiumScene(canvas);
+    const q = new URLSearchParams(window.location.search);
+    const scene = new PodiumScene(canvas, { lowSpec: q.get('low') === '1', reducedEffects: q.get('reduced') === '1' });
     void scene.setWinners(base);
     scene.start();
     const onResize = () => scene.resize();

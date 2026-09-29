@@ -72,6 +72,8 @@ export type PlayerScore = {
   // Equipped title flair text ('' / undefined = none). Shown under the name on
   // the scoreboard; broadcast for online players, local for the player themself.
   title?: string;
+  // Equipped nameplate-colour cosmetic id (e.g. 'name.gold'); tints the scoreboard name.
+  nameColor?: string;
   // Round-trip ping (ms) for online players; undefined for bots / offline.
   ping?: number;
   // Account moderation flags (online only): staff badge + verified blue check.
@@ -169,6 +171,17 @@ export type KillcamState = {
   remaining: number;
   total: number;
   killerCard?: CardPayload; // the killer's playercard (shown on the death screen)
+  // What the killer was holding (from their equipped Looks): the gun with its
+  // qualities and their finisher — shown on the killcam card when known.
+  killerKit?: { weapon: string; weaponKills?: number; finisher: string };
+  // True while the killcam is the first-person replay through the killer's eyes
+  // (their gun + crosshair); false/absent = the orbit cam fallback.
+  pov?: boolean;
+  // The killer's crosshair share-code for the POV killcam ('' = the viewer's own).
+  crosshairCode?: string;
+  // Bumps when the replayed kill lands (hit-marker + the slow-mo flash).
+  hitId?: number;
+  hitHeadshot?: boolean;
 };
 
 export type NetStatus = 'off' | 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -200,6 +213,21 @@ export type PomState = {
   // can flash a hit-marker (clarifies what's happening). `hitHeadshot` colours it.
   hitId: number;
   hitHeadshot: boolean;
+  // The star's kills in this clip: the overlay shows one tick per kill, lit as
+  // each one lands (hitId counts the landed ones).
+  killTotal?: number;
+  // The star's own crosshair (share-code; '' = draw the viewer's): online players echo theirs.
+  crosshairCode?: string;
+  // The star's setup for the Play of the Match title card (from their recorded Looks).
+  kit?: {
+    weapon: string;
+    weaponKills?: number;
+    finisher: string;
+    title: string;
+    cardBg: string;
+    cardAccent: string;
+    nameColor: string;
+  };
 };
 
 // Live net diagnostics for the in-match debug overlay (toggle). Read-only — used
@@ -243,6 +271,7 @@ export type HudState = {
   killFlash: KillFlash | null;
   damageFlash: number; // 0..1 red "you were hit" vignette intensity (decays)
   killcam: KillcamState | null;
+  taunting: boolean; // the 3rd-person taunt camera is out (centre prints stand down)
   showScoreboard: boolean;
   matchOver: { won: boolean } | null; // non-null freezes the match → results screen
   netStatus: NetStatus;
