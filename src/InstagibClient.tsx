@@ -1982,7 +1982,7 @@ const InvulnPill = memo(function InvulnPill({ secs }: { secs: string }) {
         }}
       />
       {/* Under the score boxes (top-centre belongs to them). */}
-      <div className='absolute left-1/2 top-[5.75rem] flex -translate-x-1/2 items-center gap-2 border-t-2 border-cyan-300 bg-black/55 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-100'>
+      <div className='hud-panel absolute left-1/2 top-[5.9rem] flex -translate-x-1/2 items-center gap-2 border-t-2 !border-t-cyan-300 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-100'>
         <span>Spawn shield</span>
         <span className='tabular-nums text-white/90'>{secs}s</span>
       </div>
@@ -2092,11 +2092,11 @@ const NetStatusPill = memo(function NetStatusPill({
   peers: number;
   rttMs: number;
 }) {
-  const color =
-    status === 'open' ? 'bg-emerald-400/85 text-emerald-950' :
-    status === 'connecting' ? 'bg-amber-400/85 text-amber-950' :
-    status === 'closed' || status === 'error' ? 'bg-rose-400/85 text-rose-950' :
-    'bg-white/15 text-white/70';
+  const dot =
+    status === 'open' ? 'bg-emerald-400' :
+    status === 'connecting' ? 'bg-amber-400' :
+    status === 'closed' || status === 'error' ? 'bg-rose-400' :
+    'bg-white/40';
   const label =
     status === 'open' ? `LIVE · ${peers} · ${rttMs}ms` :
     status === 'connecting' ? 'connecting…' :
@@ -2106,7 +2106,8 @@ const NetStatusPill = memo(function NetStatusPill({
   // Bottom-left (above the Speed readout): the top-right column is the killfeed +
   // FPS, and the pill used to paint over the 2nd killfeed row in any live match (#12).
   return (
-    <div className={`absolute bottom-[5.5rem] left-6 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] ${color}`}>
+    <div className='hud-panel absolute bottom-[5.5rem] left-6 flex items-center gap-1.5 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-white/85'>
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       {label}
     </div>
   );
@@ -2454,7 +2455,7 @@ const TOAST_FADE_LEAD_MS = TOAST_FADE_SEC * 1000;
 const ToastStack = memo(function ToastStack({ toasts }: { toasts: ToastEntry[] }) {
   const chips = useExitList(toasts, { exitMs: HUD_EXIT_MS, leadMs: TOAST_FADE_LEAD_MS });
   return (
-    <div className='absolute right-5 top-[13.5rem] flex flex-col items-end gap-[3px]'>
+    <div className='absolute right-5 top-[13.75rem] flex flex-col items-end gap-1'>
       {chips.map(({ item, leaving }) => (
         <ToastChip key={item.id} toast={item} leaving={leaving} />
       ))}
@@ -2472,7 +2473,7 @@ const ToastChip = memo(function ToastChip({
   const colors = tierColors(toast.tier);
   return (
     <div
-      className={`hud-chip flex items-center gap-2 border-l-2 ${colors.border} bg-black/60 px-3 py-1 font-mono text-xs${
+      className={`hud-chip hud-panel flex items-center gap-2 border-l-[3px] ${colors.border} px-3 py-1 font-mono text-xs${
         leaving ? ' hud-leaving' : ''
       }`}
       style={hudTiming(toast.remaining, toast.total, TOAST_FADE_LEAD_MS)}
@@ -2501,7 +2502,7 @@ const TrainingPanel = memo(function TrainingPanel({ t }: { t: TrainingHud }) {
   );
   return (
     <div className='pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 font-mono'>
-      <div className='flex items-center gap-1 rounded-lg border border-amber-400/25 bg-black/55 px-2 py-2 backdrop-blur-sm'>
+      <div className='hud-panel flex items-center gap-1 !border-amber-400/25 px-2 py-2'>
         <div className='px-3 text-[10px] uppercase leading-tight tracking-[0.18em] text-amber-300/90'>
           Training<br />Range
         </div>
@@ -2530,8 +2531,8 @@ const MiniLeaderboard = memo(function MiniLeaderboard({ scores }: { scores: Play
   const row = (s: PlayerScore, rank: number) => (
     <div
       key={s.id}
-      className={`flex items-center gap-2 px-2.5 py-[3px] ${
-        s.isLocal ? 'bg-cyan-400/15 shadow-[inset_2px_0_0_#67e8f9]' : 'bg-black/40'
+      className={`hud-panel flex items-center gap-2 px-2.5 py-[3px] ${
+        s.isLocal ? '!border-cyan-300/40 !bg-cyan-400/15 shadow-[inset_3px_0_0_#67e8f9]' : ''
       }`}
     >
       <span className='w-4 shrink-0 text-right tabular-nums text-white/40'>{rank}</span>
@@ -2546,11 +2547,11 @@ const MiniLeaderboard = memo(function MiniLeaderboard({ scores }: { scores: Play
     </div>
   );
   return (
-    <div className='absolute left-5 top-5 flex w-56 flex-col gap-px font-mono text-[12px]' aria-label='Leaderboard'>
+    <div className='absolute left-5 top-5 flex w-56 flex-col gap-[3px] font-mono text-[12px]' aria-label='Leaderboard'>
       {top.map((s) => row(s, scores.filter((o) => o.frags > s.frags).length + 1))}
       {you && <div className='mt-1'>{row(you, localIndex + 1)}</div>}
-      <div className='mt-1 flex items-center gap-1.5 self-start bg-black/40 px-2 py-[2px] font-sans text-[11px] text-white/60'>
-        <kbd className='border border-white/25 px-1 font-mono text-[9px] font-bold leading-[1.4] text-white/80'>Tab</kbd>
+      <div className='hud-panel mt-1 flex items-center gap-1.5 self-start px-2 py-[2px] font-sans text-[11px] text-white/60'>
+        <kbd className='rounded-[3px] border border-white/25 px-1 font-mono text-[9px] font-bold leading-[1.4] text-white/80'>Tab</kbd>
         scoreboard
       </div>
     </div>
@@ -2859,7 +2860,7 @@ const AirJumpPip = memo(function AirJumpPip({ left, max }: { left: number; max: 
 const FpsCounter = memo(function FpsCounter({ fps }: { fps: number }) {
   const color = fps >= 55 ? 'text-emerald-300' : fps >= 30 ? 'text-amber-300' : 'text-rose-300';
   return (
-    <div className='absolute right-6 top-2 font-mono text-[11px] tabular-nums text-white/70'>
+    <div className='hud-panel absolute right-5 top-0.5 px-1.5 font-mono text-[10px] tabular-nums text-white/70'>
       <span className={`mr-1 font-bold ${color}`}>{fps}</span>
       <span className='text-white/40'>fps</span>
     </div>

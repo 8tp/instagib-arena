@@ -45,6 +45,7 @@ export type RosterEntry = {
   emote: string;
   title: string;
   titleText?: string; // server-resolved flair (dynamic ranked title → "#N"/tier)
+  nameColor: string; // equipped nameplate-colour cosmetic id
   admin: boolean;
   verified: boolean;
   frags: number;
@@ -1254,6 +1255,7 @@ export class NetClient {
         emote: m.emote,
         title: m.title,
         titleText: m.titleText,
+        nameColor: m.nameColor,
         admin: m.admin,
         verified: m.verified,
         frags: s?.frags ?? 0,

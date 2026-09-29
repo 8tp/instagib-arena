@@ -72,6 +72,8 @@ export type PlayerScore = {
   // Equipped title flair text ('' / undefined = none). Shown under the name on
   // the scoreboard; broadcast for online players, local for the player themself.
   title?: string;
+  // Equipped nameplate-colour cosmetic id (e.g. 'name.gold'); tints the scoreboard name.
+  nameColor?: string;
   // Round-trip ping (ms) for online players; undefined for bots / offline.
   ping?: number;
   // Account moderation flags (online only): staff badge + verified blue check.
