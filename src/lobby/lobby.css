@@ -1,0 +1,429 @@
+/* ── Online lobby + match setup ───────────────────────────────────────────
+   Server browser, players/chat panels, create-match dialogs and the in-match
+   flow overlays. Same grammar as menu.css / the deck: near-black clipped
+   panels, hairlines, cyan = selection, emerald = go, amber/rose = warning.
+   Everything animated is CSS and switched off under reduced motion. */
+
+/* ── Field label ────────────────────────────────────────────────────────── */
+.lb-field-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+.lb-field-label b {
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.08em;
+}
+
+/* ── Mode cards (segmented control with a blurb) ────────────────────────── */
+.lb-mode {
+  clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.55rem 0.7rem 0.6rem;
+  text-align: left;
+  transition:
+    border-color 0.12s,
+    background-color 0.12s;
+}
+.lb-mode:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+.lb-mode[aria-checked='true'] {
+  border-color: rgba(103, 232, 249, 0.7);
+  background: rgba(103, 232, 249, 0.13);
+}
+.lb-mode:focus-visible,
+.lb-map:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(34, 211, 238, 0.8);
+}
+.lb-mode-name {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.8);
+}
+.lb-mode[aria-checked='true'] .lb-mode-name {
+  color: #cffafe;
+}
+.lb-mode-sub {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+/* ── Map cards ──────────────────────────────────────────────────────────── */
+.lb-maps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+@media (min-width: 640px) {
+  .lb-maps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.lb-map {
+  clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0b0c0f;
+  padding: 0;
+  text-align: left;
+  transition: border-color 0.12s;
+}
+.lb-map:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+.lb-map[aria-checked='true'] {
+  border-color: rgba(103, 232, 249, 0.85);
+}
+.lb-map-shot {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background-size: cover;
+  background-position: center;
+  transition: filter 0.2s;
+  filter: saturate(0.7) brightness(0.8);
+}
+.lb-map:hover .lb-map-shot,
+.lb-map[aria-checked='true'] .lb-map-shot {
+  filter: none;
+}
+.lb-map-shot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(6, 8, 12, 0.92), transparent 62%);
+}
+.lb-map-meta {
+  position: absolute;
+  inset: auto 0 0 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem 0.4rem;
+}
+.lb-map-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.lb-map-tag {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+.lb-map-check {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.5rem;
+  z-index: 1;
+  display: none;
+  height: 1.1rem;
+  width: 1.1rem;
+  align-items: center;
+  justify-content: center;
+  background: rgb(103, 232, 249);
+  color: #04262c;
+}
+.lb-map[aria-checked='true'] .lb-map-check {
+  display: flex;
+}
+
+/* ── Stat row (label left, value right) ─────────────────────────────────── */
+.lb-note {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── Server browser ─────────────────────────────────────────────────────── */
+.lb-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0 0.75rem 0.4rem;
+}
+.lb-chipbtn {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.15rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  transition:
+    border-color 0.12s,
+    color 0.12s,
+    background-color 0.12s;
+}
+.lb-chipbtn:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+.lb-chipbtn[aria-pressed='true'] {
+  border-color: rgba(103, 232, 249, 0.6);
+  background: rgba(103, 232, 249, 0.13);
+  color: #cffafe;
+}
+.lb-chipbtn:focus-visible {
+  outline: 2px solid rgba(34, 211, 238, 0.8);
+  outline-offset: 1px;
+}
+
+.lb-room {
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.035);
+  padding: 0.55rem;
+  transition:
+    border-color 0.14s,
+    background-color 0.14s;
+}
+.lb-room:hover,
+.lb-room:focus-within {
+  border-color: rgba(103, 232, 249, 0.35);
+  background: rgba(255, 255, 255, 0.06);
+}
+.lb-room-shot {
+  position: relative;
+  flex-shrink: 0;
+  height: 2.75rem;
+  width: 4.5rem;
+  background-size: cover;
+  background-position: center;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.lb-fill {
+  height: 3px;
+  width: 100%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+.lb-fill > i {
+  display: block;
+  height: 100%;
+  background: rgb(52, 211, 153);
+}
+.lb-fill[data-full='true'] > i {
+  background: rgb(251, 191, 36);
+}
+
+/* Centred empty / loading / error block */
+.lb-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 2rem 1.25rem;
+  text-align: center;
+}
+.lb-state-icon {
+  display: flex;
+  height: 2.75rem;
+  width: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 0.35rem;
+}
+.lb-state-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ── Players + chat ─────────────────────────────────────────────────────── */
+.lb-avatar {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  height: 1.75rem;
+  width: 1.75rem;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #fff;
+  background: hsl(var(--h, 190) 45% 30%);
+  border: 1px solid hsl(var(--h, 190) 60% 55% / 0.55);
+}
+.lb-avatar[data-guest='true'] {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.5);
+}
+.lb-avatar-sm {
+  height: 1.4rem;
+  width: 1.4rem;
+  font-size: 11px;
+}
+.lb-player {
+  clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.35rem 0.55rem;
+}
+.lb-player[data-you='true'] {
+  border-color: rgba(103, 232, 249, 0.4);
+  background: rgba(103, 232, 249, 0.08);
+}
+.lb-dot {
+  display: inline-block;
+  height: 6px;
+  width: 6px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+}
+
+.lb-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+.lb-bubble {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.3rem 0.6rem 0.4rem;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.lb-msg[data-mine='true'] .lb-bubble {
+  border-color: rgba(103, 232, 249, 0.28);
+  background: rgba(103, 232, 249, 0.09);
+}
+.lb-chat-input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.4);
+  padding: 0.5rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: #fff;
+  outline: none;
+  transition:
+    border-color 0.12s,
+    background-color 0.12s;
+}
+.lb-chat-input::placeholder {
+  color: rgba(255, 255, 255, 0.32);
+}
+.lb-chat-input:focus {
+  border-color: rgba(103, 232, 249, 0.7);
+}
+.lb-chat-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Flow overlays (waiting / disconnected / join error) ────────────────── */
+.lb-hero-icon {
+  position: relative;
+  display: flex;
+  height: 4rem;
+  width: 4rem;
+  align-items: center;
+  justify-content: center;
+  margin: 0.25rem auto 0;
+  clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+  border: 1px solid var(--lb-c, rgba(103, 232, 249, 0.5));
+  background: color-mix(in srgb, var(--lb-c, #67e8f9) 12%, transparent);
+  color: var(--lb-c, #67e8f9);
+}
+.lb-hero-icon[data-tone='rose'] {
+  --lb-c: #fb7185;
+}
+.lb-hero-icon[data-tone='amber'] {
+  --lb-c: #fbbf24;
+}
+.lb-hero-icon[data-tone='emerald'] {
+  --lb-c: #34d399;
+}
+.lb-ping::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--lb-c, #67e8f9);
+  opacity: 0;
+  animation: lb-ping 1.8s ease-out infinite;
+}
+@keyframes lb-ping {
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+.lb-spin {
+  animation: lb-spin 1.1s linear infinite;
+  transform-origin: center;
+}
+@keyframes lb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.lb-copy-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lb-ping::before,
+  .lb-spin {
+    animation: none;
+  }
+}

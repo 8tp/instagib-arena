@@ -147,6 +147,9 @@ export function createOffer(fromId: string, o: OfferInput): TradeResult<{ trade:
     if (econState(fromId).credits < giveCredits) return { ok: false, error: 'insufficient', need: giveCredits };
     const pending = (q(`SELECT COUNT(*) AS n FROM instagib_trades WHERE from_id = ? AND state = 'pending'`).get(fromId) as { n: number }).n;
     if (pending >= 10) return { ok: false, error: 'too_many_pending', need: 10 };
+    // Bound the recipient's inbox too (N senders × 10 each would be unbounded).
+    const inbox = (q(`SELECT COUNT(*) AS n FROM instagib_trades WHERE to_id = ? AND state = 'pending'`).get(target.id) as { n: number }).n;
+    if (inbox >= 40) return { ok: false, error: 'partner_inbox_full', need: 40 };
     const info = q(
       `INSERT INTO instagib_trades (from_id, to_id, give, get, give_credits, get_credits, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(fromId, target.id, JSON.stringify(give), JSON.stringify(get), giveCredits, getCredits, note, now);
