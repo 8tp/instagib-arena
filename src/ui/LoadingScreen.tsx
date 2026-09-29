@@ -145,7 +145,12 @@ export const LoadingScreen = memo(function LoadingScreen({
             </p>
           )}
         </div>
-        <ol className='w-full max-w-[21rem] shrink-0 font-mono text-[12px] uppercase tracking-[0.14em]'>
+        <div className='w-full max-w-[21rem] shrink-0'>
+        <div className='mb-2 flex items-baseline justify-between border-b border-white/15 pb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-white/50'>
+          <span>{completed ? 'Ready' : 'Loading'}</span>
+          <span className='tabular-nums text-white/80'>{pct}%</span>
+        </div>
+        <ol className='font-mono text-[12px] uppercase tracking-[0.14em]'>
           {steps.map((s, i) => {
             const active = i === firstOpen;
             return (
@@ -157,12 +162,13 @@ export const LoadingScreen = memo(function LoadingScreen({
                     s.done ? 'text-emerald-300' : active ? 'deck-pulse text-white/80' : 'text-white/25'
                   }`}
                 >
-                  {s.done ? 'OK' : active ? '···' : '—'}
+                  {s.done ? '✓' : active ? '···' : '—'}
                 </span>
               </li>
             );
           })}
         </ol>
+        </div>
       </div>
 
       <div aria-hidden='true' className='absolute inset-x-0 bottom-0 h-[3px] bg-white/10'>
