@@ -91,6 +91,7 @@ export function ModalShell({
   padded = true,
   bodyClassName = '',
   className = '',
+  panelClassName = '',
   backdrop = 'dim',
   dismissOnBackdrop = true,
   openSound = 'modalOpen',
@@ -113,6 +114,7 @@ export function ModalShell({
   padded?: boolean;
   bodyClassName?: string;
   className?: string;
+  panelClassName?: string; // extra classes on the outer (unclipped) dialog panel
   backdrop?: 'dim' | 'heavy';
   dismissOnBackdrop?: boolean;
   openSound?: UiSoundName | 'none'; // soft whoosh on mount ('none' when the dialog brings its own sting)
@@ -230,7 +232,7 @@ export function ModalShell({
         tabIndex={-1}
         className={`relative flex max-h-[92vh] ${width ?? MODAL_SIZE[size]} max-w-[94vw] flex-col text-white outline-none ${
           closing ? 'deck-modal-exit' : 'deck-modal-enter'
-        }`}
+        } ${panelClassName}`}
         style={{ boxShadow: `0 0 60px -12px ${t.glow}` }}
       >
         <div className={`clip-deck flex min-h-0 flex-1 flex-col border bg-[#0b0c0f] ${t.border} ${className}`}>
