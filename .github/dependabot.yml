@@ -5,8 +5,21 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      react:
+        patterns: ['react', 'react-dom', '@types/react', '@types/react-dom']
+      tailwind:
+        patterns: ['tailwindcss', '@tailwindcss/*']
+    ignore:
+      # Keep the compiler's Node declarations aligned with the Node 24 runtime.
+      - dependency-name: '@types/node'
+        versions: ['>=25']
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7

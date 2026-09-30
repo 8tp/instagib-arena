@@ -66,7 +66,7 @@ export function toView(data: ArrayBuffer | ArrayBufferView): DataView {
   return new DataView(data.buffer, data.byteOffset, data.byteLength);
 }
 
-export function encodeState(t: number, players: BinStatePlayer[], resumeAt: number): Uint8Array {
+export function encodeState(t: number, players: BinStatePlayer[], resumeAt: number): Uint8Array<ArrayBuffer> {
   const n = Math.min(players.length, 255);
   let size = STATE_HEADER;
   for (let i = 0; i < n; i++) size += 1 + Math.min(players[i].id.length, 255) + 5 * 2 + 4 * 2;
@@ -130,7 +130,7 @@ export function decodeState(
   return { t, resumeAt, players };
 }
 
-export function encodePos(x: number, y: number, z: number, yaw: number, pitch: number): Uint8Array {
+export function encodePos(x: number, y: number, z: number, yaw: number, pitch: number): Uint8Array<ArrayBuffer> {
   const dv = new DataView(new ArrayBuffer(POS_BYTES));
   dv.setUint8(0, BIN_POS);
   dv.setFloat32(1, x, true);
@@ -153,7 +153,7 @@ export function encodePosTick(
   pitch: number,
   tick: number,
   flags: number,
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   const dv = new DataView(new ArrayBuffer(POS_TICK_BYTES));
   dv.setUint8(0, BIN_POS_TICK);
   dv.setFloat32(1, x, true);

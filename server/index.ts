@@ -26,6 +26,7 @@ import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachInstagibWs } from './instagib-game';
+import { allowedOrigin, clientIp, protectApi } from './security';
 
 const INSTAGIB_WS_PATH = '/ws/instagib';
 
@@ -43,64 +44,11 @@ const distDir = path.join(process.cwd(), 'dist');
 const indexHtml = path.join(distDir, 'index.html');
 const hasBuild = fs.existsSync(indexHtml);
 
-// A private / loopback / mDNS hostname — i.e. something only reachable from the
-// same machine or LAN. In dev we trust these so `npm run dev:lan` works when a
-// phone or second laptop loads the app from this machine's WiFi IP (the origin
-// is then http://192.168.x.x:5173, which the localhost-only check would reject).
-const isPrivateHost = (hostname: string): boolean => {
-  if (hostname === 'localhost' || hostname.endsWith('.local')) return true;
-  if (hostname === '::1' || hostname.startsWith('127.')) return true;
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/.exec(hostname);
-  if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
-  return (
-    a === 10 || // 10.0.0.0/8
-    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
-    (a === 192 && b === 168) || // 192.168.0.0/16
-    (a === 169 && b === 254) // 169.254.0.0/16 link-local
-  );
-};
-
-// Only browsers that loaded the app from an allowed origin may open the socket.
-const isAllowedWsOrigin = (
-  origin: string | undefined,
-  hostHeader: string,
-): boolean => {
-  if (!origin) return dev; // non-browser clients (curl, load tests) only in dev
-  try {
-    const originUrl = new URL(origin);
-    const base = process.env.APP_BASE_URL;
-    if (base && originUrl.origin === new URL(base).origin) return true;
-    // In dev, trust loopback AND private-LAN origins so LAN testing works
-    // regardless of how the dev proxy rewrites the Host header.
-    if (dev && isPrivateHost(originUrl.hostname)) return true;
-    // Fallback: same-origin (handles dynamic domains / no APP_BASE_URL set).
-    return originUrl.host === hostHeader;
-  } catch {
-    return false;
-  }
-};
-
 const app = express();
 app.disable('x-powered-by');
-// Behind the Cloudflare tunnel / reverse proxy: trust the first proxy hop so
-// `req.ip` is the real client IP (used as the rate-limit fallback for
-// cookie-less callers), not the proxy's socket address.
-app.set('trust proxy', 1);
-// When Cloudflare proxies the origin, `CF-Connecting-IP` is the authoritative
-// visitor IP (CF sets it and overwrites any client-supplied value). Normalize
-// X-Forwarded-For to it so express `req.ip` — used for auth rate-limiting
-// (auth.ts) and audit logging (stats/admin) — resolves to the real visitor
-// instead of collapsing every request onto a single Cloudflare edge IP, which
-// would let a handful of logins rate-limit everyone behind that edge. No-op when
-// the header is absent (not proxied). NOTE: to make this unspoofable, also lock
-// the origin to accept traffic only from Cloudflare (Authenticated Origin Pulls
-// or an IP allowlist) so a client can't reach Railway directly with a forged header.
-app.use((req, _res, next) => {
-  const cf = req.headers['cf-connecting-ip'];
-  if (typeof cf === 'string' && cf.length > 0) req.headers['x-forwarded-for'] = cf;
-  next();
-});
+// Forwarded identity is resolved by clientIp() for both HTTP and WebSockets.
+// Keep Express's independent XFF trust disabled on Railway's variable edge chain.
+app.set('trust proxy', false);
 
 // Security headers on every response. The app is a single same-origin bundle —
 // Vite-built JS/CSS under /assets, game assets (.glb/.ogg) and the /ws/instagib
@@ -141,7 +89,8 @@ app.use((_req, res, next) => {
 });
 
 app.use(cookieParser());
-app.use(express.json({ limit: '16kb' }));
+app.use('/api', protectApi);
+app.use(express.json({ limit: '16kb', inflate: false }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, build: hasBuild });
@@ -171,9 +120,8 @@ app.use('/api', feedbackRouter);
 app.use('/api', economyRouter);
 app.use('/api/admin', adminRouter);
 
-// Promote any configured ADMIN_USERNAMES that already have accounts (idempotent;
-// new accounts are promoted at registration). Set ADMIN_USERNAMES on Railway and
-// redeploy to claim your account.
+// Promote configured ADMIN_USERNAMES only after their accounts exist.
+// Register your account first, then configure its name on Railway and redeploy.
 {
   const admins = adminUsernamesFromEnv();
   const n = syncAdminsFromEnv(admins);
@@ -243,6 +191,10 @@ app.use((err: Error & { type?: string; status?: number }, _req: express.Request,
     res.status(413).json({ error: 'payload_too_large' });
     return;
   }
+  if (err?.status === 415) {
+    res.status(415).json({ error: 'unsupported_encoding' });
+    return;
+  }
   if (err?.type === 'entity.parse.failed' || err?.status === 400) {
     res.status(400).json({ error: 'bad_request' });
     return;
@@ -251,7 +203,8 @@ app.use((err: Error & { type?: string; status?: number }, _req: express.Request,
   res.status(500).json({ error: 'server_error' });
 });
 
-const server = http.createServer(app);
+const server = http.createServer({ headersTimeout: 10_000, requestTimeout: 30_000 }, app);
+server.maxHeadersCount = 64;
 server.on('error', (err) => console.error('[server] error', err));
 
 // Game socket runs on the same HTTP server so it shares the port (and any TLS
@@ -276,19 +229,6 @@ const MAX_WS_TOTAL = parseInt(process.env.MAX_WS_TOTAL || '600', 10);
 const MAX_WS_PER_IP = parseInt(process.env.MAX_WS_PER_IP || '12', 10);
 let wsTotal = 0;
 const wsPerIp = new Map<string, number>();
-function clientIp(req: http.IncomingMessage): string {
-  // Prefer Cloudflare's authoritative client IP when proxied. The WS upgrade path
-  // bypasses the express middleware that normalizes this for HTTP routes, so the
-  // per-IP connection cap below must read CF-Connecting-IP itself — otherwise all
-  // players behind one CF edge share an IP and trip MAX_WS_PER_IP during a surge.
-  const cf = req.headers['cf-connecting-ip'];
-  const cfIp = Array.isArray(cf) ? cf[0] : cf;
-  if (cfIp && cfIp.trim()) return cfIp.trim();
-  const xff = req.headers['x-forwarded-for'];
-  const fwd = Array.isArray(xff) ? xff[0] : xff;
-  return (fwd ? fwd.split(',')[0] : req.socket.remoteAddress || '').trim() || 'unknown';
-}
-
 server.on('upgrade', (req, socket, head) => {
   const { url } = req;
   const pathname = url ? url.split('?')[0] : '';
@@ -296,7 +236,7 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (!isAllowedWsOrigin(req.headers.origin, req.headers.host || '')) {
+  if (!allowedOrigin(req.headers.origin, req.headers.host || '', true)) {
     socket.destroy();
     return;
   }

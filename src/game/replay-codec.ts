@@ -91,9 +91,7 @@ const qAng = (r: number) => clampI16(Math.round(wrapPi(r) * ANG_SCALE));
 const dqAng = (q: number) => q / ANG_SCALE;
 
 function wrapPi(a: number): number {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
+  return Number.isFinite(a) ? a - Math.PI * 2 * Math.round(a / (Math.PI * 2)) : 0;
 }
 
 // Largest length ≤ `max` that ends on a UTF-8 code-point boundary: back off over
@@ -147,6 +145,10 @@ class ByteReader {
   private dec = new TextDecoder();
   constructor(private view: DataView, private u8arr: Uint8Array) {}
   get remaining(): number { return this.view.byteLength - this.pos; }
+  skip(n: number): void {
+    if (n < 0 || n > this.remaining) throw new Error('replay: truncated');
+    this.pos += n;
+  }
   u8(): number { const v = this.view.getUint8(this.pos); this.pos += 1; return v; }
   i8(): number { const v = this.view.getInt8(this.pos); this.pos += 1; return v; }
   u16(): number { const v = this.view.getUint16(this.pos, true); this.pos += 2; return v; }
@@ -154,6 +156,7 @@ class ByteReader {
   u32(): number { const v = this.view.getUint32(this.pos, true); this.pos += 4; return v; }
   str(): string {
     const len = this.u16();
+    if (len > this.remaining) throw new Error('replay: truncated string');
     const s = this.dec.decode(this.u8arr.subarray(this.pos, this.pos + len));
     this.pos += len;
     return s;
@@ -253,7 +256,7 @@ export function encodeReplay(data: ReplayData): Uint8Array {
 
 // ── Decode ─────────────────────────────────────────────────────────────────-─
 // Throws on a malformed/foreign buffer; callers wrap in try/catch.
-export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
+export function decodeReplay(input: ArrayBuffer | Uint8Array, includeFrames = true): ReplayData {
   const u8 = input instanceof Uint8Array ? input : new Uint8Array(input);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   const r = new ByteReader(view, u8);
@@ -272,10 +275,17 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
   const shotCount = r.u16();
   const mapId = r.str();
   const bitmaskBytes = Math.ceil(aCount / 8);
+  // Validate counts against the actual payload BEFORE allocating arrays.
+  if (aCount < 1 || aCount > 16 || hz < 1 || hz > 64 || durationMs > 3_600_000 ||
+      frameCount < 1 || frameCount > 64 * 3600 + 2 || localIdx >= aCount ||
+      frameCount * (4 + bitmaskBytes) + killCount * 9 + shotCount * 18 > r.remaining) {
+    throw new Error('replay: invalid counts');
+  }
 
   const profiles: ReplayActorProfile[] = [];
   for (let i = 0; i < aCount; i++) {
     const id = r.str();
+    if (!id || profiles.some((p) => p.id === id)) throw new Error('replay: invalid actor');
     const name = r.str();
     const kind = N_TO_KIND[r.u8()] ?? 'remote';
     const hat = r.str();
@@ -300,13 +310,18 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
   const idAt = (idx: number) => (idx === NONE ? '' : profiles[idx]?.id ?? '');
 
   const frames: ReplayFrame[] = new Array(frameCount);
+  let lastFrameMs = -1;
   for (let fi = 0; fi < frameCount; fi++) {
-    const t = r.u32() / 1000;
+    const frameMs = r.u32();
+    if (frameMs < lastFrameMs || frameMs > durationMs + 3000) throw new Error('replay: invalid frame time');
+    lastFrameMs = frameMs;
+    const t = frameMs / 1000;
     const mask = new Uint8Array(bitmaskBytes);
     for (let b = 0; b < bitmaskBytes; b++) mask[b] = r.u8();
-    const poses: Record<string, ReplayPose> = {};
+    const poses: Record<string, ReplayPose> = Object.create(null);
     for (let i = 0; i < aCount; i++) {
       if (!(mask[i >> 3] & (1 << (i & 7)))) continue;
+      if (!includeFrames) { r.skip(11); continue; }
       const visible = r.u8() === 1;
       const x = dqPos(r.i16());
       const y = dqPos(r.i16());
@@ -315,7 +330,7 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
       const pitch = dqAng(r.i16());
       poses[profiles[i].id] = { x, y, z, yaw, pitch, visible };
     }
-    frames[fi] = { t, poses };
+    if (includeFrames) frames[fi] = { t, poses };
   }
 
   const kills: ReplayKill[] = new Array(killCount);
@@ -364,6 +379,7 @@ export function decodeReplay(input: ArrayBuffer | Uint8Array): ReplayData {
   }
 
   const localId = localIdx === NONE ? '' : profiles[localIdx]?.id ?? '';
+  if (r.remaining !== 0) throw new Error('replay: trailing data');
   return { version, hz, mapId, durationMs, localId, won, profiles, frames, kills, shots, taunts };
 }
 
@@ -381,7 +397,7 @@ export type ReplaySummary = {
 
 export function summarizeReplay(input: ArrayBuffer | Uint8Array): ReplaySummary | null {
   try {
-    const data = decodeReplay(input);
+    const data = decodeReplay(input, false);
     let localKills = 0;
     for (const k of data.kills) if (k.killerId === data.localId) localKills++;
     return {

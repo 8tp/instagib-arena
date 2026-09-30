@@ -5,13 +5,14 @@ dashboards, and agents (no browser login required). It exposes the same
 aggregates the in-app `/admin` dashboard renders, plus a one-call consolidated
 report.
 
-All endpoints live under `/api/admin` and accept **either** auth:
+Metrics reads under `/api/admin/metrics/` accept **either** auth:
 
 1. **A logged-in admin session** (cookie) — the browser dashboard path; can do
    everything including mutations.
 2. **A bearer token** equal to the `ADMIN_API_TOKEN` env var — the headless path.
-   **Read-only**: the mutating routes (`/verify`, `/grant`) reject token auth with
-   `403 session_required`, so a leaked read token can never change accounts.
+   **Read-only**: only GET/HEAD requests under `/metrics/` accept it. Other admin
+   routes, including account lookup, audit logs, code lists and mutations, require
+   an admin session and return `403 forbidden` to token-only callers.
 
 If `ADMIN_API_TOKEN` is unset, token auth is disabled entirely (session-only).
 
@@ -45,13 +46,12 @@ curl -H "X-Admin-Token: $ADMIN_API_TOKEN"        https://instagib.win/api/admin/
 | GET | `/api/admin/metrics/players` | `sort` (kills\|games\|level\|accuracy\|xp\|recent), `q`, `limit` (def 100) | Searchable player table |
 | GET | `/api/admin/metrics/weekly` | — | This week's challenge: participants, runs, winners, fastest clear, top kills, replays stored + bytes, map, fragLimit |
 | GET | `/api/admin/metrics/live` | — | `{online, inMatch, rooms}` right now (same as the public `/api/live`) |
-| GET | `/api/admin/audit` | `event`, `limit` (def 100) | Recent audit events (logins, registrations, matches, ranked, admin actions) |
-
-### Admin-session-only (mutations — token gets `403 session_required`)
+### Admin-session-only (token-only callers get `403 forbidden`)
 
 | Method | Path | Body |
 |---|---|---|
 | GET | `/api/admin/lookup` | `?username=` → that account's admin/verified flags |
+| GET | `/api/admin/audit` | `?event=&limit=` → recent audit events |
 | POST | `/api/admin/verify` | `{username, verified?}` |
 | POST | `/api/admin/grant` | `{username, admin?}` |
 
@@ -81,7 +81,8 @@ curl -H "X-Admin-Token: $ADMIN_API_TOKEN"        https://instagib.win/api/admin/
 
 - Token comparison is constant-time (`crypto.timingSafeEqual`); a wrong/missing
   token returns `403 forbidden`.
-- The `/audit` log contains client IPs — treat the token as a sensitive secret.
+- Metrics include player activity. Treat the token as a sensitive secret; it
+  does not grant access to the `/audit` log.
 - Match `mode` is read from the match audit detail; rows logged before mode
   tracking fall under `"unknown"` in `recentModeBreakdown`.
 - All aggregates are read-only over data already stored (no new write paths); the

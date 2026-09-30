@@ -1,3 +1,4 @@
+import { clientIp } from './security';
 // Admin / moderation + metrics API. Mounted at /api/admin. Two ways to authorize:
 //   1) a logged-in session whose account has is_admin = 1 (designate admins via
 //      the ADMIN_USERNAMES env var — see server/auth.ts). The browser dashboard /
@@ -99,7 +100,7 @@ const requireAdmin = (req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
-  if (tokenOk(req)) {
+  if (tokenOk(req) && ['GET', 'HEAD'].includes(req.method) && req.path.startsWith('/metrics/')) {
     (req as AdminRequest).admin = TOKEN_ADMIN;
     (req as AdminRequest).adminVia = 'token';
     next();
@@ -139,7 +140,7 @@ adminRouter.post('/verify', (req, res) => {
     actorName: admin.username,
     targetId: target.id,
     detail: { username: target.username },
-    ip: req.ip,
+    ip: clientIp(req),
   });
   res.json({ ok: true, username: target.username, verified: value });
 });
@@ -167,7 +168,7 @@ adminRouter.post('/grant', (req, res) => {
     actorName: admin.username,
     targetId: target.id,
     detail: { username: target.username },
-    ip: req.ip,
+    ip: clientIp(req),
   });
   res.json({ ok: true, username: target.username, admin: value });
 });
@@ -321,7 +322,7 @@ adminRouter.post('/feedback/:id/status', (req, res) => {
     actorName: admin.username,
     targetId: String(id),
     detail: { status },
-    ip: req.ip,
+    ip: clientIp(req),
   });
   res.json({ ok: true, id, status });
 });

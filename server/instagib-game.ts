@@ -12,8 +12,8 @@
 // Trust model: the SERVER decides hits. The shooter sends a shot RAY plus the
 // server-clock render time it was displaying others at; the server rewinds
 // every other player IN THE SAME ROOM to that time (lag compensation) using a
-// position history buffer and raycasts their hitboxes. The client supplies only
-// the wall-distance cap (`maxDist`) so the server doesn't need arena geometry.
+// position history buffer and raycasts their hitboxes. Shared arena geometry
+// caps every shot at the nearest wall; the client may shorten that cap.
 // Spawns / out-of-bounds use the THREE-free `arena-data` table.
 
 import type { WebSocketServer, WebSocket, RawData } from 'ws';
@@ -76,6 +76,11 @@ import {
 } from './db';
 import { accountIdFromCookieHeader } from './auth';
 import { containsProfanity } from './profanity';
+import { clientIp, RateLimiter } from './security';
+import type { IncomingMessage } from 'node:http';
+import { mapById } from '../src/game/arena-map-data';
+import { rayAabb as rayBox } from '../src/game/collision';
+import { validPlayerMove } from './game-validation';
 
 // Snapshot rate, paired with the client's 64Hz sim + 64Hz position upload so
 // the whole pipeline runs on one cadence. The lean-snapshot split (static
@@ -111,8 +116,8 @@ const KILL_RESPAWN_INVULN_MS = KILLCAM_DURATION_SEC * 1000 + SPAWN_INVULN_MS;
 // away-from-killer) spawn with the remaining invuln. So nobody can see or camp
 // the spawn while the victim is stuck watching their killcam — the big 1v1 issue.
 const RESPAWN_HIDE_MS = KILLCAM_DURATION_SEC * 1000;
-// Anti-camp spawn scoring. The server has NO map geometry (no real line-of-sight),
-// so these are the geometry-free levers layered on top of "spawn far from threats":
+// Anti-camp spawn scoring: distance, aim direction and recently used positions
+// are layered on top of "spawn far from threats":
 //   1. don't drop a player into a live threat's AIM CONE (their crosshair line), and
 //   2. don't reuse a spawn spot a camper might be sitting on.
 // Both reshape pickSpawn's distance score (values are in "metres of safety").
@@ -579,25 +584,10 @@ function resolveTitleText(playerId: string, titleId: string): string {
 }
 
 // The WS upgrade request, as far as this module reads it.
-type UpgradeReq = {
-  headers?: {
-    cookie?: string;
-    'cf-connecting-ip'?: string | string[];
-    'x-forwarded-for'?: string | string[];
-  };
-  socket?: { remoteAddress?: string };
-};
+type UpgradeReq = IncomingMessage;
 
-// Client network identity (IP) for the progression self-farm guard. Same
-// precedence as server/index.ts clientIp(): Cloudflare's CF-Connecting-IP, else
-// the first X-Forwarded-For hop (Railway's proxy), else the socket address.
 function netIdFrom(req?: UpgradeReq): string {
-  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
-  const cf = one(req?.headers?.['cf-connecting-ip'])?.trim();
-  if (cf) return cf;
-  const xff = one(req?.headers?.['x-forwarded-for']);
-  const ip = (xff ? xff.split(',')[0] : req?.socket?.remoteAddress ?? '').trim();
-  return ip.replace(/^::ffff:/, '') || 'unknown';
+  return req ? clientIp(req) : 'unknown';
 }
 
 // Are these the same player for progression purposes? Same account, or the
@@ -694,7 +684,13 @@ function rayAabb(
 }
 
 export function attachInstagibWs(wss: WebSocketServer) {
+  const controlHits = new RateLimiter(30, 10_000);
   const clients = new Map<ClientId, ClientRecord>();
+  const sendPayload = (socket: WebSocket, data: string | Uint8Array) => {
+    if (socket.readyState !== socket.OPEN) return;
+    if (socket.bufferedAmount > 256 * 1024) { socket.terminate(); return; }
+    socket.send(data);
+  };
   const rooms = new Map<RoomId, Room>();
   const listers = new Set<ClientId>();
   // Ranked Duel matchmaking queue: account-only sockets waiting for a 1v1. The
@@ -781,7 +777,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const payload = JSON.stringify(buildPresence());
     for (const id of listers) {
       const c = clients.get(id);
-      if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+      if (c && c.socket.readyState === c.socket.OPEN) sendPayload(c.socket, payload);
     }
   };
 
@@ -796,14 +792,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
   };
 
   const sendRaw = (socket: WebSocket, msg: unknown) => {
-    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
+    sendPayload(socket, JSON.stringify(msg));
   };
   const broadcastRoom = (room: Room, msg: unknown, exceptId?: ClientId) => {
     const data = JSON.stringify(msg);
     for (const id of room.members) {
       if (id === exceptId) continue;
       const c = clients.get(id);
-      if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(data);
+      if (c && c.socket.readyState === c.socket.OPEN) sendPayload(c.socket, data);
     }
     // Spectators receive the same room broadcasts (meta/beam/kill/vote/chat/peer)
     // so the watched match looks identical to what players see. They never appear
@@ -811,7 +807,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     for (const id of room.spectators) {
       if (id === exceptId) continue;
       const c = clients.get(id);
-      if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(data);
+      if (c && c.socket.readyState === c.socket.OPEN) sendPayload(c.socket, data);
     }
   };
 
@@ -845,7 +841,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       if (NETCODE_DIAG) snapshotDiagSkipped += 1;
       return;
     }
-    c.socket.send(buf);
+    sendPayload(c.socket, buf);
   };
 
   // ── Room lifecycle ────────────────────────────────────────────────────
@@ -1082,7 +1078,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     if (reply.saved && c.card) c.card.level = reply.progression.level;
     const msg = { type: 'progression' as const, mode, partial, ...reply };
     if (c.socket.readyState === c.socket.OPEN) {
-      c.socket.send(JSON.stringify(msg));
+      sendPayload(c.socket, JSON.stringify(msg));
       c.undeliveredProgression = null;
     } else {
       c.undeliveredProgression = msg; // dropped mid-grace: deliver on resume
@@ -1285,7 +1281,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
   // client right where it was (score intact). Returns false if not resumable.
   const resumeMatch = (record: ClientRecord, old: ClientRecord): boolean => {
     const room = old.roomId ? rooms.get(old.roomId) : null;
-    if (!room || !room.members.has(old.id)) return false;
+    if (!room || !room.members.has(old.id) || record.playerId !== old.playerId) return false;
     leaveRoom(record); // the fresh conn isn't in a room, but keep the invariant
     listers.delete(record.id);
     record.roomId = room.id;
@@ -1442,7 +1438,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const c = clients.get(id);
       if (c) c.spectating = null;
       if (c && c.socket.readyState === c.socket.OPEN) {
-        c.socket.send(JSON.stringify({ type: 'spectate-ended' }));
+        sendPayload(c.socket, JSON.stringify({ type: 'spectate-ended' }));
       }
     }
     room.spectators.clear();
@@ -1489,7 +1485,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     const payload = JSON.stringify({ type: 'rooms', rooms: publicRoomList() });
     for (const id of listers) {
       const c = clients.get(id);
-      if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+      if (c && c.socket.readyState === c.socket.OPEN) sendPayload(c.socket, payload);
     }
   };
 
@@ -1882,7 +1878,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     shooter: ClientRecord,
     msg: Extract<ClientMessage, { type: 'shoot' }>,
   ) => {
-    if (!shooter.roomId) return;
+    if (!shooter.roomId || shooter.respawnAt > Date.now()) return;
     const room = rooms.get(shooter.roomId);
     if (!room || room.state !== 'active') return;
     const now = Date.now();
@@ -1901,11 +1897,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
     dz /= dl;
     if (![msg.ox, msg.oy, msg.oz].every(Number.isFinite)) return;
 
-    // Anti-wallhack (#1): the ray is cast from the CLIENT-supplied origin, but
-    // the server owns no geometry to occlude with — so a modified client could
-    // place the origin flush against any victim and fire through walls. Reject
-    // origins implausibly far from the shooter's authoritative server eye. (Lag
-    // comp rewinds the victim, not the origin, so honest clients are unaffected.)
+    // Bound the uploaded eye position to the shooter, then check both the
+    // eye displacement and the shot against the shared collision geometry.
+    // Lag compensation rewinds targets, while walls remain static.
     const ex = shooter.pos.x;
     const ey = shooter.pos.y + EYE_HEIGHT;
     const ez = shooter.pos.z;
@@ -1916,9 +1910,19 @@ export function attachInstagibWs(wss: WebSocketServer) {
     // Firing ends your own spawn invuln — you can't shoot from behind protection.
     if (shooter.invulnUntilMs > now) shooter.invulnUntilMs = 0;
 
-    const wallCap = Number.isFinite(msg.maxDist)
+    let wallCap = Number.isFinite(msg.maxDist)
       ? Math.min(KILL_MAX_RANGE, Math.max(0, msg.maxDist as number))
       : KILL_MAX_RANGE;
+    const origin = { x: msg.ox, y: msg.oy, z: msg.oz };
+    const direction = { x: dx, y: dy, z: dz };
+    const originDelta = { x: msg.ox - ex, y: msg.oy - ey, z: msg.oz - ez };
+    for (const box of mapById(room.mapId).boxes) {
+      // The client eye may lead a received position, but cannot cross a wall.
+      const between = rayBox({ x: ex, y: ey, z: ez }, originDelta, box);
+      if (between !== null && between <= 1) return;
+      const hit = rayBox(origin, direction, box);
+      if (hit !== null) wallCap = Math.min(wallCap, hit);
+    }
     const rt = Number.isFinite(msg.renderTime)
       ? Math.max(now - MAX_REWIND_MS, Math.min(now, msg.renderTime as number))
       : now - MAX_REWIND_MS;
@@ -2213,11 +2217,14 @@ export function attachInstagibWs(wss: WebSocketServer) {
         msg = decoded;
       } else {
         try {
-          msg = JSON.parse(raw.toString()) as ClientMessage;
+          const parsed: unknown = JSON.parse(raw.toString());
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || typeof (parsed as { type?: unknown }).type !== 'string') return;
+          msg = parsed as ClientMessage;
         } catch {
           return;
         }
       }
+      if (!['pos', 'ping', 'shoot'].includes(msg.type) && !controlHits.allow(record.id, ts)) return;
       record.lastSeen = ts;
       switch (msg.type) {
         case 'hello':
@@ -2288,7 +2295,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             const payload = JSON.stringify(out);
             for (const lid of listers) {
               const c = clients.get(lid);
-              if (c && c.socket.readyState === c.socket.OPEN) c.socket.send(payload);
+              if (c && c.socket.readyState === c.socket.OPEN) sendPayload(c.socket, payload);
             }
           }
           break;
@@ -2296,7 +2303,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
 
         case 'create': {
           rankedQueue.delete(record.id); // creating a room → leave the ranked queue
-          if (!chargeRoomCreate(record, ts)) {
+          if (rooms.size >= 256 || !chargeRoomCreate(record, ts)) {
             sendRaw(socket, { type: 'join-failed', reason: 'rate' });
             break;
           }
@@ -2346,7 +2353,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
             if (!target || r.members.size > target.members.size) target = r;
           }
           if (!target) {
-            if (!chargeRoomCreate(record, ts)) {
+            if (rooms.size >= 256 || !chargeRoomCreate(record, ts)) {
               sendRaw(socket, { type: 'join-failed', reason: 'rate' });
               break;
             }
@@ -2591,6 +2598,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
         case 'pos': {
           if (
             !record.roomId ||
+            record.respawnAt > ts ||
             !Number.isFinite(msg.x) ||
             !Number.isFinite(msg.y) ||
             !Number.isFinite(msg.z) ||
@@ -2602,6 +2610,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
           ) {
             break;
           }
+          const movementRoom = rooms.get(record.roomId);
+          if (!movementRoom || !validPlayerMove(movementRoom.mapId, record.pos, msg)) break;
           // Only a well-formed u32 tick opts into the tick timeline (JSON uploads
           // could otherwise carry negative / huge / fractional ticks).
           const hasTick = msg.tick !== undefined;
@@ -2664,11 +2674,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
             }
             // Speed clamp (#3): reject implausible teleports/speedhacks — these
             // positions feed both the snapshot broadcast and lag-comp rewind, so
-            // a spoof would poison what every other player sees + shoots. Skip
-            // the first packet after a teleport (history cleared by a server
-            // respawn/vote) so legitimate repositions aren't flagged. A zero
-            // allowance (two uploads in the same instant) still bounds the move.
-            if (record.history.length > 0 && prevPosMs > 0) {
+            // a spoof would poison what every other player sees + shoots.
+            // Respawns already assign the new position server-side, so every
+            // upload is bounded, including the first and those after a respawn.
+            {
+              if (prevPosMs === 0) clampMs = Math.max(clampMs, POS_SILENT_CREDIT_MS);
               const horiz = Math.hypot(msg.x - record.pos.x, msg.z - record.pos.z);
               const vert = Math.abs(msg.y - record.pos.y);
               const dtSec = Math.max(clampMs, 1) / 1000;

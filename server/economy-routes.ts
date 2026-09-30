@@ -1,3 +1,4 @@
+import { clientIp } from './security';
 // REST surface of the v3 economy (docs/economy.md §10). Mounted at /api.
 // Cookie auth (the account id IS the identity); every write is rate-limited and
 // runs in one DB transaction (economy.ts / market.ts / trades.ts).
@@ -54,7 +55,7 @@ const READ_WINDOW_MS = 10_000;
 const READ_MAX = 40;
 const readHits = new Map<string, { start: number; n: number }>();
 function allowRead(req: Request, res: Response): boolean {
-  const key = req.ip || 'unknown';
+  const key = clientIp(req);
   const now = Date.now();
   const h = readHits.get(key);
   if (!h || now - h.start >= READ_WINDOW_MS) {
@@ -150,7 +151,7 @@ economyRouter.post('/codes/redeem', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
   try {
-    send(res, redeemCode(id, body(req).code, rateKeyFor(req) + '|' + (req.ip ?? '')));
+    send(res, redeemCode(id, body(req).code, clientIp(req)));
   } catch (err) {
     console.error('[codes] redeem failed', err);
     res.status(400).json({ ok: false, error: 'stale_reward' });
@@ -190,7 +191,7 @@ economyRouter.post('/market/list', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
   const b = body(req);
-  send(res, listItem(id, str(b.uid), b.price, netHash(req.ip)));
+  send(res, listItem(id, str(b.uid), b.price, netHash(clientIp(req))));
 });
 economyRouter.post('/market/unlist', (req, res) => {
   const id = writer(req, res);
@@ -200,7 +201,7 @@ economyRouter.post('/market/unlist', (req, res) => {
 economyRouter.post('/market/buy', (req, res) => {
   const id = writer(req, res);
   if (!id) return;
-  send(res, buyListing(id, body(req).id, netHash(req.ip)));
+  send(res, buyListing(id, body(req).id, netHash(clientIp(req))));
 });
 
 // ── Trades ───────────────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ import {
 import { accountId } from './auth';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
 import { summarizeReplay } from '../src/game/replay-codec';
+import { RateLimiter } from './security';
 
 export const challengeRouter = Router();
 
@@ -28,8 +29,8 @@ const clampInt = (v: unknown, lo: number, hi: number): number => {
 };
 
 // Light per-account submit limiter (a run takes minutes; this only blocks spam).
-const last = new Map<string, number>();
-const MIN_GAP_MS = 5_000;
+const submissions = new RateLimiter(1, 5_000);
+const uploads = new RateLimiter(2, 60_000);
 
 // A win takes at least a few seconds; cap the run window at an hour.
 const MIN_WIN_MS = 1_000;
@@ -51,11 +52,10 @@ challengeRouter.post('/challenge/weekly', (req: Request, res) => {
     return;
   }
   const now = Date.now();
-  if (now - (last.get(id) ?? 0) < MIN_GAP_MS) {
+  if (!submissions.allow(id, now)) {
     res.status(429).json({ error: 'rate_limited' });
     return;
   }
-  last.set(id, now);
   const body = (req.body ?? {}) as Record<string, unknown>;
   const kills = clampInt(body.kills, 0, WEEKLY_CHALLENGE_FRAG_LIMIT);
   const won = body.won === true && kills >= WEEKLY_CHALLENGE_FRAG_LIMIT; // a win means you hit the cap
@@ -75,7 +75,13 @@ challengeRouter.post('/challenge/weekly', (req: Request, res) => {
 // current board entry (right map, win/loss + time/kills agree within tolerance).
 challengeRouter.post(
   '/challenge/weekly/replay',
-  express.raw({ type: 'application/octet-stream', limit: MAX_REPLAY_BYTES }),
+  (req, res, next) => {
+    const id = accountId(req);
+    if (!id) { res.status(401).json({ error: 'account_required' }); return; }
+    if (!uploads.allow(id)) { res.status(429).json({ error: 'rate_limited' }); return; }
+    next();
+  },
+  express.raw({ type: 'application/octet-stream', limit: MAX_REPLAY_BYTES, inflate: false }),
   (req: Request, res) => {
     const id = accountId(req);
     if (!id) {
@@ -108,6 +114,10 @@ challengeRouter.post(
       return;
     }
     if (me.won) {
+      if (summary.localKills < WEEKLY_CHALLENGE_FRAG_LIMIT) {
+        res.status(400).json({ error: 'kills_mismatch' });
+        return;
+      }
       if (Math.abs(summary.durationMs - me.timeMs) > TIME_TOLERANCE_MS) {
         res.status(400).json({ error: 'time_mismatch' });
         return;
@@ -139,6 +149,7 @@ challengeRouter.get('/challenge/weekly/replay', (req: Request, res) => {
     return;
   }
   res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Vary', 'Accept-Encoding');
   // The blob only changes when the player sets a new board-defining run; a short
   // cache cuts bandwidth on repeated/concurrent watches without serving a beaten
   // run for long.

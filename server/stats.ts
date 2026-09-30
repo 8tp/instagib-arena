@@ -1,3 +1,4 @@
+import { clientIp } from './security';
 // Account-bound player stats API.
 //
 // Progression is tied to a registered account (see server/auth.ts). A guest (no
@@ -25,7 +26,7 @@ function playerId(req: Request): string {
 
 // Rate-limit key: the account when logged in, else the client IP.
 export function rateKeyFor(req: Request): string {
-  return accountId(req) || req.ip || 'unknown';
+  return accountId(req) || clientIp(req);
 }
 
 // Clamp client-reported integers into a sane range — these are unranked,
@@ -173,7 +174,7 @@ statsRouter.post('/stats', (req, res) => {
       mode,
       src: 'post',
     },
-    ip: req.ip,
+    ip: clientIp(req),
   });
 
   // Stats (legacy shape) plus the full reward payload (legacy xpGained /

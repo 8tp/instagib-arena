@@ -90,7 +90,7 @@ interesting parts are all in this repo.
 
 ## Quick start
 
-**Prerequisites:** Node **≥ 20.19** (the build/toolchain needs it). With
+**Prerequisites:** Node **24 LTS** (the build/toolchain needs it). With
 [`fnm`](https://github.com/Schniz/fnm) or `nvm`, e.g. `fnm use 20.19.0`.
 
 ```bash

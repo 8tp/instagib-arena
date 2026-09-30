@@ -517,8 +517,8 @@ export function motes(drive: Drive, o: MotesOpts): THREE.Mesh {
         // by area instead (no shimmer).
         float depth = max(-mv.z, 0.01);
         float px = size * sc * uPx / depth;
-        float h = max(px, 1.2) * depth / uPx * 0.5;
-        mv.xy += corner * h;
+        float cgHalfExtent = max(px, 1.2) * depth / uPx * 0.5;
+        mv.xy += corner * cgHalfExtent;
         gl_Position = projectionMatrix * mv;
         vCol = cgCap(col * max(a, 0.0), p) * min(1.0, (px * px) / 1.44);
         vQ = corner;

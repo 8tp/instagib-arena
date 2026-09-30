@@ -3,6 +3,7 @@
 // NOT EXISTS), so there are no migrations to run.
 
 import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { sqlite } from './sqlite';
 import {
   ACCURACY_MIN_SHOTS,
@@ -1376,11 +1377,25 @@ const userByIdStmt = sqlite.prepare(
 const accountByLowerStmt = sqlite.prepare(
   `SELECT id, username, is_admin, is_verified FROM instagib_users WHERE username_lower = ?`,
 );
+export const SESSION_MAX_AGE = 30 * 24 * 60 * 60_000;
+const sessionHash = (token: string): string => createHash('sha256').update(token).digest('hex');
+// Migrate existing sessions without changing the browser's opaque cookie.
+const sessionCols = sqlite.prepare('PRAGMA table_info(instagib_sessions)').all() as { name: string }[];
+if (!sessionCols.some((c) => c.name === 'token_hashed')) {
+  sqlite.transaction(() => {
+    sqlite.exec('ALTER TABLE instagib_sessions ADD COLUMN token_hashed INTEGER NOT NULL DEFAULT 0');
+    const migrate = sqlite.prepare('UPDATE instagib_sessions SET token = ?, token_hashed = 1 WHERE token = ?');
+    for (const r of sqlite.prepare('SELECT token FROM instagib_sessions').all() as { token: string }[]) migrate.run(sessionHash(r.token), r.token);
+  })();
+}
 const insertSessionStmt = sqlite.prepare(
-  `INSERT INTO instagib_sessions (token, user_id, created_at) VALUES (?, ?, ?)`,
+  `INSERT INTO instagib_sessions (token, user_id, created_at, token_hashed) VALUES (?, ?, ?, 1)`,
 );
-const sessionStmt = sqlite.prepare(`SELECT user_id FROM instagib_sessions WHERE token = ?`);
+const sessionStmt = sqlite.prepare(`SELECT user_id FROM instagib_sessions WHERE token = ? AND created_at > ?`);
 const deleteSessionStmt = sqlite.prepare(`DELETE FROM instagib_sessions WHERE token = ?`);
+const pruneSessions = sqlite.prepare('DELETE FROM instagib_sessions WHERE created_at <= ?');
+pruneSessions.run(Date.now() - SESSION_MAX_AGE);
+setInterval(() => pruneSessions.run(Date.now() - SESSION_MAX_AGE), 60 * 60_000).unref();
 const setVerifiedStmt = sqlite.prepare(`UPDATE instagib_users SET is_verified = @v WHERE id = @id`);
 const setAdminStmt = sqlite.prepare(`UPDATE instagib_users SET is_admin = @v WHERE id = @id`);
 
@@ -1458,17 +1473,21 @@ export function syncAdminsFromEnv(usernamesLower: string[]): number {
   return changes;
 }
 export function createSession(token: string, userId: string, now: number): void {
-  insertSessionStmt.run(token, userId, now);
+  sqlite.transaction(() => {
+    insertSessionStmt.run(sessionHash(token), userId, now);
+    sqlite.prepare(`DELETE FROM instagib_sessions WHERE user_id = ? AND token NOT IN
+      (SELECT token FROM instagib_sessions WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 8)`).run(userId, userId);
+  })();
 }
 // Resolve a session token to its account id ('' if missing/unknown). This is the
 // progression identity used by the stats API and the game WS.
 export function userIdFromSession(token: string): string {
-  if (!token) return '';
-  const row = sessionStmt.get(token) as { user_id: string } | undefined;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return '';
+  const row = sessionStmt.get(sessionHash(token), Date.now() - SESSION_MAX_AGE) as { user_id: string } | undefined;
   return row?.user_id ?? '';
 }
 export function deleteSession(token: string): void {
-  deleteSessionStmt.run(token);
+  deleteSessionStmt.run(sessionHash(token));
 }
 
 // ── Admin metrics (dashboard) ────────────────────────────────────────────────

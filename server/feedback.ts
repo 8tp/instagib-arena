@@ -1,3 +1,4 @@
+import { clientIp } from './security';
 // Player feedback / bug reports. The in-game form (FeedbackModal) POSTs here; the
 // admin panel reads them back via /api/admin/metrics/feedback. Guests may submit
 // (identity = '' like the stats API). This is free-text shown only to admins — it
@@ -61,7 +62,7 @@ function str(req: Request, ...keys: string[]): string {
 feedbackRouter.post('/feedback', (req, res) => {
   const now = Date.now();
   const id = accountId(req);
-  const rateKey = id || req.ip || 'unknown';
+  const rateKey = id || clientIp(req);
   if (!allowPost(rateKey, now)) {
     res.status(429).json({ error: 'rate_limited' });
     return;
@@ -95,7 +96,7 @@ feedbackRouter.post('/feedback', (req, res) => {
     type,
     title,
     body: text,
-    ip: req.ip,
+    ip: clientIp(req),
     userAgent: (req.get('user-agent') ?? '').slice(0, 256),
     now,
   });
@@ -110,7 +111,7 @@ feedbackRouter.post('/feedback', (req, res) => {
     actorName: playerName,
     targetId: String(newId),
     detail: { type, title },
-    ip: req.ip,
+    ip: clientIp(req),
     now,
   });
 

@@ -586,7 +586,7 @@ export class NetClient {
   // behavior is unchanged; Phase 2 routes these through an unreliable datagram
   // channel (WebTransport) with auto-fallback to the WS, while everything that
   // must not be lost or reordered (join/meta/kill/vote/chat…) stays on the WS.
-  private sendUnreliable(bytes: Uint8Array) {
+  private sendUnreliable(bytes: Uint8Array<ArrayBuffer>) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(bytes);
     }
