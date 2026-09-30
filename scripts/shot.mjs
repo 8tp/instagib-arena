@@ -187,7 +187,8 @@ async function main() {
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     })()`);
-    if (mode !== 'ffa') await clickByText(`^${mode === 'tdm' ? 'TDM' : 'Duel'}\\b`); // mode cards carry a blurb after the name
+    // Mode cards run the name straight into a blurb ("TDMTeam…"), so no \b here.
+    if (mode !== 'ffa') await clickByText(`^${mode === 'tdm' ? 'TDM' : 'Duel'}`);
     await sleep(300);
     await clickByText('^start match');
     await sleep(settle);
