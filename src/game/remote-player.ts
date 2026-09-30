@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { applyHighlight, type BotModel } from './bots';
 import { CharacterAnimator, type CharacterAnimInput } from './character-anim';
 import { Character, skinColorFor } from './character/character';
+import { dyeById } from './dyes';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from './character/gun';
 import { probeGibFloor } from './character/gibs';
 import type { FootfallListener } from './locomotion';
@@ -136,6 +137,11 @@ export class RemotePlayer {
   private plateHidden = false; // nameplate off while the corpse is on screen
   private modelRoot: THREE.Object3D | null = null;
   private character: Character | null = null;
+  // The combatant body (null on the capsule fallback) — for viewer-side
+  // overlays such as the enemy outline.
+  get body(): Character | null {
+    return this.character;
+  }
   // Look inputs: TDM team colour > the viewer's enemy highlight > own skin.
   private highlight: THREE.Color | null = null;
   private weaponGroup: AttachedRailgun | null = null; // the attached 3rd-person railgun (recoloured on finish change)
@@ -280,13 +286,13 @@ export class RemotePlayer {
 
   // Armour colour: a TDM team colour reads as identification (natural look);
   // otherwise the viewer's enemy-highlight colour goes full-bright; otherwise
-  // the player's own stable bright skin.
+  // the player's equipped dye, or their own stable bright skin.
   private resolveLook() {
     const ch = this.character;
     if (!ch) return;
     if (this.teamColor) ch.setLook(this.teamColor, 'natural');
     else if (this.highlight) ch.setLook(this.highlight, 'highlight');
-    else ch.setLook(skinColorFor(this.name), 'natural');
+    else ch.wearDye(dyeById(this.resolved?.looks.dye?.d), skinColorFor(this.name));
   }
 
   // Footfall events for synced footstep audio: a monotonically increasing
@@ -347,6 +353,7 @@ export class RemotePlayer {
         this.unusualId = this.resolved.unusual;
         this.finishLook = snapshot.looks.finish;
         this.applyFinishLook();
+        if ((snapshot.looks.dye?.d ?? null) !== this.character?.dyeId) this.resolveLook();
       }
       cos = this.resolved;
     } else {

@@ -8,7 +8,7 @@ import type { ItemSlot, Loadout } from '../game/items/types';
 import { legacyUnusualFor } from './display';
 
 export const SLOT_GROUPS: ReadonlyArray<{ id: string; label: string; slots: readonly ItemSlot[] }> = [
-  { id: 'character', label: 'Character', slots: ['hat', 'face', 'back'] },
+  { id: 'character', label: 'Character', slots: ['hat', 'face', 'back', 'dye'] },
   { id: 'weapon', label: 'Weapon', slots: ['finish', 'beam'] },
   { id: 'effects', label: 'Finisher & effects', slots: ['finisher', 'spawn'] },
   { id: 'identity', label: 'Identity', slots: ['card', 'title', 'nameColor'] },
@@ -20,6 +20,7 @@ export const SLOT_VIEW: Record<ItemSlot, PreviewView> = {
   hat: 'head',
   face: 'face',
   back: 'back',
+  dye: 'full',
   finish: 'weapon',
   beam: 'weapon',
   finisher: 'finisher',

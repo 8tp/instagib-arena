@@ -17,6 +17,7 @@ import {
   TITLES,
   type Rarity,
 } from '../cosmetics';
+import { DEFAULT_DYE, DYES } from '../dyes';
 import { CURRENT_SEASON, type ItemSlot, type Tier } from './types';
 
 export type ItemDef = {
@@ -128,6 +129,10 @@ const LEGACY_TIER: Record<string, Tier> = {
   singularity: 'legendary', prism: 'relic',
   // spawns
   'emote.headbang': 'uncommon', 'emote.kneel': 'uncommon',
+  // emotes (v3.1 meme taunts)
+  'emote.facepalm': 'uncommon', 'emote.pushups': 'uncommon',
+  'emote.crab': 'rare', 'emote.gg': 'rare', 'emote.teatime': 'rare',
+  'emote.tpose': 'epic', 'emote.micdrop': 'epic', 'emote.takethel': 'legendary',
   'spawn.ring': 'uncommon', 'spawn.ember': 'rare', 'spawn.rift': 'epic',
 };
 
@@ -171,6 +176,8 @@ export const ITEM_DEFS: readonly ItemDef[] = [
   ...wearables('face', FACES_V3),
   { id: 'back.none', slot: 'back', name: 'No Back Item', blurb: 'Travel light.', tier: 'common', art: 'back.none', default: true, tradable: false, inCases: false },
   ...wearables('back', BACKS_V3),
+  { id: DEFAULT_DYE, slot: 'dye', name: 'Natural Skin', blurb: 'Your own bright colour, keyed to your name.', tier: 'common', art: DEFAULT_DYE, default: true, tradable: false, inCases: false },
+  ...DYES.map((d): ItemDef => ({ id: d.id, slot: 'dye', name: d.name, blurb: d.blurb, tier: d.tier, art: d.id, tradable: true, inCases: d.tier !== 'unobtainable' })),
   ...STAFF_WEARABLES.map(([slot, id, name, blurb]): ItemDef => ({ id, slot, name, blurb, tier: 'unobtainable', art: id, tradable: false, inCases: false })),
   ...legacy('finish', RAILGUN_FINISHES),
   ...legacy('beam', RAIL_COLORS),
@@ -192,6 +199,7 @@ export const DEFAULT_LOADOUT: Record<ItemSlot, string> = {
   hat: 'hat.none',
   face: 'face.none',
   back: 'back.none',
+  dye: DEFAULT_DYE,
   finish: 'gun.stock',
   beam: 'rail.cyan',
   finisher: 'pulse',

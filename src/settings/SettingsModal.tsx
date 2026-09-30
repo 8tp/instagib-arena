@@ -19,13 +19,14 @@ import {
   SENSITIVITY_STEP,
 } from '../game/constants';
 import type { CrosshairConfig, Settings } from '../app-types';
-import { DEFAULT_CROSSHAIR, DEFAULT_SETTINGS } from './codec';
+import { DEFAULT_CROSSHAIR, DEFAULT_SETTINGS, ENEMY_OUTLINE_MAX, ENEMY_OUTLINE_MIN } from './codec';
 import { CrosshairColorPresets, CrosshairPreview, CrosshairShapePresets } from './CrosshairPreview';
 import {
   AnnouncerPackRow,
   ColorRow,
   CrosshairShare,
   NumberRow,
+  OutlinePreview,
   SegRow,
   SelectRow,
   SettingRow,
@@ -60,7 +61,7 @@ const TAB_KEYS: Record<SettingsTab, ReadonlyArray<keyof Settings>> = {
     'worldBrightness',
   ],
   audio: ['volume', 'sfxVolume', 'uiSounds', 'announcerEnabled', 'announcerVolume', 'announcerPack', 'captions'],
-  accessibility: ['reducedEffects', 'hideChat', 'enemyBright', 'enemyColor'],
+  accessibility: ['reducedEffects', 'hideChat', 'enemyBright', 'enemyColor', 'enemyOutline', 'enemyOutlineColor', 'enemyOutlineWidth'],
   profile: [],
 };
 
@@ -508,6 +509,44 @@ export function SettingsModal({
         ),
         ...(settings.enemyBright
           ? [row('enemyc', 'enemy color', <ColorRow label='Enemy color' value={settings.enemyColor} def={D.enemyColor} onChange={(v) => set({ enemyColor: v })} />)]
+          : []),
+        row(
+          'outline',
+          'enemy outline visibility colorblind',
+          <ToggleRow
+            label='Enemy outline'
+            hint='Draws a solid outline around opponents. Walls still hide it — it never shows through cover.'
+            value={settings.enemyOutline}
+            def={D.enemyOutline}
+            onChange={(v) => set({ enemyOutline: v })}
+          />,
+        ),
+        ...(settings.enemyOutline
+          ? [
+              row('outlinec', 'enemy outline color', <ColorRow label='Outline color' value={settings.enemyOutlineColor} def={D.enemyOutlineColor} onChange={(v) => set({ enemyOutlineColor: v })} />),
+              row(
+                'outlinew',
+                'enemy outline thickness width',
+                <SliderRow
+                  label='Outline thickness'
+                  hint='In screen pixels — the same at any distance.'
+                  value={settings.enemyOutlineWidth}
+                  min={ENEMY_OUTLINE_MIN}
+                  max={ENEMY_OUTLINE_MAX}
+                  step={0.5}
+                  def={D.enemyOutlineWidth}
+                  format={px}
+                  onChange={(v) => set({ enemyOutlineWidth: v })}
+                />,
+              ),
+              row(
+                'outlinep',
+                'enemy outline preview',
+                <SettingRow label='Preview' hint='How an outlined opponent reads against the arena.'>
+                  <OutlinePreview color={settings.enemyOutlineColor} width={settings.enemyOutlineWidth} />
+                </SettingRow>,
+              ),
+            ]
           : []),
       ],
     },

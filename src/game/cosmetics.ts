@@ -490,7 +490,16 @@ export type EmoteKind =
   | 'robot'
   | 'kneel'
   | 'railspin'
-  | 'laugh';
+  | 'laugh'
+  // v3.1 meme taunts (hard-light props via emote-props.ts)
+  | 'takethel'
+  | 'tpose'
+  | 'crab'
+  | 'facepalm'
+  | 'micdrop'
+  | 'gg'
+  | 'pushups'
+  | 'teatime';
 
 export type EmoteCosmetic = {
   id: string;
@@ -519,6 +528,15 @@ export const EMOTES: readonly EmoteCosmetic[] = [
   { id: 'emote.robot',     name: 'Robot',        blurb: 'Beep. Boop. Gibbed.',                   rarity: 'rare',      source: { type: 'case' }, kind: 'robot' },
   { id: 'emote.airguitar', name: 'Air Guitar',   blurb: 'Shred on the corpse.',                  rarity: 'epic',      source: { type: 'case' }, kind: 'airguitar' },
   { id: 'emote.railspin',  name: 'Rail Spin',    blurb: 'A showboat gun twirl, caught clean.',   rarity: 'legendary', source: { type: 'case' }, kind: 'railspin' },
+  // v3.1 meme taunts (hard-light props via emotes.ts + emote-props.ts). Tiers in items/catalog.ts LEGACY_TIER.
+  { id: 'emote.facepalm', name: 'Facepalm',     blurb: 'For when the feed says it all.',        rarity: 'common',    source: { type: 'case' }, kind: 'facepalm' },
+  { id: 'emote.pushups',  name: 'Drop and Give', blurb: 'Three reps. One clap. Show-off.',       rarity: 'common',    source: { type: 'case' }, kind: 'pushups' },
+  { id: 'emote.crab',     name: 'Crab Walk',    blurb: 'Sideways scuttle, claws snipping.',      rarity: 'rare',      source: { type: 'case' }, kind: 'crab' },
+  { id: 'emote.gg',       name: 'GG',           blurb: 'A hard-light sign for a well-fragged foe.', rarity: 'rare',   source: { type: 'case' }, kind: 'gg' },
+  { id: 'emote.teatime',  name: 'Tea Time',     blurb: 'A satisfied sip. None of your business.', rarity: 'rare',     source: { type: 'case' }, kind: 'teatime' },
+  { id: 'emote.tpose',    name: 'Assert Dominance', blurb: 'A rigid T and a slow, creepy rotate.', rarity: 'epic',    source: { type: 'case' }, kind: 'tpose' },
+  { id: 'emote.micdrop',  name: 'Mic Drop',     blurb: 'Last words. Dropped mic. Walk away.',    rarity: 'epic',      source: { type: 'case' }, kind: 'micdrop' },
+  { id: 'emote.takethel', name: 'Take the L',   blurb: 'Forehead L, hop-kicks, zero mercy.',     rarity: 'legendary', source: { type: 'case' }, kind: 'takethel' },
 ];
 
 export function emoteById(id: string): EmoteCosmetic {

@@ -233,7 +233,12 @@ function seedState() {
   add('hat.cap');
   add('hat.cap');
   add('back.pack');
-  S.equipped = { hat: tophat.uid, finish: rail.uid };
+  const dyeTmp = add('dye.aurora');
+  add('dye.gold');
+  add('dye.hazard');
+  add('dye.magma');
+  add('dye.lime');
+  S.equipped = { hat: tophat.uid, finish: rail.uid, dye: dyeTmp.uid };
 
   // Market: other players' listings.
   const defs = ITEM_DEFS.filter((d) => d.tradable && !d.default && d.slot !== 'title' && d.slot !== 'card');

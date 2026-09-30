@@ -28,10 +28,23 @@ per-tier odds each ~4–5× rarer). Research notes: see the PR description.
   Announcer packs stay level-gated entitlements (not items).
 
 ### Slots
-`hat · face · back · finish (railgun skin) · beam (rail colour) · finisher · spawn · emote ·
+`hat · face · back · dye · finish (railgun skin) · beam (rail colour) · finisher · spawn · emote ·
 card · nameColor · title`. The old `unusual` slot is **gone**: an unusual effect is an
 **attribute of a hat (or emote) instance** (TF2 style). Face = visor/mask/goggles/moustache on the
 head bone's front; back = backpacks, jetpacks, wings, quivers, **capes** (spring-simulated).
+
+### Dyes (`dye` slot)
+A dye recolours your armour for everyone who sees you (Krunker-style player skins, our own
+looks). Data: `src/game/dyes.ts` (THREE-free); renderer: the character shader
+(`character/body.ts`, `uDye*` uniforms, keyed by `pattern`) via `Character.wearDye()`.
+Default `dye.none` = the natural name-keyed skin. Tiers: Common gloss solids → Uncommon
+matte/metal → Rare two-tones/stripes → Epic chrome/pearl → Legendary animated (Chroma Cycle,
+Hardlight, Aurora, Mainframe) → Relic (Magma Core, Spectre, Vantablack, Nebula) →
+Unobtainable (Event Horizon, Vault only). Drops from the Accessory + Vault cases.
+**Fairness:** solids stay in the natural skins' luminance band; dark patterns carry a bright
+fresnel rim / glowing detail; nothing is actually transparent; TDM team colours and the
+viewer's bright-enemy colour always override a dye. Animated dyes run off one shared wall
+clock and slow down under reduced effects.
 
 ### Tiers (7)
 | tier | colour | case odds | salvage (⛁) |
@@ -76,7 +89,7 @@ Vault 600 ⛁. Families:
 |---|---|
 | Hat Case | hats |
 | Weapon Case | finishes + beams |
-| Accessory Case | face + back |
+| Accessory Case | face + back + dye + name colour |
 | Taunt Case | emotes + finishers + spawn effects |
 | Vault Case (premium) | everything; tier odds shifted up; Unobtainable 0.02% |
 Roll = tier (fixed odds) → def uniformly among that tier in the pool → qualities → mint. RNG:

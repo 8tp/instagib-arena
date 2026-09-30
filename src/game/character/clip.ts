@@ -18,6 +18,12 @@ import { PoseSpec, SIDE_L, SIDE_R } from './pose';
 //
 // Oscillators add a sine on any channel component for secondary motion
 // (bobs, wiggles) — `cycles` per loop keeps looping clips seamless.
+//
+// Props: a clip may carry small hard-light props (built by emote-props.ts —
+// an "L" glyph, a sign, a mic…). Each rides one bone of the combatant, is
+// keyed in that bone's frame (p: metres, r: degrees YXZ, s: uniform scale)
+// with the same easing, and only shows inside its [from, to] window while
+// the clip's blend weight is above ½ (CharacterAnimator owns them).
 
 export type Ease = 'linear' | 'in' | 'out' | 'inOut' | 'outBack' | 'inBack' | 'outElastic' | 'hold';
 type V = readonly number[];
@@ -53,12 +59,34 @@ export type OscDef = {
   fade?: number;
 };
 
+export type PropKind = 'glyphL' | 'ggSign' | 'mic' | 'teacup' | 'saucer';
+
+export type PropKeyDef = {
+  t: number;
+  e?: Ease;
+  p?: V; // position in the bone's frame (m)
+  r?: V; // euler YXZ (degrees)
+  s?: number; // uniform scale
+};
+
+export type PropDef = {
+  kind: PropKind;
+  bone: RBone; // the bone it rides ('root' = ground space)
+  from?: number; // visible window (s); defaults to the whole clip
+  to?: number;
+  // Materialise / dematerialise time at the window edges (s), or [in, out]
+  // (0 = appear / vanish on the frame — e.g. a hand-off between two props).
+  pop?: number | readonly [number, number];
+  keys?: PropKeyDef[];
+};
+
 export type ClipDef = {
   duration: number;
   loop: boolean;
   keys: KeyDef[];
   osc?: OscDef[];
   gun?: boolean; // the clip shows the railgun in hand
+  props?: PropDef[];
 };
 
 type Channel = {
@@ -73,12 +101,26 @@ type Channel = {
 
 type Osc = OscDef & { bone: number; angle: boolean };
 
+export type ClipProp = {
+  kind: PropKind;
+  bone: number;
+  from: number;
+  to: number;
+  popIn: number;
+  popOut: number;
+  whole: boolean; // shown for the whole clip (no window edges)
+  p: Channel | null;
+  r: Channel | null;
+  s: Channel | null;
+};
+
 export type Clip = {
   duration: number;
   loop: boolean;
   gun: boolean;
   channels: Channel[];
   osc: Osc[];
+  props: ClipProp[];
 };
 
 const DEG = Math.PI / 180;
@@ -166,7 +208,83 @@ export function compileClip(def: ClipDef): Clip {
       bone: o.ch.startsWith('r.') ? (BONE_INDEX[o.ch.slice(2) as BoneName] ?? -1) : -1,
       angle: o.ch.startsWith('r.') || o.ch === 'oL' || o.ch === 'oR' || (o.ch === 'root' && o.i === 3),
     })),
+    props: (def.props ?? []).map((p) => compileProp(p, def.duration)),
   };
+}
+
+function compileProp(def: PropDef, dur: number): ClipProp {
+  const mk = (target: string, dim: number, deg: boolean): Channel => ({
+    target,
+    bone: -1,
+    dim,
+    deg: Array.from({ length: dim }, () => deg),
+    times: [],
+    values: [],
+    eases: [],
+  });
+  const p = mk('p', 3, false);
+  const r = mk('r', 3, true);
+  const s = mk('s', 1, false);
+  for (const k of [...(def.keys ?? [])].sort((a, b) => a.t - b.t)) {
+    const e = k.e ?? 'inOut';
+    if (k.p) {
+      p.times.push(k.t);
+      p.values.push([k.p[0] ?? 0, k.p[1] ?? 0, k.p[2] ?? 0]);
+      p.eases.push(e);
+    }
+    if (k.r) {
+      r.times.push(k.t);
+      r.values.push([(k.r[0] ?? 0) * DEG, (k.r[1] ?? 0) * DEG, (k.r[2] ?? 0) * DEG]);
+      r.eases.push(e);
+    }
+    if (k.s !== undefined) {
+      s.times.push(k.t);
+      s.values.push([k.s]);
+      s.eases.push(e);
+    }
+  }
+  const from = def.from ?? 0;
+  const to = def.to ?? dur;
+  const pop = def.pop ?? 0.14;
+  return {
+    kind: def.kind,
+    bone: BONE_INDEX[def.bone] ?? 0,
+    from,
+    to,
+    popIn: typeof pop === 'number' ? pop : pop[0],
+    popOut: typeof pop === 'number' ? pop : pop[1],
+    whole: from <= 0 && to >= dur,
+    p: p.times.length ? p : null,
+    r: r.times.length ? r : null,
+    s: s.times.length ? s : null,
+  };
+}
+
+// Clip-local time (wrapped for loops, clamped otherwise).
+export function clipTime(clip: Clip, t: number): number {
+  const dur = clip.duration;
+  return clip.loop ? ((t % dur) + dur) % dur : Math.min(Math.max(t, 0), dur);
+}
+
+// A prop's pose at clip-local time `tt`: writes position (m) and euler
+// (radians, YXZ) and returns its scale including the window envelope
+// (0 = hidden). Materialising pops in with a little overshoot.
+export function evalProp(clip: Clip, prop: ClipProp, tt: number, pos: number[], rot: number[]): number {
+  if (!prop.whole && (tt < prop.from || tt > prop.to)) return 0;
+  const dur = clip.duration;
+  if (prop.p) sampleChannel(prop.p, tt, dur, clip.loop, pos);
+  else pos[0] = pos[1] = pos[2] = 0;
+  if (prop.r) sampleChannel(prop.r, tt, dur, clip.loop, rot);
+  else rot[0] = rot[1] = rot[2] = 0;
+  let s = 1;
+  if (prop.s) {
+    sampleChannel(prop.s, tt, dur, clip.loop, _val);
+    s = _val[0];
+  }
+  if (prop.whole) return s;
+  const a = prop.popIn > 0 ? Math.min(1, (tt - prop.from) / prop.popIn) : 1;
+  const b = prop.popOut > 0 ? Math.min(1, (prop.to - tt) / prop.popOut) : 1;
+  return s * ease('outBack', Math.max(0, a)) * ease('out', Math.max(0, b));
 }
 
 const _val = [0, 0, 0, 0];

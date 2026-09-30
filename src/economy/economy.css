@@ -2382,3 +2382,196 @@
 .ec-rv-framed {
   box-shadow: 0 0 60px -12px var(--frame-glow) !important;
 }
+
+/* ═══ Item previews: turntables, the pool hover card, the preview modal ════ */
+
+/* A turntable strip (thumbs.ts) clipped to its tile, stepped frame by frame
+   (steps() in the inline animation — frame-rate independent). */
+.ec-turn {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  animation: ec-turn-in 180ms ease-out both;
+}
+.ec-turn-strip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  max-width: none;
+  will-change: transform;
+}
+@keyframes ec-turn {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-100%);
+  }
+}
+@keyframes ec-turn-in {
+  from {
+    opacity: 0;
+  }
+}
+/* "Rendering the spin": a thin sweep in the tier colour along the top edge. */
+.ec-turn-loading {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ec-turn-loading::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--rc, #67e8f9), transparent);
+  animation: ec-turn-load 0.9s linear infinite;
+}
+@keyframes ec-turn-load {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+.ec-contents-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Pool hover card (portalled, fixed beside its tile). */
+.ec-hovercard {
+  position: fixed;
+  z-index: 66;
+  width: 272px;
+  background: linear-gradient(180deg, #10141b 0%, #0a0c11 100%);
+  box-shadow:
+    0 22px 48px -14px rgba(0, 0, 0, 0.9),
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 0 36px -14px var(--rc);
+  border-top: 2px solid var(--rc);
+  animation: ec-hc-in 150ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.ec-hovercard.is-l {
+  animation-name: ec-hc-in-l;
+}
+.ec-hovercard.is-reduced {
+  animation: none;
+}
+@keyframes ec-hc-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+@keyframes ec-hc-in-l {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+.ec-hovercard-art {
+  padding: 10px 10px 0;
+}
+.ec-hovercard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 14px;
+}
+.ec-hovercard-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.ec-hovercard-blurb {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+/* Preview modal: the live stage + an info column (stacked when narrow). */
+.ec-pv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  min-height: 0;
+}
+.ec-pv-stage {
+  height: min(66vh, 620px);
+  min-height: 320px;
+}
+.ec-pv-stage .lk-canvas {
+  mask-image: none;
+}
+.ec-pv-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px 22px 24px;
+  background: #0a0c11;
+  box-shadow: inset 3px 0 0 var(--rc);
+}
+.ec-pv-name {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 0.98;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.ec-pv-note {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.48);
+}
+.ec-pv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+@media (max-width: 760px) {
+  .ec-pv {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ec-pv-stage {
+    height: min(52vh, 440px);
+    min-height: 280px;
+    border-right: 0;
+  }
+  .ec-pv-info {
+    padding: 16px;
+    box-shadow: inset 0 3px 0 var(--rc);
+  }
+  .ec-pv-name {
+    font-size: 26px;
+  }
+  .ec-pv-controls {
+    margin-top: 4px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ec-turn,
+  .ec-hovercard {
+    animation: none;
+  }
+}

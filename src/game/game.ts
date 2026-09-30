@@ -68,6 +68,8 @@ import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, setMapBuildQuality, 
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker, medalSting } from './medals';
 import { FOOTSTEP_STRIDE, MotionTracker } from './sfx/motion-tracker';
 import { floorBelow, setCharacterFxQuality, setGibFloorProbe } from './character/gibs';
+import { CharacterOutline, OutlineStyle } from './character/outline';
+import type { Character } from './character/character';
 import {
   DEFAULT_KILL_EFFECT,
   DEFAULT_RAIL_COLOR,
@@ -372,6 +374,11 @@ export class Game {
   private worldColor = new THREE.Color(0xffffff);
   private worldBrightness = 0;
   private enemyColor: THREE.Color | null = null; // null = natural enemies
+  // Enemy outline (viewer accessibility option): one hull per outlined enemy
+  // body, kept in sync each frame by syncEnemyOutlines(). Style is shared.
+  private outlineStyle: OutlineStyle | null = null;
+  private outlines = new Map<Character, CharacterOutline>();
+  private outlineFrame = 0;
 
   // Multiplayer
   private net: NetClient | null = null;
@@ -979,6 +986,63 @@ export class Game {
   setEnemyStyle(colorHex: string | null) {
     this.enemyColor = colorHex ? new THREE.Color(colorHex) : null;
     this.applyEnemyStyle();
+  }
+
+  // Outline enemies in a colour + pixel width for visibility (accessibility,
+  // available to everyone — like bright enemies). Depth-tested: never through walls.
+  setEnemyOutline(on: boolean, colorHex: string, widthPx: number) {
+    if (!on) {
+      this.clearEnemyOutlines();
+      this.outlineStyle?.dispose();
+      this.outlineStyle = null;
+      return;
+    }
+    const style = (this.outlineStyle ??= new OutlineStyle());
+    style.setColor(/^#[0-9a-f]{6}$/i.test(colorHex) ? colorHex : '#ffffff');
+    style.setWidth(widthPx);
+  }
+
+  private clearEnemyOutlines() {
+    for (const o of this.outlines.values()) o.dispose();
+    this.outlines.clear();
+  }
+
+  // Attach / show / hide / prune outline hulls to match this frame's enemies:
+  // FFA/Duel = every other combatant; TDM = the other team. Hidden while the
+  // body is dying (the finisher looks mustn't be traced) or dead; the body's
+  // own hides (first-person spectate, replays) apply through the scene graph.
+  private syncEnemyOutlines() {
+    const style = this.outlineStyle;
+    if (!style) return;
+    style.syncViewport(this.renderer);
+    const frame = ++this.outlineFrame;
+    const tdm = this.netMode === 'tdm' && this.localTeam != null;
+    for (const rp of this.remotePlayers.values()) {
+      this.markOutline(rp.body, !(tdm && rp.team === this.localTeam) && rp.deadTimer <= 0, style, frame);
+    }
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        const friend = this.localTeam != null && b.getTeam() === this.localTeam;
+        this.markOutline(b.body, !friend && b.state.alive, style, frame);
+      }
+    }
+    for (const [body, o] of this.outlines) {
+      if (o.seen === frame) continue;
+      o.dispose(); // the combatant left / was rebuilt
+      this.outlines.delete(body);
+    }
+  }
+
+  private markOutline(body: Character | null, show: boolean, style: OutlineStyle, frame: number) {
+    if (!body) return; // capsule fallback: no hull
+    let o = this.outlines.get(body);
+    if (!o) {
+      if (!show) return; // attach lazily, only to bodies that need one
+      o = new CharacterOutline(body, style);
+      this.outlines.set(body, o);
+    }
+    o.seen = frame;
+    o.setVisible(show);
   }
 
   // Equipped kill-effect cosmetic (the explosion that plays at YOUR frags).
@@ -1709,6 +1773,9 @@ export class Game {
     window.removeEventListener('keydown', this.tauntKeyHandler);
     this.tauntBody?.dispose(this.scene);
     this.tauntBody = null;
+    this.clearEnemyOutlines();
+    this.outlineStyle?.dispose();
+    this.outlineStyle = null;
     this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.replay?.dispose();
@@ -4278,6 +4345,7 @@ export class Game {
     // re-centred under the (now finalized) camera inside render().
     this.postFx.muteVignette(this.reducedEffects);
     if (this.replay) this.hideLiveBodiesForReplay();
+    this.syncEnemyOutlines();
     this.postFx.render();
     for (const g of this.tauntHidden) g.visible = true;
     this.tauntHidden.length = 0;

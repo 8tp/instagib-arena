@@ -454,6 +454,11 @@
 .st-color input[type='color']::-moz-color-swatch {
   border: 0;
 }
+.st-outline-preview {
+  display: block;
+  flex: none;
+  border: 1px solid var(--st-line-strong);
+}
 .st-color input[type='color']:focus-visible {
   outline: 2px solid var(--st-acc);
   outline-offset: 1px;

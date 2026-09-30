@@ -6,6 +6,7 @@ import { WornHat } from './hats';
 import { emoteById } from './cosmetics';
 import { CharacterAnimator } from './character-anim';
 import { Character, skinColorFor } from './character/character';
+import { dyeById } from './dyes';
 import { attachRailgun, disposeRailgun } from './character/gun';
 import { WornGearCtor, type GearLike } from '../economy/gear';
 import type { Loadout } from './items/types';
@@ -657,6 +658,7 @@ export class PodiumScene {
       group.rotation.y = Math.PI; // the combatant faces -Z; turn to face the camera (+Z)
 
       const character = new Character({ colorHex: skinColorFor(w.name) });
+      character.wearDye(dyeById(w.looks?.dye?.d), skinColorFor(w.name));
       group.add(character.root);
       const anim = new CharacterAnimator(character, { driveYaw: false, holdGun: false });
       const kind = emoteById(w.emoteId).kind;

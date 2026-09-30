@@ -8,6 +8,7 @@ import { HOLD, PALM_OFFSET } from './character/gun';
 import { GibBurst, type GibFloor } from './character/gibs';
 import { Locomotion, type FootfallListener, type LocoInput } from './locomotion';
 import { emoteClip, emoteStance, type AnyEmoteKind as EmoteKind } from './emotes';
+import { EmoteProps } from './emote-props';
 
 // Third-person animation for the code-built arena combatant, shared by
 // networked remote players, offline bots, replays, the podium and the Locker.
@@ -16,7 +17,7 @@ import { emoteClip, emoteStance, type AnyEmoteKind as EmoteKind } from './emotes
 //   motion tracking (from the entity's world position — the server owns it)
 //   → Locomotion (procedural gait, air, land, dash, wall-kick) → PoseSpec
 //   → aim layer (pitch through spine/neck/head; gun hold on the aim line)
-//   → optional full-body emote clip, blended in/out
+//   → optional full-body emote clip, blended in/out (+ its hard-light props)
 //   → solver (FK + two-bone IK for all four limbs) → bone matrices.
 // Death is an instagib: the body's own rigid parts fly apart (see gibs.ts).
 // Purely visual — hitboxes and positions are never written.
@@ -112,6 +113,8 @@ export class CharacterAnimator {
   private emoteTarget = 0;
   // Pending clip swap: blend out the old one first.
   private nextEmote: EmoteKind | null = null;
+  // The emote's props (L glyph, sign, mic…), made on the first clip that has any.
+  private props: EmoteProps | null = null;
 
   constructor(
     readonly character: Character,
@@ -170,6 +173,7 @@ export class CharacterAnimator {
 
   private startEmote(kind: EmoteKind) {
     this.emote = emoteClip(kind);
+    if (this.emote.props.length && !this.props) this.props = new EmoteProps(this.character);
     this.emoteKind = kind;
     this.emoteT = 0;
     this.emoteTarget = 1;
@@ -183,6 +187,7 @@ export class CharacterAnimator {
   // `style` = the killer's finisher: it picks how the body breaks apart.
   die(floor?: GibFloor, style: KillEffectStyle = DEFAULT_KILL_EFFECT): boolean {
     if (this.gibs.active) return true;
+    this.props?.hide();
     this.gibs.start(this.vx, this.vyNow, this.vz, floor ?? this.guessFloor(), style);
     return true;
   }
@@ -226,6 +231,8 @@ export class CharacterAnimator {
 
   dispose(): void {
     this.gibs.dispose();
+    this.props?.dispose();
+    this.props = null;
   }
 
   // ── Per-frame ──────────────────────────────────────────────────────────────
@@ -361,6 +368,7 @@ export class CharacterAnimator {
       solvePose(rig, this.spec);
     }
     rig.writeBones();
+    this.props?.update(this.emote, this.emoteT, this.emoteW);
   }
 
   // ── Motion tracking ────────────────────────────────────────────────────────

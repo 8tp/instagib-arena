@@ -1,7 +1,7 @@
 import type { EmoteKind } from './cosmetics';
 import { B, REST_ABS } from './character/rig';
 import { PoseSpec, SIDE_L, SIDE_R } from './character/pose';
-import { compileClip, type Clip, type ClipDef } from './character/clip';
+import { compileClip, type Clip, type ClipDef, type KeyDef, type PropKeyDef } from './character/clip';
 
 // ── Authored emotes / taunts ─────────────────────────────────────────────────
 //
@@ -46,7 +46,286 @@ const HR_REST = [0.265, 0.9, -0.02] as const;
 export type ExtraEmoteKind = 'airguitar' | 'headbang' | 'robot' | 'kneel' | 'railspin' | 'laugh';
 export type AnyEmoteKind = EmoteKind | ExtraEmoteKind;
 
+// ── Meme taunts (v3.1) ───────────────────────────────────────────────────────
+// Sillier, louder clips that read from across the arena. Several conjure a
+// hard-light prop (emote-props.ts): the clip keys it on a bone like any other
+// channel, and it only exists while the clip is playing.
+
+type MemeKind = 'takethel' | 'tpose' | 'crab' | 'facepalm' | 'micdrop' | 'gg' | 'pushups' | 'teatime';
+
+// Hand orientations (oL/oR, chest frame, degrees). Rest: fingers down, palms in.
+const FIST_FWD_R = [90, 0, 0] as const; // fingers forward, palm in (mug / stick grip)
+const PALM_OUT_UP_R = [180, -90, 0] as const; // fingers up, palm to the crowd
+const PALM_UP_R = [0, -90, -90] as const;
+const PALM_UP_L = [0, 90, 90] as const;
+const PALM_FACE_R = [180, 90, 0] as const; // fingers up, palm back (to the visor)
+// A prop gripped in a FIST_FWD hand, standing upright (+Y up) in the palm.
+const GRIP_P = [0, -0.068, -0.012] as const;
+const GRIP_R = [-90, 0, 0] as const;
+
+// Take the L: right hand throws the L to the forehead (the glyph lights up
+// over it), then hop-kick, hop-kick, the free arm flapping, head wagging.
+function takeTheL(): ClipDef {
+  const P = 0.6;
+  const keys: KeyDef[] = [{ t: 0, hR: [0.06, 1.64, -0.26], eR: [0.7, -1, 0.1], oR: PALM_OUT_UP_R }];
+  const glyph: PropKeyDef[] = [];
+  for (let i = 0; i < 4; i++) {
+    const t0 = i * P;
+    const sd = i % 2 ? -1 : 1;
+    keys.push(
+      // land, knees soft
+      { t: t0, e: 'in', root: [0, 0, 0, 0], hips: [0, -0.1, 0.01], fL: [-0.15, Y0, 0.0], fR: [0.12, Y0, 0.01], kL: [-0.2, 0, -1], hL: [-0.3, 0.98, -0.22], eL: [-0.6, -1, 0.4], r: { hips: [0, 0, 0], spine: [-6, 0, 0], chest: [-2, 0, 0], head: [-4, 0, 2 * sd] } },
+      // hop + the leg kicks out
+      { t: t0 + 0.22, e: 'out', root: [0, 0.075, 0, 0], hips: [0, -0.02, 0], fL: [-0.48, Y0 + 0.25, -0.06], fR: [0.12, Y0 - 0.02, 0.02], kL: [-1, 0.3, -0.5], hL: [-0.6, 1.24, -0.06], eL: [-0.3, -1, 0.3], r: { hips: [0, 0, -6], spine: [3, 0, 3], chest: [2, 0, 0], head: [6, 8 * sd, 4 * sd] } },
+      { t: t0 + 0.42, e: 'in', root: [0, 0, 0, 0], fL: [-0.2, Y0 + 0.05, 0.02], fR: [0.12, Y0, 0.01] },
+    );
+    glyph.push({ t: t0, e: "in", s: 0.42 }, { t: t0 + 0.22, e: "out", s: 0.47 });
+  }
+  glyph[0].p = [0.0, 0.35, -0.3];
+  return { duration: 4 * P, loop: true, keys, props: [{ kind: 'glyphL', bone: 'head', keys: glyph }] };
+}
+
+// T-pose: tuck, SNAP rigid into a T, then turn on the spot like a mannequin on
+// a turntable, hovering an inch off the floor — the head staying locked on
+// you as long as it can, then whipping round early to find you again.
+const tpose: ClipDef = {
+  duration: 4,
+  loop: true,
+  keys: [
+    { t: 0, root: [0, 0, 0, 0], hips: [0, HIP_DIP, 0], hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], r: { spine: [0, 0, 0], chest: [0, 0, 0], neck: [0, 0, 0], head: [0, 0, 0] } },
+    { t: 0.22, oL: [0, 0, 0], oR: [0, 0, 0], e: 'inOut', hips: [0, -0.08, 0], hL: [-0.2, 0.98, -0.14], hR: [0.2, 0.98, -0.14], eL: [-1, -0.3, 0.4], eR: [1, -0.3, 0.4], r: { spine: [-8, 0, 0], chest: [-4, 0, 0], head: [-12, 0, 0] } },
+    // SNAP
+    { t: 0.36, e: 'outBack', hips: [0, 0.005, 0], hL: [-0.77, 1.425, 0], hR: [0.77, 1.425, 0], eL: [0, 0, 1], eR: [0, 0, 1], oL: [0, 0, -90], oR: [0, 0, 90], fL: [-0.085, Y0, 0], fR: [0.085, Y0, 0], r: { spine: [2, 0, 0], chest: [2, 0, 0], neck: [0, 0, 0], head: [3, 0, 0] } },
+    { t: 0.55, root: [0, 0, 0, 0], r: { neck: [0, 0, 0], head: [3, 0, 0] } },
+    // the turntable (linear, motor-driven); the head counter-turns to hold your gaze
+    { t: 1.1, e: 'linear', root: [0, 0.045, 0, 70.7], r: { neck: [0, -28, 0], head: [3, -42, 0] } },
+    { t: 1.45, e: 'linear', root: [0, 0.05, 0, 116] },
+    { t: 1.55, e: 'out', r: { neck: [0, 0, 0], head: [3, 0, 0] } },
+    { t: 2.8, e: 'linear', r: { neck: [0, 0, 0], head: [3, 0, 0] } },
+    { t: 2.81, e: 'hold', r: { neck: [0, 28, 0], head: [3, 42, 0] } },
+    { t: 3.35, e: 'linear', root: [0, 0.045, 0, 360], r: { neck: [0, 0, 0], head: [3, 0, 0] } },
+    { t: 3.5, e: 'out', root: [0, 0, 0, 360], hL: [-0.77, 1.425, 0], hR: [0.77, 1.425, 0], oL: [0, 0, -90], oR: [0, 0, 90] },
+    // a creepy head tilt, then drop it all
+    { t: 3.52, e: 'hold', r: { head: [3, 0, 16] } },
+    { t: 3.72, r: { head: [3, 0, 16], spine: [2, 0, 0], chest: [2, 0, 0] } },
+    { t: 4, e: 'inOut', root: [0, 0, 0, 360], hips: [0, HIP_DIP, 0], hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+  ],
+};
+
+// Crab walk: deep squat, knees out, claws up and snipping — four scuttling
+// side-steps right, four back left.
+function crab(): ClipDef {
+  const S = 0.4;
+  // [fL.x, fR.x, hips.x] at each step (right ×4, then back).
+  const plan: [number, number, number][] = [
+    [-0.25, 0.25, 0],
+    [-0.25, 0.41, 0.08],
+    [-0.09, 0.41, 0.16],
+    [-0.09, 0.57, 0.24],
+    [0.07, 0.57, 0.32],
+    [-0.09, 0.57, 0.24],
+    [-0.09, 0.41, 0.16],
+    [-0.25, 0.41, 0.08],
+  ];
+  const keys: KeyDef[] = [
+    { t: 0, hL: [-0.44, 1.7, -0.2], hR: [0.44, 1.7, -0.2], eL: [-1, -0.7, 0.3], eR: [1, -0.7, 0.3], oL: [150, 60, 0], oR: [150, -60, 0], kL: [-1, 0, -0.6], kR: [1, 0, -0.6] },
+  ];
+  const mid = (a: number, b: number) => (a + b) / 2;
+  for (let i = 0; i < plan.length; i++) {
+    const [lx, rx, hx] = plan[i];
+    const [nlx, nrx, nhx] = plan[(i + 1) % plan.length];
+    const t0 = i * S;
+    const liftL = nlx !== lx; // which foot moves on this step
+    const sd = nhx > hx ? 1 : -1;
+    keys.push(
+      { t: t0, e: 'in', fL: [lx, Y0, 0.02], fR: [rx, Y0, 0.02], hips: [hx, -0.22, 0.04], r: { hips: [0, 0, 0], spine: [-4, 0, 0], head: [-2, 0, -6 * sd] } },
+      {
+        t: t0 + S / 2,
+        e: 'out',
+        fL: liftL ? [mid(lx, nlx), Y0 + 0.09, 0.0] : [lx, Y0, 0.02],
+        fR: liftL ? [rx, Y0, 0.02] : [mid(rx, nrx), Y0 + 0.09, 0.0],
+        hips: [mid(hx, nhx), -0.17, 0.04],
+        r: { hips: [0, 0, liftL ? 5 : -5], spine: [0, 0, 0], head: [2, 0, 6 * sd] },
+      },
+    );
+  }
+  return {
+    duration: plan.length * S,
+    loop: true,
+    keys,
+    osc: [
+      { ch: 'oL', i: 2, amp: 26, hz: 5 },
+      { ch: 'oR', i: 2, amp: 26, hz: 5, phase: 0.5 },
+      { ch: 'hL', i: 1, amp: 0.035, hz: 2.5 },
+      { ch: 'hR', i: 1, amp: 0.035, hz: 2.5, phase: 0.5 },
+    ],
+  };
+}
+
+// Facepalm: glance at the killfeed … SMACK, palm to visor, head shaking in
+// the hand, drag it down the face, then a full-body "why are you like this".
+const facepalm: ClipDef = {
+  duration: 3,
+  loop: true,
+  keys: [
+    { t: 0, hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], neck: [0, 0, 0], head: [0, 0, 0] } },
+    // wind up: the hand hangs out in front of the visor, head up at the replay
+    { t: 0.34, e: 'inOut', hR: [0.16, 1.52, -0.5], eR: [0.8, -1, 0.2], oR: PALM_FACE_R, r: { head: [12, -10, 0], neck: [2, 0, 0], chest: [3, 0, 0] } },
+    // SMACK
+    { t: 0.46, e: 'in', hR: [0.03, 1.66, -0.25], eR: [1, -0.6, 0.3], r: { head: [14, 0, 0], neck: [4, 0, 0], chest: [4, 0, 0] } },
+    // slump into the hand
+    { t: 0.66, e: 'outBack', hR: [0.03, 1.65, -0.26], hL: [-0.3, 0.99, 0.03], eL: [-1, 0, -0.2], hips: [0, -0.05, 0], r: { spine: [-3, 0, 0], chest: [-3, 0, 0], neck: [-2, 0, 0], head: [-5, 0, 0] } },
+    { t: 1.75, hR: [0.03, 1.64, -0.26], r: { spine: [-5, 0, 0], chest: [-4, 0, 0], neck: [-2, 0, 0], head: [-6, 0, 0] } },
+    // drag it down the visor
+    { t: 2.05, e: 'in', hR: [0.05, 1.4, -0.3], oR: PALM_FACE_R, r: { head: [-4, 0, 0], neck: [-2, 0, 0] } },
+    // exasperated palms-up shrug
+    { t: 2.3, e: 'outBack', hL: [-0.46, 1.16, -0.26], hR: [0.46, 1.16, -0.26], eL: [-1, -0.5, 0.3], eR: [1, -0.5, 0.3], oL: PALM_UP_L, oR: PALM_UP_R, hips: [0, -0.01, 0], r: { spine: [2, 0, 0], chest: [4, 0, 0], neck: [0, 0, 0], head: [6, 0, 12] } },
+    { t: 2.65, hL: [-0.45, 1.18, -0.26], hR: [0.45, 1.18, -0.26], r: { head: [6, 0, 12] } },
+    { t: 3, e: 'inOut', hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], neck: [0, 0, 0], head: [0, 0, 0] } },
+  ],
+  osc: [
+    { ch: 'r.head', i: 1, amp: 13, hz: 2.6, from: 0.7, to: 1.95, fade: 0.15 },
+    { ch: 'r.chest', i: 0, amp: 1.5, hz: 1.3, from: 0.7, to: 1.95 },
+  ],
+};
+
+// Mic drop: last words into the mic, arm out, a beat… let go. The mic
+// clatters on the floor; chin up, hands on hips, you're done here.
+const MIC_OUT = [0.66, 1.42, -0.26] as const;
+const MIC_HOLD = [0.12, 1.42, -0.34] as const;
+const micdrop: ClipDef = {
+  duration: 3.2,
+  loop: true,
+  keys: [
+    { t: 0, hR: MIC_HOLD, eR: [1, -0.6, 0.3], oR: FIST_FWD_R, hL: [-0.34, 1.12, -0.22], eL: [-0.8, -0.8, 0.4], oL: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [2, 0, 0], neck: [0, 0, 0], head: [-6, 0, 0] } },
+    { t: 0.7, e: 'inOut', hR: [0.12, 1.44, -0.34], hL: [-0.46, 1.22, -0.26], r: { chest: [4, 6, 0], head: [-2, -6, 0] } },
+    // arm out, look at it
+    { t: 0.95, e: 'outBack', hR: MIC_OUT, eR: [0.3, -1, 0.3], hL: [-0.3, 0.98, -0.1], eL: [-0.4, -0.6, 0.8], r: { spine: [2, -4, 0], chest: [4, -6, 0], neck: [0, -10, 0], head: [4, -18, 0] } },
+    { t: 1.35, hR: MIC_OUT, oR: FIST_FWD_R, r: { head: [2, -20, 0] } },
+    // …drop (the wrist flicks open)
+    { t: 1.45, e: 'out', hR: [0.67, 1.46, -0.24], oR: [40, 0, -30] },
+    // turn away: chin up, hands on hips
+    { t: 1.8, e: 'outBack', hR: [0.3, 1.0, 0.02], eR: [1, 0, -0.2], oR: [0, 0, 20], hL: [-0.3, 1.0, 0.02], eL: [-1, 0, -0.2], oL: [0, 0, -20], hips: [0, -0.01, 0], r: { spine: [4, 10, 0], chest: [6, 8, 0], neck: [0, 14, 0], head: [16, 22, 0] } },
+    { t: 2.75, hR: [0.3, 1.0, 0.02], hL: [-0.3, 1.0, 0.02], r: { head: [14, 24, 0] } },
+    { t: 3.2, e: 'inOut', hR: MIC_HOLD, eR: [1, -0.6, 0.3], oR: FIST_FWD_R, hL: [-0.34, 1.12, -0.22], eL: [-0.8, -0.8, 0.4], oL: [0, 0, 0], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [2, 0, 0], neck: [0, 0, 0], head: [-6, 0, 0] } },
+  ],
+  osc: [{ ch: 'r.head', i: 0, amp: 5, hz: 3.2, from: 0.05, to: 0.75 }],
+  props: [
+    // in the hand until the release…
+    { kind: 'mic', bone: 'hand.R', from: 0, to: 1.42, pop: [0.14, 0], keys: [{ t: 0, p: GRIP_P, r: GRIP_R }] },
+    // …then in ground space: fall, bounce, roll, dematerialise.
+    {
+      kind: 'mic',
+      bone: 'root',
+      from: 1.42,
+      to: 3.05,
+      pop: [0, 0.25],
+      keys: [
+        { t: 1.42, p: [0.64, 1.34, -0.33], r: [0, 0, 0] },
+        { t: 1.94, e: 'in', p: [0.68, 0.03, -0.36], r: [0, 0, -62] },
+        { t: 2.06, e: 'out', p: [0.71, 0.11, -0.37], r: [0, 30, -80] },
+        { t: 2.18, e: 'in', p: [0.74, 0.025, -0.38], r: [0, 40, -90] },
+        { t: 2.5, e: 'out', p: [0.77, 0.025, -0.39], r: [0, 55, -90] },
+      ],
+    },
+  ],
+};
+
+// GG: whip a hard-light "GG" picket sign overhead, pump it, wag it.
+const gg: ClipDef = {
+  duration: 2.8,
+  loop: true,
+  keys: [
+    { t: 0, hR: [0.26, 0.98, -0.16], eR: [0.4, -0.5, 1], oR: FIST_FWD_R, hL: HL_REST, eL: [-0.3, 0, 1], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+    { t: 0.16, e: 'inOut', hR: [0.24, 1.02, -0.2], hips: [0, -0.08, 0], r: { spine: [-6, 0, 0], head: [-8, 0, 0] } },
+    { t: 0.4, e: 'outBack', hR: [0.3, 1.82, -0.14], eR: [1, -0.4, 0.3], hL: [-0.42, 1.34, -0.24], eL: [-0.8, -1, 0.3], hips: [0, -0.01, 0], r: { spine: [5, 0, -3], chest: [6, 0, -3], head: [10, -6, 4] } },
+    { t: 1.7, hR: [0.3, 1.82, -0.14], hL: [-0.42, 1.34, -0.24], oR: FIST_FWD_R, r: { head: [10, 6, -4] } },
+    // wag it
+    { t: 1.9, e: 'inOut', oR: [90, 0, 18] },
+    { t: 2.1, e: 'inOut', oR: [90, 0, -18] },
+    { t: 2.3, e: 'inOut', oR: [90, 0, 10], hR: [0.3, 1.8, -0.14] },
+    { t: 2.8, e: 'inOut', hR: [0.26, 0.98, -0.16], eR: [0.4, -0.5, 1], oR: FIST_FWD_R, hL: HL_REST, eL: [-0.3, 0, 1], hips: [0, HIP_DIP, 0], r: { spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] } },
+  ],
+  osc: [
+    { ch: 'hR', i: 1, amp: 0.07, hz: 2.6, from: 0.45, to: 1.75, fade: 0.1 },
+    { ch: 'hL', i: 1, amp: 0.06, hz: 2.6, phase: 0.5, from: 0.45, to: 1.75, fade: 0.1 },
+    { ch: 'hips', i: 1, amp: 0.02, hz: 2.6, phase: 0.25, from: 0.45, to: 1.75 },
+  ],
+  props: [{ kind: 'ggSign', bone: 'hand.R', from: 0.12, to: 2.62, pop: 0.16, keys: [{ t: 0, p: GRIP_P, r: GRIP_R }] }],
+};
+
+// Push-ups: drop and give me… three. Two clean reps, a clap rep, spring up,
+// dust off the gauntlets. (The body goes to the floor on purpose.)
+const PLANK_UP = { root: [0, 0.1, 0.45, 0], hL: [-0.26, 1.237, -0.497], hR: [0.26, 1.237, -0.497], oL: [0, -90, -159], oR: [0, 90, 159] } as const;
+const PLANK_DN = { root: [0, 0.1, 0.45, 0], hL: [-0.26, 1.305, -0.279], hR: [0.26, 1.305, -0.279], oL: [0, -90, -169], oR: [0, 90, 169] } as const;
+const pushups: ClipDef = {
+  duration: 3.6,
+  loop: true,
+  keys: [
+    { t: 0, root: [0, 0, 0, 0], r: { root: [0, 0, 0], spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] }, hips: [0, HIP_DIP, 0], hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0], fL: [-0.13, Y0, 0], fR: [0.13, Y0, 0.01] },
+    { t: 0.22, e: 'inOut', hips: [0, -0.14, 0], hL: [-0.24, 1.1, -0.3], hR: [0.24, 1.1, -0.3], eL: [-0.6, -1, 0.2], eR: [0.6, -1, 0.2], r: { root: [-8, 0, 0], spine: [-10, 0, 0], head: [-10, 0, 0] } },
+    // timber — catch in the plank
+    { t: 0.52, e: 'in', ...PLANK_UP, hips: [0, HIP_DIP, 0], eL: [-0.5, -0.6, 0.6], eR: [0.5, -0.6, 0.6], fL: [-0.12, Y0, 0], fR: [0.12, Y0, 0], r: { root: [-69, 0, 0], spine: [0, 0, 0], head: [16, 0, 0] } },
+    { t: 0.62, e: 'out', r: { root: [-71, 0, 0], head: [14, 0, 0] } },
+    { t: 0.72, e: 'inOut', ...PLANK_UP, r: { root: [-69, 0, 0], head: [16, 0, 0] } },
+    // rep 1
+    { t: 1.0, e: 'inOut', ...PLANK_DN, r: { root: [-79, 0, 0], head: [22, 0, 0] } },
+    { t: 1.25, e: 'inOut', ...PLANK_UP, r: { root: [-69, 0, 0], head: [16, 0, 0] } },
+    // rep 2
+    { t: 1.5, e: 'inOut', ...PLANK_DN, r: { root: [-79, 0, 0], head: [22, 0, 0] } },
+    // clap rep: explode up, hands off the floor, clap, catch
+    { t: 1.72, e: 'out', root: [0, 0.14, 0.45, 0], r: { root: [-63, 0, 0], head: [12, 0, 0] }, hL: [-0.035, 1.18, -0.42], hR: [0.035, 1.18, -0.42], oL: [90, 0, 0], oR: FIST_FWD_R },
+    { t: 1.92, e: 'in', ...PLANK_UP, r: { root: [-69, 0, 0], head: [16, 0, 0] } },
+    { t: 2.08, e: 'out', ...PLANK_DN, r: { root: [-76, 0, 0], head: [20, 0, 0] } },
+    { t: 2.3, e: 'inOut', ...PLANK_UP, r: { root: [-69, 0, 0], head: [16, 0, 0] } },
+    // spring back up
+    { t: 2.72, e: 'outBack', root: [0, 0.04, 0, 0], r: { root: [0, 0, 0], spine: [2, 0, 0], head: [6, 0, 0] }, hips: [0, -0.02, 0], hL: [-0.12, 1.08, -0.28], hR: [0.12, 1.08, -0.28], oL: [90, 0, 0], oR: FIST_FWD_R, eL: [-0.6, -1, 0.3], eR: [0.6, -1, 0.3] },
+    { t: 2.82, e: 'in', root: [0, 0, 0, 0] },
+    // dust off the gauntlets
+    { t: 3.0, e: 'inOut', hL: [-0.02, 1.08, -0.3], hR: [0.14, 1.12, -0.28] },
+    { t: 3.15, e: 'inOut', hL: [-0.14, 1.12, -0.28], hR: [0.02, 1.08, -0.3] },
+    { t: 3.6, e: 'inOut', root: [0, 0, 0, 0], r: { root: [0, 0, 0], spine: [0, 0, 0], chest: [0, 0, 0], head: [0, 0, 0] }, hips: [0, HIP_DIP, 0], hL: HL_REST, hR: HR_REST, eL: [-0.3, 0, 1], eR: [0.3, 0, 1], oL: [0, 0, 0], oR: [0, 0, 0] },
+  ],
+};
+
+// Tea time: saucer in one hand, cup in the other; a long, satisfied sip, then
+// a slow look away. None of your business, really.
+const teatime: ClipDef = {
+  duration: 3.4,
+  loop: true,
+  keys: [
+    { t: 0, hL: [-0.1, 1.14, -0.3], eL: [-1, -0.6, 0.2], oL: PALM_UP_L, hR: [0.12, 1.2, -0.3], eR: [1, -0.6, 0.2], oR: FIST_FWD_R, hips: [0.02, -0.03, 0], r: { hips: [0, 0, -3], spine: [2, 0, 2], chest: [2, 0, 0], neck: [0, 0, 0], head: [-6, 0, 0] } },
+    { t: 0.45, e: 'inOut', hR: [0.07, 1.5, -0.3], oR: [100, 0, 0], r: { head: [0, 0, 0] } },
+    { t: 0.75, e: 'inOut', hR: [0.05, 1.56, -0.26], oR: [132, 0, 0], r: { neck: [4, 0, 0], head: [16, 0, 0], chest: [5, 0, 0] } },
+    { t: 1.4, hR: [0.05, 1.57, -0.25], oR: [138, 0, 0], r: { neck: [4, 0, 0], head: [18, 0, 0], chest: [6, 0, 0] } },
+    // lower… and look away
+    { t: 1.8, e: 'inOut', hR: [0.13, 1.21, -0.3], oR: FIST_FWD_R, r: { neck: [0, 12, 0], head: [6, 26, 6], chest: [3, 4, 0] } },
+    { t: 2.9, hR: [0.13, 1.21, -0.3], r: { neck: [0, 14, 0], head: [7, 30, 8], chest: [3, 4, 0] } },
+    { t: 3.4, e: 'inOut', hR: [0.12, 1.2, -0.3], oR: FIST_FWD_R, r: { neck: [0, 0, 0], head: [-6, 0, 0], chest: [2, 0, 0] } },
+  ],
+  osc: [
+    { ch: 'oR', i: 0, amp: 3, hz: 2.2, from: 0.8, to: 1.4, fade: 0.1 },
+    { ch: 'r.chest', i: 0, amp: 1.2, cycles: 2 },
+  ],
+  props: [
+    { kind: 'saucer', bone: 'hand.L', keys: [{ t: 0, p: [0.035, -0.07, -0.01], r: [0, 0, -90] }] },
+    { kind: 'teacup', bone: 'hand.R', keys: [{ t: 0, p: [-0.06, -0.06, 0.035], r: GRIP_R }] },
+  ],
+};
+
+const MEMES: Record<MemeKind, ClipDef> = {
+  takethel: takeTheL(),
+  tpose,
+  crab: crab(),
+  facepalm,
+  micdrop,
+  gg,
+  pushups,
+  teatime,
+};
+
 const DEFS: Record<AnyEmoteKind, ClipDef> = {
+  ...MEMES,
   // Locker "character" view idle: weight on one hip, breathing, a glance.
   idle: {
     duration: 4,

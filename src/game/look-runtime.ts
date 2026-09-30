@@ -190,14 +190,15 @@ const defsIn = (slot: ItemSlot) => ITEM_DEFS.filter((d) => d.slot === slot && !d
 const HAT_DEFS = defsIn('hat');
 const FACE_DEFS = defsIn('face');
 const BACK_DEFS = defsIn('back');
+const DYE_DEFS = defsIn('dye');
 const FINISH_DEFS = ITEM_DEFS.filter((d) => d.slot === 'finish' && d.inCases);
 const EMOTE_DEFS = ITEM_DEFS.filter((d) => d.slot === 'emote' && d.inCases);
 // Only effect kinds the hat renderer actually has (legacy UnusualKind set).
 const RENDERABLE_EFFECTS = UNUSUAL_EFFECTS.filter((e) => UNUSUALS.some((u) => u.kind === e.kind));
 const oneOf = <T>(a: readonly T[]): T | undefined => a[Math.floor(Math.random() * a.length)];
 
-// A random cosmetic loadout for a solo bot: usually a hat, often face/back gear
-// and a finish, ~5% of hats Unusual. Purely visual.
+// A random cosmetic loadout for a solo bot: usually a hat, often face/back gear,
+// a dye and a finish, ~5% of hats Unusual. Purely visual.
 export function randomBotLoadout(): Loadout {
   const out: Loadout = {};
   const hat = Math.random() < 0.85 ? oneOf(HAT_DEFS) : undefined;
@@ -212,6 +213,8 @@ export function randomBotLoadout(): Loadout {
   if (face) out.face = { d: face.id };
   const back = Math.random() < 0.4 ? oneOf(BACK_DEFS) : undefined;
   if (back) out.back = { d: back.id };
+  const dye = Math.random() < 0.5 ? oneOf(DYE_DEFS) : undefined;
+  if (dye) out.dye = { d: dye.id };
   const finish = Math.random() < 0.6 ? oneOf(FINISH_DEFS) : undefined;
   if (finish) {
     out.finish = { d: finish.id };
