@@ -17,6 +17,7 @@
     "dev:server": "tsx watch server/index.ts",
     "lan": "node scripts/lan-url.mjs",
     "netcode:load": "tsx scripts/netcode-load.ts",
+    "bots:sim": "tsx scripts/bot-sim.ts",
     "build": "vite build",
     "preview": "vite preview",
     "start": "NODE_ENV=production tsx server/index.ts",

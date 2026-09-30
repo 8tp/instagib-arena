@@ -32,7 +32,6 @@ export type BotState = {
   pos: Vec3;
   alive: boolean;
   respawnTimer: number;
-  moveTimer: number;
 };
 
 export type Medal =

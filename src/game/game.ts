@@ -2787,7 +2787,8 @@ export class Game {
       // Targetable entities: the local player (only while alive) + all live
       // bots. Each bot skips itself. Resolve any shots they decide to take.
       const enemies: BotTarget[] = [];
-      if (!dead) enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam });
+      // `invuln`: bots see your spawn protection and hold fire (they still track).
+      if (!dead) enemies.push({ id: 'player', pos: this.player.pos, team: this.localTeam, invuln: this.localRespawnInvuln > 0 });
       for (const b of this.bots.bots) {
         if (b.state.alive) enemies.push({ id: b.state.id, pos: b.state.pos, team: b.getTeam() });
       }
@@ -3005,6 +3006,13 @@ export class Game {
       killerId: 'you',
     });
     this.lastShotMs = performance.now();
+    // Offline bots hear the shot (and flinch from one that passes close).
+    this.bots?.hearShot(
+      { x: this.tmpBeamOrigin.x, y: this.tmpBeamOrigin.y, z: this.tmpBeamOrigin.z },
+      { x: result.end.x, y: result.end.y, z: result.end.z },
+      'player',
+      this.localTeam,
+    );
     this.audio.play('fire', 0.55);
     if (!trainingShot) this.audio.chargeStart(this.weapon.cooldown); // coils recharge hum
     this.addShake(SHAKE_FIRE);
@@ -3221,6 +3229,8 @@ export class Game {
     });
     // Spatialized so you can hear which direction a bot is firing from.
     this.audio.playAt('fire', origin.x, origin.y, origin.z, 0.4);
+    // …and the other bots hear it too.
+    this.bots?.hearShot(intent.origin, { x: end.x, y: end.y, z: end.z }, intent.botId, intent.team);
     if (!victimKind || !victimPos) return;
     // A bot scoring the match's first kill consumes First Blood, so the local
     // player can't later claim it for what is really the second kill.
