@@ -359,7 +359,7 @@ export function CasesTab({
                   </tbody>
                 </table>
               )}
-              <p className='mt-2 font-sans text-[12px] text-white/45'>Qualities stack — a Strange Professional Killstreak finish is possible. Festive only comes from seasonal cases.</p>
+              <p className='mt-2 font-sans text-[12px] text-white/45'>Qualities stack — a Tracked Professional Killstreak finish is possible. Festive only comes from seasonal cases.</p>
             </div>
           </div>
 

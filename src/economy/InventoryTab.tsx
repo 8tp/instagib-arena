@@ -10,7 +10,7 @@ import { SegButton, Skeleton } from '../deck';
 import { sfxProps, toast, uiHover, uiSfx } from '../deck-core';
 import { cosmeticById, nameColorById, sourceLabel, titleById } from '../game/cosmetics';
 import { DEFAULT_LOADOUT, ITEM_DEFS, itemDef } from '../game/items/catalog';
-import { TIER_META, strangeRank, STRANGE_RANKS, wearName, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
+import { TIER_META, strangeRank, STRANGE_RANKS, QUALITY_LABEL, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
 import { prefetchThumbnails } from '../game/thumbs';
 import { LockerStage, type StageNameplate } from '../locker/LockerStage';
 import { DyeSwatch, ItemTile } from '../ui/item-tile';
@@ -638,7 +638,7 @@ function Details({
             {confirm === inst.uid ? (
               <span className='ec-confirm' role='alertdialog' aria-label='Confirm salvage'>
                 <span>
-                  Salvage{inst.quality.includes('unusual') || TIER_META[tier].rank >= 3 ? ` this ${TIER_META[tier].label}${inst.quality.includes('unusual') ? ' Unusual' : ''}` : ''} for {fmtCredits(gain)}? Can’t be undone.
+                  Salvage{inst.quality.includes('unusual') || TIER_META[tier].rank >= 3 ? ` this ${TIER_META[tier].label}${inst.quality.includes('unusual') ? ` ${QUALITY_LABEL.unusual}` : ''}` : ''} for {fmtCredits(gain)}? Can’t be undone.
                 </span>
                 <button type='button' className='ec-btn ec-btn-danger' data-action='salvage-confirm' disabled={busy} onClick={() => onSalvage(inst)}>Salvage · {fmtCredits(gain)}</button>
                 <button type='button' className='ec-btn' onClick={() => setConfirm(null)}>Cancel</button>
@@ -662,15 +662,14 @@ function EyeGlyph() {
   );
 }
 
-// Provenance-ish facts: origin, minted date, strange progress, wear + seed.
+// Provenance-ish facts: origin, minted date, Tracked progress, pattern seed.
 function InstFacts({ inst }: { inst: ItemInstanceWire }) {
   const a = inst.attrs;
   const rows: [string, string][] = [
     ['Origin', ORIGIN_LABEL[inst.origin]],
     ['Minted', new Date(inst.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })],
   ];
-  if (a.wear != null) rows.push(['Wear', `${a.wear.toFixed(4)} · ${wearName(a.wear)}${a.seed != null ? ` · seed ${a.seed}` : ''}`]);
-  else if (a.seed != null) rows.push(['Pattern seed', String(a.seed)]);
+  if (a.seed != null) rows.push(['Pattern seed', String(a.seed)]);
   if (a.nameTag) rows.push(['Name tag', `“${a.nameTag}”`]);
   rows.push(['Trade', inst.tradable ? 'Tradable' : 'Bound to your account']);
   const strange = inst.quality.includes('strange');
@@ -687,7 +686,7 @@ function InstFacts({ inst }: { inst: ItemInstanceWire }) {
       ))}
       {strange && (
         <div className='ec-facts-wide'>
-          <span>Strange</span>
+          <span>{QUALITY_LABEL.strange}</span>
           <b>
             {strangeRank(kills)} · {kills.toLocaleString()} kills{next ? ` · ${(next.kills - kills).toLocaleString()} to ${next.name}` : ' · top rank'}
           </b>

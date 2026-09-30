@@ -1,6 +1,6 @@
 // The admin item generator: pick a catalog def (searchable thumbnails, slot /
 // tier / season filters), dress it up (unusual effect, Strange + kills,
-// Festive, killstreak sheen + professional effect, pattern seed + wear, custom
+// Festive, killstreak sheen + professional effect, pattern seed, custom
 // name / description / tint / tier, bound), and see the exact item a player
 // will get. Controlled: the parent owns the SpecDraft. Used for direct mints
 // (Items) and for each item in a code / gift reward bundle.
@@ -8,7 +8,7 @@ import '../locker/locker.css';
 import '../economy/economy.css';
 import { useDeferredValue, useMemo, useState } from 'react';
 import { itemDef, seasonOf } from '../game/items/catalog';
-import { ITEM_SLOTS, KS_EFFECTS, KS_SHEENS, SEASONS, TIERS, TIER_META, UNUSUAL_EFFECTS, wearName, type ItemSlot, type Tier } from '../game/items/types';
+import { ITEM_SLOTS, KS_EFFECTS, KS_SHEENS, SEASONS, TIERS, TIER_META, UNUSUAL_EFFECTS, type ItemSlot, type Tier } from '../game/items/types';
 import { SLOT_LABEL, defSeason, instBlurb, instFullName, instTags, instTier } from '../economy/display';
 import { TagPills, TierChip } from '../economy/parts';
 import { specPreview } from '../inbox/reward';
@@ -170,7 +170,6 @@ export function ItemSpecEditor({
   const effectNote = slot === 'hat' || slot === 'emote' ? undefined : 'shows on hats + emotes';
   const ksNote = slot === 'finish' ? undefined : 'shows on finishes';
   const staffBound = !!def && !def.tradable && def.tier === 'unobtainable';
-  const wearNum = d.wear.trim() === '' ? null : Math.max(0, Math.min(1, Number(d.wear) || 0));
 
   const form = (
     <div className='flex min-w-0 flex-col gap-4'>
@@ -218,16 +217,6 @@ export function ItemSpecEditor({
           <>
             <Field label='Pattern seed' hint='0–999 · blank = none'>
               <input className={inputCls} inputMode='numeric' value={d.seed} onChange={(e) => set('seed', e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder='318' data-field='spec-seed' />
-            </Field>
-            <Field label='Wear' hint={wearNum != null ? `${wearNum.toFixed(2)} · ${wearName(wearNum)}` : 'blank = none'}>
-              <span className='flex items-center gap-2'>
-                <input type='range' min={0} max={1} step={0.01} value={wearNum ?? 0} onChange={(e) => set('wear', e.target.value)} className='flex-1 accent-cyan-400' aria-label='Wear' data-field='spec-wear' />
-                {d.wear !== '' && (
-                  <button type='button' className='text-[10px] font-bold text-white/40 hover:text-rose-300' onClick={() => set('wear', '')} aria-label='Clear wear'>
-                    ✕
-                  </button>
-                )}
-              </span>
             </Field>
           </>
         )}

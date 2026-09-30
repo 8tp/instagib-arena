@@ -45,7 +45,7 @@ const SLOT_NAME: Record<CosmeticSlot, string> = {
   railColor: 'Rail beam',
   railgunFinish: 'Railgun finish',
   hat: 'Hat',
-  unusual: 'Unusual',
+  unusual: 'Anomalous',
   card: 'Player card',
   emote: 'Emote',
   nameColor: 'Name colour',

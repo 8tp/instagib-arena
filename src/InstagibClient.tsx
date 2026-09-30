@@ -57,7 +57,7 @@ import {
 } from './game/net';
 import { withLegacyFromLooks } from './game/look-runtime';
 import { itemDef } from './game/items/catalog';
-import { TIER_META, qualityPrefix, wearName } from './game/items/types';
+import { TIER_META, qualityPrefix } from './game/items/types';
 import { CHAT_CLIENT_MAX_LEN } from './lobby/helpers';
 import { GlobalChatPanel, OnlinePlayersPanel, OpenLobbies, ServerStatusChip } from './lobby/ServerBrowser';
 import { CreateMatchModal, CreateOnlineModal, InviteModal } from './lobby/CreateMatch';
@@ -1546,7 +1546,7 @@ function ReplayTag({ label, tone }: { label: string; tone: 'cyan' | 'amber' }) {
 /* ───────────────────────── HUD layout ───────────────────────── */
 
 // The equipped finish's card while you inspect the gun: full name (quality
-// prefix + name), Strange kills + rank, wear, pattern seed, mint number, in the
+// prefix + name), Tracked kills + rank, pattern seed, mint number, in the
 // tier colour. Data is the equipped instance the hub put in Settings.finishItem;
 // a plain stock/bought finish shows just its name.
 function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
@@ -1565,7 +1565,6 @@ function InspectCard({ settings, kills }: { settings: Settings; kills: number | 
   const title = prefix ? `${prefix} ${base}` : base;
   const bits: string[] = [];
   if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
-  if (typeof attrs.wear === 'number') bits.push(wearName(attrs.wear));
   if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
   if (item) bits.push(`#${item.mint}`);
   return (

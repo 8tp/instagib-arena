@@ -32,22 +32,53 @@ export const ITEM_SLOTS: readonly ItemSlot[] = [
   'hat', 'face', 'back', 'dye', 'finish', 'beam', 'finisher', 'spawn', 'emote', 'card', 'nameColor', 'title',
 ];
 
+// Internal quality ids are stable (they're stored in DB rows, listings, codes).
+// Players see QUALITY_LABEL: 'unusual' → "Anomalous", 'strange' → "Tracked".
 export type Quality = 'unusual' | 'strange' | 'festive' | 'killstreak' | 'professional' | 'founder' | 'admin';
+
+export const QUALITY_LABEL: Record<Quality, string> = {
+  unusual: 'Anomalous',
+  strange: 'Tracked',
+  festive: 'Festive',
+  killstreak: 'Killstreak',
+  professional: 'Professional Killstreak',
+  founder: 'Founder',
+  admin: 'Staff',
+};
 
 // Per-instance attributes rolled at mint (or set by an admin).
 export type ItemAttrs = {
-  effect?: string; // unusual effect id (UNUSUAL_EFFECTS) — hats + emotes
-  kills?: number; // strange counter (server-maintained)
+  effect?: string; // Anomalous effect id (UNUSUAL_EFFECTS) — hats + emotes
+  kills?: number; // Tracked counter (server-maintained)
   sheen?: string; // killstreak sheen colour id (KS_SHEENS)
   ksEffect?: string; // professional killstreak effect id (KS_EFFECTS)
   festive?: boolean;
   seed?: number; // pattern seed 0..999 (finishes)
-  wear?: number; // 0..1 (finishes)
   nameTag?: string;
   customName?: string; // admin one-off
   customDesc?: string;
   tint?: string; // admin one-off tint '#rrggbb'
 };
+
+// Which rolled/admin attributes mean anything on which slot — the admin editor
+// only offers these, and the server drops the rest at mint (prepareAdminItem).
+// Name tags and the admin one-off name/description apply to every slot.
+export type SlotAttr = 'effect' | 'kills' | 'sheen' | 'ksEffect' | 'festive' | 'seed' | 'tint';
+export const SLOT_ATTRS: Record<ItemSlot, readonly SlotAttr[]> = {
+  hat: ['effect', 'festive', 'tint'],
+  face: ['tint'],
+  back: ['tint'],
+  dye: [],
+  finish: ['kills', 'sheen', 'ksEffect', 'festive', 'seed'],
+  beam: ['kills'],
+  finisher: ['kills'],
+  spawn: [],
+  emote: ['effect'],
+  card: [],
+  nameColor: [],
+  title: [],
+};
+export const slotAllows = (slot: ItemSlot, attr: SlotAttr): boolean => SLOT_ATTRS[slot].includes(attr);
 
 export type ItemOrigin = 'case' | 'spin' | 'code' | 'gift' | 'admin' | 'road' | 'challenge' | 'founder' | 'title' | 'market' | 'trade' | 'legacy';
 export type ItemState = 'owned' | 'listed' | 'traded' | 'salvaged' | 'revoked';
@@ -74,7 +105,6 @@ export type Look = {
   k?: string; // professional killstreak effect
   f?: 1; // festive
   p?: number; // pattern seed
-  w?: number; // wear
   t?: string; // admin tint
 };
 export type Loadout = Partial<Record<ItemSlot, Look>>;
@@ -96,10 +126,10 @@ const STD_ODDS: Record<Tier, number> = {
 };
 
 export const CASES: readonly CaseDef[] = [
-  { id: 'hat', name: 'Hat Case', blurb: 'Hats — with a shot at an Unusual.', cost: 150, slots: ['hat'], odds: STD_ODDS },
-  { id: 'weapon', name: 'Weapon Case', blurb: 'Railgun finishes and rail beams. Strange and Killstreak variants.', cost: 150, slots: ['finish', 'beam'], odds: STD_ODDS },
+  { id: 'hat', name: 'Hat Case', blurb: 'Hats — with a shot at an Anomalous.', cost: 150, slots: ['hat'], odds: STD_ODDS },
+  { id: 'weapon', name: 'Weapon Case', blurb: 'Railgun finishes and rail beams. Tracked and Killstreak variants.', cost: 150, slots: ['finish', 'beam'], odds: STD_ODDS },
   { id: 'accessory', name: 'Accessory Case', blurb: 'Face gear, backpacks, wings, capes, dyes and name colours.', cost: 150, slots: ['face', 'back', 'dye', 'nameColor'], odds: STD_ODDS },
-  { id: 'taunt', name: 'Taunt Case', blurb: 'Emotes, finishers and spawn effects. Unusual taunts drop here.', cost: 150, slots: ['emote', 'finisher', 'spawn'], odds: STD_ODDS },
+  { id: 'taunt', name: 'Taunt Case', blurb: 'Emotes, finishers and spawn effects. Anomalous taunts drop here.', cost: 150, slots: ['emote', 'finisher', 'spawn'], odds: STD_ODDS },
   {
     id: 'vault', name: 'Vault Case', blurb: 'Everything, weighted up — and a whisper of Unobtainable.', cost: 600, premium: true,
     slots: ['hat', 'face', 'back', 'dye', 'finish', 'beam', 'finisher', 'spawn', 'emote'],
@@ -140,28 +170,29 @@ export const QUALITY_ODDS = {
   professional: 0.015, // finishes (subset of killstreak)
 } as const;
 
+// Tracked rank ladder: the item's name prefix climbs with its kill count.
 export const STRANGE_RANKS: readonly { kills: number; name: string }[] = [
-  { kills: 0, name: 'Strange' },
-  { kills: 10, name: 'Unremarkable' },
-  { kills: 25, name: 'Scarcely Lethal' },
-  { kills: 45, name: 'Mildly Menacing' },
-  { kills: 70, name: 'Somewhat Threatening' },
-  { kills: 100, name: 'Uncharitable' },
-  { kills: 135, name: 'Notably Dangerous' },
-  { kills: 175, name: 'Sufficiently Lethal' },
-  { kills: 225, name: 'Truly Feared' },
-  { kills: 275, name: 'Spectacularly Lethal' },
-  { kills: 350, name: 'Gore-Spattered' },
-  { kills: 500, name: 'Wicked Nasty' },
-  { kills: 750, name: 'Positively Inhumane' },
-  { kills: 999, name: 'Totally Ordinary' },
-  { kills: 1000, name: 'Face-Melting' },
-  { kills: 1500, name: 'Rage-Inducing' },
-  { kills: 2500, name: 'Server-Clearing' },
-  { kills: 5000, name: 'Epic' },
-  { kills: 7500, name: 'Legendary' },
-  { kills: 7616, name: 'Australian' },
-  { kills: 8500, name: 'Rail God’s Own' },
+  { kills: 0, name: 'Tracked' },
+  { kills: 10, name: 'Zeroed-In' },
+  { kills: 25, name: 'Blooded' },
+  { kills: 45, name: 'Proven' },
+  { kills: 70, name: 'Hazardous' },
+  { kills: 100, name: 'Lethal' },
+  { kills: 135, name: 'Merciless' },
+  { kills: 175, name: 'Relentless' },
+  { kills: 225, name: 'Ruthless' },
+  { kills: 275, name: 'Feared' },
+  { kills: 350, name: 'Dreaded' },
+  { kills: 500, name: 'Notorious' },
+  { kills: 750, name: 'Apex' },
+  { kills: 999, name: 'One Shy' },
+  { kills: 1000, name: 'Kilofrag' },
+  { kills: 1500, name: 'Arena-Clearing' },
+  { kills: 2500, name: 'Railborn' },
+  { kills: 5000, name: 'Hyperlethal' },
+  { kills: 7500, name: 'Transcendent' },
+  { kills: 7777, name: 'Jackpot' },
+  { kills: 8500, name: 'Instagib Incarnate' },
 ];
 
 export function strangeRank(kills: number): string {
@@ -170,18 +201,7 @@ export function strangeRank(kills: number): string {
   return name;
 }
 
-export const WEAR_BANDS: readonly { max: number; name: string }[] = [
-  { max: 0.07, name: 'Factory New' },
-  { max: 0.15, name: 'Minimal Wear' },
-  { max: 0.38, name: 'Field-Tested' },
-  { max: 0.45, name: 'Well-Worn' },
-  { max: 1.01, name: 'Battle-Scarred' },
-];
-export function wearName(w: number): string {
-  return (WEAR_BANDS.find((b) => w < b.max) ?? WEAR_BANDS[WEAR_BANDS.length - 1]).name;
-}
-
-// Unusual effects (renderer: src/game/fx/unusuals.ts keys by `kind`). `taunt` = also valid on emotes.
+// Anomalous (internal: unusual) effects (renderer: src/game/fx/unusuals.ts keys by `kind`). `taunt` = also valid on emotes.
 export const UNUSUAL_EFFECTS: readonly { id: string; name: string; kind: string; taunt?: boolean }[] = [
   { id: 'fx.embers', name: 'Searing Embers', kind: 'embers', taunt: true },
   { id: 'fx.orbit', name: 'Orbiting Energy', kind: 'orbit' },
@@ -252,7 +272,7 @@ export const ONBOARDING = {
 
 export function qualityPrefix(q: readonly Quality[], attrs: ItemAttrs): string {
   const parts: string[] = [];
-  if (q.includes('unusual')) parts.push('Unusual');
+  if (q.includes('unusual')) parts.push(QUALITY_LABEL.unusual);
   if (q.includes('strange')) parts.push(strangeRank(attrs.kills ?? 0));
   if (q.includes('festive')) parts.push('Festive');
   if (q.includes('professional')) parts.push('Professional Killstreak');

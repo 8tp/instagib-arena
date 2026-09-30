@@ -13,7 +13,7 @@ import {
   qualityPrefix,
   seasonName,
   strangeRank,
-  wearName,
+  QUALITY_LABEL,
   type ItemInstanceWire,
   type ItemSlot,
   type Look,
@@ -78,7 +78,6 @@ export function instLook(i: ItemInstanceWire): Look {
   if (a.ksEffect) look.k = a.ksEffect;
   if (a.festive || i.quality.includes('festive')) look.f = 1;
   if (a.seed != null) look.p = a.seed;
-  if (a.wear != null) look.w = a.wear;
   if (a.tint) look.t = a.tint;
   return look;
 }
@@ -110,7 +109,7 @@ export type Tag = { text: string; color: string };
 export function instPrefixParts(i: ItemInstanceWire): Tag[] {
   const q = i.quality;
   const out: Tag[] = [];
-  if (q.includes('unusual')) out.push({ text: 'Unusual', color: QUALITY_TONE.unusual });
+  if (q.includes('unusual')) out.push({ text: QUALITY_LABEL.unusual, color: QUALITY_TONE.unusual });
   if (q.includes('strange')) out.push({ text: strangeRank(i.attrs.kills ?? 0), color: QUALITY_TONE.strange });
   if (q.includes('festive')) out.push({ text: 'Festive', color: QUALITY_TONE.festive });
   if (q.includes('professional')) out.push({ text: 'Professional Killstreak', color: QUALITY_TONE.professional });
@@ -122,12 +121,11 @@ export function instTags(i: ItemInstanceWire): Tag[] {
   const out: Tag[] = [];
   const q = i.quality;
   const a = i.attrs;
-  if (q.includes('unusual')) out.push({ text: effectName(a.effect) ?? 'Unusual', color: QUALITY_TONE.unusual });
+  if (q.includes('unusual')) out.push({ text: effectName(a.effect) ?? QUALITY_LABEL.unusual, color: QUALITY_TONE.unusual });
   if (q.includes('strange')) out.push({ text: `${strangeRank(a.kills ?? 0)} · ${(a.kills ?? 0).toLocaleString()} kills`, color: QUALITY_TONE.strange });
   if (q.includes('professional')) out.push({ text: `Pro Killstreak${a.ksEffect ? ` · ${ksEffectName(a.ksEffect) ?? ''}` : ''}`, color: sheenInfo(a.sheen)?.color ?? QUALITY_TONE.professional });
   else if (q.includes('killstreak')) out.push({ text: `Killstreak · ${sheenInfo(a.sheen)?.name ?? 'Sheen'}`, color: sheenInfo(a.sheen)?.color ?? QUALITY_TONE.killstreak });
   if (q.includes('festive')) out.push({ text: 'Festive', color: QUALITY_TONE.festive });
-  if (a.wear != null) out.push({ text: wearName(a.wear), color: '#9fb0c6' });
   if (q.includes('founder')) out.push({ text: 'Founder', color: QUALITY_TONE.founder });
   if (q.includes('admin')) out.push({ text: 'Staff', color: QUALITY_TONE.admin });
   return out;
@@ -136,11 +134,10 @@ export function instTags(i: ItemInstanceWire): Tag[] {
 // The one-line attribute string on the tile itself (kept short).
 export function instTileSub(i: ItemInstanceWire): string {
   const q = i.quality;
-  if (q.includes('unusual')) return effectName(i.attrs.effect) ?? 'Unusual';
+  if (q.includes('unusual')) return effectName(i.attrs.effect) ?? QUALITY_LABEL.unusual;
   if (q.includes('professional')) return 'Professional';
   if (q.includes('killstreak')) return 'Killstreak';
   if (q.includes('strange')) return `${(i.attrs.kills ?? 0).toLocaleString()} kills`;
-  if (i.attrs.wear != null) return wearName(i.attrs.wear);
   if (q.includes('festive')) return 'Festive';
   return '';
 }

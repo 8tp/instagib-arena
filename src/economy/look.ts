@@ -11,7 +11,6 @@ export function lookKey(look: Look): string {
   if (look.k) k += `|k=${look.k}`;
   if (look.f) k += '|f=1';
   if (look.p != null) k += `|p=${look.p}`;
-  if (look.w != null) k += `|w=${Math.round(look.w * 100)}`;
   if (look.t) k += `|t=${look.t}`;
   return k;
 }
@@ -28,7 +27,6 @@ export function parseLookKey(key: string): Look {
     else if (f === 'k') look.k = v;
     else if (f === 'f') look.f = 1;
     else if (f === 'p') look.p = Number(v);
-    else if (f === 'w') look.w = Number(v) / 100;
     else if (f === 't') look.t = v;
   }
   return look;
