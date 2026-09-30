@@ -40,7 +40,7 @@ let cache: ArenaTextures | null = null;
 
 // ── deterministic noise ────────────────────────────────────────────────────
 
-function hash(ix: number, iy: number, seed: number): number {
+export function hash(ix: number, iy: number, seed: number): number {
   let n = Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ Math.imul(seed, 0x9e3779b1);
   n = Math.imul(n ^ (n >>> 15), 0x85ebca6b);
   n = Math.imul(n ^ (n >>> 13), 0xc2b2ae35);
@@ -50,7 +50,7 @@ function hash(ix: number, iy: number, seed: number): number {
 
 // Tiling value noise as a full-size field (lattice precomputed, bilinear with
 // smoothstep). `cell` is the lattice spacing in texels.
-function noiseField(size: number, cell: number, seed: number): Float32Array {
+export function noiseField(size: number, cell: number, seed: number): Float32Array {
   const n = Math.max(1, Math.round(size / cell));
   const lattice = new Float32Array(n * n);
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) lattice[y * n + x] = hash(x, y, seed);
@@ -89,7 +89,7 @@ function noiseField(size: number, cell: number, seed: number): Float32Array {
 }
 
 // Two-octave blotch noise centred on 0 (range ≈ -0.5..0.5).
-function blotchField(size: number, cell: number, seed: number): Float32Array {
+export function blotchField(size: number, cell: number, seed: number): Float32Array {
   const a = noiseField(size, cell, seed);
   const b = noiseField(size, cell / 2, seed + 101);
   const out = new Float32Array(size * size);
@@ -97,13 +97,13 @@ function blotchField(size: number, cell: number, seed: number): Float32Array {
   return out;
 }
 
-function smoothstep(e0: number, e1: number, x: number): number {
+export function smoothstep(e0: number, e1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 }
 
 // Separable wrapping box blur (running sums) — used to bake cavity AO.
-function boxBlurWrap(src: Float32Array, size: number, radius: number): Float32Array {
+export function boxBlurWrap(src: Float32Array, size: number, radius: number): Float32Array {
   const tmp = new Float32Array(size * size);
   const out = new Float32Array(size * size);
   const win = radius * 2 + 1;
@@ -131,7 +131,7 @@ function boxBlurWrap(src: Float32Array, size: number, radius: number): Float32Ar
 
 // Per-texel authoring masks. `h` is in TEXEL units (1 unit of height per texel
 // of run = a 45° slope), everything else is 0..1.
-type Field = {
+export type Field = {
   size: number;
   h: Float32Array; // height, positive = raised
   seam: Float32Array; // groove + bevel (darker, rougher)
@@ -142,7 +142,7 @@ type Field = {
   mix?: Float32Array; // optional 0..1 blend toward BakeSpec.base2 (stripes, paint bands)
 };
 
-function newField(size: number): Field {
+export function newField(size: number): Field {
   const n = size * size;
   return {
     size,
@@ -156,7 +156,7 @@ function newField(size: number): Field {
 
 // Anisotropic tiling value noise (separate lattice spacing along x and y) —
 // wood grain, brushed metal, streaks. Same smoothstep bilinear as noiseField.
-function noiseField2(size: number, cellX: number, cellY: number, seed: number): Float32Array {
+export function noiseField2(size: number, cellX: number, cellY: number, seed: number): Float32Array {
   const nx = Math.max(1, Math.round(size / cellX));
   const ny = Math.max(1, Math.round(size / cellY));
   const lattice = new Float32Array(nx * ny);
@@ -186,7 +186,7 @@ function noiseField2(size: number, cellX: number, cellY: number, seed: number): 
   return out;
 }
 
-type PanelSpec = {
+export type PanelSpec = {
   size: number;
   cols: number;
   rows: number;
@@ -204,7 +204,7 @@ type PanelSpec = {
 };
 
 // Flat plates separated by bevelled grooves, optional rivets + hairline inset.
-function panelField(s: PanelSpec): Field {
+export function panelField(s: PanelSpec): Field {
   const f = newField(s.size);
   const { size } = s;
   const px = size / s.cols;
@@ -262,7 +262,7 @@ function panelField(s: PanelSpec): Field {
   return f;
 }
 
-type CorrugationSpec = {
+export type CorrugationSpec = {
   size: number;
   ribs: number; // ribs per tile
   depth: number; // rib depth, texel units
@@ -273,7 +273,7 @@ type CorrugationSpec = {
 };
 
 // Shipping-container skin: trapezoid vertical ribs + horizontal frame rails.
-function corrugationField(s: CorrugationSpec): Field {
+export function corrugationField(s: CorrugationSpec): Field {
   const f = newField(s.size);
   const { size } = s;
   const pitch = size / s.ribs;
@@ -305,7 +305,7 @@ function corrugationField(s: CorrugationSpec): Field {
 // Industrial floor grating: bearing bars along V every `pitch` texels, cross
 // rods along U every `cross` texels, dark voids between (no alpha — it reads
 // as grating through normal + albedo + cavity AO, and stays solid for decals).
-function gratingField(s: {
+export function gratingField(s: {
   size: number; pitch: number; bar: number; cross: number; rod: number; depth: number; frame: number; seed: number;
 }): Field {
   const f = newField(s.size);
@@ -334,7 +334,7 @@ function gratingField(s: {
 
 // Planks along U: `rows` boards per tile, `segs` butt joints per row at
 // hashed offsets, bevelled gaps, per-board tone and a stretched grain.
-function planksField(s: {
+export function planksField(s: {
   size: number; rows: number; segs: number; gap: number; bevel: number; depth: number;
   grain: number; tone: number; seed: number;
 }): Field {
@@ -372,7 +372,7 @@ function planksField(s: {
 
 // Running-bond blocks (stone, concrete block, brick-at-giant-scale) with
 // mortar grooves and per-block tone.
-function blocksField(s: {
+export function blocksField(s: {
   size: number; cols: number; rows: number; mortar: number; bevel: number; depth: number;
   tone: number; wobble: number; seed: number;
 }): Field {
@@ -408,7 +408,7 @@ function blocksField(s: {
 }
 
 // Tufted upholstery: soft pillows between buttons on a diamond lattice.
-function tuftField(s: { size: number; cells: number; depth: number; seed: number }): Field {
+export function tuftField(s: { size: number; cells: number; depth: number; seed: number }): Field {
   const f = newField(s.size);
   const { size } = s;
   const c = size / s.cells;
@@ -433,7 +433,7 @@ function tuftField(s: { size: number; cells: number; depth: number; seed: number
 
 // Nearly flat surface with only low-frequency unevenness: plaster, asphalt,
 // poured concrete. Optional vertical stripes via `mix` (wallpaper).
-function flatField(s: {
+export function flatField(s: {
   size: number; wobble: number; stripes?: number; stripeWidth?: number; seed: number;
 }): Field {
   const f = newField(s.size);
@@ -460,7 +460,7 @@ function flatField(s: {
 
 // ── baking ─────────────────────────────────────────────────────────────────
 
-type BakeSpec = {
+export type BakeSpec = {
   base: number; // sRGB hex
   base2?: number; // sRGB hex blended in by Field.mix
   stain?: { color: number; amount: number; cell: number; bias: number; rough: number; seed: number };
@@ -499,7 +499,7 @@ function dataTexture(data: Uint8Array, size: number, srgb: boolean): THREE.DataT
 // 0..1 → 0..255 with clamping (integer rounding, hot loop).
 const byte = (v: number) => (v <= 0 ? 0 : v >= 1 ? 255 : (v * 255 + 0.5) | 0);
 
-function bake(f: Field, s: BakeSpec, tile: number): SurfaceTextures {
+export function bake(f: Field, s: BakeSpec, tile: number): SurfaceTextures {
   const { size } = f;
   const n = size * size;
   const blotch = blotchField(size, size / 6, s.seed);
@@ -737,13 +737,10 @@ function makeTower(): SurfaceTextures {
 // so bright players stay the most readable thing on screen. Albedos are dark
 // and desaturated; the colour comes from the baked lights.
 
-export type TextureThemeId = 'void' | 'reactor' | 'lounge' | 'dusk' | 'nightport' | 'rustdusk' | 'lab';
 
-type Recipe = () => SurfaceTextures;
+export const R = 256; // default recipe resolution
 
-const R = 256; // default recipe resolution
-
-const panel = (
+export const panel = (
   base: number,
   tile: number,
   o: Partial<PanelSpec> & { rough?: number; seamDark?: number; stain?: BakeSpec['stain']; tone?: number; grain?: number; normal?: number } = {},
@@ -763,7 +760,7 @@ const panel = (
 
 let flatCeilingCache: SurfaceTextures | null = null;
 // Open-top maps never draw their ceiling: share one tiny set.
-function unusedCeiling(): SurfaceTextures {
+export function unusedCeiling(): SurfaceTextures {
   if (!flatCeilingCache) {
     flatCeilingCache = bake(flatField({ size: 32, wobble: 0.2, seed: 3 }), {
       base: 0x202226, seamDark: 1, toneNoise: 0, grain: 0,
@@ -773,221 +770,6 @@ function unusedCeiling(): SurfaceTextures {
   return flatCeilingCache;
 }
 
-const THEME_RECIPES: Record<TextureThemeId, Record<SurfaceKind, Recipe>> = {
-  // Void: dark gunmetal plate, big quiet panels; the colour is all light.
-  void: {
-    floor: () => panel(0x3a404b, 4, { inset: 11, rough: 0.42, seed: 11 }),
-    wall: () => panel(0x454c5c, 4, { cols: 1, rows: 2, bevel: 3, depth: 3.5, inset: 12, rough: 0.5, seed: 23 }),
-    ceiling: unusedCeiling,
-    platform: () => panel(0x5a6272, 2, { rivets: 'corners', rivetInset: 16, rivetR: 2.5, rivetH: 1.2, rough: 0.38, seed: 41 }),
-    cover: () => panel(0x4c5362, 2, { cols: 1, rows: 1, bevel: 3, depth: 4, inset: 14, rough: 0.45, seed: 53 }),
-    tower: () => panel(0x353a44, 4, { cols: 1, rows: 4, rivets: 'bands', rivetInset: 10, rivetR: 2.5, rivetH: 1.2, rough: 0.4, seed: 67 }),
-  },
-  // Reactor: industrial steel plate + grating, worn safety-yellow cover.
-  reactor: {
-    // Big 3 m deck plates, low-contrast grout: the floor must not out-shout
-    // the walls or the players standing on it.
-    floor: () => panel(0x4a4f56, 6, {
-      seamHalf: 1, bevel: 2, depth: 2, seamDark: 0.78, rough: 0.55, tone: 0.03, seed: 12,
-      stain: { color: 0x3a3c40, amount: 0.2, cell: 56, bias: 0.14, rough: -0.12, seed: 13 },
-    }),
-    // Tall 3 × 6 m bulkhead plates with a shallow mid seam — no rivet grid.
-    wall: () => bake(
-      panelField({ size: R, cols: 2, rows: 1, seamHalf: 1.2, bevel: 2.5, depth: 3, midSeam: 0.35, rivets: 'none', wobble: 0.7, seed: 24 }),
-      {
-        base: 0x646b74, seamDark: 0.6, toneNoise: 0.05, grain: 0.015,
-        rough: { base: 0.6, seam: 0.2, centre: 0.08, blotch: 0.07, grain: 0.03 },
-        ao: 0.7, aoBlur: 4, seed: 25,
-        stain: { color: 0x44474c, amount: 0.18, cell: 64, bias: 0.16, rough: 0.08, seed: 26 },
-      },
-      6,
-    ),
-    ceiling: () => panel(0x33373e, 8, { rough: 0.85, seed: 37 }),
-    platform: () => bake(
-      gratingField({ size: R, pitch: 21, bar: 2.6, cross: 64, rod: 1.8, depth: 5, frame: 5, seed: 42 }),
-      {
-        base: 0x737a84, seamDark: 0.3, toneNoise: 0.03, grain: 0.02,
-        rough: { base: 0.45, seam: 0.4, centre: 0, blotch: 0.06, grain: 0.03 },
-        ao: 0.7, aoBlur: 3, seed: 43,
-      },
-      3,
-    ),
-    cover: () => panel(0x9c8646, 2, {
-      cols: 1, rows: 1, bevel: 3, depth: 4, rivets: 'corners', rivetInset: 14, rivetR: 3, rivetH: 1.5, rough: 0.6, seed: 54,
-      stain: { color: 0x4a4230, amount: 0.2, cell: 48, bias: 0.16, rough: 0.12, seed: 55 },
-    }),
-    tower: () => panel(0x4b5058, 4, { cols: 1, rows: 2, rivets: 'corners', rivetInset: 14, rivetR: 3, rivetH: 1.5, rough: 0.5, seed: 68 }),
-  },
-  // Lounge: giant-scale wood, teal wallpaper, oxblood tufted sofas.
-  lounge: {
-    floor: () => bake(
-      planksField({ size: R, rows: 6, segs: 1, gap: 0.8, bevel: 1.4, depth: 2.5, grain: 0.9, tone: 0.07, seed: 14 }),
-      {
-        base: 0x6e4a30, seamDark: 0.35, toneNoise: 0.02, grain: 0.01,
-        rough: { base: 0.42, seam: 0.3, centre: 0.1, blotch: 0.05, grain: 0.02 },
-        ao: 0.7, aoBlur: 3, seed: 15,
-      },
-      8,
-    ),
-    wall: () => bake(flatField({ size: R, wobble: 0.5, stripes: 8, stripeWidth: 0.34, seed: 27 }), {
-      base: 0x4d665e, base2: 0x587268, seamDark: 1, toneNoise: 0.03, grain: 0.012,
-      rough: { base: 0.82, seam: 0, centre: 0, blotch: 0.04, grain: 0.02 },
-      ao: 0.2, aoBlur: 3, seed: 28,
-    }, 4),
-    ceiling: () => bake(flatField({ size: 128, wobble: 1.0, seed: 38 }), {
-      base: 0x9e968a, seamDark: 1, toneNoise: 0.04, grain: 0.01,
-      rough: { base: 0.92, seam: 0, centre: 0, blotch: 0.03, grain: 0.01 },
-      ao: 0.2, aoBlur: 3, seed: 39,
-    }, 8),
-    platform: () => bake(
-      planksField({ size: R, rows: 4, segs: 2, gap: 0.8, bevel: 1.4, depth: 2.5, grain: 0.9, tone: 0.06, seed: 44 }),
-      {
-        base: 0x7a5233, seamDark: 0.4, toneNoise: 0.02, grain: 0.01,
-        rough: { base: 0.38, seam: 0.3, centre: 0.1, blotch: 0.05, grain: 0.02 },
-        ao: 0.7, aoBlur: 3, seed: 45,
-      },
-      4,
-    ),
-    cover: () => bake(tuftField({ size: R, cells: 4, depth: 6, seed: 56 }), {
-      base: 0x6e2a2f, seamDark: 0.55, toneNoise: 0.03, grain: 0.02,
-      rough: { base: 0.9, seam: 0.05, centre: 0, blotch: 0.03, grain: 0.03 },
-      ao: 0.8, aoBlur: 6, seed: 57, normalStrength: 0.8,
-    }, 4),
-    tower: () => bake(
-      planksField({ size: R, rows: 3, segs: 1, gap: 1, bevel: 2, depth: 3, grain: 0.7, tone: 0.05, seed: 69 }),
-      {
-        base: 0x4a3423, seamDark: 0.4, toneNoise: 0.02, grain: 0.01,
-        rough: { base: 0.4, seam: 0.3, centre: 0.08, blotch: 0.05, grain: 0.02 },
-        ao: 0.7, aoBlur: 3, seed: 70,
-      },
-      4,
-    ),
-  },
-  // Dusk suburb: asphalt, block fence, painted clapboard, deck boards, and a
-  // neutral painted-metal skin the vehicles tint per box.
-  dusk: {
-    floor: () => bake(flatField({ size: R, wobble: 0.6, seed: 16 }), {
-      base: 0x404147, seamDark: 1, toneNoise: 0.05, grain: 0.07,
-      rough: { base: 0.85, seam: 0, centre: 0, blotch: 0.05, grain: 0.04 },
-      ao: 0.3, aoBlur: 3, seed: 17,
-      stain: { color: 0x27282c, amount: 0.45, cell: 36, bias: 0.1, rough: -0.1, seed: 18 },
-    }, 4),
-    wall: () => bake(
-      blocksField({ size: R, cols: 4, rows: 8, mortar: 1.2, bevel: 1.8, depth: 3, tone: 0.05, wobble: 0.8, seed: 29 }),
-      {
-        base: 0x8a847b, seamDark: 0.6, toneNoise: 0.04, grain: 0.03,
-        rough: { base: 0.85, seam: 0.1, centre: 0.02, blotch: 0.04, grain: 0.03 },
-        ao: 0.7, aoBlur: 3, seed: 30,
-      },
-      4,
-    ),
-    ceiling: unusedCeiling,
-    platform: () => bake(
-      planksField({ size: R, rows: 8, segs: 2, gap: 0.8, bevel: 1.2, depth: 2, grain: 0.6, tone: 0.06, seed: 46 }),
-      {
-        base: 0x75604c, seamDark: 0.45, toneNoise: 0.03, grain: 0.02,
-        rough: { base: 0.75, seam: 0.2, centre: 0.05, blotch: 0.05, grain: 0.03 },
-        ao: 0.7, aoBlur: 3, seed: 47,
-      },
-      4,
-    ),
-    cover: () => panel(0xbcbcbc, 2, { cols: 2, rows: 1, bevel: 3, depth: 3, rough: 0.5, tone: 0.02, grain: 0.008, seed: 58 }),
-    tower: () => bake(
-      planksField({ size: R, rows: 16, segs: 0, gap: 0.6, bevel: 2.2, depth: 3, grain: 0.1, tone: 0.015, seed: 71 }),
-      {
-        base: 0xc4beb0, seamDark: 0.6, toneNoise: 0.03, grain: 0.01,
-        rough: { base: 0.7, seam: 0.1, centre: 0.02, blotch: 0.05, grain: 0.02 },
-        ao: 0.8, aoBlur: 3, seed: 72,
-      },
-      4,
-    ),
-  },
-  // Night port: wet concrete, streaked retaining walls, rusted container skin.
-  nightport: {
-    floor: () => panel(0x55565a, 4, {
-      seamHalf: 1, bevel: 1.5, depth: 2, rough: 0.42, tone: 0.07, grain: 0.03, seed: 19,
-      stain: { color: 0x2e2f32, amount: 0.45, cell: 72, bias: 0.06, rough: -0.32, seed: 20 },
-    }),
-    wall: () => panel(0x6a6862, 4, {
-      cols: 1, rows: 1, seamHalf: 1, bevel: 1.5, depth: 1.5, rivets: 'corners', rivetInset: 24, rivetR: 3, rivetH: -1.5,
-      rough: 0.88, tone: 0.06, seed: 31,
-      stain: { color: 0x44423d, amount: 0.2, cell: 56, bias: 0.16, rough: 0.05, seed: 32 },
-    }),
-    ceiling: unusedCeiling,
-    platform: () => bake(
-      gratingField({ size: R, pitch: 21, bar: 2.6, cross: 64, rod: 1.8, depth: 5, frame: 5, seed: 48 }),
-      {
-        base: 0x5d6168, seamDark: 0.12, toneNoise: 0.03, grain: 0.02,
-        rough: { base: 0.5, seam: 0.4, centre: 0, blotch: 0.06, grain: 0.03 },
-        ao: 0.85, aoBlur: 3, seed: 49,
-      },
-      2,
-    ),
-    cover: () => bake(
-      corrugationField({ size: R, ribs: 8, depth: 5, frame: 14, frameDepth: 6, wobble: 0.5, seed: 59 }),
-      {
-        base: 0xa3a3a3, seamDark: 0.8, toneNoise: 0.05, grain: 0.02,
-        rough: { base: 0.62, seam: 0.12, centre: 0, blotch: 0.08, grain: 0.03 },
-        ao: 0.5, aoBlur: 5, seed: 60,
-        stain: { color: 0x5b3020, amount: 0.5, cell: 26, bias: 0.1, rough: 0.2, seed: 61 },
-      },
-      2,
-    ),
-    tower: () => panel(0x5d6168, 4, { cols: 1, rows: 4, rivets: 'bands', rivetInset: 10, rivetR: 2.5, rivetH: 1.2, rough: 0.55, seed: 73 }),
-  },
-  // Rust at dusk: oxidised steel everywhere, oily concrete underfoot.
-  rustdusk: {
-    floor: () => panel(0x625c56, 4, {
-      cols: 1, rows: 1, seamHalf: 1, bevel: 1.5, depth: 2, rough: 0.8, tone: 0.05, grain: 0.03, seed: 21,
-      stain: { color: 0x3a3430, amount: 0.3, cell: 72, bias: 0.1, rough: -0.2, seed: 22 },
-    }),
-    wall: () => bake(
-      corrugationField({ size: R, ribs: 6, depth: 6, frame: 0, frameDepth: 0, wobble: 0.6, seed: 33 }),
-      {
-        base: 0x70513f, seamDark: 0.78, toneNoise: 0.06, grain: 0.02,
-        rough: { base: 0.8, seam: 0.08, centre: 0, blotch: 0.06, grain: 0.03 },
-        ao: 0.5, aoBlur: 5, seed: 34,
-        stain: { color: 0x4a2c1e, amount: 0.3, cell: 60, bias: 0.08, rough: 0.05, seed: 35 },
-      },
-      4,
-    ),
-    ceiling: unusedCeiling,
-    platform: () => bake(
-      gratingField({ size: R, pitch: 21, bar: 2.6, cross: 64, rod: 1.8, depth: 5, frame: 5, seed: 50 }),
-      {
-        base: 0x6a584a, seamDark: 0.12, toneNoise: 0.04, grain: 0.02,
-        rough: { base: 0.6, seam: 0.3, centre: 0, blotch: 0.06, grain: 0.03 },
-        ao: 0.85, aoBlur: 3, seed: 51,
-      },
-      2,
-    ),
-    cover: () => panel(0x75704f, 2, {
-      cols: 1, rows: 1, bevel: 3, depth: 4, rivets: 'corners', rivetInset: 14, rivetR: 3, rivetH: 1.5, rough: 0.7, seed: 62,
-      stain: { color: 0x6a3a20, amount: 0.25, cell: 48, bias: 0.14, rough: 0.1, seed: 63 },
-    }),
-    tower: () => panel(0x5e4434, 4, {
-      rivets: 'corners', rivetInset: 12, rivetR: 2.5, rivetH: 1.2, rough: 0.7, seed: 74,
-      stain: { color: 0x7a4020, amount: 0.25, cell: 48, bias: 0.16, rough: 0.1, seed: 75 },
-    }),
-  },
-  // Lab: clean and bright — the exception to the moody rule.
-  lab: {
-    floor: () => panel(0x868c94, 4, { inset: 11, rough: 0.5, seed: 12 }),
-    wall: () => panel(0xa9aeb5, 4, { cols: 2, rows: 1, midSeam: 0.4, rough: 0.55, seed: 24 }),
-    ceiling: unusedCeiling,
-    platform: () => panel(0x9aa0a8, 2, { rivets: 'corners', rivetInset: 16, rivetR: 2.5, rivetH: 1.2, rough: 0.45, seed: 42 }),
-    cover: () => bake(
-      corrugationField({ size: R, ribs: 8, depth: 5, frame: 14, frameDepth: 6, wobble: 0.5, seed: 53 }),
-      {
-        base: 0xa8683a, seamDark: 0.82, toneNoise: 0.04, grain: 0.02,
-        rough: { base: 0.6, seam: 0.15, centre: 0, blotch: 0.08, grain: 0.03 },
-        ao: 0.5, aoBlur: 5, seed: 54,
-      },
-      2,
-    ),
-    tower: () => panel(0x646b75, 4, { rivets: 'corners', rivetInset: 14, rivetR: 3, rivetH: 1.5, seed: 68 }),
-  },
-};
 
 let hazardCache: THREE.DataTexture | null = null;
 
@@ -1022,22 +804,22 @@ export function getHazardTexture(): THREE.DataTexture {
   return hazardCache;
 }
 
-const themeCache = new Map<TextureThemeId, ArenaTextures>();
+const themeCache = new Map<string, ArenaTextures>();
 let themeGenMs = 0;
 
-// Surface set for a world theme (cached per theme for the session).
-export function getThemeTextures(id: TextureThemeId): ArenaTextures {
+// Surface set for a world theme (cached per theme id for the session). The
+// recipes live with each map's look (world/looks/<mapId>.ts).
+export function getThemeTextures(id: string, recipes: Record<SurfaceKind, () => SurfaceTextures>): ArenaTextures {
   const hit = themeCache.get(id);
   if (hit) return hit;
   const t0 = performance.now();
-  const r = THEME_RECIPES[id];
   const set: ArenaTextures = {
-    floor: r.floor(),
-    wall: r.wall(),
-    ceiling: r.ceiling(),
-    platform: r.platform(),
-    cover: r.cover(),
-    tower: r.tower(),
+    floor: recipes.floor(),
+    wall: recipes.wall(),
+    ceiling: recipes.ceiling(),
+    platform: recipes.platform(),
+    cover: recipes.cover(),
+    tower: recipes.tower(),
   };
   const ms = performance.now() - t0;
   themeGenMs += ms;

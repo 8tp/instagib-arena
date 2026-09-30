@@ -38,6 +38,13 @@
   min-height: 100vh;
   font-family: var(--font-sans);
 }
+/* The console root scrolls itself — body scrolling is locked for the game. */
+.adm-scroller {
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .adm ::selection {
   background: rgba(91, 227, 255, 0.3);
 }

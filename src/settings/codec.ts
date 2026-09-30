@@ -5,6 +5,7 @@ import {
   DEFAULT_DPI,
   DEFAULT_FOV,
   DEFAULT_KEYBINDS,
+  mergeKeybinds,
   DEFAULT_RAW_INPUT,
   DEFAULT_SENSITIVITY,
   DEFAULT_VERT_SCALE,
@@ -196,7 +197,7 @@ export function decodeSettings(code: string): Settings | null {
       enemyOutlineColor: sanitizeHex(parsed.enemyOutlineColor, DEFAULT_SETTINGS.enemyOutlineColor),
       enemyOutlineWidth: clampOutlineWidth(parsed.enemyOutlineWidth ?? DEFAULT_SETTINGS.enemyOutlineWidth),
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
-      keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
+      keybinds: mergeKeybinds(parsed.keybinds),
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
     };
   } catch {

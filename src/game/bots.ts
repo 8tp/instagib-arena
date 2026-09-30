@@ -43,7 +43,7 @@ import {
 import { emoteClip } from './emotes';
 import { railgunFinishById, type KillEffectStyle } from './cosmetics';
 import type { Loadout } from './items/types';
-import type { BotState, EntityId, Vec3 } from './types';
+import type { AABB, BotState, EntityId, Vec3 } from './types';
 
 const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse', 'Echo'];
 const BOT_FACING_LERP = 12;
@@ -165,6 +165,63 @@ export function pickFreeSpot(
   // inside a central monolith on Stadium/Hangar/Spire/Reactor/Crucible.
   if (fallback) return fallback;
   return { x: map.spawn.x, y: 0.05, z: map.spawn.z };
+}
+
+// Hand-placed spawn point (map.spawns) farthest from every avoid point, with a
+// little variety among the safest few so respawns aren't predictable. Falls
+// back to a random clear floor spot on maps without a spawn list.
+export function pickSpawnPoint(map: ArenaMap, avoid: Vec3[] = [], radius = BOT_RADIUS): Vec3 {
+  const spawns = map.spawns;
+  if (!spawns || spawns.length === 0) return pickFreeSpot(map, avoid, radius);
+  const scored = spawns.map((s) => ({
+    s,
+    d: avoid.length ? Math.min(...avoid.map((a) => Math.hypot(s.x - a.x, s.y - a.y, s.z - a.z))) : Math.random() * 100,
+  }));
+  scored.sort((a, b) => b.d - a.d);
+  const pick = scored[Math.floor(Math.random() * Math.min(3, scored.length))];
+  return { ...pick.s };
+}
+
+// Raised walkable tops (platforms, decks, crates) per map, for wander targets
+// off the ground floor. Perimeter walls and slivers are skipped.
+const topsCache = new WeakMap<ArenaMap, AABB[]>();
+function walkableTops(map: ArenaMap): AABB[] {
+  const hit = topsCache.get(map);
+  if (hit) return hit;
+  const o = map.bounds;
+  const e = 1e-3;
+  const tops = map.boxes.filter((b, i) => {
+    if (i < 2 || b.max.y < 0.9) return false;
+    const w = b.max.x - b.min.x;
+    const d = b.max.z - b.min.z;
+    if (w < 2 || d < 2) return false;
+    if (b.max.y > o.max.y - 4) return false;
+    const touches = b.min.x <= o.min.x + e || b.max.x >= o.max.x - e || b.min.z <= o.min.z + e || b.max.z >= o.max.z - e;
+    return !(touches && b.max.y - b.min.y >= 4);
+  });
+  topsCache.set(map, tops);
+  return tops;
+}
+
+// Next roam target: usually a clear floor spot, sometimes a raised top so bots
+// climb (jump / double-jump / boost) onto high ground instead of living on
+// the floor of a vertical map.
+export function pickWanderPoint(map: ArenaMap, from: Vec3, radius = BOT_RADIUS): Vec3 {
+  const tops = walkableTops(map);
+  if (tops.length && Math.random() < 0.4) {
+    const PROBE_YS = [0.15, 0.95, BOT_HEIGHT - 0.1];
+    for (let k = 0; k < 10; k++) {
+      const b = tops[Math.floor(Math.random() * tops.length)];
+      const inset = radius + 0.3;
+      if (b.max.x - b.min.x <= inset * 2 || b.max.z - b.min.z <= inset * 2) continue;
+      const x = b.min.x + inset + Math.random() * (b.max.x - b.min.x - inset * 2);
+      const z = b.min.z + inset + Math.random() * (b.max.z - b.min.z - inset * 2);
+      const y = b.max.y + 0.05;
+      if (Math.hypot(x - from.x, z - from.z) < 5) continue;
+      if (PROBE_YS.every((dy) => !pointInsideAnyBox({ x, y: y + dy, z }, map, radius))) return { x, y, z };
+    }
+  }
+  return pickFreeSpot(map, from, radius);
 }
 
 function makeNameSprite(name: string, color = '#ffd1d8'): THREE.Sprite {
@@ -389,7 +446,7 @@ export class Bot {
       }
       this.state.respawnTimer -= dt;
       if (this.state.respawnTimer <= 0) {
-        const spot = pickFreeSpot(map, null);
+        const spot = pickSpawnPoint(map, enemies.filter((e) => e.id !== this.state.id).map((e) => e.pos));
         this.state.pos = spot;
         this.target = { ...spot };
         this.vel = { x: 0, y: 0, z: 0 };
@@ -866,10 +923,15 @@ export class Bot {
       else this.roamStuckTimer = 0;
       if (this.roamStuckTimer > 0.5) {
         this.roamStuckTimer = 0;
-        this.target = pickFreeSpot(map, this.state.pos);
+        this.target = pickWanderPoint(map, this.state.pos);
         if (this.onGround) this.doJump(); // pop over whatever's blocking us
       } else if (blocked && this.onGround) {
-        this.target = pickFreeSpot(map, this.state.pos);
+        // Walked into the side of the ledge we're heading for: climb it (hop a
+        // low one, boost a tall one) instead of giving up on raised ground.
+        const up = this.target.y - this.state.pos.y;
+        if (up > 0.6 && up < 3 && Math.random() < 0.6) this.doJump();
+        else if (up > 0.6 && up < 9 && this.boostCooldown <= 0) this.doBoost(dx / dist, dz / dist);
+        else this.target = pickWanderPoint(map, this.state.pos);
       }
     } else {
       // Reached the wander point: settle briefly (gravity still applies so a bot on
@@ -879,7 +941,7 @@ export class Bot {
       this.roamStuckTimer = 0;
       this.state.moveTimer -= dt;
       if (this.state.moveTimer <= 0) {
-        this.target = pickFreeSpot(map, this.state.pos);
+        this.target = pickWanderPoint(map, this.state.pos);
         this.state.moveTimer = rand(BOT_MOVE_INTERVAL_MIN, BOT_MOVE_INTERVAL_MAX);
       }
     }
@@ -1192,7 +1254,7 @@ export class BotManager {
   ) {
     const names = pickN(BOT_NAMES, count);
     for (let i = 0; i < count; i++) {
-      const spawn = pickFreeSpot(map, playerSpawn);
+      const spawn = pickSpawnPoint(map, [playerSpawn, ...this.bots.map((b) => b.state.pos)]);
       const bot = new Bot(`bot-${i}`, names[i] ?? `Bot${i}`, spawn, scene, model, difficulty);
       this.bots.push(bot);
     }

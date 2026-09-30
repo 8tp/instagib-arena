@@ -40,3 +40,13 @@ node scripts/shot.mjs --base http://localhost:5181 --path /play --out design/sho
 ```
 `--shots` is `name[:yaw,pitch[,x,y,z]]` separated by `;`. `--no-hud` hides the React layer,
 `--mode duel|tdm`, `--eval "js"` runs before the first shot (e.g. `__ig.setPostFx({...})`).
+`--no-gun` hides the viewmodel, `--no-bots` empties the arena; a positioned view is held every
+frame, so aerial shots don't fall. yaw 0 looks toward −z (yaw = atan2(−dx, −dz) to face a point).
+The run also prints the `[world]` texture-generation and lightmap-bake timings.
+
+## Map analysis: `scripts/map-check.ts`
+`npx tsx scripts/map-check.ts <mapId>|--all` prints errors (blocked/unsupported spawns, boxes
+outside bounds, lights off any face), reachability by tier (walk / jump / double jump / boost),
+spawn-to-spawn sightlines and "openness" (share of random standing-eye pairs that see each
+other), and writes a top-down plan + two elevations to `design/shots/maps/<id>-plan.png`.
+The layout targets it checks against are in `design/refs/map-brief.md`.

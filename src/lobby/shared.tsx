@@ -91,6 +91,7 @@ export function MapCard({
       aria-label={`${name}${tag ? ` (${tag})` : ''}`}
       onClick={onPick}
       className='lb-map'
+      data-map={mapId}
     >
       <div className='lb-map-shot' style={mapShotStyle(mapId, url)}>
         <span className='lb-map-check'>

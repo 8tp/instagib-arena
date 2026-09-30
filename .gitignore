@@ -32,3 +32,5 @@ design/shots/**/*.png
 
 # rendered sound previews (audio critique)
 design/sounds/
+# Third-party reference previews (Ratz workshop) — local critique only, never committed.
+design/refs/ratz/*.jpg

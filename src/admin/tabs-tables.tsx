@@ -136,7 +136,7 @@ const SORTS: { value: Sort; label: string }[] = [
   { value: 'xp', label: 'Total XP' },
 ];
 
-export function PlayersTab({ onOpen }: { onOpen: (tab: 'items' | 'gifts', player: string) => void }) {
+export function PlayersTab({ onOpen }: { onOpen: (tab: 'items' | 'grant' | 'gifts', player: string) => void }) {
   const [sort, setSort] = useState<Sort>('recent');
   const [q, setQ] = useState('');
   const [dq, setDq] = useState('');
@@ -206,6 +206,9 @@ export function PlayersTab({ onOpen }: { onOpen: (tab: 'items' | 'gifts', player
                     <span className='flex justify-end gap-1.5'>
                       <button type='button' className='adm-btn sm' onClick={() => onOpen('items', p.id)} data-action='player-items'>
                         Items
+                      </button>
+                      <button type='button' className='adm-btn sm' onClick={() => onOpen('grant', p.id)} data-action='player-grant'>
+                        Grant
                       </button>
                       <button type='button' className='adm-btn sm' onClick={() => onOpen('gifts', p.id)} data-action='player-gift'>
                         Gift

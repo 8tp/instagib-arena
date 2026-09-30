@@ -302,7 +302,8 @@ test('movement accepts safe spawns and rejects wall crossings and ceiling escape
     const arena = ARENA_NET[id];
     for (const spawn of arena.spawns) assert.equal(validPlayerMove(id, spawn, spawn), true, `${id}: ${JSON.stringify(spawn)}`);
   }
-  assert.equal(validPlayerMove('causeway', { x: -16, y: 0.05, z: 0 }, { x: -12, y: 0.05, z: 0 }), false);
+  // Causeway's west pylon (x −13.75…−11.25, z 3.5…6) stands between these two floor spots.
+  assert.equal(validPlayerMove('causeway', { x: -15, y: 0.05, z: 5 }, { x: -10, y: 0.05, z: 5 }), false);
   assert.equal(validPlayerMove('causeway', { x: 0, y: 0.05, z: 0 }, { x: 0, y: 50, z: 0 }), false);
 });
 test('replay uploads require auth before parsing the body', async () => {
@@ -344,40 +345,63 @@ test('game server blocks shots through walls and still awards clear-line hits', 
   await b.wait('joined');
   const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   await pause(100);
+  // Walk to a floor cell through moves the server accepts. Spawns can be on a
+  // raised deck, so the search runs on two levels — the spawn's height and the
+  // floor — and may drop from the first to the second where the way down is clear.
   async function move(c: typeof a, id: string, tx: number, tz: number) {
     const start = state.players.find((p: any) => p.id === id);
     const sx = Math.round(start.x), sz = Math.round(start.z);
-    const key = (x: number, z: number) => `${x},${z}`;
-    const queue = [[sx, sz]];
-    const prev = new Map<string, [number, number] | null>([[key(sx, sz), null]]);
+    const floor = 0.05;
+    const bounds = MAPS.find((m) => m.id === 'causeway')!.map.bounds;
+    const high = start.y > 0.5 ? start.y : floor;
+    type Cell = [number, number, number];
+    const key = (x: number, z: number, y: number) => `${x},${z},${y}`;
+    const queue: Cell[] = [[sx, sz, high]];
+    const prev = new Map<string, Cell | null>([[key(sx, sz, high), null]]);
+    let found: Cell | null = null;
     for (let i = 0; i < queue.length; i++) {
-      const [x, z] = queue[i];
-      if (x === tx && z === tz) break;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = x + dx, nz = z + dz;
-        if (nx < -30 || nx > 30 || nz < -20 || nz > 20 || prev.has(key(nx, nz))) continue;
-        if (!validPlayerMove('causeway', { x, y: 0.05, z }, { x: nx, y: 0.05, z: nz })) continue;
-        prev.set(key(nx, nz), [x, z]); queue.push([nx, nz]);
+      const [x, z, y] = queue[i];
+      if (x === tx && z === tz && y === floor) {
+        found = queue[i];
+        break;
+      }
+      const next: Cell[] = [[x + 1, z, y], [x - 1, z, y], [x, z + 1, y], [x, z - 1, y]];
+      if (y !== floor) next.push([x, z, floor]);
+      for (const [nx, nz, ny] of next) {
+        if (nx <= bounds.min.x || nx >= bounds.max.x || nz <= bounds.min.z || nz >= bounds.max.z || prev.has(key(nx, nz, ny))) continue;
+        if (!validPlayerMove('causeway', { x, y, z }, { x: nx, y: ny, z: nz })) continue;
+        prev.set(key(nx, nz, ny), [x, z, y]);
+        queue.push([nx, nz, ny]);
       }
     }
-    assert.ok(prev.has(key(tx, tz)));
-    const path: [number, number][] = [];
-    let cursor: [number, number] | null = [tx, tz];
-    while (cursor) { path.unshift(cursor); cursor = prev.get(key(...cursor)) ?? null; }
-    for (const [x, z] of path) { c.ws.send(JSON.stringify({ type: 'pos', x, y: 0.05, z, yaw: 0 })); await pause(30); }
+    assert.ok(found, `no accepted path from (${sx}, ${start.y.toFixed(2)}, ${sz}) to (${tx}, ${tz})`);
+    const path: Cell[] = [];
+    let cursor: Cell | null = found;
+    while (cursor) {
+      path.unshift(cursor);
+      cursor = prev.get(key(...cursor)) ?? null;
+    }
+    let lastY = path[0][2];
+    for (const [x, z, y] of path) {
+      // Fall like a player would (the server rejects a 6 m drop in one 30 ms update).
+      for (let fy = lastY - 0.4; fy > y; fy -= 0.4) { c.ws.send(JSON.stringify({ type: 'pos', x, y: fy, z, yaw: 0 })); await pause(30); }
+      c.ws.send(JSON.stringify({ type: 'pos', x, y, z, yaw: 0 }));
+      lastY = y;
+      await pause(30);
+    }
     await pause(100);
     const current = state.players.find((p: any) => p.id === id);
-    assert.ok(Math.abs(current.x - tx) < 0.05 && Math.abs(current.z - tz) < 0.05);
+    assert.ok(Math.abs(current.x - tx) < 0.05 && Math.abs(current.z - tz) < 0.05 && current.y < 0.2, `${id} ended at ${JSON.stringify(current)}`);
   }
-  await Promise.all([move(a, aid, -16, 0), move(b, bid, -12, 0)]);
+  await Promise.all([move(a, aid, -15, 5), move(b, bid, -10, 5)]);
   await pause(Math.max(0, aj.resumeAt - Date.now()) + 100);
-  a.ws.send(JSON.stringify({ type: 'shoot', ox: -16, oy: 1.65, oz: 0, dx: 1, dy: 0, dz: 0, maxDist: 220, renderTime: Date.now() }));
+  a.ws.send(JSON.stringify({ type: 'shoot', ox: -15, oy: 1.65, oz: 5, dx: 1, dy: 0, dz: 0, maxDist: 220, renderTime: Date.now() }));
   const beam = await b.wait('beam');
-  assert.ok(beam.ex <= -14.99);
+  assert.ok(beam.ex <= -13.74); // stopped by the pylon face
   assert.equal(b.messages.some((m) => m.type === 'kill'), false);
-  await move(b, bid, -16, 4);
+  await move(b, bid, -15, 9);
   await pause(1200);
-  a.ws.send(JSON.stringify({ type: 'shoot', ox: -16, oy: 1.65, oz: 0, dx: 0, dy: 0, dz: 1, maxDist: 220, renderTime: Date.now() }));
+  a.ws.send(JSON.stringify({ type: 'shoot', ox: -15, oy: 1.65, oz: 5, dx: 0, dy: 0, dz: 1, maxDist: 220, renderTime: Date.now() }));
   const kill = await a.wait('kill');
   assert.equal(kill.killerId, aid);
   assert.equal(kill.victimId, bid);
