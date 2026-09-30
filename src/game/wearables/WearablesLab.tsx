@@ -88,7 +88,11 @@ function wearablesDriver(params: URLSearchParams): LabDriver {
   const T = Number(params.get('t') ?? (pose === 'idle' ? 0.5 : 2));
   const unusual = params.get('unusual');
   const play = params.get('play') === '1';
-  const scen = SCEN.get(pose);
+  const scen = pose === 'run' ? SCEN.get('run') :
+    pose === 'strafe' ? SCEN.get('strafe') :
+      pose === 'dash' ? SCEN.get('dash') :
+        pose === 'jump' ? SCEN.get('jump') :
+          pose === 'gib' ? SCEN.get('gib') : undefined;
   const moving = Boolean(scen);
   type St = { anim: CharacterAnimator; gear: WornGear; t: number; dead: boolean };
   const st = new Map<Character, St>();

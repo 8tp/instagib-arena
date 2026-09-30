@@ -149,7 +149,7 @@ async function main() {
   console.log('-'.repeat(100));
   console.log(clipped ? `${clipped} sound(s) above -1 dBFS` : 'no sound above -1 dBFS');
   if (!noWav) console.log(`WAVs → ${outDir}/`);
-  if (problems.length) console.log(problems.slice(0, 20).map(logText).join('\n'));
+  for (const line of problems.slice(0, 20)) console.log(logText(line));
   ws.close();
   cleanup();
   process.exit(0);

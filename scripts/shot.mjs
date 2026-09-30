@@ -230,7 +230,7 @@ async function main() {
   }
   const gl = await evaluate(`(() => { try { const c = document.createElement('canvas').getContext('webgl2'); const d = c && c.getExtension('WEBGL_debug_renderer_info'); return d ? c.getParameter(d.UNMASKED_RENDERER_WEBGL) : (c ? 'webgl2' : 'none'); } catch (e) { return String(e); } })()`);
   console.log(`[gl] ${logText(gl)}`);
-  if (consoleLines.length) console.log(consoleLines.slice(0, 20).map(logText).join('\n'));
+  for (const line of consoleLines.slice(0, 20)) console.log(logText(line));
   ws.close();
   cleanup();
   process.exit(0);
