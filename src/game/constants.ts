@@ -378,7 +378,8 @@ export type KeybindAction =
   | 'scoreboard'
   | 'chat'
   | 'taunt'
-  | 'inspect';
+  | 'inspect'
+  | 'restart';
 
 export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }> = [
   { id: 'forward', label: 'Move forward' },
@@ -392,6 +393,7 @@ export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }
   { id: 'chat', label: 'Chat' },
   { id: 'taunt', label: 'Taunt (equipped emote)' },
   { id: 'inspect', label: 'Inspect weapon' },
+  { id: 'restart', label: 'Restart challenge (training range)' },
 ];
 
 export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
@@ -406,4 +408,5 @@ export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   chat: 'KeyY',
   taunt: 'KeyG',
   inspect: 'KeyF',
+  restart: 'KeyR',
 };

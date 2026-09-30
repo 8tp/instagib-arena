@@ -94,7 +94,10 @@ import type {
   PlayerScore,
   PomState,
   ToastEntry,
+  TrainingChallengeHud,
+  TrainingChallengeId,
   TrainingHud,
+  TrainingResultHud,
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
 import type { CrosshairConfig, InstagibProfile, ProgressionResp, Settings } from './app-types';
@@ -1672,7 +1675,7 @@ const HudLayout = memo(function HudLayout({
       <HudMiniLeaderboard />
       <HudScoreBoxes fragLimit={info.fragLimit} />
       <HudNetDebug />
-      <HudTraining />
+      <HudTraining restartKey={keyLabel(settings.keybinds.restart ?? 'KeyR')} />
       <HudBanner />
       <HudCaptions captions={settings.captions} />
       <HudFragPopup />
@@ -1764,13 +1767,27 @@ function HudNetDebug() {
   return stats ? <NetDebugOverlay s={stats} /> : null;
 }
 
-function HudTraining() {
-  // Whole seconds for the running clock so the panel re-renders ~1 Hz, not per push.
+function HudTraining({ restartKey }: { restartKey: string }) {
+  // Whole seconds for the free-practice clock; a running challenge's clock is
+  // already quantised to tenths by the engine.
   const t = useHudSlice(
     (s) => (s.training ? { ...s.training, elapsed: Math.floor(s.training.elapsed) } : null),
     shallowEqual,
   );
-  return t ? <TrainingPanel t={t} /> : null;
+  if (!t) return null;
+  const c = t.challenge;
+  return (
+    <>
+      {c ? <ChallengePanel c={c} restartKey={restartKey} /> : <TrainingPanel t={t} restartKey={restartKey} />}
+      {c?.phase === 'countdown' && c.countdown > 0 && <ChallengeCountdown name={c.name} n={c.countdown} />}
+      {!c && t.result && <ChallengeResult r={t.result} restartKey={restartKey} />}
+      {t.notice && (
+        <div key={t.notice} className='hud-panel pointer-events-none absolute left-1/2 top-[7.4rem] -translate-x-1/2 px-3 py-1 font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-200' style={{ animation: 'hud-fade-in 160ms ease-out both' }}>
+          {t.notice}
+        </div>
+      )}
+    </>
+  );
 }
 
 function HudBanner() {
@@ -2416,31 +2433,142 @@ const ToastChip = memo(function ToastChip({
 
 /* ───────────────────────── Training range panel ───────────────────────── */
 
-const TrainingPanel = memo(function TrainingPanel({ t }: { t: TrainingHud }) {
+const CHALLENGE_ACCENT: Record<TrainingChallengeId, { text: string; border: string }> = {
+  flick: { text: 'text-amber-300', border: '!border-amber-400/40' },
+  strafers: { text: 'text-fuchsia-300', border: '!border-fuchsia-400/40' },
+  course: { text: 'text-cyan-300', border: '!border-cyan-400/40' },
+  gauntlet: { text: 'text-emerald-300', border: '!border-emerald-400/40' },
+};
+
+// 83.4 → "1:23.4"; decimals = digits after the point.
+function clockText(sec: number, decimals = 1): string {
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(decimals).padStart(decimals ? 3 + decimals : 2, '0')}`;
+}
+
+const TrainingStat = ({ label, value, accent }: { label: string; value: string; accent?: string }) => (
+  <div className='flex flex-col items-center px-3'>
+    <span className={`text-xl font-extrabold tabular-nums ${accent ?? 'text-white'}`}>{value}</span>
+    <span className='text-[9px] uppercase tracking-[0.18em] text-white/45'>{label}</span>
+  </div>
+);
+
+// Free practice: live accuracy / streak, plus how to start a challenge.
+const TrainingPanel = memo(function TrainingPanel({ t, restartKey }: { t: TrainingHud; restartKey: string }) {
   const acc = Math.round(t.accuracy * 100);
-  const mins = Math.floor(t.elapsed / 60);
-  const secs = Math.floor(t.elapsed % 60);
-  const Stat = ({ label, value, accent }: { label: string; value: string; accent?: string }) => (
-    <div className='flex flex-col items-center px-3'>
-      <span className={`text-xl font-extrabold tabular-nums ${accent ?? 'text-white'}`}>{value}</span>
-      <span className='text-[9px] uppercase tracking-[0.18em] text-white/45'>{label}</span>
-    </div>
-  );
   return (
     <div className='pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 font-mono'>
       <div className='hud-panel flex items-center gap-1 !border-amber-400/25 px-2 py-2'>
         <div className='px-3 text-[10px] uppercase leading-tight tracking-[0.18em] text-amber-300/90'>
-          Training<br />Range
+          Free
+          <br />
+          practice
         </div>
         <div className='h-8 w-px bg-white/10' />
-        <Stat label='Accuracy' value={`${acc}%`} accent='text-cyan-200' />
-        <Stat label='Streak' value={`${t.streak}`} accent={t.streak >= 5 ? 'text-amber-300' : 'text-white'} />
-        <Stat label='Best' value={`${t.bestStreak}`} />
-        <Stat label='Targets' value={`${t.destroyed}`} />
-        <Stat label='Time' value={`${mins}:${secs.toString().padStart(2, '0')}`} />
+        <TrainingStat label='Accuracy' value={`${acc}%`} accent='text-cyan-200' />
+        <TrainingStat label='Streak' value={`${t.streak}`} accent={t.streak >= 5 ? 'text-amber-300' : 'text-white'} />
+        <TrainingStat label='Best' value={`${t.bestStreak}`} />
+        <TrainingStat label='Targets' value={`${t.destroyed}`} />
+        <TrainingStat label='Time' value={clockText(t.elapsed, 0)} />
       </div>
-      <div className='mt-1 text-center text-[9px] uppercase tracking-[0.2em] text-white/35'>
-        Free practice · no respawns · drill aim &amp; movement
+      <div className='mt-1 text-center text-[9px] uppercase tracking-[0.2em] text-white/45'>
+        {t.result ? `${restartKey} retry ${t.result.name} · or stand on a pad` : `Stand on a pad to start a challenge · ${restartKey} back to the hub`}
+      </div>
+    </div>
+  );
+});
+
+// A running challenge: the clock, the score line, and your best.
+const ChallengePanel = memo(function ChallengePanel({ c, restartKey }: { c: TrainingChallengeHud; restartKey: string }) {
+  const accent = CHALLENGE_ACCENT[c.id];
+  const acc = c.shots ? Math.round((c.hits / c.shots) * 100) : 0;
+  const best = c.best === null ? '—' : c.kind === 'race' ? `${c.best.toFixed(2)}s` : `${c.best}`;
+  return (
+    <div className='pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 font-mono'>
+      <div className={`hud-panel flex items-center gap-1 px-2 py-2 ${accent.border}`}>
+        <div className={`px-3 text-[10px] uppercase leading-tight tracking-[0.18em] ${accent.text}`}>
+          {c.name}
+          <br />
+          <span className='text-white/45'>{c.kind === 'aim' ? 'time left' : 'time'}</span>
+        </div>
+        <div className='h-8 w-px bg-white/10' />
+        <div className='flex min-w-[6.5rem] flex-col items-center px-3'>
+          <span className={`text-3xl font-extrabold tabular-nums ${c.kind === 'aim' && c.time <= 5 && c.phase === 'running' ? 'text-rose-300' : 'text-white'}`}>
+            {clockText(c.time)}
+          </span>
+        </div>
+        <div className='h-8 w-px bg-white/10' />
+        {c.kind === 'aim' ? (
+          <>
+            <TrainingStat label='Hits' value={`${c.hits}`} accent={accent.text} />
+            <TrainingStat label='Accuracy' value={`${acc}%`} accent='text-cyan-200' />
+          </>
+        ) : (
+          <>
+            <TrainingStat label='Gate' value={`${c.gate}/${c.gates}`} accent={accent.text} />
+            <TrainingStat
+              label='Split'
+              value={c.split === null ? '—' : `${c.split > 0 ? '+' : c.split < 0 ? '−' : '±'}${Math.abs(c.split).toFixed(2)}`}
+              accent={c.split === null ? 'text-white/60' : c.split <= 0 ? 'text-emerald-300' : 'text-rose-300'}
+            />
+            {c.targetsLeft !== null && <TrainingStat label='Targets' value={`${c.targetsLeft}`} accent={c.targetsLeft === 0 ? 'text-emerald-300' : 'text-white'} />}
+          </>
+        )}
+        <TrainingStat label='Best' value={best} />
+      </div>
+      <div className='mt-1 text-center text-[9px] uppercase tracking-[0.2em] text-white/45'>
+        {restartKey} restart{c.kind === 'aim' ? ' · stay on the firing line' : c.targetsLeft !== null ? ' · +2 s per target left standing' : ' · race your ghost'}
+      </div>
+    </div>
+  );
+});
+
+const ChallengeCountdown = memo(function ChallengeCountdown({ name, n }: { name: string; n: number }) {
+  return (
+    <div className='pointer-events-none absolute inset-x-0 top-[max(34%,17rem)] z-20 flex flex-col items-center'>
+      <div className='hud-cprint-sub'>{name} starts in</div>
+      <div key={n} className='hud-tick hud-tick-center hud-count'>
+        {n}
+      </div>
+    </div>
+  );
+});
+
+// The finished run: score, the breakdown, and whether it beat your best.
+const ChallengeResult = memo(function ChallengeResult({ r, restartKey }: { r: TrainingResultHud; restartKey: string }) {
+  const accent = CHALLENGE_ACCENT[r.id];
+  const acc = r.shots ? Math.round((r.hits / r.shots) * 100) : 0;
+  const score = r.kind === 'race' ? `${r.score.toFixed(2)} s` : `${r.score} hits`;
+  const best = r.best === null ? null : r.kind === 'race' ? `${r.best.toFixed(2)} s` : `${r.best} hits`;
+  const detail =
+    r.kind === 'aim'
+      ? `${r.hits}/${r.shots} shots · ${acc}% accuracy`
+      : r.penalty > 0
+        ? `includes +${r.penalty} s for targets left standing`
+        : r.id === 'gauntlet'
+          ? 'every target down — no penalty'
+          : 'clean run';
+  return (
+    <div
+      key={r.key}
+      className='pointer-events-none absolute inset-x-0 top-[max(26%,13rem)] z-20 flex justify-center font-mono'
+      style={{ animation: 'hud-scale-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both' }}
+    >
+      <div className={`hud-panel flex min-w-[20rem] flex-col items-center gap-1 !bg-[#080b10]/92 px-6 py-4 ${accent.border}`}>
+        <div className={`text-[11px] uppercase tracking-[0.22em] ${accent.text}`}>{r.name} complete</div>
+        <div className='font-display text-5xl font-bold tabular-nums text-white'>{score}</div>
+        <div className='text-[11px] text-white/60'>{detail}</div>
+        {r.newBest ? (
+          <div className='mt-1 bg-amber-300 px-2 py-[2px] text-[11px] font-bold uppercase tracking-[0.2em] text-amber-950'>
+            New best{best ? ` · was ${best}` : ''}
+          </div>
+        ) : (
+          best && <div className='mt-1 text-[11px] uppercase tracking-[0.16em] text-white/50'>Best {best}</div>
+        )}
+        <div className='mt-2 text-[9px] uppercase tracking-[0.2em] text-white/45'>
+          {restartKey} to retry · walk to a pad for another challenge
+        </div>
       </div>
     </div>
   );
@@ -3404,7 +3532,7 @@ function Lobby({
                   }
                   disabled={playDisabled}
                   accent='amber'
-                  sub='Aim drills, no pressure'
+                  sub='Aim challenges, movement course'
                   delay={6}
                 >
                   Training range

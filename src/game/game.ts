@@ -63,7 +63,8 @@ import { EffectsManager, prewarmFx } from './effects';
 import { prewarmGuns } from './gun/prewarm';
 import { prewarmPodiumTextures } from './podium-textures';
 import { setRailBeamsReduced, type RailBeamMode } from './fx/rail-beam';
-import { TrainingRange, type TrainingStats } from './training';
+import { TrainingRange, type TrainingTeleport } from './training';
+import { TRAINING_LAYOUT } from './maps/training';
 import { InputManager } from './input';
 import { buildMapMesh, DEFAULT_MAP, MAPS, mapById, rayAabb, setMapBuildQuality, type ArenaMap } from './map';
 import { BANNER_MEDALS, MEDAL_LABELS, MedalTracker, medalSting } from './medals';
@@ -557,10 +558,12 @@ export class Game {
   private tauntCooldownUntil = 0; // performance.now() ms
   private tauntCode = 'KeyG';
   private inspectCode = 'KeyF';
+  private restartCode = 'KeyR';
   private readonly tauntKeyHandler = (e: KeyboardEvent) => {
     if (e.repeat) return;
     if (e.code === this.tauntCode) this.tryTaunt();
     else if (e.code === this.inspectCode) this.tryInspect();
+    else if (e.code === this.restartCode) this.tryTrainingRestart();
   };
   // Weapon inspect (first-person gun look-over): the HUD card listens.
   private inspectShown = false;
@@ -725,6 +728,7 @@ export class Game {
     this.input.setBindings(binds);
     this.tauntCode = binds.taunt || '';
     this.inspectCode = binds.inspect || '';
+    this.restartCode = binds.restart || '';
   }
 
   // ── In-game chat (online only) ────────────────────────────────────────
@@ -1814,7 +1818,8 @@ export class Game {
     this.applyMultiplayerState();
     // Training mode: a target-practice range (no bots, no return fire).
     if (this.training && !this.net && !this.trainingRange) {
-      this.trainingRange = new TrainingRange(this.scene, this.map);
+      this.trainingRange = new TrainingRange(this.scene, this.map, TRAINING_LAYOUT);
+      this.trainingTeleport({ pos: TRAINING_LAYOUT.hub.spawn, yaw: TRAINING_LAYOUT.hub.yaw });
     }
     this.emitHud();
   }
@@ -2721,7 +2726,8 @@ export class Game {
       const wasGround = this.player.onGround;
       const preVy = this.player.vel.y;
       const wasDashing = this.player.dashTimer > 0;
-      this.player.step(input, dt, this.map, this.inCountdown);
+      // A training challenge's 3-2-1 holds you on the start mark too.
+      this.player.step(input, dt, this.map, this.inCountdown || !!this.trainingRange?.frozen);
       const v = this.player.vel;
       if (!wasGround && this.player.onGround) {
         this.viewmodelMotion.onLand(-preVy);
@@ -2770,7 +2776,10 @@ export class Game {
 
     this.weapon.step(dt, this.scene);
     this.effects.step(dt, this.scene);
-    this.trainingRange?.update(dt);
+    if (this.trainingRange) {
+      const tp = this.trainingRange.update(dt, { pos: this.player.pos, onGround: this.player.onGround });
+      if (tp) this.trainingTeleport(tp);
+    }
     if (this.localRespawnInvuln > 0) {
       this.localRespawnInvuln = Math.max(0, this.localRespawnInvuln - dt);
     }
@@ -2819,7 +2828,7 @@ export class Game {
     this.weaponWasReady = ready;
 
     // A cancelled taunt (jump) hands aim and fire back at once, while the camera glides home.
-    if (input.firePressed && !dead && !this.inCountdown && !(this.taunt && !this.taunt.cancelled)) this.handleFire();
+    if (input.firePressed && !dead && !this.inCountdown && (this.trainingRange?.canFire() ?? true) && !(this.taunt && !this.taunt.cancelled)) this.handleFire();
 
     // Position broadcast at the sim-tick rate, with idle dedup. Sending fresher
     // samples (vs the old 32Hz) reduces the snapshot-aliasing jitter remote
@@ -2899,6 +2908,27 @@ export class Game {
     return { hit, headshot };
   }
 
+  // Training range: put the player on a challenge's start mark (or back at the
+  // hub), standing still, facing down the course / range.
+  private trainingTeleport(tp: TrainingTeleport) {
+    this.player.pos = { ...tp.pos };
+    this.player.vel = { x: 0, y: 0, z: 0 };
+    this.player.onGround = false;
+    this.player.yaw = tp.yaw;
+    this.player.pitch = 0;
+    this.emitHud();
+  }
+
+  // Dev / QA hook (window.__ig): start a training challenge without the pad.
+  startTrainingChallenge(id: 'flick' | 'strafers' | 'course' | 'gauntlet') {
+    if (this.trainingRange) this.trainingTeleport(this.trainingRange.begin(id));
+  }
+
+  private tryTrainingRestart() {
+    if (!this.trainingRange || this.chatOpen || !this.locked) return;
+    this.trainingTeleport(this.trainingRange.restart());
+  }
+
   private handleFire() {
     this.tmpEuler.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     this.tmpForward.set(0, 0, -1).applyEuler(this.tmpEuler);
@@ -2940,10 +2970,11 @@ export class Game {
     // Training-range targets are raycast just like bots (collateral allowed).
     if (this.trainingRange) targets.push(...this.trainingRange.targets());
 
-    // Training range: drop the rail cooldown so players can drill fast flick
-    // shots. firePressed is edge-triggered, so this is one shot per click — not
-    // full-auto. (See the matching reset after the shot lands.)
-    const trainingShot = this.trainingRange !== null;
+    // Training range free practice: drop the rail cooldown so players can drill
+    // fast flick shots. firePressed is edge-triggered, so this is one shot per
+    // click — not full-auto. Challenges keep the real cooldown. (See the
+    // matching reset after the shot lands.)
+    const trainingShot = this.trainingRange?.freeFire() ?? false;
     if (trainingShot) this.weapon.cooldown = 0;
     const result = this.weapon.fire(
       muzzle,
@@ -4156,7 +4187,7 @@ export class Game {
       mode: this.netMode,
       localTeam: this.localTeam,
       teamScores,
-      training: this.trainingRange ? { ...this.trainingRange.stats() } : null,
+      training: this.trainingRange ? this.trainingRange.hud() : null,
       pom: this.pom ? { ...this.pom } : null,
       chat: { open: this.chatOpen, lines: this.chatLines.map((l) => ({ ...l })) },
       netDebug: this.netDebugOn && this.net ? this.net.getDebugStats() : null,

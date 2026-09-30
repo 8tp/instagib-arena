@@ -300,6 +300,7 @@ export type SpectatorHud = {
 };
 
 export type TrainingHud = {
+  // Free-practice stats (only count while no challenge runs).
   shots: number;
   hits: number;
   destroyed: number;
@@ -307,4 +308,38 @@ export type TrainingHud = {
   bestStreak: number;
   accuracy: number; // 0..1
   elapsed: number; // seconds
+  challenge: TrainingChallengeHud | null; // a challenge counting down / running
+  result: TrainingResultHud | null; // the last finished run (cleared after a few seconds)
+  notice: string | null; // short-lived line: "Left the firing line — cancelled"
+};
+
+export type TrainingChallengeId = 'flick' | 'strafers' | 'course' | 'gauntlet';
+
+export type TrainingChallengeHud = {
+  id: TrainingChallengeId;
+  name: string;
+  kind: 'aim' | 'race';
+  phase: 'countdown' | 'running';
+  countdown: number; // whole seconds left before GO (3, 2, 1)
+  time: number; // aim: seconds left; race: seconds elapsed (tenths)
+  hits: number;
+  shots: number;
+  gate: number; // race: gates passed
+  gates: number;
+  split: number | null; // race: seconds vs your best at the last gate (− = ahead)
+  targetsLeft: number | null; // gauntlet: targets still standing
+  best: number | null; // your best score (hits, or seconds for races)
+};
+
+export type TrainingResultHud = {
+  key: number; // changes per result (animation key)
+  id: TrainingChallengeId;
+  name: string;
+  kind: 'aim' | 'race';
+  score: number; // hits, or total seconds for races
+  hits: number;
+  shots: number;
+  penalty: number; // seconds added (Gauntlet)
+  best: number | null; // best BEFORE this run
+  newBest: boolean;
 };
