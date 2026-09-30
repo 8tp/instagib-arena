@@ -11,6 +11,9 @@ export type PreviewItem = {
   tier: Tier;
   blurb?: string;
   tags?: Tag[];
+  // A Tracked (internal: strange) item's confirmed kills — the finish preview
+  // shows them on the gun's counter module. Absent = not Tracked.
+  kills?: number;
 };
 
 // Cards live on the Locker's own card showcase; defaults have nothing to show.
@@ -20,7 +23,9 @@ export function canPreview(def: string): boolean {
 }
 
 export function previewOfInst(i: ItemInstanceWire): PreviewItem {
-  return { def: i.def, look: instLook(i), name: instFullName(i) || instBaseName(i), tier: instTier(i), blurb: instBlurb(i), tags: instTags(i) };
+  const p: PreviewItem = { def: i.def, look: instLook(i), name: instFullName(i) || instBaseName(i), tier: instTier(i), blurb: instBlurb(i), tags: instTags(i) };
+  if (i.quality.includes('strange')) p.kills = i.attrs.kills ?? 0;
+  return p;
 }
 
 export function previewOfDef(id: string): PreviewItem | null {

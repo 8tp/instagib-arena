@@ -56,10 +56,12 @@ export function ItemPreviewModal({ item, settings, onClose }: { item: PreviewIte
   const [replayKey, setReplayKey] = useState(0);
   const view: PreviewView = worn && !close ? 'full' : closeView;
   const lookKeyStr = JSON.stringify(look);
+  // A Tracked finish shows its kill count on the gun's counter module.
+  const trackedKills = slot === 'finish' && typeof item.kills === 'number' ? item.kills : null;
   const cos = useMemo(
-    () => previewCosmetics(settings.looks ?? {}, { slot, look }, view, settings),
+    () => ({ ...previewCosmetics(settings.looks ?? {}, { slot, look }, view, settings), trackedKills }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settings.looks, lookKeyStr, slot, view, settings.playerName, settings.reducedEffects],
+    [settings.looks, lookKeyStr, slot, view, settings.playerName, settings.reducedEffects, trackedKills],
   );
   const c = TIER_COLOR[item.tier];
   const identity = slot === 'title' || slot === 'nameColor';

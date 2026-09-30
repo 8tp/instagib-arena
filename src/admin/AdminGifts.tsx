@@ -8,17 +8,18 @@ import type { InboxMessageWire } from '../game/items/types';
 import { econ, reasonText } from '../economy/api';
 import { MessageRow } from '../inbox/InboxPanel';
 import { CheckLine, RewardBundleEditor } from './RewardBundleEditor';
-import { PlayerLookup } from './PlayerLookup';
+import { playerCard, type AdminPlayer } from './api';
+import { PlayerPicker, PlayerSummary } from './PlayerPicker';
 import { draftToBundle, emptyBundle, type BundleDraft } from './spec-draft';
 import { fromLocalInput } from './time';
-import { Banner, Card, Check, ExpiryField, Field, Seg, inputCls, primaryCls, btnCls, type Msg } from './ui';
+import { Banner, ExpiryField, Field, Plate, Seg, Toggle, type Msg } from './ui';
 import { useBundleCheck } from './useBundleCheck';
 
 type Sent = { at: number; to: string; title: string; sent: number; reward: boolean };
 
-export function AdminGiftsTab() {
+export function AdminGiftsTab({ initialPlayer }: { initialPlayer?: string }) {
   const [target, setTarget] = useState<'one' | 'all'>('one');
-  const [player, setPlayer] = useState('');
+  const [player, setPlayer] = useState<AdminPlayer | null>(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [attach, setAttach] = useState(true);
@@ -30,6 +31,18 @@ export function AdminGiftsTab() {
   const [msg, setMsg] = useState<Msg>(null);
   const [log, setLog] = useState<Sent[]>([]);
   const check = useBundleCheck(bundle, attach);
+
+  // Deep link from Players ("Gift").
+  useEffect(() => {
+    if (!initialPlayer) return;
+    let live = true;
+    void playerCard(initialPlayer).then((p) => {
+      if (live && p) setPlayer(p);
+    });
+    return () => {
+      live = false;
+    };
+  }, [initialPlayer]);
 
   // "Everyone" means every account: fetch the number so the confirm can say it.
   useEffect(() => {
@@ -46,7 +59,7 @@ export function AdminGiftsTab() {
   const expiresAt = fromLocalInput(expires);
   const problems: string[] = [];
   if (!title.trim()) problems.push('Add a title.');
-  if (target === 'one' && !player.trim()) problems.push('Pick a player.');
+  if (target === 'one' && !player) problems.push('Pick a player.');
   if (attach && check.state !== 'ok') problems.push(check.state === 'err' ? check.text : check.state === 'empty' ? 'Add something to attach (or untick attachments).' : 'Checking the reward…');
   if (expires && expiresAt <= Date.now()) problems.push('The expiry must be in the future.');
   const ready = problems.length === 0 && !busy;
@@ -60,7 +73,7 @@ export function AdminGiftsTab() {
     setBusy(true);
     setMsg(null);
     const r = await econ.adminGift({
-      ...(target === 'all' ? { all: true } : { player: player.trim() }),
+      ...(target === 'all' ? { all: true } : { player: player?.id ?? '' }),
       title: title.trim(),
       body: body.trim(),
       reward: attach ? draftToBundle(bundle) : undefined,
@@ -68,8 +81,8 @@ export function AdminGiftsTab() {
     });
     setBusy(false);
     setConfirming(false);
-    if (!r.ok) return setMsg({ tone: 'err', text: r.status === 404 && target === 'one' ? `No player named “${player.trim()}”.` : reasonText(r, 'admin') });
-    const to = target === 'all' ? 'everyone' : player.trim();
+    if (!r.ok) return setMsg({ tone: 'err', text: r.status === 404 && target === 'one' ? `${player?.userName ?? 'That player'} no longer exists.` : reasonText(r, 'admin') });
+    const to = target === 'all' ? 'everyone' : player?.userName ?? '';
     setMsg({ tone: 'ok', text: `✓ Sent to ${r.sent.toLocaleString()} player${r.sent === 1 ? '' : 's'}${target === 'one' ? ` (${to})` : ''}.` });
     setLog((l) => [{ at: Date.now(), to, title: title.trim(), sent: r.sent, reward: attach }, ...l].slice(0, 12));
   };
@@ -92,12 +105,12 @@ export function AdminGiftsTab() {
   };
 
   return (
-    <div>
-      <Card title='Send a gift or message'>
-        <div className='grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]'>
-          <div className='flex min-w-0 flex-col gap-4'>
-            <div className='flex flex-wrap items-end gap-3'>
-              <Field label='Send to'>
+    <div className='flex flex-col gap-5'>
+      <Plate title='Send a gift or message' sub='Lands in the player’s inbox. Attachments are minted when they claim.'>
+        <div className='grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]'>
+          <div className='flex min-w-0 flex-col gap-5'>
+            <div className='flex flex-col gap-3'>
+              <Field label='Send to' as='div'>
                 <Seg
                   label='Recipients'
                   value={target}
@@ -112,89 +125,98 @@ export function AdminGiftsTab() {
                 />
               </Field>
               {target === 'one' ? (
-                <label className='flex min-w-[14rem] flex-1 flex-col gap-1 sm:max-w-xs'>
-                  <span className='sr-only'>Player</span>
-                  <PlayerLookup value={player} onChange={setPlayer} placeholder='Search a player…' field='gift-player' />
-                </label>
+                <>
+                  <PlayerPicker value={player} onChange={setPlayer} field='gift-player' label='Recipient' />
+                  {player && <PlayerSummary p={player} />}
+                </>
               ) : (
-                <span className='pb-1.5 text-[12px] text-amber-200/90'>Every account{accounts != null ? ` · ${accounts.toLocaleString()} players` : ''}</span>
+                <div className='adm-banner' data-tone='warn'>
+                  Every account{accounts != null ? ` · ${accounts.toLocaleString()} players` : ''}. You’ll confirm before it sends.
+                </div>
               )}
             </div>
             <Field label='Title' hint='≤ 80'>
-              <input className={`${inputCls} text-[14px]`} maxLength={80} value={title} onChange={(e) => setTitle(e.target.value)} placeholder='Thanks for playtesting!' data-field='gift-title' />
+              <input className='adm-input text-[14px]' maxLength={80} value={title} onChange={(e) => setTitle(e.target.value)} placeholder='Thanks for playtesting!' data-field='gift-title' />
             </Field>
             <Field label='Message' hint='optional · ≤ 1000'>
-              <textarea className={`${inputCls} min-h-[84px] resize-y font-sans text-[13px] leading-relaxed`} maxLength={1000} value={body} onChange={(e) => setBody(e.target.value)} placeholder='A few words from the team…' data-field='gift-body' />
+              <textarea className='adm-input min-h-[96px] resize-y' maxLength={1000} value={body} onChange={(e) => setBody(e.target.value)} placeholder='A few words from the team…' data-field='gift-body' />
             </Field>
-            <div>
-              <div className='mb-2'>
-                <Check checked={attach} onChange={setAttach} field='gift-attach'>
-                  Attach a reward (claimable from the inbox)
-                </Check>
-              </div>
+            <div className='flex flex-col gap-3 border-t border-[var(--adm-line)] pt-4'>
+              <Toggle checked={attach} onChange={setAttach} field='gift-attach' hint='claimable from the inbox'>
+                Attach a reward
+              </Toggle>
               {attach && (
                 <>
                   <RewardBundleEditor value={bundle} onChange={setBundle} />
-                  <div className='mt-2'>
-                    <CheckLine check={check} emptyText='Add credits, free rolls or an item.' />
-                  </div>
+                  <CheckLine check={check} emptyText='Add credits, free rolls or an item.' />
                 </>
               )}
             </div>
-            <div className='sm:max-w-md'>
+            <div className='sm:max-w-lg'>
               <ExpiryField value={expires} onChange={setExpires} label={attach ? 'Claim by' : 'Expires'} />
             </div>
 
             {confirming ? (
-              <div className='flex flex-col gap-3 rounded-md border border-amber-400/50 bg-amber-400/[0.07] p-4' role='alertdialog' aria-label='Confirm send to everyone' data-confirm-all>
-                <div className='font-display text-[16px] font-bold uppercase tracking-[0.08em] text-amber-200'>Send to every account?</div>
-                <p className='text-[13px] leading-relaxed text-white/75'>
+              <div className='flex flex-col gap-3 border border-[rgba(245,181,69,0.5)] bg-[rgba(245,181,69,0.07)] p-4' role='alertdialog' aria-label='Confirm send to everyone' data-confirm-all>
+                <div className='font-display text-[16px] font-semibold uppercase tracking-[0.08em] text-[var(--adm-warn)]'>Send to every account?</div>
+                <p className='text-[13px] leading-relaxed text-[var(--adm-ink-2)]'>
                   “{title.trim()}” goes into the inbox of <b className='text-white'>all {accounts != null ? accounts.toLocaleString() : ''} players</b>
                   {hasReward ? ', each with their own copy of the attachments' : ''}. This can’t be recalled.
                 </p>
                 <div className='flex flex-wrap gap-2'>
-                  <button type='button' className='rounded-md border border-amber-300 bg-amber-300 px-4 py-2 text-[12px] font-bold uppercase tracking-[0.14em] text-zinc-950 transition hover:bg-amber-200 disabled:opacity-50' disabled={busy} onClick={() => void send()} data-action='gift-confirm-all'>
+                  <button type='button' className='adm-btn warn' disabled={busy} onClick={() => void send()} data-action='gift-confirm-all'>
                     {busy ? 'Sending…' : `Yes, send to all${accounts != null ? ` ${accounts.toLocaleString()}` : ''}`}
                   </button>
-                  <button type='button' className={btnCls} onClick={() => setConfirming(false)} disabled={busy}>
+                  <button type='button' className='adm-btn' onClick={() => setConfirming(false)} disabled={busy}>
                     Cancel
                   </button>
                 </div>
               </div>
             ) : (
               <div className='flex flex-wrap items-center gap-3'>
-                <button type='button' className={primaryCls} disabled={!ready} onClick={() => void send()} data-action='gift-send'>
-                  {busy ? 'Sending…' : target === 'all' ? 'Send to everyone…' : `Send to ${player.trim() || '…'}`}
+                <button type='button' className='adm-btn primary' disabled={!ready} onClick={() => void send()} data-action='gift-send'>
+                  {busy ? 'Sending…' : target === 'all' ? 'Send to everyone…' : `Send to ${player?.userName ?? '…'}`}
                 </button>
-                {problems.length > 0 && <span className='text-[11px] text-white/40'>{problems[0]}</span>}
+                {problems.length > 0 && <span className='text-[12px] text-[var(--adm-ink-3)]'>{problems[0]}</span>}
               </div>
             )}
-            <Banner msg={msg} />
+            <Banner msg={msg} onClose={() => setMsg(null)} />
           </div>
 
-          <aside className='flex flex-col gap-2 lg:sticky lg:top-4 lg:self-start'>
-            <div className='text-[10px] uppercase tracking-[0.18em] text-white/40'>In their inbox</div>
+          <aside className='flex flex-col gap-2 lg:sticky lg:top-[120px] lg:self-start'>
+            <span className='adm-section-label'>In their inbox</span>
             <ul className='ib-list' data-gift-preview>
               <MessageRow m={sample} open fresh={false} claiming={false} error={null} onToggle={() => undefined} onClaim={() => undefined} preview />
             </ul>
           </aside>
         </div>
-      </Card>
+      </Plate>
 
       {log.length > 0 && (
-        <Card title='Sent this session'>
-          <ul className='flex flex-col gap-1.5 font-mono text-[12px]'>
-            {log.map((s) => (
-              <li key={s.at} className='flex flex-wrap items-center gap-x-4 gap-y-1 rounded border border-white/8 bg-black/20 px-3 py-2'>
-                <b className='text-white/90'>{s.title}</b>
-                <span className='text-white/50'>→ {s.to}</span>
-                <span className='text-emerald-300'>{s.sent.toLocaleString()} delivered</span>
-                {s.reward && <span className='text-amber-200'>with attachments</span>}
-                <span className='ml-auto text-white/35'>{new Date(s.at).toLocaleTimeString()}</span>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        <Plate title='Sent this session' flush>
+          <table className='adm-table'>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>To</th>
+                <th className='num'>Delivered</th>
+                <th>Attachments</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {log.map((s) => (
+                <tr key={s.at}>
+                  <td className='strong'>{s.title}</td>
+                  <td>{s.to}</td>
+                  <td className='num'>{s.sent.toLocaleString()}</td>
+                  <td>{s.reward ? 'Yes' : '—'}</td>
+                  <td>{new Date(s.at).toLocaleTimeString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Plate>
       )}
     </div>
   );

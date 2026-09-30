@@ -71,6 +71,9 @@ export type PreviewCosmetics = {
   // Economy v3: the Looks to wear (hat / face / back go to the wearable
   // builders when present; the legacy hatId/unusualId fields are the fallback).
   looks?: Loadout;
+  // A Tracked (internal: strange) finish's confirmed kills: the weapon view
+  // shows them on the gun's counter module. null/absent = no counter.
+  trackedKills?: number | null;
 };
 
 export type PreviewOptions = {
@@ -516,6 +519,7 @@ export class CharacterPreview {
   private ensureGun() {
     const finish = railgunFinishById(this.cos.railgunFinish).data;
     if (this.gun) {
+      this.gun.setStrangeKills(this.cos.trackedKills ?? null);
       if (this.gunFinish === this.cos.railgunFinish) return;
       // Same model → recolour in place (uniforms). A different custom model
       // (Wyrmfang, Reaper… — finish.model) changes the gun's SHAPE, which
@@ -533,6 +537,7 @@ export class CharacterPreview {
     this.gun = g;
     this.gunFinish = this.cos.railgunFinish;
     g.setLowSpec(this.lowSpec);
+    g.setStrangeKills(this.cos.trackedKills ?? null);
     // Centre the ~1.33 m gun on the pivot (grip origin sits ~0.23 m behind centre).
     g.group.position.set(0, 0, 0.23);
     this.gunPivot.add(g.group);
@@ -634,6 +639,7 @@ export class CharacterPreview {
       this.anim?.playEmote(kind, true);
       this.syncEmoteGun(kind);
     }
+    if ((cos.trackedKills ?? null) !== (prev.trackedKills ?? null)) this.gun?.setStrangeKills(cos.trackedKills ?? null);
     if (cos.railgunFinish !== prev.railgunFinish) {
       // The bug this fixes: a finish change used to leave the old gun on show.
       if (this.gun) this.ensureGun(); // recolour in place (kept while hidden)
@@ -792,6 +798,13 @@ export class CharacterPreview {
   // window's top up instead of being cropped.
   private framing(): Framing {
     const f = FRAMES[this.view];
+    if (this.view === 'weapon' && typeof this.cos.trackedKills === 'number') {
+      // A Tracked finish: in closer (the gun still fits) so the counter reads.
+      Object.assign(this.frameTmp, f);
+      this.frameTmp.dist = 2.45;
+      this.frameTmp.elev = 0.22;
+      return this.frameTmp;
+    }
     if (this.view !== 'head' && this.view !== 'crown') return f;
     const tan = Math.tan((f.fov * Math.PI) / 360);
     const win = this.view === 'head' ? 1.1 : 1.3;
@@ -868,8 +881,11 @@ export class CharacterPreview {
     const sway = this.cos.reducedEffects ? 0 : Math.sin(this.t * 0.5) * amp * this.swayW;
     this.baseYaw += (this.baseYawTarget - this.baseYaw) * (this.cos.reducedEffects ? 1 : 1 - Math.exp(-5 * dt));
     this.subject.rotation.y = FACE_CAMERA + this.baseYaw + this.yaw + sway;
-    // The gun points its barrel to screen-right and a little into depth.
-    this.gunPivot.rotation.set(0.06, -0.58 + this.yaw + sway, 0.03);
+    // The gun points its barrel to screen-right and a little into depth. A
+    // Tracked finish turns the other way (barrel to screen-left) so its left
+    // flank — the kill-counter module — faces the camera.
+    const tracked = typeof this.cos.trackedKills === 'number';
+    this.gunPivot.rotation.set(0.06, (tracked ? 0.58 : -0.58) + this.yaw + sway, tracked ? -0.03 : 0.03);
   }
 
   // Pause the render loop (the canvas stays mounted, e.g. hidden behind a 2D

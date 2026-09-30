@@ -28,6 +28,11 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 //     &wall=side:0.3|front:0.6   test slab for the clipping check
 //     &overlay=0   old path: gun parented to the world camera (clips)
 //     &post=0      every post pass off (the direct-render path)
+//     &inspect=<s> hold the KeyF inspect at this many seconds in (0…2.5)
+//     &kills=1234 (or &strange=) a Tracked counter; &bump=<s> the count went
+//                 up by one this long ago (the digit roll)
+//   ?view=hero    one gun, big, in the studio (&finish &angle=0.35 &dist=1.9
+//                 &elev=0.38 &kills &lod) — model + counter close-ups
 //   ?view=sheet   contact sheet of every finish (&lod=low, &fire=…)
 //   ?view=beams   every rail colour as a row (&age=0.12 &top=1.5 &bottom=-1.1), or one
 //                 shot across the arena into a wall (&only=rail.spectrum)
@@ -76,6 +81,7 @@ export class GunLab {
     this.resize();
     if (this.view === 'vm') this.setupViewmodel();
     else if (this.view === 'sheet') this.setupSheet();
+    else if (this.view === 'hero') this.setupHero();
     else if (this.view === 'beams') this.setupBeams();
     else if (this.view === 'tp') this.setupThirdPerson();
   }
@@ -87,7 +93,7 @@ export class GunLab {
   }
 
   // Item qualities from the URL: &streak=10 &sheen=sheen.violet &ks=ks.fire
-  // (professional) &festive=1 &strange=137.
+  // (professional) &festive=1 &kills=137 (or &strange=137) &bump=<s>.
   private applyQualities(g: {
     setStreak(n: number): void;
     setKillstreak(s: string | null, k: string | null): void;
@@ -99,7 +105,18 @@ export class GunLab {
     g.setStreak(this.num('streak', 0));
     g.setKillstreak(p.get('sheen'), p.get('ks'));
     g.setFestive(p.get('festive') === '1');
-    if (p.has('strange')) g.setStrangeKills?.(this.num('strange', 0));
+    const kills = p.has('kills') ? this.num('kills', 0) : p.has('strange') ? this.num('strange', 0) : null;
+    if (kills !== null) {
+      if (p.has('bump')) {
+        // Show the count one lower, then bump it `bump` seconds before the
+        // frame (the digit roll + flash).
+        g.setStrangeKills?.(Math.max(0, kills - 1));
+        const back = this.virtualMs;
+        this.virtualMs = T0 - this.num('bump', 0.1) * 1000;
+        g.setStrangeKills?.(kills);
+        this.virtualMs = back;
+      } else g.setStrangeKills?.(kills);
+    }
   }
 
   // ── First-person view ─────────────────────────────────────────────────────
@@ -149,6 +166,12 @@ export class GunLab {
     if (rc) this.railgun.setBeamColors(rc.data.core, rc.data.helix, rc.mode);
     // Settle the pose (zoom tuck etc.) for 2 s, then run the shot timeline.
     for (let t = 0; t < 2; t += STEP) this.stepPose(STEP, zoom);
+    if (p.has('inspect')) {
+      // Full intensity: a low motion intensity plays the calm (half) inspect.
+      this.motion.setIntensity(1);
+      this.motion.startInspect(false);
+      for (let t = 0; t < this.num('inspect', 1.15); t += STEP) this.stepPose(STEP, zoom);
+    }
     localRail.charge = 1;
     this.renderOnce(); // registers the live muzzle (fx/rail-state.ts)
     if (fireT >= 0) {
@@ -287,6 +310,35 @@ export class GunLab {
       });
       this.renderer.setScissorTest(false);
       this.renderer.setViewport(0, 0, size.x, size.y);
+    };
+  }
+
+  // ── One gun, big (model + counter close-ups) ─────────────────────────────
+  private setupHero() {
+    const p = this.params;
+    const lod = p.get('lod') === 'low' ? 'low' : 'high';
+    const scene = this.studio();
+    const f = railgunFinishById(p.get('finish') ?? 'gun.stock');
+    const g = buildRailgun(f.data, { lod });
+    g.setCharge(1);
+    this.applyQualities(g);
+    scene.add(g.group);
+    this.guns.push(g);
+    this.gun = g;
+    const cam = new THREE.PerspectiveCamera(this.num('fov', 24), 1, 0.02, 20);
+    const angle = this.num('angle', 0.35);
+    const dist = this.num('dist', 1.9);
+    const tz = this.num('tz', -0.24);
+    const ty = this.num('ty', -0.02);
+    cam.position.set(-dist * Math.cos(angle), dist * this.num('elev', 0.38), tz - dist * Math.sin(angle));
+    cam.lookAt(0, ty, tz);
+    this.sink([], `hero · ${f.name} · lod ${lod}`);
+    const size = new THREE.Vector2();
+    this.frame = () => {
+      this.renderer.getSize(size);
+      cam.aspect = size.x / size.y;
+      cam.updateProjectionMatrix();
+      this.renderer.render(scene, cam);
     };
   }
 

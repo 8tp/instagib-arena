@@ -1,102 +1,159 @@
 // A reward bundle (docs/economy.md §7b) as a form: credits, free rolls and up to
 // ten items, each built with the ItemSpecEditor. Checked live against the
 // server's own validator (POST /api/admin/rewards/validate) so "Create" /
-// "Send" can only go out with a bundle the server will accept.
+// "Send" only goes out with a bundle the server will accept.
 import { useState } from 'react';
 import { REWARD_LIMITS } from '../game/items/types';
-import { instFullName } from '../economy/display';
+import { instFullName, instTags } from '../economy/display';
+import { TagPills } from '../economy/parts';
 import { specPreview } from '../inbox/reward';
 import { SpecTile } from '../inbox/RewardBits';
+import { TicketGlyph } from '../menu/RewardTile';
 import { ItemSpecEditor } from './ItemSpecEditor';
 import type { BundleCheck } from './useBundleCheck';
 import { draftToSpec, newDraft, type BundleDraft, type SpecDraft } from './spec-draft';
-import { Field, btnCls, inputCls } from './ui';
 
 export function CheckLine({ check, emptyText }: { check: BundleCheck; emptyText: string }) {
-  const tone = check.state === 'ok' ? 'text-emerald-300' : check.state === 'err' ? 'text-rose-300' : 'text-white/40';
-  const text = check.state === 'ok' ? '✓ Server accepts this reward' : check.state === 'err' ? `✕ ${check.text}` : check.state === 'checking' ? 'Checking…' : emptyText;
+  const color = check.state === 'ok' ? 'var(--adm-good)' : check.state === 'err' ? 'var(--adm-bad)' : 'var(--adm-ink-3)';
+  const text = check.state === 'ok' ? 'Server accepts this reward.' : check.state === 'err' ? check.text : check.state === 'checking' ? 'Checking with the server…' : emptyText;
+  const glyph = check.state === 'ok' ? '✓' : check.state === 'err' ? '✕' : '·';
   return (
-    <div className={`font-mono text-[11px] ${tone}`} role='status' data-bundle-check={check.state}>
+    <div className='flex items-center gap-2 text-[12px]' style={{ color }} role='status' data-bundle-check={check.state}>
+      <span aria-hidden className='font-mono'>
+        {glyph}
+      </span>
       {text}
+    </div>
+  );
+}
+
+function Amount({
+  label,
+  glyph,
+  value,
+  onChange,
+  max,
+  presets,
+  field,
+  color,
+}: {
+  label: string;
+  glyph: React.ReactNode;
+  value: string;
+  onChange: (v: string) => void;
+  max: number;
+  presets: number[];
+  field: string;
+  color: string;
+}) {
+  const n = Number(value) || 0;
+  const over = n > max;
+  return (
+    <div className='flex min-w-0 flex-col gap-1.5'>
+      <span className='adm-label'>
+        {label}
+        <span className='hint'>max {max.toLocaleString()}</span>
+      </span>
+      <div className='adm-input flex items-center gap-2' aria-invalid={over} style={{ height: 38 }}>
+        <span style={{ color }} className='shrink-0'>
+          {glyph}
+        </span>
+        <input
+          className='mono h-full min-w-0 flex-1 bg-transparent text-[15px] outline-none'
+          inputMode='numeric'
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, '').slice(0, 7))}
+          placeholder='0'
+          aria-label={label}
+          data-field={field}
+        />
+        {value && (
+          <button type='button' className='text-[12px] text-[var(--adm-ink-3)] hover:text-[var(--adm-ink)]' onClick={() => onChange('')} aria-label={`Clear ${label}`}>
+            ✕
+          </button>
+        )}
+      </div>
+      <div className='flex flex-wrap gap-1'>
+        {presets.map((p) => (
+          <button key={p} type='button' className='adm-chip' onClick={() => onChange(String(Math.min(max, n + p)))}>
+            +{p.toLocaleString()}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
 export function RewardBundleEditor({ value, onChange }: { value: BundleDraft; onChange: (b: BundleDraft) => void }) {
   const [editing, setEditing] = useState<number | null>(null);
-  const [fresh, setFresh] = useState<number | null>(null); // a just-added item opens on the picker
   const b = value;
   const setItem = (key: number, d: SpecDraft) => onChange({ ...b, items: b.items.map((x) => (x.key === key ? d : x)) });
   const add = () => {
     const d = newDraft(b.items.length ? b.items[b.items.length - 1].def : 'hat.tophat');
     onChange({ ...b, items: [...b.items, d] });
     setEditing(d.key);
-    setFresh(d.key);
   };
   const remove = (key: number) => {
     onChange({ ...b, items: b.items.filter((x) => x.key !== key) });
     if (editing === key) setEditing(null);
   };
-  const num = (s: string) => s.replace(/[^0-9]/g, '');
   const cur = b.items.find((x) => x.key === editing) ?? null;
 
   return (
-    <div className='flex flex-col gap-3 rounded-md border border-white/10 bg-black/20 p-3' data-bundle-editor>
-      <div className='grid grid-cols-2 gap-3 sm:max-w-md'>
-        <Field label='Credits ⛁' hint={`≤ ${REWARD_LIMITS.credits.toLocaleString()}`}>
-          <input className={inputCls} inputMode='numeric' value={b.credits} onChange={(e) => onChange({ ...b, credits: num(e.target.value) })} placeholder='0' data-field='bundle-credits' />
-        </Field>
-        <Field label='Free rolls' hint={`≤ ${REWARD_LIMITS.rolls}`}>
-          <input className={inputCls} inputMode='numeric' value={b.rolls} onChange={(e) => onChange({ ...b, rolls: num(e.target.value) })} placeholder='0' data-field='bundle-rolls' />
-        </Field>
+    <div className='flex flex-col gap-4' data-bundle-editor>
+      <div className='grid gap-4 sm:grid-cols-2'>
+        <Amount label='Credits' glyph='⛁' color='var(--adm-credit)' value={b.credits} onChange={(v) => onChange({ ...b, credits: v })} max={REWARD_LIMITS.credits} presets={[100, 500, 1000, 5000]} field='bundle-credits' />
+        <Amount label='Free rolls' glyph={<TicketGlyph size={14} />} color='var(--adm-rail)' value={b.rolls} onChange={(v) => onChange({ ...b, rolls: v })} max={REWARD_LIMITS.rolls} presets={[1, 3, 5, 10]} field='bundle-rolls' />
       </div>
 
-      <div>
-        <div className='mb-2 flex items-center justify-between gap-2'>
-          <span className='text-[10px] uppercase tracking-[0.14em] text-white/40'>
-            Items <span className='text-white/30'>{b.items.length} / {REWARD_LIMITS.items} · minted fresh when claimed</span>
+      <div className='flex flex-col gap-2'>
+        <div className='flex items-center justify-between gap-2'>
+          <span className='adm-label'>
+            Items
+            <span className='hint'>
+              {b.items.length} of {REWARD_LIMITS.items} · minted fresh when claimed
+            </span>
           </span>
-          <button type='button' className={btnCls} onClick={add} disabled={b.items.length >= REWARD_LIMITS.items} data-action='bundle-add-item'>
+          <button type='button' className='adm-btn' onClick={add} disabled={b.items.length >= REWARD_LIMITS.items} data-action='bundle-add-item'>
             + Add item
           </button>
         </div>
-        {b.items.length > 0 && (
-          <ul className='flex flex-wrap gap-2'>
+        {b.items.length === 0 ? (
+          <button type='button' onClick={add} className='border border-dashed border-[var(--adm-line-2)] px-4 py-5 text-center text-[13px] text-[var(--adm-ink-3)] transition hover:border-[var(--adm-rail)] hover:text-[var(--adm-ink)]'>
+            No items attached. Add one to build it with the item generator.
+          </button>
+        ) : (
+          <ul className='flex flex-col border border-[var(--adm-line)]'>
             {b.items.map((d, i) => {
               const inst = specPreview(draftToSpec(d), d.key);
               const on = editing === d.key;
               return (
-                <li key={d.key} className={`flex w-[132px] flex-col items-center gap-1 rounded-md border p-1.5 ${on ? 'border-cyan-400/60 bg-cyan-400/10' : 'border-white/10 bg-black/30'}`}>
-                  <button type='button' className='w-full' onClick={() => setEditing(on ? null : d.key)} aria-pressed={on} aria-label={`Edit item ${i + 1}: ${instFullName(inst)}`} data-action='bundle-edit-item'>
-                    <SpecTile inst={inst} fluid />
-                  </button>
-                  <span className='line-clamp-2 min-h-[2.2em] text-center text-[11px] leading-tight text-white/75'>{instFullName(inst)}</span>
-                  <span className='flex gap-2'>
-                    <button type='button' className='text-[10px] font-bold uppercase tracking-[0.1em] text-cyan-300/80 hover:text-cyan-200' onClick={() => setEditing(on ? null : d.key)}>
-                      {on ? 'Close' : 'Edit'}
+                <li key={d.key} className={`border-b border-[var(--adm-line)] last:border-b-0 ${on ? 'bg-[rgba(91,227,255,0.04)]' : ''}`}>
+                  <div className='flex items-center gap-3 px-2.5 py-2'>
+                    <span className='w-5 text-center font-mono text-[11px] text-[var(--adm-ink-3)]'>{i + 1}</span>
+                    <SpecTile inst={inst} size={44} />
+                    <span className='flex min-w-0 flex-1 flex-col gap-1'>
+                      <span className='truncate text-[13px] font-medium text-[var(--adm-ink)]'>{instFullName(inst)}</span>
+                      <TagPills tags={instTags(inst)} />
+                    </span>
+                    <button type='button' className='adm-btn sm' onClick={() => setEditing(on ? null : d.key)} aria-expanded={on} data-action='bundle-edit-item'>
+                      {on ? 'Done' : 'Edit'}
                     </button>
-                    <button type='button' className='text-[10px] font-bold uppercase tracking-[0.1em] text-rose-300/70 hover:text-rose-200' onClick={() => remove(d.key)} data-action='bundle-remove-item'>
+                    <button type='button' className='adm-btn sm danger' onClick={() => remove(d.key)} data-action='bundle-remove-item' aria-label={`Remove item ${i + 1}`}>
                       Remove
                     </button>
-                  </span>
+                  </div>
+                  {on && cur && (
+                    <div className='border-t border-[var(--adm-line)] p-3'>
+                      <ItemSpecEditor key={cur.key} value={cur} onChange={(nd) => setItem(cur.key, nd)} />
+                    </div>
+                  )}
                 </li>
               );
             })}
           </ul>
         )}
       </div>
-
-      {cur && (
-        <div className='rounded-md border border-cyan-400/25 bg-cyan-400/[0.03] p-3'>
-          <div className='mb-3 flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200/80'>
-            <span>Item {b.items.indexOf(cur) + 1}</span>
-            <button type='button' className='text-white/45 hover:text-white' onClick={() => setEditing(null)}>
-              Done
-            </button>
-          </div>
-          <ItemSpecEditor key={cur.key} value={cur} onChange={(d) => setItem(cur.key, d)} pickerOpen={cur.key === fresh} />
-        </div>
-      )}
     </div>
   );
 }

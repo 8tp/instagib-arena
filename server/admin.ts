@@ -37,6 +37,15 @@ import {
 import { adminGrant, adminInventory, adminMint, adminRevoke, itemHistory } from './economy';
 import { adminCodeRedemptions, adminCreateCode, adminListCodes, adminSendGift, adminSetCodeActive, prepareBundle } from './rewards';
 import { WEEKLY_CHALLENGE_FRAG_LIMIT, WEEKLY_CHALLENGE_MAP } from '../src/game/constants';
+import {
+  getConcurrency,
+  getEconomyMetrics,
+  getEngagementMetrics,
+  getWeeklyCohorts,
+  playerCard,
+  searchPlayers,
+  startConcurrencySampler,
+} from './admin-metrics';
 
 export const adminRouter = Router();
 
@@ -62,6 +71,7 @@ let liveSource: () => LiveCounts = () => ({
 });
 export function setLiveCountsSource(fn: () => LiveCounts): void {
   liveSource = fn;
+  startConcurrencySampler(fn); // once-a-minute ring for the concurrency chart
 }
 
 const API_TOKEN = process.env.ADMIN_API_TOKEN || '';
@@ -121,6 +131,10 @@ function denyToken(req: Request, res: Response): boolean {
 }
 
 const cleanUsername = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+const intParam = (v: unknown, fallback: number): number => {
+  const n = typeof v === 'string' ? parseInt(v, 10) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+};
 
 // Set/clear a player's verified blue-check (Krunker-style), by username.
 adminRouter.post('/verify', (req, res) => {
@@ -286,6 +300,24 @@ adminRouter.get('/inventory/:player', (req, res) => {
   res.json({ player: target.username, id: target.id, ...adminInventory(target.id, req.query.all === '1') });
 });
 
+// Player combobox typeahead: accounts by name (exact → prefix → substring,
+// most recently seen first); an empty ?q= lists recently seen accounts.
+// Session-only (not under /metrics/), read-only.
+adminRouter.get('/players/search', (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  res.json({ players: searchPlayers(q, intParam(req.query.limit, 20)) });
+});
+
+// One account's summary card (by username or id) — the "who did I pick" card.
+adminRouter.get('/players/:player/card', (req, res) => {
+  const card = playerCard(String(req.params.player));
+  if (!card) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json({ player: card });
+});
+
 // Look up a player's current flags so the admin UI can show/toggle state.
 adminRouter.get('/lookup', (req, res) => {
   const target = findAccountByName(cleanUsername(req.query.username).toLowerCase());
@@ -338,10 +370,6 @@ adminRouter.get('/audit', (req, res) => {
 
 // ── Metrics dashboard (read-only aggregates) ─────────────────────────────────
 // All gated by requireAdmin (router-level). The dashboard at /admin renders these.
-const intParam = (v: unknown, fallback: number): number => {
-  const n = typeof v === 'string' ? parseInt(v, 10) : NaN;
-  return Number.isFinite(n) ? n : fallback;
-};
 
 // Headline KPIs + 24h/7d/30d activity windows + live concurrency.
 adminRouter.get('/metrics/overview', (_req, res) => {
@@ -369,6 +397,28 @@ adminRouter.get('/metrics/players', (req, res) => {
   const sort = typeof req.query.sort === 'string' ? req.query.sort : undefined;
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
   res.json({ players: getPlayersTable({ sort, q, limit: intParam(req.query.limit, 100) }) });
+});
+
+// Economy health: faucets vs sinks per day, case opens by case, market + trades,
+// mint mix by origin / tier, what's held now (?days=7..90, prev-period totals).
+adminRouter.get('/metrics/economy', (req, res) => {
+  res.json({ economy: getEconomyMetrics(intParam(req.query.days, 30)) });
+});
+
+// Engagement: DAU/WAU/MAU, matches by mode, guest share, hour-of-day, top
+// players over the range (?days=7..90, prev-period totals).
+adminRouter.get('/metrics/engagement', (req, res) => {
+  res.json({ engagement: getEngagementMetrics(intParam(req.query.days, 30)) });
+});
+
+// Weekly signup cohorts × weeks since signup (?weeks=2..12).
+adminRouter.get('/metrics/cohorts', (req, res) => {
+  res.json(getWeeklyCohorts(intParam(req.query.weeks, 8)));
+});
+
+// Sampled concurrency (1/min in-memory ring, last 24 h; resets on deploy).
+adminRouter.get('/metrics/concurrency', (_req, res) => {
+  res.json({ concurrency: getConcurrency(), live: liveSource() });
 });
 
 // Live concurrency right now (online players / players in a match / open rooms).

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { CustomGunBuild } from './types';
 import {
-  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, fxMesh, hull, lathe, motes, stations, surfaceMaterial, torusZ,
-  type Lod, type PartOpts, type V3,
+  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, fxMesh, hull, lathe, motes, mountPad, stations, surfaceMaterial,
+  taperTube, torusZ, twistZ, type Lod, type PartOpts, type TrackerMount, type V3,
 } from './kit';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -16,12 +16,45 @@ import {
 // motes drifting up off the gold; on the shot the crown spins up and flares,
 // the gems flash and a ring of light bursts outward. Streak: the crown lifts
 // and burns brighter, the glints thicken into a shower.
+// Detail: a twisted sceptre barrel, fleurs-de-lis on the flanks, gold bands
+// with beads, a gilded filigree arc under the stock.
 // Draws: body (+ crown and gems, vertex-animated) · aura · glints = 3.
 // ─────────────────────────────────────────────────────────────────────────
 
 const Z = { ENAMEL: 1, GOLD: 2, JEWEL: 3, CROWN: 4, CROWN_JEWEL: 5, ORBIT_GEM: 6, CREST: 7 } as const;
 const CROWN_C: V3 = [0, 0.132, -0.025]; // floats over the crest
 const CROWN_R = 0.036;
+// Tracked module seat: a white-enamel cartouche framed in gold, low on the
+// −X flank between the receiver bands (face x −0.063, y −0.012, z −0.142 …
+// +0.022).
+const MOUNT_FACE: V3 = [-0.063, -0.012, -0.06];
+
+// An open tube along Z (r0 at the back → r1 at the front) with a fluted
+// cross-section: alternate rim vertices sit in, so twisting it spirals.
+function flutedTube(r0: number, r1: number, len: number, flutes: number, rows: number): THREE.BufferGeometry {
+  const g = new THREE.CylinderGeometry(r1, r0, len, flutes * 2, rows, true);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const n = flutes * 2 + 1;
+  for (let i = 0; i < pos.count; i++) {
+    if ((i % n) % 2 === 1) pos.setXYZ(i, pos.getX(i) * 0.88, pos.getY(i), pos.getZ(i) * 0.88);
+  }
+  g.rotateX(-Math.PI / 2);
+  return g;
+}
+
+// A fleur-de-lis in the side plane (u = −z, v = y), centred on the origin:
+// a tall central petal, two petals curling out and down, a binding band.
+function fleur(p: Parts, at: V3, s: number, o: PartOpts, flat: boolean): void {
+  const x = at[0];
+  const P = (u: number, v: number, w = 0.0022): V3[] => [[x - w, at[1] + v * s, at[2] - u * s], [x + w, at[1] + v * s, at[2] - u * s]];
+  p.add(hull([...P(0, 1), ...P(-0.22, 0.35), ...P(0.22, 0.35), ...P(0, -0.1), ...P(-0.12, 0.05), ...P(0.12, 0.05)]), { ...o, flat: true });
+  for (const k of [-1, 1]) {
+    p.add(hull([...P(k * 0.15, 0.1), ...P(k * 0.4, 0.62), ...P(k * 0.62, 0.55), ...P(k * 0.55, 0.2), ...P(k * 0.3, 0.0)]), { ...o, flat: true });
+    if (!flat) p.add(hull([...P(k * 0.1, -0.2), ...P(k * 0.3, -0.62), ...P(k * 0.18, -0.62), ...P(k * 0.04, -0.3)]), { ...o, flat: true });
+  }
+  p.add(hull([...P(-0.4, -0.02, 0.003), ...P(0.4, -0.02, 0.003), ...P(-0.4, -0.16, 0.003), ...P(0.4, -0.16, 0.003)]), { ...o, flat: true });
+  if (!flat) p.add(hull([...P(0, -0.2), ...P(-0.1, -0.7), ...P(0.1, -0.7), ...P(0, -0.8)]), { ...o, flat: true });
+}
 
 function gem(r: number): THREE.BufferGeometry {
   // A brilliant-ish cut: crown table + pavilion point (8 facets).
@@ -35,7 +68,7 @@ function gem(r: number): THREE.BufferGeometry {
   return hull(pts);
 }
 
-function buildBody(lod: Lod): THREE.BufferGeometry {
+function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount } {
   const hi = lod === 'high';
   const SEG = hi ? 20 : 8;
   const p = new Parts();
@@ -53,10 +86,18 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
     [-0.16, 0.096, 0.114, 0.024],
     [-0.25, 0.07, 0.082, 0.03],
   ], 0.026), ENAMEL);
-  for (const z of [0.1, -0.03, -0.16]) p.add(chamferBox(0.1, 0.12, 0.012, 0.004), { ...GOLD, at: [0, 0.024, z] });
-  for (const sx of [-1, 1]) {
-    for (let i = 0; i < (hi ? 4 : 2); i++) p.add(chamferBox(0.006, 0.006, 0.3, 0.002), { ...GOLD_LT, at: [sx * 0.049, 0.05 - i * 0.018, -0.05] });
+  // Gold bands fore and aft (clear of the flank seat), each with a raised
+  // bead; fluted gold cheeks along the upper flanks; fleurs-de-lis aft.
+  for (const z of [0.1, -0.178]) {
+    p.add(chamferBox(0.124, 0.128, 0.014, 0.005), { ...GOLD, at: [0, 0.024, z] });
+    if (hi) p.add(chamferBox(0.128, 0.006, 0.006, 0.002), { ...GOLD_LT, at: [0, 0.024, z] });
   }
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < (hi ? 3 : 1); i++) p.add(chamferBox(0.006, 0.006, 0.26, 0.002), { ...GOLD_LT, at: [sx * 0.058, 0.064 - i * 0.015, -0.04] });
+    fleur(p, [sx * 0.058, 0.004, 0.058], 0.036, GOLD_LT, !hi);
+  }
+  // Tracked module seat.
+  const mount = mountPad(p, { face: MOUNT_FACE, depth: 0.022, pad: { ...ENAMEL, rough: 0.25 }, rim: GOLD_LT, hi });
   // Crest on the back: a gold shield set with a ruby.
   p.add(hull([[-0.024, 0.088, 0.02], [0.024, 0.088, 0.02], [-0.024, 0.088, -0.02], [0.024, 0.088, -0.02], [0, 0.088, -0.05],
     [-0.02, 0.096, 0.016], [0.02, 0.096, 0.016], [-0.02, 0.096, -0.016], [0.02, 0.096, -0.016], [0, 0.096, -0.042]]), { ...GOLD_LT, zone: Z.CREST, flat: true });
@@ -65,8 +106,17 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   // Stock: a gilded sceptre ending in an orb and cross.
   p.add(cylZ(0.016, 0.02, 0.3, SEG), { ...GOLD, at: [0, 0.03, 0.29] });
   for (const z of [0.18, 0.26, 0.34]) p.add(lathe([[0.012, z - 0.01], [0.026, z - 0.004], [0.026, z + 0.004], [0.012, z + 0.01]], SEG), { ...GOLD_LT, at: [0, 0.03, 0] });
-  p.add(stations([[0.15, 0.03, 0.03, -0.06], [0.4, 0.028, 0.028, -0.09]], 0.008), ENAMEL);
+  // Lower stock: a gilded filigree arc sweeping from the grip to the butt.
+  p.add(taperTube([[0, -0.055, 0.14], [0, -0.085, 0.24], [0, -0.1, 0.33], [0, -0.1, 0.415]], 0.012, 0.009, hi ? 12 : 5, hi ? 7 : 4), GOLD);
+  // A balustrade of gold spindles between the sceptre and the arc.
+  if (hi) {
+    for (const [z, yb] of [[0.2, -0.075], [0.27, -0.09], [0.34, -0.1]] as const) {
+      p.add(lathe([[0.003, yb], [0.005, yb + 0.01], [0.004, (yb + 0.014) / 2], [0.008, (yb + 0.014) / 2 + 0.008], [0.004, 0.006], [0.006, 0.014]], 8),
+        { ...GOLD_LT, at: [0, 0, z], rot: [-Math.PI / 2, 0, 0] });
+    }
+  }
   p.add(chamferBox(0.042, 0.17, 0.028, 0.01), { ...ENAMEL, at: [0, -0.03, 0.43] });
+  p.add(chamferBox(0.048, 0.176, 0.008, 0.003), { ...GOLD, at: [0, -0.03, 0.447] });
   p.add(new THREE.SphereGeometry(0.03, hi ? 20 : 10, hi ? 14 : 8), { ...GOLD_LT, at: [0, 0.075, 0.43] });
   p.add(chamferBox(0.008, 0.04, 0.008, 0.002), { ...GOLD_LT, at: [0, 0.12, 0.43] });
   p.add(chamferBox(0.026, 0.008, 0.008, 0.002), { ...GOLD_LT, at: [0, 0.126, 0.43] });
@@ -76,8 +126,8 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
 
   // Barrel: fluted gold with enamel rings.
   p.add(lathe([[0.03, -0.3], [0.056, -0.3], [0.062, -0.29], [0.062, -0.246], [0.054, -0.236], [0.022, -0.236]], SEG), { ...GOLD, at: [0, BARREL_Y, 0] });
-  const flutes = hi ? 12 : 6;
-  p.add(cylZ(0.03, 0.026, 0.54, flutes * 2, false), { ...GOLD, at: [0, BARREL_Y, -0.56], flat: true });
+  // Sceptre barrel: gold flutes twisted about a turn down its length.
+  p.add(twistZ(flutedTube(0.03, 0.026, 0.54, hi ? 8 : 6, hi ? 28 : 10).translate(0, 0, -0.56), 12), { ...GOLD, rough: 0.42, at: [0, BARREL_Y, 0], flat: true });
   for (const z of [-0.36, -0.46, -0.68, -0.78]) {
     p.add(lathe([[0.028, z - 0.012], [0.038, z - 0.008], [0.038, z + 0.008], [0.028, z + 0.012]], SEG), { ...ENAMEL, at: [0, BARREL_Y, 0] });
   }
@@ -125,7 +175,7 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
     const a = (i / 3) * Math.PI * 2;
     p.add(gem(0.009), { ...orbit[i], zone: Z.ORBIT_GEM, at: [Math.cos(a) * 0.056, BARREL_Y + Math.sin(a) * 0.056, -0.5 + i * 0.04], rot: [0, Math.PI / 2, a] });
   }
-  return p.merge(`sovereign-${lod}`);
+  return { geo: p.merge(`sovereign-${lod}`), mount };
 }
 
 const VERT = /* glsl */ `
@@ -223,7 +273,9 @@ const GLINTS = /* glsl */ `
 export const buildSovereign: CustomGunBuild = ({ lod, finish }) => {
   const rig = new GunRig('sovereign', lod, finish);
   const d = rig.drive;
-  rig.body(cached(`sovereign-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'sovereign', vert: VERT, frag: FRAG }));
+  const body = cached(`sovereign-body-${lod}`, () => buildBody(lod));
+  rig.trackerMount = body.mount;
+  rig.body(body.geo, surfaceMaterial(d, { key: 'sovereign', vert: VERT, frag: FRAG }));
   rig.add(fxMesh(d, auraGeo(), { key: 'sovereign-aura', frag: AURA_FRAG }));
   rig.add(motes(d, { key: 'sovereign', count: lod === 'high' ? 70 : 24, motion: GLINTS, star: true }));
   return rig.instance();

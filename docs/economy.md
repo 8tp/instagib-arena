@@ -61,25 +61,35 @@ clock and slow down under reduced effects.
 (unusual / strange / killstreak / professional) are published in-game to all players.
 
 ### Qualities & attributes (rolled per instance at mint)
-- **Unusual** (hats, emotes): an `effect` id from `UNUSUAL_EFFECTS`. Hat case: 1.5% per hat roll
-  (Legendary+ hats 5%); Taunt case emotes 2%. Shown as "Unusual <Hat>" with the effect name.
-- **Strange** (finishes, finishers, beams): 10%. Carries `kills` (server-counted, on the item,
-  survives trades) and a rank name from `STRANGE_RANKS` (Strange → … → Hale's Own-style top rank).
+Internal quality ids are stable (stored in DB rows, listings, codes); players see
+`QUALITY_LABEL` — `unusual` is shown as **Anomalous**, `strange` as **Tracked**.
+- **Anomalous** (`unusual`; hats, emotes): an `effect` id from `UNUSUAL_EFFECTS`. Hat case: 1.5% per
+  hat roll (Legendary+ hats 5%); Taunt case emotes 2%. Shown as "Anomalous <Hat>" with the effect name.
+- **Tracked** (`strange`; finishes, finishers, beams): 10%. Carries `kills` (server-counted, on the
+  item, survives trades) and a rank name from `STRANGE_RANKS` (Tracked → Zeroed-In → … → Kilofrag →
+  … → Instagib Incarnate). A Tracked finish carries a kill-counter module on the gun model that
+  ticks up live in-match and faces the camera during weapon inspect.
 - **Killstreak** (finishes only): 6%. `sheen` (colour glow on the gun while on a ≥5 streak) and,
   at 1.5%, **Professional**: `sheen` + `ksEffect` (eye/visor particles while on a streak, like TF2).
 - **Festive** (finishes, hats): only from seasonal cases or admin — festive lights / wrapping.
-- **Pattern** (finishes): `seed` 0–999 (pattern offset/scale variation) and `wear` 0–1 (band:
-  Factory New < .07, Minimal Wear < .15, Field-Tested < .38, Well-Worn < .45, Battle-Scarred).
+- **Pattern** (finishes): `seed` 0–999 (pattern offset/scale variation). (Wear bands were retired;
+  the old `wear` attribute is stripped from stored items at boot.)
 - **Name tag** (admin or future item): `nameTag` string (profanity-filtered, 24 chars).
 - **Admin custom**: `customName`, `customDesc`, `tint` (hex) — an admin can mint a one-off.
-Multiple qualities stack (e.g. Strange Professional Killstreak finish). Display order:
-`[Unusual] [Strange] [Festive] [Killstreak/Professional] <name>`.
+Multiple qualities stack (e.g. Tracked Professional Killstreak finish). Display order:
+`[Anomalous] [Tracked rank] [Festive] [Killstreak/Professional] <name>`.
+
+**Which attributes apply where** — `SLOT_ATTRS` (types.ts) is the single table: effect → hat, emote
+(emotes: `taunt` effects only); kills → finish, beam, finisher; sheen + ksEffect → finish; festive →
+hat, finish; seed → finish; tint → hat, face, back. Name tag / custom name / description / tier /
+bound apply to every slot. The admin editor only offers applicable fields; `prepareAdminItem`
+silently drops the rest (so codes/gifts saved before a rule change still grant).
 
 ### Equipped look (broadcast)
 Equipped = `slot → uid` (server-validated: you own it and it's `owned`). What other players see is
 a compact **Look** per slot: `{ d: defId, e?: effect, s?: sheen, k?: ksEffect, f?: 1 (festive),
-p?: seed, w?: wear, t?: tint }` carried in the room `meta`. Strange kill counts are NOT broadcast
-per tick; the killcam card may show "Strange Railgun — 1,234 kills".
+p?: seed, t?: tint }` carried in the room `meta`. Tracked kill counts are NOT broadcast
+per tick; the killcam card may show "Kilofrag Railgun — 1,234 kills".
 
 ## 2. Cases ("rolls")
 
@@ -87,7 +97,7 @@ Cases are opened directly with credits or a **free roll** token (no keys). Stand
 Vault 600 ⛁. Families:
 | case | pool |
 |---|---|
-| Hat Case | hats |
+| Hat Case | hats (Anomalous chance) |
 | Weapon Case | finishes + beams |
 | Accessory Case | face + back + dye + name colour |
 | Taunt Case | emotes + finishers + spawn effects |
@@ -264,5 +274,5 @@ seller, createdAt, item, tier, suggested}`); `GET /api/trades` → `{ incoming, 
 - Old per-slot messages (`hat`, `railColor`, …) are ignored except that they make the server re-read
   the account's persisted equipment.
 - Taunts are ignored outside an `active` room (map vote / podium / dead players); verified with a scripted
-  15-frag duel: a dead player's `taunt` is dropped, and match end credits the equipped Strange item
+  15-frag duel: a dead player's `taunt` is dropped, and match end credits the equipped Tracked item
   (`attrs.kills` = counted frags).

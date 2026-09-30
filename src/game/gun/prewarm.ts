@@ -26,9 +26,10 @@ export async function prewarmGuns(postFx: PostFxPipeline, opts: { lowSpec?: bool
   if (kept.has(postFx)) return;
   const vm = buildRailgun(undefined, { lod: 'high' });
   vm.setLowSpec(!!opts.lowSpec);
-  // Item-quality overlays (killstreak sheen, festive lights, strange counter)
-  // are drawn only when on, so switch them on for the warm-up: their programs
-  // (sheen, festive, counter) then compile here, not mid-match. Unusuals,
+  // Item-quality overlays (killstreak sheen, festive lights, the Tracked
+  // counter module) are drawn only when on, so switch them on for the
+  // warm-up: their programs (sheen, festive, the counter's LCD) then compile
+  // here, not mid-match. Unusuals,
   // taunt auras and killstreak eyes share the unusual point/ribbon programs,
   // which prewarmFx (effects.ts) compiles.
   vm.setKillstreak('sheen.team', 'ks.fire');

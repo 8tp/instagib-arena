@@ -53,12 +53,18 @@ export const NO_AXIS = -10;
 
 export type GunLod = 'high' | 'low';
 
+// Where the Tracked kill counter (tracker.ts) seats on the standard gun: the
+// lower −X flank of the receiver, under the charge window (the flank the
+// first-person view sees). Model space; the module's local x = 0 is the flank.
+export type TrackerMount = { position: [number, number, number]; rotationY?: number; scale?: number };
+export const TRACKER_MOUNT: TrackerMount = { position: [-0.049, -0.013, -0.035] };
+
 type V3 = [number, number, number];
 type EdgeMode = 'hull' | 'none' | 'all';
 
 // A box with every edge chamfered by `c` (convex hull of the 24 cut corners):
 // flat-shaded bevels that catch a highlight on each edge.
-function chamferBox(w: number, h: number, d: number, c: number): THREE.BufferGeometry {
+export function chamferBox(w: number, h: number, d: number, c: number): THREE.BufferGeometry {
   const x = w / 2, y = h / 2, z = d / 2;
   const pts: THREE.Vector3[] = [];
   for (const sx of [-1, 1]) {
@@ -78,7 +84,7 @@ function chamferBox(w: number, h: number, d: number, c: number): THREE.BufferGeo
 // Hull through chamfered rectangles ("stations") along Z: tapered receivers,
 // wedges and stocks. Each station is [z, width, height, yCentre]; the first and
 // last get a chamfered end face.
-function stationPrism(stations: Array<[number, number, number, number]>, c: number): THREE.BufferGeometry {
+export function stationPrism(stations: Array<[number, number, number, number]>, c: number): THREE.BufferGeometry {
   const pts: THREE.Vector3[] = [];
   const ring = (z: number, w: number, h: number, yc: number) => {
     const x = w / 2, y = h / 2;
@@ -140,7 +146,7 @@ function prep(g: THREE.BufferGeometry): THREE.BufferGeometry {
 
 // ── Builder ─────────────────────────────────────────────────────────────────
 
-class GunBuilder {
+export class GunBuilder {
   readonly parts: THREE.BufferGeometry[] = [];
   private readonly m = new THREE.Matrix4();
   private readonly q = new THREE.Quaternion();
@@ -191,6 +197,22 @@ class GunBuilder {
   }
 }
 
+// Rotate a model-space offset by an Euler (for parts placed along a tilted
+// member, e.g. the grip's finger ridges).
+function along(origin: V3, rot: V3, local: V3): V3 {
+  const v = new THREE.Vector3(...local).applyEuler(new THREE.Euler(...rot));
+  return [origin[0] + v.x, origin[1] + v.y, origin[2] + v.z];
+}
+
+function hexBolt(b: GunBuilder, pos: V3, r: number, axis: 'x' | 'y' | 'z', sign = 1) {
+  // A hex head on a thin washer, facing along ±axis.
+  const rot: V3 = axis === 'x' ? [0, 0, Math.PI / 2] : axis === 'z' ? [Math.PI / 2, 0, 0] : [0, 0, 0];
+  const off = (d: number): V3 =>
+    axis === 'x' ? [pos[0] + sign * d, pos[1], pos[2]] : axis === 'y' ? [pos[0], pos[1] + sign * d, pos[2]] : [pos[0], pos[1], pos[2] + sign * d];
+  b.put(PART.METAL, new THREE.CylinderGeometry(r * 1.3, r * 1.3, 0.0012, 10), off(0), rot, 'none');
+  b.put(PART.METAL_LT, new THREE.CylinderGeometry(r * 0.92, r, 0.0032, 6), off(0.0018), rot, 'none');
+}
+
 function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   const hi = lod === 'high';
   const SEG = hi ? 24 : 10;
@@ -210,29 +232,46 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
     [-0.2, 0.07, 0.022, 0.09],
     [-0.238, 0.056, 0.016, 0.085],
   ], 0.007));
-  // Heat-sink fins across the top cover (the view looks straight down on them).
+  // Heat-sink fins across the top cover (the view looks straight down on
+  // them), between two machined side rails; a low notch sight at the rear.
   if (hi) {
-    for (let i = 0; i < 7; i++) b.put(P.METAL_LT, new THREE.BoxGeometry(0.056, 0.012, 0.006), [0, 0.106, 0.086 - i * 0.026], undefined, 'none');
+    for (let i = 0; i < 9; i++) {
+      b.put(P.METAL_LT, chamferBox(0.054, 0.013, 0.0052, 0.0014), [0, 0.1065, 0.09 - i * 0.02]);
+    }
+    for (const sx of [-1, 1]) {
+      b.put(P.METAL, chamferBox(0.006, 0.01, 0.178, 0.0018), [sx * 0.03, 0.105, 0.01]);
+    }
+    b.put(P.METAL, chamferBox(0.036, 0.006, 0.016, 0.0018), [0, 0.103, 0.114]);
+    for (const sx of [-1, 1]) b.put(P.METAL_LT, chamferBox(0.009, 0.014, 0.012, 0.002), [sx * 0.0105, 0.11, 0.114]);
   } else {
-    b.put(P.METAL_LT, new THREE.BoxGeometry(0.056, 0.01, 0.16), [0, 0.105, 0.008], undefined, 'none');
+    b.put(P.METAL_LT, new THREE.BoxGeometry(0.056, 0.01, 0.18), [0, 0.105, 0.0], undefined, 'none');
   }
-  // Flanks: charge window + bezel, accent status strip, vents.
+  // Flanks: charge window + bezel, accent status strip under the top cover,
+  // vents, a bolted access plate low on the flank (the Tracked counter's seat
+  // on the −X side — see TRACKER_MOUNT).
   for (const sx of [-1, 1]) {
     const wz = (WINDOW_Z[0] + WINDOW_Z[1]) / 2;
     const wl = WINDOW_Z[0] - WINDOW_Z[1];
     b.put(P.WINDOW, new THREE.BoxGeometry(0.006, 0.03, wl), [sx * 0.0475, 0.036, wz], undefined, 'none');
-    b.put(P.GLOW, new THREE.BoxGeometry(0.004, 0.005, 0.2), [sx * 0.0495, -0.006, -0.06], undefined, 'none');
+    b.put(P.GLOW, new THREE.BoxGeometry(0.004, 0.004, 0.23), [sx * 0.0495, 0.0665, -0.065], undefined, 'none');
     if (hi) {
       b.put(P.METAL_LT, chamferBox(0.008, 0.008, wl + 0.02, 0.0025), [sx * 0.0495, 0.055, wz]);
       b.put(P.METAL_LT, chamferBox(0.008, 0.008, wl + 0.02, 0.0025), [sx * 0.0495, 0.017, wz]);
       b.put(P.METAL_LT, chamferBox(0.008, 0.03, 0.008, 0.0025), [sx * 0.0495, 0.036, WINDOW_Z[0] + 0.006]);
       b.put(P.METAL_LT, chamferBox(0.008, 0.03, 0.008, 0.0025), [sx * 0.0495, 0.036, WINDOW_Z[1] - 0.006]);
+      // Strip channel: a dark slot the accent strip sits in.
+      b.put(P.RUBBER, new THREE.BoxGeometry(0.003, 0.008, 0.236), [sx * 0.0483, 0.0665, -0.065], undefined, 'none');
       for (let i = 0; i < 3; i++) {
         b.put(P.RUBBER, chamferBox(0.004, 0.04, 0.009, 0.0015), [sx * 0.0495, 0.034, -0.168 - i * 0.022], [0.25, 0, 0]);
       }
+      // Access plate + its four screws.
+      b.put(P.METAL, chamferBox(0.003, 0.026, 0.13, 0.0012), [sx * 0.0495, -0.006, -0.035]);
+      for (const [py, pz] of [[0.002, 0.024], [0.002, -0.094], [-0.014, 0.024], [-0.014, -0.094]] as const) {
+        b.put(P.METAL_LT, new THREE.CylinderGeometry(0.0022, 0.0022, 0.0026, 6), [sx * 0.051, py, pz], [0, 0, Math.PI / 2], 'none');
+      }
       // Hex-head bolts pinning the side plate.
-      for (const [by, bz] of [[0.062, 0.07], [0.062, -0.2], [-0.014, 0.07], [-0.014, -0.2]] as const) {
-        b.put(P.METAL_LT, new THREE.CylinderGeometry(0.0048, 0.0048, 0.004, 6), [sx * 0.0495, by, bz], [0, 0, Math.PI / 2], 'none');
+      for (const [by, bz] of [[0.058, 0.074], [0.058, -0.204], [-0.014, 0.074], [-0.014, -0.204]] as const) {
+        hexBolt(b, [sx * 0.049, by, bz], 0.0042, 'x', sx);
       }
     }
   }
@@ -244,6 +283,8 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   b.lathe(P.CAP, [[0, capZ0], [0.03, capZ0], [0.03, capZ1], [0, capZ1]], SEG, capY);
   for (const [z0, z1] of [[capZ0 - 0.006, capZ0 + 0.024], [capZ1 - 0.024, capZ1 + 0.006]] as const) {
     b.lathe(P.METAL, [[0, z0], [0.042, z0], [0.05, z0 + 0.008], [0.05, z1 - 0.008], [0.042, z1], [0, z1]], SEG, capY);
+    // A bright machined lip on each end ring.
+    if (hi) b.lathe(P.METAL_LT, [[0.0495, z0 + 0.011], [0.052, z0 + 0.013], [0.052, z1 - 0.013], [0.0495, z1 - 0.011]], SEG, capY);
   }
   const struts = hi ? 6 : 3;
   for (let i = 0; i < struts; i++) {
@@ -260,13 +301,45 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   ], 0.006));
   b.put(P.METAL, chamferBox(0.048, 0.18, 0.008, 0.003), [0, -0.025, 0.419]);
   b.put(P.RUBBER, chamferBox(0.044, 0.17, 0.032, 0.01), [0, -0.025, 0.438]);
+  if (hi) {
+    // Cheek riser on the top bar, and cross pins where the bars meet the plate.
+    b.put(P.BODY, stationPrism([
+      [0.3, 0.036, 0.016, 0.063],
+      [0.33, 0.038, 0.02, 0.065],
+      [0.4, 0.038, 0.02, 0.065],
+      [0.412, 0.034, 0.016, 0.063],
+    ], 0.005));
+    for (const [py, pz] of [[0.042, 0.405], [-0.084, 0.405]] as const) {
+      b.put(P.METAL_LT, new THREE.CylinderGeometry(0.0045, 0.0045, 0.038, 8), [0, py, pz], [0, 0, Math.PI / 2], 'none');
+    }
+  }
 
   // ── Grip, guard, trigger (unchanged hold point for the hand IK) ───────────
   b.put(P.RUBBER, stationPrism([
     [0.13, 0.066, 0.05, -0.06],
     [0.04, 0.066, 0.05, -0.06],
   ], 0.012));
-  b.put(P.RUBBER, chamferBox(0.06, 0.2, 0.082, 0.014), [0, -0.15, 0.1], [0.32, 0, 0]);
+  const gripRot: V3 = [0.32, 0, 0];
+  const gripAt: V3 = [0, -0.15, 0.1];
+  if (hi) {
+    // Contoured grip: a palm swell, a flared base; built along Z, stood up.
+    const grip = stationPrism([
+      [-0.1, 0.058, 0.08, 0.002],
+      [-0.084, 0.062, 0.084, 0.0],
+      [-0.02, 0.064, 0.086, -0.002],
+      [0.05, 0.061, 0.082, 0.0],
+      [0.1, 0.058, 0.078, 0.0],
+    ], 0.013);
+    grip.rotateX(-Math.PI / 2); // local +Z → +Y (up the grip); local y → −Z
+    b.put(P.RUBBER, grip, gripAt, gripRot);
+    // A metal backstrap and a screw each side (the stipple is in the shader).
+    b.put(P.METAL, chamferBox(0.04, 0.17, 0.006, 0.002), along(gripAt, gripRot, [0, 0.0, 0.042]), gripRot);
+    for (const sx of [-1, 1]) {
+      b.put(P.METAL_LT, new THREE.CylinderGeometry(0.0034, 0.0034, 0.003, 6), along(gripAt, gripRot, [sx * 0.031, 0.045, 0.01]), [0, 0, Math.PI / 2], 'none');
+    }
+  } else {
+    b.put(P.RUBBER, chamferBox(0.06, 0.2, 0.082, 0.014), gripAt, gripRot);
+  }
   b.put(P.METAL, chamferBox(0.066, 0.016, 0.09, 0.005), [0, -0.245, 0.132], [0.32, 0, 0]);
   b.put(P.METAL, chamferBox(0.014, 0.01, 0.11, 0.003), [0, -0.093, -0.002]);
   b.put(P.METAL, chamferBox(0.014, 0.056, 0.012, 0.003), [0, -0.066, -0.055]);
@@ -278,10 +351,24 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
     [-0.33, 0.066, 0.05, -0.043],
   ], 0.012));
   b.put(P.METAL, chamferBox(0.07, 0.046, 0.012, 0.004), [0, -0.043, -0.335]);
+  if (hi) {
+    // Contact bands round the cell and a release latch on each side.
+    b.put(P.METAL_LT, chamferBox(0.077, 0.061, 0.007, 0.0025), [0, -0.0455, -0.212]);
+    b.put(P.METAL_LT, chamferBox(0.07, 0.054, 0.007, 0.0025), [0, -0.0435, -0.308]);
+    for (const sx of [-1, 1]) {
+      b.put(P.METAL, chamferBox(0.004, 0.016, 0.03, 0.0012), [sx * 0.0365, -0.043, -0.26]);
+    }
+  }
 
   // ── Accelerator ────────────────────────────────────────────────────────────
   // Mount collar where the barrel leaves the receiver.
   b.lathe(P.METAL, [[0.03, -0.3], [0.058, -0.3], [0.065, -0.29], [0.065, -0.246], [0.056, -0.236], [0.022, -0.236]], SEG);
+  if (hi) {
+    // A bright machined band round the collar + a low front sight post on top.
+    b.lathe(P.METAL_LT, [[0.064, -0.281], [0.067, -0.278], [0.067, -0.258], [0.064, -0.255]], SEG);
+    b.put(P.METAL, chamferBox(0.016, 0.008, 0.022, 0.002), [0, BARREL_Y + 0.068, -0.268]);
+    b.put(P.METAL_LT, chamferBox(0.004, 0.012, 0.006, 0.0012), [0, BARREL_Y + 0.077, -0.268]);
+  }
   // The energy core, running the whole way to the emitter…
   b.lathe(P.CORE, [[0, CORE_Z[0]], [CORE_R, CORE_Z[0]], [CORE_R, CORE_Z[1]], [0, CORE_Z[1]]], hi ? 14 : 8, CORE_Y);
   // …in an open-top channel: two heavy side walls on a keel. From the side the
@@ -294,6 +381,8 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   for (const sx of [-1, 1]) {
     b.put(P.METAL, chamferBox(0.015, 0.064, sl, 0.004), [sx * 0.027, BARREL_Y, sc]);
     if (hi) {
+      // Conductor rails capping the walls.
+      b.put(P.METAL_LT, chamferBox(0.008, 0.004, sl - 0.012, 0.0014), [sx * 0.027, BARREL_Y + 0.0335, sc]);
       // Vent slots between the coils.
       for (let i = 0; i < COIL_COUNT; i++) {
         const z = COIL_Z[i] - 0.0475;
@@ -323,6 +412,7 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   b.lathe(P.METAL, [
     [0.026, -0.872], [0.047, -0.872], [0.059, -0.861], [0.059, -0.795], [0.052, -0.777], [0.04, -0.766], [0.03, -0.766],
   ], SEG);
+  if (hi) b.lathe(P.METAL_LT, [[0.058, -0.812], [0.061, -0.809], [0.061, -0.797], [0.058, -0.794]], SEG);
   b.put(P.RUBBER, latheZ([[0, -0.868], [0.027, -0.868]], SEG), [0, BARREL_Y, 0], undefined, 'none');
   b.put(P.GLOW, new THREE.TorusGeometry(0.036, 0.006, 6, hi ? 28 : 12), [0, BARREL_Y, -0.873], undefined, 'none');
   for (let i = 0; i < 3; i++) {
@@ -334,8 +424,8 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
     // Vent slots round the shroud.
     for (let i = 0; i < 4; i++) {
       const a = Math.PI / 4 + (i * Math.PI) / 2;
-      b.put(P.RUBBER, chamferBox(0.004, 0.012, 0.05, 0.0015),
-        [Math.cos(a) * 0.0575, BARREL_Y + Math.sin(a) * 0.0575, -0.82], [0, 0, a]);
+      b.put(P.RUBBER, chamferBox(0.004, 0.012, 0.04, 0.0015),
+        [Math.cos(a) * 0.0575, BARREL_Y + Math.sin(a) * 0.0575, -0.836], [0, 0, a]);
     }
   }
   return b.merge();

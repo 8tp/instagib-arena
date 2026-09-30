@@ -57,7 +57,8 @@ import {
 } from './game/net';
 import { withLegacyFromLooks } from './game/look-runtime';
 import { itemDef } from './game/items/catalog';
-import { TIER_META, qualityPrefix } from './game/items/types';
+import { QUALITY_LABEL, STRANGE_RANKS, TIER_META, qualityPrefix, strangeRank } from './game/items/types';
+import { qualityTone } from './economy/display';
 import { CHAT_CLIENT_MAX_LEN } from './lobby/helpers';
 import { GlobalChatPanel, OnlinePlayersPanel, OpenLobbies, ServerStatusChip } from './lobby/ServerBrowser';
 import { CreateMatchModal, CreateOnlineModal, InviteModal } from './lobby/CreateMatch';
@@ -1546,9 +1547,10 @@ function ReplayTag({ label, tone }: { label: string; tone: 'cyan' | 'amber' }) {
 /* ───────────────────────── HUD layout ───────────────────────── */
 
 // The equipped finish's card while you inspect the gun: full name (quality
-// prefix + name), Tracked kills + rank, pattern seed, mint number, in the
-// tier colour. Data is the equipped instance the hub put in Settings.finishItem;
-// a plain stock/bought finish shows just its name.
+// prefix + name) in the tier colour, pattern seed, mint number; on a Tracked
+// finish, its rank, confirmed kills and progress to the next rank (the same
+// count the gun's counter module shows). Data is the equipped instance the hub
+// put in Settings.finishItem; a plain stock/bought finish shows just its name.
 function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -1564,9 +1566,16 @@ function InspectCard({ settings, kills }: { settings: Settings; kills: number | 
   const prefix = item ? qualityPrefix(item.quality, { ...attrs, kills: kills ?? attrs.kills }) : '';
   const title = prefix ? `${prefix} ${base}` : base;
   const bits: string[] = [];
-  if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
   if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
   if (item) bits.push(`#${item.mint}`);
+  let tracked: { rank: string; next: { kills: number; name: string } | undefined; pct: number } | null = null;
+  if (kills !== null) {
+    const next = STRANGE_RANKS.find((r) => r.kills > kills);
+    const cur = [...STRANGE_RANKS].reverse().find((r) => kills >= r.kills) ?? STRANGE_RANKS[0];
+    const pct = next ? Math.max(0, Math.min(1, (kills - cur.kills) / Math.max(1, next.kills - cur.kills))) : 1;
+    tracked = { rank: strangeRank(kills), next, pct };
+  }
+  const tone = qualityTone('strange');
   return (
     <div
       aria-hidden='true'
@@ -1577,6 +1586,22 @@ function InspectCard({ settings, kills }: { settings: Settings; kills: number | 
       <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
         {title}
       </div>
+      {tracked && kills !== null && (
+        <div className='ml-auto mt-1.5 w-60' style={{ textShadow: '0 1px 6px rgba(0,0,0,0.8)' }}>
+          <div className='flex items-baseline justify-between gap-3 text-[11px] font-semibold'>
+            <span className='uppercase tracking-[0.14em]' style={{ color: tone }}>
+              {QUALITY_LABEL.strange} · {tracked.rank}
+            </span>
+            <span className='tabular-nums text-white/85'>{kills.toLocaleString()} kills</span>
+          </div>
+          <div className='mt-1 h-[3px] overflow-hidden rounded-full bg-white/10'>
+            <div className='h-full rounded-full' style={{ width: `${tracked.pct * 100}%`, background: tone }} />
+          </div>
+          <div className='mt-0.5 text-[10px] tabular-nums text-white/45'>
+            {tracked.next ? `${(tracked.next.kills - kills).toLocaleString()} to ${tracked.next.name}` : 'Top rank'}
+          </div>
+        </div>
+      )}
       {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
     </div>
   );

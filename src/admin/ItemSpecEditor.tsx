@@ -1,113 +1,43 @@
-// The admin item generator: pick a catalog def (searchable thumbnails, slot /
-// tier / season filters), dress it up (unusual effect, Strange + kills,
-// Festive, killstreak sheen + professional effect, pattern seed, custom
-// name / description / tint / tier, bound), and see the exact item a player
-// will get. Controlled: the parent owns the SpecDraft. Used for direct mints
-// (Items) and for each item in a code / gift reward bundle.
+// The admin item generator. Pick a base item (ItemPicker), then dress it — but
+// only with what that item's slot can carry: the quality fields come straight
+// from SLOT_ATTRS (game/items/types.ts), the same table the server enforces in
+// prepareAdminItem. Switching the base item clears whatever the new slot can't
+// take. One editor feeds direct mints (Items), code rewards and gifts.
 import '../locker/locker.css';
 import '../economy/economy.css';
-import { useDeferredValue, useMemo, useState } from 'react';
-import { itemDef, seasonOf } from '../game/items/catalog';
-import { ITEM_SLOTS, KS_EFFECTS, KS_SHEENS, SEASONS, TIERS, TIER_META, UNUSUAL_EFFECTS, type ItemSlot, type Tier } from '../game/items/types';
-import { SLOT_LABEL, defSeason, instBlurb, instFullName, instTags, instTier } from '../economy/display';
+import { itemDef } from '../game/items/catalog';
+import { KS_EFFECTS, KS_SHEENS, SLOT_ATTRS, TIERS, TIER_META, strangeRank, type SlotAttr, type Tier } from '../game/items/types';
+import { SLOT_LABEL, defSeason, instBaseName, instBlurb, instPrefixParts, instTags, instTier } from '../economy/display';
 import { TagPills, TierChip } from '../economy/parts';
 import { specPreview } from '../inbox/reward';
 import { SpecTile } from '../inbox/RewardBits';
-import { ItemTile } from '../ui/item-tile';
 import { TIER_COLOR, isIridescent } from '../ui/rarity';
-import { MINTABLE, HEX6, draftToSpec, type SpecDraft } from './spec-draft';
-import { Check, Field, inputCls, selectCls } from './ui';
+import { Select } from './combobox';
+import { ItemPicker, TierDot } from './ItemPicker';
+import { HEX6, draftToSpec, effectsFor, retarget, type SpecDraft } from './spec-draft';
+import { Field, Toggle } from './ui';
 
-const PICKER_CAP = 60;
-const opt = 'bg-zinc-900';
+const ATTR_LABEL: Record<SlotAttr, string> = {
+  effect: 'Anomalous effect',
+  kills: 'Tracked',
+  sheen: 'Killstreak sheen',
+  ksEffect: 'Professional effect',
+  festive: 'Festive',
+  seed: 'Pattern seed',
+  tint: 'Tint',
+};
+const ALL_ATTRS = Object.keys(ATTR_LABEL) as SlotAttr[];
 
-// ── Def picker ──────────────────────────────────────────────────────────────
-export function DefPicker({ value, onPick, startOpen = true }: { value: string; onPick: (id: string) => void; startOpen?: boolean }) {
-  const [open, setOpen] = useState(startOpen);
-  const [q, setQ] = useState('');
-  const [slot, setSlot] = useState<ItemSlot | ''>('');
-  const [tier, setTier] = useState<Tier | ''>('');
-  const [season, setSeason] = useState<string>('');
-  const dq = useDeferredValue(q);
-  const list = useMemo(() => {
-    const t = dq.trim().toLowerCase();
-    return MINTABLE.filter(
-      (d) =>
-        (!slot || d.slot === slot) &&
-        (!tier || d.tier === tier) &&
-        (season === '' || seasonOf(d) === Number(season)) &&
-        (!t || d.name.toLowerCase().includes(t) || d.id.toLowerCase().includes(t)),
-    ).sort((a, b) => TIER_META[b.tier].rank - TIER_META[a.tier].rank || a.name.localeCompare(b.name));
-  }, [dq, slot, tier, season]);
-  const cur = itemDef(value);
-
-  if (!open) {
-    return (
-      <div className='flex items-center gap-3 rounded-md border border-white/10 bg-black/30 p-2'>
-        <ItemTile id={value} size={48} label={false} tier={cur?.tier} />
-        <div className='min-w-0 flex-1'>
-          <div className='truncate text-[13px] font-semibold text-white/90'>{cur?.name ?? value}</div>
-          <div className='font-mono text-[11px] text-white/40'>
-            {cur ? `${SLOT_LABEL[cur.slot]} · ${TIER_META[cur.tier].label} · ${defSeason(cur.id)?.name ?? ''}` : 'unknown def'} · {value}
-          </div>
-        </div>
-        <button type='button' className='rounded-md border border-white/20 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-white/80 hover:border-cyan-400/60 hover:text-cyan-200' onClick={() => setOpen(true)}>
-          Change
-        </button>
-      </div>
-    );
-  }
-
+function Section({ title, note, children }: { title: string; note?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className='rounded-md border border-white/10 bg-black/30 p-3' data-def-picker>
-      <div className='mb-3 flex flex-wrap gap-2'>
-        <input className={`${inputCls} min-w-[10rem] flex-1`} placeholder='Search items…' value={q} onChange={(e) => setQ(e.target.value)} aria-label='Search items' data-field='def-search' />
-        <select className={selectCls} value={slot} onChange={(e) => setSlot(e.target.value as ItemSlot | '')} aria-label='Slot'>
-          <option value='' className={opt}>All slots</option>
-          {ITEM_SLOTS.filter((s) => MINTABLE.some((d) => d.slot === s)).map((s) => (
-            <option key={s} value={s} className={opt}>{SLOT_LABEL[s]}</option>
-          ))}
-        </select>
-        <select className={selectCls} value={tier} onChange={(e) => setTier(e.target.value as Tier | '')} aria-label='Tier'>
-          <option value='' className={opt}>All tiers</option>
-          {TIERS.map((t) => (
-            <option key={t} value={t} className={opt}>{TIER_META[t].label}</option>
-          ))}
-        </select>
-        <select className={selectCls} value={season} onChange={(e) => setSeason(e.target.value)} aria-label='Season'>
-          <option value='' className={opt}>All seasons</option>
-          {SEASONS.map((s) => (
-            <option key={s.id} value={s.id} className={opt}>{s.name}</option>
-          ))}
-        </select>
-        {!startOpen && (
-          <button type='button' className='px-2 text-[11px] font-bold uppercase tracking-[0.12em] text-white/45 hover:text-white' onClick={() => setOpen(false)}>
-            Done
-          </button>
-        )}
+    <fieldset className='flex min-w-0 flex-col gap-3 border-t border-[var(--adm-line)] pt-4'>
+      <legend className='sr-only'>{title}</legend>
+      <div className='flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1'>
+        <span className='adm-section-label'>{title}</span>
+        {note && <span className='text-[12px] text-[var(--adm-ink-3)]'>{note}</span>}
       </div>
-      <div className='-m-1 max-h-[300px] overflow-y-auto p-1'>
-        <ul className='grid grid-cols-[repeat(auto-fill,minmax(84px,1fr))] gap-2'>
-          {list.slice(0, PICKER_CAP).map((d) => (
-            <li key={d.id}>
-              <ItemTile
-                id={d.id}
-                fluid
-                tier={d.tier}
-                selected={d.id === value}
-                onClick={() => {
-                  onPick(d.id);
-                  if (!startOpen) setOpen(false);
-                }}
-                rootProps={{ 'data-def': d.id, title: `${d.name} · ${SLOT_LABEL[d.slot]} · ${TIER_META[d.tier].label}` }}
-              />
-            </li>
-          ))}
-        </ul>
-        {list.length === 0 && <div className='py-6 text-center text-[12px] text-white/35'>No items match.</div>}
-        {list.length > PICKER_CAP && <div className='pt-3 text-center text-[11px] text-white/35'>+{list.length - PICKER_CAP} more — refine the search.</div>}
-      </div>
-    </div>
+      {children}
+    </fieldset>
   );
 }
 
@@ -117,167 +47,237 @@ export function SpecPreview({ draft, count }: { draft: SpecDraft; count?: number
   const tier = instTier(inst);
   const def = itemDef(inst.def);
   const season = defSeason(inst.def);
-  const tint = inst.attrs.tint;
+  const prefix = instPrefixParts(inst);
+  const blurb = instBlurb(inst);
   return (
-    <div className='flex flex-col items-center gap-2.5 text-center' data-spec-preview>
-      <div className='text-[10px] uppercase tracking-[0.18em] text-white/40'>Live preview</div>
-      <div className='relative w-[184px]'>
+    <div className='flex flex-col items-center gap-3 text-center' data-spec-preview>
+      <div className='relative w-[176px]'>
         <SpecTile inst={inst} fluid />
-        {count != null && count > 1 && <span className='absolute -bottom-2 -right-2 rounded bg-cyan-300 px-1.5 py-0.5 font-display text-[13px] font-bold text-zinc-950'>×{count}</span>}
+        {count != null && count > 1 && (
+          <span className='absolute -bottom-2 -right-2 bg-[var(--adm-rail)] px-1.5 py-0.5 font-mono text-[13px] font-bold text-[#041016]'>×{count}</span>
+        )}
       </div>
-      <div className={`font-display text-[17px] font-bold uppercase leading-tight ${isIridescent(tier) ? 'ec-iri-text' : ''}`} style={isIridescent(tier) ? undefined : { color: TIER_COLOR[tier].text }}>
-        {instFullName(inst)}
+      <div className='font-display text-[18px] font-semibold uppercase leading-tight' data-preview-name>
+        {prefix.map((p) => (
+          <span key={p.text} style={{ color: p.color }}>
+            {p.text}{' '}
+          </span>
+        ))}
+        <span className={isIridescent(tier) ? 'ec-iri-text' : ''} style={isIridescent(tier) ? undefined : { color: TIER_COLOR[tier].text }}>
+          {instBaseName(inst)}
+        </span>
       </div>
-      <div className='flex flex-wrap items-center justify-center gap-1.5'>
+      <div className='flex flex-wrap items-center justify-center gap-1.5 text-[12px] text-[var(--adm-ink-2)]'>
         <TierChip tier={tier} />
-        {def && <span className='font-mono text-[11px] text-white/45'>{SLOT_LABEL[def.slot]}</span>}
-        {season && <span className='font-mono text-[11px] text-white/45'>· {season.name}</span>}
+        {def && <span>{SLOT_LABEL[def.slot]}</span>}
+        {season && <span>· {season.name}</span>}
       </div>
       <TagPills tags={instTags(inst)} />
-      {instBlurb(inst) && <p className='max-w-[240px] text-[12px] italic leading-snug text-white/55'>“{instBlurb(inst)}”</p>}
-      <div className='flex flex-wrap items-center justify-center gap-2 font-mono text-[11px]'>
-        <span className={inst.tradable ? 'text-emerald-300' : 'text-amber-300'}>{inst.tradable ? 'Tradable' : 'Bound · untradable'}</span>
-        {tint && (
-          <span className='flex items-center gap-1 text-white/50'>
-            <span className='inline-block h-3 w-3 rounded-sm border border-white/30' style={{ background: tint }} /> {tint}
+      {blurb && <p className='max-w-[240px] text-[12px] italic leading-snug text-[var(--adm-ink-2)]'>“{blurb}”</p>}
+      <div className='flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[12px]'>
+        <span style={{ color: inst.tradable ? 'var(--adm-good)' : 'var(--adm-warn)' }}>{inst.tradable ? 'Tradable' : 'Bound · untradable'}</span>
+        {inst.attrs.tint && (
+          <span className='flex items-center gap-1 font-mono text-[var(--adm-ink-2)]'>
+            <span className='adm-key' style={{ background: inst.attrs.tint }} /> {inst.attrs.tint}
           </span>
         )}
-        {inst.attrs.nameTag && <span className='text-white/50'>tag “{inst.attrs.nameTag}”</span>}
+        {inst.attrs.seed != null && <span className='font-mono text-[var(--adm-ink-2)]'>Pattern #{inst.attrs.seed}</span>}
+        {inst.attrs.nameTag && <span className='text-[var(--adm-ink-2)]'>Tag “{inst.attrs.nameTag}”</span>}
       </div>
     </div>
   );
 }
 
 // ── The editor ──────────────────────────────────────────────────────────────
-export function ItemSpecEditor({
-  value,
-  onChange,
-  preview = true,
-  pickerOpen = true,
-  count,
-}: {
-  value: SpecDraft;
-  onChange: (d: SpecDraft) => void;
-  preview?: boolean;
-  pickerOpen?: boolean;
-  count?: number;
-}) {
+export function ItemSpecEditor({ value, onChange, preview = true, count }: { value: SpecDraft; onChange: (d: SpecDraft) => void; preview?: boolean; count?: number }) {
   const d = value;
   const set = <K extends keyof SpecDraft>(k: K, v: SpecDraft[K]) => onChange({ ...d, [k]: v });
   const def = itemDef(d.def);
   const slot = def?.slot;
-  const effects = slot === 'emote' ? UNUSUAL_EFFECTS.filter((e) => e.taunt) : UNUSUAL_EFFECTS;
-  const effectNote = slot === 'hat' || slot === 'emote' ? undefined : 'shows on hats + emotes';
-  const ksNote = slot === 'finish' ? undefined : 'shows on finishes';
-  const staffBound = !!def && !def.tradable && def.tier === 'unobtainable';
+  const has = (a: SlotAttr) => !!slot && SLOT_ATTRS[slot].includes(a);
+  const effects = effectsFor(slot);
+  const missing = slot ? ALL_ATTRS.filter((a) => !has(a)) : [];
+  const staffBound = !!def && !def.tradable && def.tier === 'unobtainable'; // staff gear (server: STAFF_INSTANCE_DEFS)
+  const slotName = slot ? SLOT_LABEL[slot] : 'item';
+  const any = slot ? SLOT_ATTRS[slot].length > 0 : false;
+  const kills = Math.floor(Number(d.kills) || 0);
 
   const form = (
     <div className='flex min-w-0 flex-col gap-4'>
-      <DefPicker value={d.def} onPick={(id) => set('def', id)} startOpen={pickerOpen} />
+      <Field label='Base item' hint='the art, slot and default tier' as='div'>
+        <ItemPicker value={d.def} onChange={(id) => onChange(retarget(d, id))} />
+      </Field>
 
-      <fieldset className='grid gap-3 sm:grid-cols-2'>
-        <legend className='mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70'>Qualities</legend>
-        <Field label='Unusual effect' hint={effectNote}>
-          <select className={selectCls} value={d.effect} onChange={(e) => set('effect', e.target.value)} data-field='spec-effect'>
-            <option value='' className={opt}>None</option>
-            {effects.map((e) => (
-              <option key={e.id} value={e.id} className={opt}>{e.name}</option>
-            ))}
-          </select>
-        </Field>
-        <div className='flex flex-wrap items-end gap-x-5 gap-y-2'>
-          <span className='flex items-center gap-2'>
-            <Check checked={d.strange} onChange={(v) => set('strange', v)} field='spec-strange'>Strange</Check>
-            {d.strange && (
-              <input className={`${inputCls} w-24`} inputMode='numeric' value={d.kills} onChange={(e) => set('kills', e.target.value.replace(/[^0-9]/g, ''))} aria-label='Starting kills' title='Starting kill count' data-field='spec-kills' />
+      <Section
+        title={`${slotName} qualities`}
+        note={
+          any && missing.length ? (
+            <>
+              {slotName}s can’t carry: {missing.map((a) => ATTR_LABEL[a]).join(', ')}
+            </>
+          ) : undefined
+        }
+      >
+        {!any ? (
+          <p className='text-[13px] text-[var(--adm-ink-3)]' data-no-qualities>
+            {slotName}s take no qualities. The one-off fields below still apply.
+          </p>
+        ) : (
+          <div className='grid gap-x-4 gap-y-3 sm:grid-cols-2'>
+            {has('effect') && (
+              <Field label='Anomalous effect' hint={slot === 'emote' ? 'taunt-capable only' : undefined} as='div'>
+                <Select
+                  label='Anomalous effect'
+                  value={d.effect}
+                  onChange={(v) => set('effect', v)}
+                  options={[{ value: '', label: 'None' }, ...effects.map((e) => ({ value: e.id, label: e.name, hint: e.taunt && slot !== 'emote' ? 'taunt' : undefined }))]}
+                  field='spec-effect'
+                />
+              </Field>
             )}
-          </span>
-          <Check checked={d.festive} onChange={(v) => set('festive', v)} field='spec-festive'>Festive</Check>
-        </div>
-        <Field label='Killstreak sheen' hint={ksNote}>
-          <span className='flex items-center gap-2'>
-            <select className={`${selectCls} flex-1`} value={d.sheen} onChange={(e) => onChange({ ...d, sheen: e.target.value, ksEffect: e.target.value ? d.ksEffect : '' })} data-field='spec-sheen'>
-              <option value='' className={opt}>None</option>
-              {KS_SHEENS.map((s) => (
-                <option key={s.id} value={s.id} className={opt}>{s.name}</option>
-              ))}
-            </select>
-            {d.sheen && <span className='inline-block h-4 w-4 shrink-0 rounded-sm' style={{ background: KS_SHEENS.find((s) => s.id === d.sheen)?.color }} aria-hidden />}
-          </span>
-        </Field>
-        <Field label='Professional effect' hint={d.sheen ? undefined : 'needs a sheen'}>
-          <select className={selectCls} value={d.ksEffect} disabled={!d.sheen} onChange={(e) => set('ksEffect', e.target.value)} data-field='spec-ksEffect'>
-            <option value='' className={opt}>None</option>
-            {KS_EFFECTS.map((s) => (
-              <option key={s.id} value={s.id} className={opt}>{s.name}</option>
-            ))}
-          </select>
-        </Field>
-        {slot === 'finish' && (
-          <>
-            <Field label='Pattern seed' hint='0–999 · blank = none'>
-              <input className={inputCls} inputMode='numeric' value={d.seed} onChange={(e) => set('seed', e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} placeholder='318' data-field='spec-seed' />
-            </Field>
-          </>
+            {has('kills') && (
+              <Field label='Tracked kill counter' hint={d.strange ? `rank: ${strangeRank(kills)}` : undefined} as='div'>
+                <span className='flex h-[34px] items-center gap-3'>
+                  <Toggle checked={d.strange} onChange={(v) => set('strange', v)} field='spec-strange'>
+                    Tracked
+                  </Toggle>
+                  {d.strange && (
+                    <input
+                      className='adm-input mono w-28'
+                      inputMode='numeric'
+                      value={d.kills}
+                      onChange={(e) => set('kills', e.target.value.replace(/[^0-9]/g, '').slice(0, 8))}
+                      aria-label='Starting kills'
+                      placeholder='0'
+                      data-field='spec-kills'
+                    />
+                  )}
+                </span>
+              </Field>
+            )}
+            {has('sheen') && (
+              <Field label='Killstreak sheen' as='div'>
+                <Select
+                  label='Killstreak sheen'
+                  value={d.sheen}
+                  onChange={(v) => onChange({ ...d, sheen: v, ksEffect: v ? d.ksEffect : '' })}
+                  options={[{ value: '', label: 'None' }, ...KS_SHEENS.map((s) => ({ value: s.id, label: s.name, swatch: s.color }))]}
+                  field='spec-sheen'
+                />
+              </Field>
+            )}
+            {has('ksEffect') && (
+              <Field label='Professional effect' hint={d.sheen ? 'makes it Professional' : 'pick a sheen first'} as='div'>
+                <Select
+                  label='Professional effect'
+                  value={d.ksEffect}
+                  disabled={!d.sheen}
+                  onChange={(v) => set('ksEffect', v)}
+                  options={[{ value: '', label: 'None' }, ...KS_EFFECTS.map((s) => ({ value: s.id, label: s.name }))]}
+                  field='spec-ksEffect'
+                />
+              </Field>
+            )}
+            {has('seed') && (
+              <Field label='Pattern seed' hint='0–999 · blank = none' as='div'>
+                <span className='flex gap-2'>
+                  <input
+                    className='adm-input mono w-24'
+                    inputMode='numeric'
+                    aria-label='Pattern seed'
+                    value={d.seed}
+                    onChange={(e) => set('seed', e.target.value.replace(/[^0-9]/g, '').slice(0, 3))}
+                    placeholder='318'
+                    data-field='spec-seed'
+                  />
+                  <button type='button' className='adm-btn' onClick={() => set('seed', String(Math.floor(Math.random() * 1000)))}>
+                    Random
+                  </button>
+                </span>
+              </Field>
+            )}
+            {has('tint') && (
+              <Field label='Tint' hint='one-off colour' as='div'>
+                <span className='flex items-center gap-2'>
+                  <input
+                    type='color'
+                    aria-label='Tint colour'
+                    value={HEX6.test(d.tint) ? d.tint : '#ff4fd8'}
+                    onChange={(e) => set('tint', e.target.value)}
+                    className={`h-[34px] w-11 shrink-0 cursor-pointer border border-[var(--adm-line-2)] bg-[var(--adm-plate)] p-0.5 ${d.tint ? '' : 'opacity-35'}`}
+                    data-field='spec-tint-picker'
+                  />
+                  <input
+                    className='adm-input mono w-28'
+                    value={d.tint}
+                    onChange={(e) => set('tint', e.target.value.trim())}
+                    placeholder='none'
+                    aria-label='Tint hex'
+                    aria-invalid={!!d.tint && !HEX6.test(d.tint)}
+                    data-field='spec-tint'
+                  />
+                  {d.tint && (
+                    <button type='button' className='adm-btn sm ghost' onClick={() => set('tint', '')}>
+                      Clear
+                    </button>
+                  )}
+                </span>
+              </Field>
+            )}
+            {has('festive') && (
+              <div className='flex items-end pb-1.5'>
+                <Toggle checked={d.festive} onChange={(v) => set('festive', v)} field='spec-festive' hint='holiday lights'>
+                  Festive
+                </Toggle>
+              </div>
+            )}
+          </div>
         )}
-      </fieldset>
+      </Section>
 
-      <fieldset className='grid gap-3 sm:grid-cols-2'>
-        <legend className='mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-fuchsia-300/70'>One-off</legend>
-        <Field label='Custom name' hint='≤ 40'>
-          <input className={inputCls} maxLength={40} value={d.customName} onChange={(e) => set('customName', e.target.value)} placeholder={def?.name} data-field='spec-name' />
-        </Field>
-        <Field label='Tier override'>
-          <select className={selectCls} value={d.tier} onChange={(e) => set('tier', e.target.value as Tier | '')} data-field='spec-tier'>
-            <option value='' className={opt}>Def default ({def ? TIER_META[def.tier].label : '—'})</option>
-            {TIERS.map((t) => (
-              <option key={t} value={t} className={opt}>{TIER_META[t].label}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label='Custom description' hint='≤ 200' wide>
-          <input className={inputCls} maxLength={200} value={d.customDesc} onChange={(e) => set('customDesc', e.target.value)} placeholder={def?.blurb} data-field='spec-desc' />
-        </Field>
-        <Field label='Tint'>
-          <span className='flex items-center gap-2'>
-            <input
-              type='color'
-              aria-label='Tint colour'
-              value={HEX6.test(d.tint) ? d.tint : '#ff4fd8'}
-              onChange={(e) => set('tint', e.target.value)}
-              className='h-[30px] w-10 shrink-0 cursor-pointer rounded border border-white/15 bg-transparent'
-              data-field='spec-tint-picker'
+      <Section title='One-off' note='applies to every item'>
+        <div className='grid gap-x-4 gap-y-3 sm:grid-cols-2'>
+          <Field label='Custom name' hint='≤ 40'>
+            <input className='adm-input' maxLength={40} value={d.customName} onChange={(e) => set('customName', e.target.value)} placeholder={def?.name} data-field='spec-name' />
+          </Field>
+          <Field label='Tier' as='div'>
+            <Select<Tier | ''>
+              label='Tier'
+              value={d.tier}
+              onChange={(v) => set('tier', v)}
+              options={[
+                { value: '', label: def ? `Default · ${TIER_META[def.tier].label}` : 'Default', icon: def ? <TierDot tier={def.tier} /> : undefined },
+                ...TIERS.map((t) => ({ value: t, label: TIER_META[t].label, icon: <TierDot tier={t} /> })),
+              ]}
+              field='spec-tier'
             />
-            <input className={`${inputCls} w-28`} value={d.tint} onChange={(e) => set('tint', e.target.value.trim())} placeholder='none' aria-label='Tint hex' data-field='spec-tint' />
-            {d.tint && (
-              <button type='button' className='text-[10px] font-bold text-white/40 hover:text-rose-300' onClick={() => set('tint', '')} aria-label='Clear tint'>
-                ✕
-              </button>
-            )}
-            {d.tint && !HEX6.test(d.tint) && <span className='text-[11px] text-rose-300'>#rrggbb</span>}
-          </span>
-        </Field>
-        <Field label='Name tag' hint='≤ 24'>
-          <input className={inputCls} maxLength={24} value={d.nameTag} onChange={(e) => set('nameTag', e.target.value)} data-field='spec-nametag' />
-        </Field>
-        <div className='flex items-end sm:col-span-2'>
-          <Check checked={d.bound || staffBound} disabled={staffBound} onChange={(v) => set('bound', v)} field='spec-bound'>
-            Bound (untradable){staffBound ? ' — staff gear is always bound' : ''}
-          </Check>
+          </Field>
+          <Field label='Custom description' hint='≤ 200' className='sm:col-span-2'>
+            <input className='adm-input' maxLength={200} value={d.customDesc} onChange={(e) => set('customDesc', e.target.value)} placeholder={def?.blurb} data-field='spec-desc' />
+          </Field>
+          <Field label='Name tag' hint='≤ 24'>
+            <input className='adm-input' maxLength={24} value={d.nameTag} onChange={(e) => set('nameTag', e.target.value)} placeholder='None' data-field='spec-nametag' />
+          </Field>
+          <div className='flex items-end pb-1.5'>
+            <Toggle checked={d.bound || staffBound} disabled={staffBound} onChange={(v) => set('bound', v)} field='spec-bound' hint={staffBound ? 'this item is always bound' : 'can’t be traded or sold'}>
+              Bound
+            </Toggle>
+          </div>
         </div>
-      </fieldset>
+      </Section>
     </div>
   );
 
   if (!preview) return form;
   return (
-    <div className='grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]'>
+    <div className='grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]'>
       {form}
-      <div className='lg:sticky lg:top-4 lg:self-start'>
-        <div className='rounded-lg border border-white/10 bg-[radial-gradient(120%_80%_at_50%_0%,rgba(103,232,249,0.08),transparent_70%)] p-4'>
+      <aside className='lg:sticky lg:top-[120px] lg:self-start'>
+        <div className='adm-section-label mb-2'>Player gets</div>
+        <div className='border border-[var(--adm-line)] bg-[radial-gradient(120%_70%_at_50%_0%,rgba(91,227,255,0.07),transparent_70%)] p-4'>
           <SpecPreview draft={d} count={count} />
         </div>
-      </div>
+      </aside>
     </div>
   );
 }

@@ -227,14 +227,18 @@ export function InventoryTab({
   // ── Preview ──────────────────────────────────────────────────────────────
   const baseLooks: Loadout = useMemo(() => settings.looks ?? {}, [settings.looks]);
   const tryLook = shownEntry ? (shownEntry.inst ? instLook(shownEntry.inst) : shownEntry.def.default ? null : { d: shownEntry.def.id }) : null;
-  // An Unusual hat (tried on, or the one you wear) needs the taller crown framing.
+  // An Anomalous hat (tried on, or the one you wear) needs the taller crown framing.
   const hatFx = shownEntry ? tryLook?.e : baseLooks.hat?.e;
   const previewView = slot === 'hat' && hatFx ? 'crown' : SLOT_VIEW[slot];
   const tryKey = shownEntry ? `${shownEntry.key}|${shownEntry.slot}` : '';
+  // The gun on the stage carries its Tracked counter: the finish being tried on,
+  // else the equipped one.
+  const finishInst = shownEntry?.slot === 'finish' ? (shownEntry.inst ?? null) : (settings.finishItem ?? null);
+  const trackedKills = finishInst?.quality.includes('strange') ? (finishInst.attrs.kills ?? 0) : null;
   const cos = useMemo(
-    () => previewCosmetics(baseLooks, shownEntry ? { slot: shownEntry.slot, look: tryLook } : null, previewView, settings),
+    () => ({ ...previewCosmetics(baseLooks, shownEntry ? { slot: shownEntry.slot, look: tryLook } : null, previewView, settings), trackedKills }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseLooks, tryKey, previewView, settings.playerName, settings.reducedEffects],
+    [baseLooks, tryKey, previewView, settings.playerName, settings.reducedEffects, trackedKills],
   );
 
   const titleText = (id: string) => {

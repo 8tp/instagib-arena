@@ -1,64 +1,126 @@
-// Shared bits for the /admin economy tabs (Items · Codes · Gifts): the same
-// zinc/cyan dashboard chrome as src/AdminDashboard.tsx.
+// Shared atoms for the /admin console: plates, fields, toggles, segmented
+// controls, banners, stat tiles, loading / empty / error states. Styles live in
+// ./admin.css (tokens under .adm).
 import { useEffect, useState, type ReactNode } from 'react';
+import { Sparkline } from './charts';
+import { avatarColor, pct } from './format';
 import { toLocalInput } from './time';
 
-export const inputCls =
-  'rounded-md border border-white/15 bg-black/40 px-3 py-1.5 font-mono text-[12px] text-white outline-none focus:border-cyan-400/60 placeholder:text-white/30 disabled:opacity-40';
-export const selectCls = `${inputCls} pr-7`;
-export const btnCls =
-  'rounded-md border border-white/20 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.12em] text-white/80 transition hover:border-cyan-400/60 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-40';
-export const primaryCls =
-  'rounded-md border border-cyan-400/60 bg-cyan-400/15 px-4 py-2 text-[12px] font-bold uppercase tracking-[0.14em] text-cyan-100 transition hover:bg-cyan-400/25 disabled:cursor-not-allowed disabled:opacity-40';
-export const dangerCls =
-  'rounded-md border border-rose-400/40 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.1em] text-rose-300 transition hover:bg-rose-400/10 disabled:opacity-40';
+// Class names for native controls (kept as exports so forms read the same).
+export const inputCls = 'adm-input';
+export const btnCls = 'adm-btn';
+export const primaryCls = 'adm-btn primary';
+export const dangerCls = 'adm-btn sm danger';
 
-export function Card({ title, right, children, className = '' }: { title: string; right?: ReactNode; children: ReactNode; className?: string }) {
+export function Plate({
+  title,
+  sub,
+  right,
+  children,
+  className = '',
+  flush = false,
+  id,
+}: {
+  title?: ReactNode;
+  sub?: ReactNode;
+  right?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  flush?: boolean; // body without padding (tables run edge to edge)
+  id?: string;
+}) {
   return (
-    <section className={`mb-6 rounded-lg border border-white/10 bg-white/[0.03] p-4 ${className}`}>
-      <div className='mb-3 flex flex-wrap items-center justify-between gap-2'>
-        <h2 className='font-display text-[13px] uppercase tracking-[0.16em] text-white/70'>{title}</h2>
-        {right}
-      </div>
-      {children}
+    <section className={`adm-plate ${className}`} aria-labelledby={id} data-plate>
+      {(title || right) && (
+        <header className='adm-plate-head'>
+          <div className='min-w-0'>
+            {title && (
+              <h2 className='adm-plate-title' id={id}>
+                {title}
+              </h2>
+            )}
+            {sub && <div className='adm-plate-sub'>{sub}</div>}
+          </div>
+          {right && <div className='flex flex-wrap items-center gap-2'>{right}</div>}
+        </header>
+      )}
+      <div className={flush ? 'pt-3' : 'adm-plate-body'}>{children}</div>
     </section>
   );
 }
 
-export function Field({ label, hint, children, wide, className = '' }: { label: string; hint?: string; children: ReactNode; wide?: boolean; className?: string }) {
+// A labelled field. `as='div'` for custom controls (comboboxes) so a click on
+// the label text doesn't activate the trigger button.
+export function Field({
+  label,
+  hint,
+  children,
+  className = '',
+  as = 'label',
+  error,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  as?: 'label' | 'div';
+  error?: string;
+}) {
+  const Tag = as;
   return (
-    <label className={`flex min-w-0 flex-col gap-1 ${wide ? 'sm:col-span-2' : ''} ${className}`}>
-      <span className='text-[10px] uppercase tracking-[0.14em] text-white/40'>
+    <Tag className={`flex min-w-0 flex-col gap-1.5 ${className}`}>
+      <span className='adm-label'>
         {label}
-        {hint && <span className='ml-1.5 normal-case tracking-normal text-white/30'>{hint}</span>}
+        {hint && <span className='hint'>{hint}</span>}
       </span>
       {children}
-    </label>
+      {error && <span className='text-[12px] text-[var(--adm-bad)]'>{error}</span>}
+    </Tag>
   );
 }
 
-export function Check({ checked, onChange, children, disabled, field }: { checked: boolean; onChange: (v: boolean) => void; children: ReactNode; disabled?: boolean; field?: string }) {
+// A switch with its label. role=switch; Space/Enter toggle (native button).
+export function Toggle({
+  checked,
+  onChange,
+  children,
+  hint,
+  disabled,
+  field,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  children: ReactNode;
+  hint?: ReactNode;
+  disabled?: boolean;
+  field?: string;
+}) {
   return (
-    <label className={`flex items-center gap-2 text-[12px] ${disabled ? 'text-white/35' : 'text-white/75'}`}>
-      <input type='checkbox' className='accent-cyan-400' checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} data-field={field} />
-      {children}
-    </label>
+    <button
+      type='button'
+      className='group flex items-center gap-2.5 text-left disabled:cursor-not-allowed'
+      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      role='switch'
+      aria-checked={checked}
+      data-field={field}
+    >
+      <span className='adm-switch' data-on={checked ? '' : undefined} aria-hidden />
+      <span className={`text-[13px] ${disabled ? 'text-[var(--adm-ink-3)]' : 'text-[var(--adm-ink)]'}`}>
+        {children}
+        {hint && <span className='ml-2 text-[12px] text-[var(--adm-ink-3)]'>{hint}</span>}
+      </span>
+    </button>
   );
 }
+// Back-compat name used by older forms.
+export const Check = Toggle;
 
-// A two-or-three-way segmented toggle.
-export function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: { id: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+export function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: { id: T; label: ReactNode }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <div role='radiogroup' aria-label={label} className='inline-flex rounded-md border border-white/15 bg-black/40 p-0.5'>
+    <div role='radiogroup' aria-label={label} className='adm-seg'>
       {options.map((o) => (
-        <button
-          key={o.id}
-          type='button'
-          role='radio'
-          aria-checked={value === o.id}
-          onClick={() => onChange(o.id)}
-          className={`rounded px-3 py-1 text-[11px] font-bold uppercase tracking-[0.12em] transition ${value === o.id ? 'bg-cyan-400/20 text-cyan-100' : 'text-white/45 hover:text-white/80'}`}
-        >
+        <button key={o.id} type='button' role='radio' aria-checked={value === o.id} onClick={() => onChange(o.id)}>
           {o.label}
         </button>
       ))}
@@ -66,12 +128,17 @@ export function Seg<T extends string>({ value, options, onChange, label }: { val
   );
 }
 
-export type Msg = { tone: 'ok' | 'err'; text: string } | null;
-export function Banner({ msg }: { msg: Msg }) {
+export type Msg = { tone: 'ok' | 'err' | 'warn'; text: ReactNode } | null;
+export function Banner({ msg, onClose }: { msg: Msg; onClose?: () => void }) {
   if (!msg) return null;
   return (
-    <div role={msg.tone === 'err' ? 'alert' : 'status'} className={`rounded border px-3 py-2 text-[12px] ${msg.tone === 'ok' ? 'border-emerald-400/40 bg-emerald-400/5 text-emerald-200' : 'border-rose-400/40 bg-rose-400/5 text-rose-200'}`}>
-      {msg.text}
+    <div role={msg.tone === 'err' ? 'alert' : 'status'} className='adm-banner' data-tone={msg.tone}>
+      <span className='min-w-0 flex-1'>{msg.text}</span>
+      {onClose && (
+        <button type='button' className='text-[12px] opacity-60 hover:opacity-100' onClick={onClose} aria-label='Dismiss'>
+          ✕
+        </button>
+      )}
     </div>
   );
 }
@@ -92,7 +159,8 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
           () => undefined,
         );
       }}
-      className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] transition ${done ? 'border-emerald-400/50 text-emerald-300' : 'border-white/15 text-white/50 hover:border-cyan-400/50 hover:text-cyan-200'}`}
+      className='adm-btn sm'
+      style={done ? { borderColor: 'var(--adm-good)', color: 'var(--adm-good)' } : undefined}
       aria-label={`${label} ${text}`}
       data-action='copy'
     >
@@ -101,24 +169,141 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
   );
 }
 
-// Quick expiry presets for the datetime field.
+// Datetime + quick presets. '' = never.
 export function ExpiryField({ value, onChange, label = 'Expires' }: { value: string; onChange: (v: string) => void; label?: string }) {
   const preset = (days: number) => onChange(toLocalInput(Date.now() + days * 86_400_000));
   return (
-    <Field label={label} hint={value ? '' : 'blank = never'}>
+    <Field label={label} hint={value ? undefined : 'never'} as='div'>
       <span className='flex flex-wrap items-center gap-1.5'>
-        <input type='datetime-local' className={`${inputCls} [color-scheme:dark]`} value={value} onChange={(e) => onChange(e.target.value)} data-field='expires' />
+        <input type='datetime-local' aria-label={label} className='adm-input mono' value={value} onChange={(e) => onChange(e.target.value)} data-field='expires' />
         {[1, 7, 30].map((d) => (
-          <button key={d} type='button' className='rounded border border-white/10 px-1.5 py-1 text-[10px] font-bold text-white/50 hover:border-cyan-400/50 hover:text-cyan-200' onClick={() => preset(d)}>
-            {d}d
+          <button key={d} type='button' className='adm-chip' onClick={() => preset(d)}>
+            +{d}d
           </button>
         ))}
         {value && (
-          <button type='button' className='rounded px-1.5 py-1 text-[10px] font-bold text-white/40 hover:text-rose-300' onClick={() => onChange('')} aria-label='Clear expiry'>
-            ✕
+          <button type='button' className='adm-btn sm ghost' onClick={() => onChange('')} aria-label={`Clear ${label.toLowerCase()}`}>
+            Never
           </button>
         )}
       </span>
     </Field>
+  );
+}
+
+// ── Figures ─────────────────────────────────────────────────────────────────
+// A credit amount: the game's ⛁ glyph as a small amber prefix.
+export function Cr({ n }: { n: string | number }) {
+  return (
+    <span className='whitespace-nowrap'>
+      <span className='adm-cr' aria-hidden>
+        ⛁
+      </span>
+      <span className='sr-only'>credits </span>
+      {typeof n === 'number' ? n.toLocaleString() : n}
+    </span>
+  );
+}
+
+// Signed change vs the previous period. `good` says which direction is good.
+export function Delta({ value, good = 'up', vs }: { value: number | null; good?: 'up' | 'down' | 'none'; vs?: string }) {
+  if (value == null) return <span className='adm-delta' data-tone='flat' title={vs ? `no baseline ${vs}` : undefined}>new</span>;
+  const flat = Math.abs(value) < 0.005;
+  const up = value > 0;
+  const tone = flat || good === 'none' ? 'flat' : (up ? good === 'up' : good === 'down') ? 'good' : 'bad';
+  return (
+    <span className='adm-delta' data-tone={tone} title={vs}>
+      {flat ? '±0%' : `${up ? '▲' : '▼'} ${pct(Math.abs(value), Math.abs(value) < 0.1 ? 1 : 0)}`}
+    </span>
+  );
+}
+
+export function StatTile({
+  label,
+  value,
+  sub,
+  delta,
+  good,
+  vs,
+  spark,
+  accent,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  sub?: ReactNode;
+  delta?: number | null;
+  good?: 'up' | 'down' | 'none';
+  vs?: string;
+  spark?: number[];
+  accent?: boolean;
+}) {
+  return (
+    <div className='adm-tile' data-accent={accent ? '' : undefined} data-tile>
+      <div className='adm-tile-label'>{label}</div>
+      <div className='flex items-end justify-between gap-2'>
+        <div className='adm-tile-value'>{value}</div>
+        {spark && <Sparkline points={spark} />}
+      </div>
+      <div className='flex min-w-0 items-center gap-2'>
+        {delta !== undefined && <Delta value={delta} good={good} vs={vs} />}
+        {sub && <span className='adm-tile-sub'>{sub}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── States ──────────────────────────────────────────────────────────────────
+export function Loading({ rows = 3, label = 'Loading' }: { rows?: number; label?: string }) {
+  return (
+    <div className='flex flex-col gap-2 py-2' role='status' aria-label={label}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className='adm-skel h-9' style={{ opacity: 1 - i * 0.2 }} />
+      ))}
+    </div>
+  );
+}
+
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div className='adm-state' role='alert'>
+      <strong>Couldn’t load this.</strong>
+      <span>{message}</span>
+      {onRetry && (
+        <button type='button' className='adm-btn sm mt-2' onClick={onRetry}>
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function Empty({ title, children }: { title: ReactNode; children?: ReactNode }) {
+  return (
+    <div className='adm-state'>
+      <strong>{title}</strong>
+      {children && <span>{children}</span>}
+    </div>
+  );
+}
+
+// ── Players ─────────────────────────────────────────────────────────────────
+export function Avatar({ name, large = false }: { name: string; large?: boolean }) {
+  return (
+    <span className={`adm-avatar ${large ? 'lg' : ''}`} style={{ background: avatarColor(name.toLowerCase()) }} aria-hidden>
+      {(name.trim()[0] ?? '?').toUpperCase()}
+    </span>
+  );
+}
+
+export function PlayerFlags({ admin, verified }: { admin?: boolean; verified?: boolean }) {
+  return (
+    <>
+      {admin && <span className='adm-flag staff'>Staff</span>}
+      {verified && (
+        <span className='adm-flag verified' title='Verified'>
+          ✓ Verified
+        </span>
+      )}
+    </>
   );
 }

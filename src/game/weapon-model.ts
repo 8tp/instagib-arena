@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { RailgunFinish } from './cosmetics';
 import type { CustomGunBuild } from './gun/custom/types';
-import { SheenOverlay, StrangeCounter, festiveKit } from './gun/gun-extras';
+import { SheenOverlay, festiveKit } from './gun/gun-extras';
+import { TrackedCounter } from './gun/tracker';
 import { flashTexture } from './fx-pool';
 import { localRail, nowMs } from './fx/rail-state';
-import { BARREL_Y, COIL_COUNT, MUZZLE_Z, railgunGeometry, type GunLod } from './gun/gun-geometry';
+import { BARREL_Y, COIL_COUNT, MUZZLE_Z, TRACKER_MOUNT, railgunGeometry, type GunLod } from './gun/gun-geometry';
 import { GunMaterial, STOCK_FINISH, gunFx, type GunUniforms } from './gun/gun-material';
 import { fxFlags } from './fx/fx-settings';
 import './gun/custom/load';
@@ -100,8 +101,10 @@ export type RailgunModel = {
   setKillstreak(sheen: string | null, ksEffect: string | null): void;
   // Festive: string lights round the barrel + a small bow.
   setFestive(on: boolean): void;
-  // Strange: a tiny glowing odometer on the left flank (first-person viewmodel
-  // only — a 'low' third-person build ignores it). null hides it.
+  // Tracked (internal id 'strange'): the kill-counter module bolted to the
+  // left flank (gun/tracker.ts) reading `n` confirmed kills; a rise rolls the
+  // changed digits. 'high' builds only (viewmodel, locker) — a 'low' build
+  // ignores it. null hides the module.
   setStrangeKills(n: number | null): void;
   // Free this gun's own resources (materials). The geometry is shared.
   dispose(): void;
@@ -261,7 +264,7 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     driver.update(now, isViewmodel);
   };
 
-  const extras = buildExtras(group, [mesh], lod, f.accentHot);
+  const extras = buildExtras(group, [mesh], lod, f.accentHot, () => new TrackedCounter({ material, ownsMaterial: false, hook: true }));
   const model: RailgunModel = {
     group,
     muzzle,
@@ -287,6 +290,7 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
     },
     setLowSpec(low: boolean) {
       if (lod === 'high') material.setHighDetail(!low);
+      extras.setLowSpec(low);
     },
     dispose() {
       extras.dispose();
@@ -297,14 +301,19 @@ export function buildRailgun(finish?: RailgunFinish, opts: BuildRailgunOptions =
   return model;
 }
 
-// The quality overlays shared by the standard and custom builds.
-function buildExtras(group: THREE.Group, sources: THREE.Mesh[], lod: RailgunLod, accentHot: number) {
+// The quality overlays shared by the standard and custom builds. The Tracked
+// counter is built on first use (most guns never show one).
+function buildExtras(
+  group: THREE.Group,
+  sources: THREE.Mesh[],
+  lod: RailgunLod,
+  accentHot: number,
+  makeCounter: () => TrackedCounter,
+) {
   const sheen = new SheenOverlay(group, sources, lod === 'high' ? 1 : 0.75);
-  const counter = lod === 'high' ? new StrangeCounter() : null;
-  if (counter) {
-    counter.setColor(accentHot);
-    group.add(counter.mesh);
-  }
+  let counter: TrackedCounter | null = null;
+  let hot = accentHot;
+  let low = false;
   let festive: THREE.Mesh | null = null;
   let streak = 0;
   return {
@@ -327,11 +336,24 @@ function buildExtras(group: THREE.Group, sources: THREE.Mesh[], lod: RailgunLod,
         }
       },
       setStrangeKills(n: number | null) {
-        counter?.set(n);
+        if (lod !== 'high') return;
+        if (!counter) {
+          if (n === null || !Number.isFinite(n)) return;
+          counter = makeCounter();
+          counter.setColor(hot);
+          counter.setLowSpec(low);
+          group.add(counter.group);
+        }
+        counter.set(n);
       },
     },
     setAccent(hex: number) {
+      hot = hex;
       counter?.setColor(hex);
+    },
+    setLowSpec(on: boolean) {
+      low = on;
+      counter?.setLowSpec(on);
     },
     dispose() {
       sheen.dispose();
@@ -388,7 +410,15 @@ function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: Railgu
   inst.group.traverse((o) => {
     if ((o as THREE.Mesh).isMesh && meshes.length < 24) meshes.push(o as THREE.Mesh);
   });
-  const extras = buildExtras(group, meshes, lod, f.accentHot);
+  // A custom model seats the counter where it says (trackerMount), else on the
+  // standard gun's mount; the housing gets its own surface in the finish.
+  const extras = buildExtras(group, meshes, lod, f.accentHot, () => {
+    counterMat ??= new GunMaterial(curFinish, { lod: 'high' });
+    counterMat.setHighDetail(!lowSpec);
+    return new TrackedCounter({ material: counterMat, ownsMaterial: true, mount: inst.trackerMount ?? TRACKER_MOUNT, hook: !inst.trackerMount });
+  });
+  let counterMat: GunMaterial | null = null;
+  let curFinish = f;
   let lowSpec = false;
   let last = nowMs();
   group.add(
@@ -432,11 +462,15 @@ function buildCustomRailgun(build: CustomGunBuild, f: RailgunFinish, lod: Railgu
     setFinish(next?: RailgunFinish) {
       const nf = next ?? STOCK_FINISH;
       inst.setFinish?.(nf);
+      curFinish = nf;
+      counterMat?.setFinish(nf);
       extras.setAccent(nf.accentHot);
       muzzleFlash.material.color.copy(flareColor(nf.accentHot));
     },
     setLowSpec(low: boolean) {
       lowSpec = low;
+      counterMat?.setHighDetail(!low);
+      extras.setLowSpec(low);
     },
     dispose() {
       extras.dispose();
