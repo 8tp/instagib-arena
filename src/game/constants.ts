@@ -396,6 +396,26 @@ export const KEYBIND_ACTIONS: ReadonlyArray<{ id: KeybindAction; label: string }
   { id: 'restart', label: 'Restart challenge (training range)' },
 ];
 
+// Saved binds merged over the defaults. An action missing from the save (one
+// added since) gets its default key only if no saved action already uses that
+// key — otherwise it starts unbound, instead of silently taking the key away.
+export function mergeKeybinds(saved: Partial<Record<KeybindAction, string>> | undefined): Record<KeybindAction, string> {
+  const out = { ...DEFAULT_KEYBINDS };
+  if (!saved) return out;
+  const used = new Set<string>();
+  for (const a of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
+    const code = saved[a];
+    if (typeof code === 'string') {
+      out[a] = code;
+      if (code) used.add(code);
+    }
+  }
+  for (const a of Object.keys(DEFAULT_KEYBINDS) as KeybindAction[]) {
+    if (typeof saved[a] !== 'string' && used.has(DEFAULT_KEYBINDS[a])) out[a] = '';
+  }
+  return out;
+}
+
 export const DEFAULT_KEYBINDS: Record<KeybindAction, string> = {
   forward: 'KeyW',
   back: 'KeyS',

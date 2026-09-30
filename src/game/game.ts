@@ -2912,8 +2912,7 @@ export class Game {
   // hub), standing still, facing down the course / range.
   private trainingTeleport(tp: TrainingTeleport) {
     this.player.pos = { ...tp.pos };
-    this.player.vel = { x: 0, y: 0, z: 0 };
-    this.player.onGround = false;
+    this.player.resetMotion();
     this.player.yaw = tp.yaw;
     this.player.pitch = 0;
     this.emitHud();

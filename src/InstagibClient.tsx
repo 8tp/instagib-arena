@@ -67,7 +67,7 @@ import {
   AIR_JUMPS,
   DASH_COOLDOWN,
   DEFAULT_GAME_MODE,
-  DEFAULT_KEYBINDS,
+  mergeKeybinds,
   DEFAULT_VIEWMODEL_OFFSET,
   HIT_MARKER_DURATION_SEC,
   HIT_MARKER_KILL_DURATION_SEC,
@@ -157,7 +157,7 @@ function loadSettings(): Settings {
       ...parsed,
       // Nested objects need an explicit merge so newly-added fields survive.
       crosshair: { ...DEFAULT_CROSSHAIR, ...(parsed.crosshair ?? {}) },
-      keybinds: { ...DEFAULT_KEYBINDS, ...(parsed.keybinds ?? {}) },
+      keybinds: mergeKeybinds(parsed.keybinds),
       viewmodelOffset: { ...DEFAULT_VIEWMODEL_OFFSET, ...(parsed.viewmodelOffset ?? {}) },
     };
     // Migrate legacy sensitivity: the old model stored radians/pixel (~0.0022).
@@ -1675,7 +1675,7 @@ const HudLayout = memo(function HudLayout({
       <HudMiniLeaderboard />
       <HudScoreBoxes fragLimit={info.fragLimit} />
       <HudNetDebug />
-      <HudTraining restartKey={keyLabel(settings.keybinds.restart ?? 'KeyR')} />
+      <HudTraining restartKey={settings.keybinds.restart ? keyLabel(settings.keybinds.restart) : 'Restart (unbound — set in Settings)'} />
       <HudBanner />
       <HudCaptions captions={settings.captions} />
       <HudFragPopup />
@@ -2482,7 +2482,7 @@ const TrainingPanel = memo(function TrainingPanel({ t, restartKey }: { t: Traini
 // A running challenge: the clock, the score line, and your best.
 const ChallengePanel = memo(function ChallengePanel({ c, restartKey }: { c: TrainingChallengeHud; restartKey: string }) {
   const accent = CHALLENGE_ACCENT[c.id];
-  const acc = c.shots ? Math.round((c.hits / c.shots) * 100) : 0;
+  const acc = c.shots ? Math.round((c.landed / c.shots) * 100) : 0;
   const best = c.best === null ? '—' : c.kind === 'race' ? `${c.best.toFixed(2)}s` : `${c.best}`;
   return (
     <div className='pointer-events-none absolute left-1/2 top-4 -translate-x-1/2 font-mono'>
@@ -2538,12 +2538,12 @@ const ChallengeCountdown = memo(function ChallengeCountdown({ name, n }: { name:
 // The finished run: score, the breakdown, and whether it beat your best.
 const ChallengeResult = memo(function ChallengeResult({ r, restartKey }: { r: TrainingResultHud; restartKey: string }) {
   const accent = CHALLENGE_ACCENT[r.id];
-  const acc = r.shots ? Math.round((r.hits / r.shots) * 100) : 0;
+  const acc = r.shots ? Math.round((r.landed / r.shots) * 100) : 0;
   const score = r.kind === 'race' ? `${r.score.toFixed(2)} s` : `${r.score} hits`;
   const best = r.best === null ? null : r.kind === 'race' ? `${r.best.toFixed(2)} s` : `${r.best} hits`;
   const detail =
     r.kind === 'aim'
-      ? `${r.hits}/${r.shots} shots · ${acc}% accuracy`
+      ? `${r.landed}/${r.shots} shots landed · ${acc}% accuracy`
       : r.penalty > 0
         ? `includes +${r.penalty} s for targets left standing`
         : r.id === 'gauntlet'

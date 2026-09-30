@@ -10,6 +10,7 @@ export type RunRecord = {
   score: number;
   hits: number;
   shots: number;
+  landed?: number; // shots that hit something (older records: use hits)
   penalty: number; // seconds added (Gauntlet: targets left standing × 2)
   at: number; // Date.now()
 };
@@ -29,12 +30,24 @@ type Store = {
   ghost: Partial<Record<ChallengeId, GhostRecord>>;
 };
 
+const IDS: ChallengeId[] = ['flick', 'strafers', 'course', 'gauntlet'];
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+// Anything malformed (hand-edited, from an older build) is dropped, per record.
 function load(): Store {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
     if (raw) {
       const s = JSON.parse(raw) as Partial<Store>;
-      return { best: s.best ?? {}, ghost: s.ghost ?? {} };
+      const best: Store['best'] = {};
+      const ghost: Store['ghost'] = {};
+      for (const id of IDS) {
+        const b = s.best?.[id];
+        if (b && isNum(b.score) && isNum(b.hits) && isNum(b.shots) && isNum(b.penalty)) best[id] = b;
+        const g = s.ghost?.[id];
+        if (g && isNum(g.step) && g.step > 0 && Array.isArray(g.xyz) && g.xyz.every(isNum) && g.xyz.length % 3 === 0 && Array.isArray(g.splits) && g.splits.every(isNum)) ghost[id] = g;
+      }
+      return { best, ghost };
     }
   } catch {
     // Corrupt or blocked storage — start clean.
@@ -61,7 +74,7 @@ export function isBetter(id: ChallengeId, run: RunRecord, prev: RunRecord | unde
   if (!prev) return true;
   if (run.score !== prev.score) return LOWER_IS_BETTER[id] ? run.score < prev.score : run.score > prev.score;
   // Tie on hits: the more accurate run wins.
-  const acc = (r: RunRecord) => (r.shots > 0 ? r.hits / r.shots : 0);
+  const acc = (r: RunRecord) => (r.shots > 0 ? Math.min(r.hits, r.landed ?? r.hits) / r.shots : 0);
   return acc(run) > acc(prev);
 }
 

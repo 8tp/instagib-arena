@@ -53,6 +53,7 @@ type Run = {
   t: number;
   hits: number;
   shots: number;
+  landed: number;
   gate: number;
   splits: number[];
   ghost: number[];
@@ -82,6 +83,7 @@ export class TrainingRange {
   private notice: string | null = null;
   private noticeAge = 0;
   private free = { shots: 0, hits: 0, destroyed: 0, streak: 0, bestStreak: 0, elapsed: 0 };
+  private shotLanded = false; // the current shot has hit at least one target
   private freeTargetsUp = false;
 
   constructor(
@@ -112,7 +114,8 @@ export class TrainingRange {
       const par = `par ${this.layout.course.par} s`;
       foot = best ? `Best ${best.score.toFixed(2)} s · ${par}` : `No time yet · ${par}`;
     } else {
-      foot = best ? `Best ${best.score} hits · ${best.shots ? Math.round((best.hits / best.shots) * 100) : 0}%` : 'No score yet';
+      const landed = best ? Math.min(best.hits, best.landed ?? best.hits) : 0;
+      foot = best ? `Best ${best.score} hits · ${best.shots ? Math.round((landed / best.shots) * 100) : 0}%` : 'No score yet';
     }
     return { title: def.name, sub: def.rules, foot, accent: def.accent };
   }
@@ -136,7 +139,7 @@ export class TrainingRange {
     this.clearRun();
     const def = CHALLENGES[id];
     this.run = {
-      id, phase: 'countdown', countdown: COUNTDOWN, t: 0, hits: 0, shots: 0, gate: 0,
+      id, phase: 'countdown', countdown: COUNTDOWN, t: 0, hits: 0, shots: 0, landed: 0, gate: 0,
       splits: [], ghost: [], ghostAcc: 0, strafeQueue: [], lastFlick: null,
     };
     this.lastId = id;
@@ -181,7 +184,7 @@ export class TrainingRange {
     const left = r.id === 'gauntlet' ? this.field.count('gauntlet') : 0;
     const penalty = left * GAUNTLET_PENALTY;
     const score = def.kind === 'race' ? Math.round((r.t + penalty) * 100) / 100 : r.hits;
-    const record: RunRecord = { score, hits: r.hits, shots: r.shots, penalty, at: Date.now() };
+    const record: RunRecord = { score, hits: r.hits, shots: r.shots, landed: r.landed, penalty, at: Date.now() };
     const ghost: GhostRecord | undefined =
       def.kind === 'race' ? { step: GHOST_STEP, xyz: r.ghost, splits: r.splits } : undefined;
     const prev = this.bests.best(r.id);
@@ -194,6 +197,7 @@ export class TrainingRange {
       score,
       hits: r.hits,
       shots: r.shots,
+      landed: r.landed,
       penalty,
       best: prev ? prev.score : null,
       newBest,
@@ -364,6 +368,7 @@ export class TrainingRange {
   }
 
   registerShot() {
+    this.shotLanded = false;
     if (this.run) this.run.shots += 1;
     else this.free.shots += 1;
   }
@@ -377,11 +382,14 @@ export class TrainingRange {
     const hit = this.field.hit(id);
     if (!hit) return null;
     const r = this.run;
+    const first = !this.shotLanded; // accuracy counts shots, not targets
+    this.shotLanded = true;
     if (r) {
       r.hits += 1;
+      if (first) r.landed += 1;
       if (hit.kind === 'strafer') r.strafeQueue.push(STRAFER_RESPAWN);
     } else {
-      this.free.hits += 1;
+      if (first) this.free.hits += 1;
       this.free.destroyed += 1;
       this.free.streak += 1;
       if (this.free.streak > this.free.bestStreak) this.free.bestStreak = this.free.streak;
@@ -427,6 +435,7 @@ export class TrainingRange {
       time: Math.floor(time * 10) / 10,
       hits: r.hits,
       shots: r.shots,
+      landed: r.landed,
       gate: r.gate,
       gates: this.layout.course.gates.length,
       split,

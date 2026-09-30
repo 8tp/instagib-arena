@@ -322,8 +322,9 @@ export type TrainingChallengeHud = {
   phase: 'countdown' | 'running';
   countdown: number; // whole seconds left before GO (3, 2, 1)
   time: number; // aim: seconds left; race: seconds elapsed (tenths)
-  hits: number;
+  hits: number; // targets destroyed (a rail through two counts two)
   shots: number;
+  landed: number; // shots that hit at least one target (accuracy = landed / shots)
   gate: number; // race: gates passed
   gates: number;
   split: number | null; // race: seconds vs your best at the last gate (− = ahead)
@@ -339,6 +340,7 @@ export type TrainingResultHud = {
   score: number; // hits, or total seconds for races
   hits: number;
   shots: number;
+  landed: number;
   penalty: number; // seconds added (Gauntlet)
   best: number | null; // best BEFORE this run
   newBest: boolean;

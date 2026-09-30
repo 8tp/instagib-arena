@@ -58,6 +58,20 @@ export class Player {
     landed: false, // touched down this step
     impactSpeed: 0, // downward speed at touchdown, m/s (when `landed`)
   };
+  // Stand still with every ability ready (training-range start marks): no
+  // leftover dash, wall-jump window, boost carve or cooldown.
+  resetMotion() {
+    this.vel = { x: 0, y: 0, z: 0 };
+    this.onGround = false;
+    this.airJumpsLeft = AIR_JUMPS;
+    this.dashTimer = 0;
+    this.dashCooldown = 0;
+    this.boostCooldown = 0;
+    this.boostAirCtrlTimer = 0;
+    this.wallNormal = null;
+    this.wallTimer = 0;
+  }
+
   // Post-boost window of extra air-control (the Soldier "rocket then carve").
   private boostAirCtrlTimer = 0;
   private dashDir: Vec3 = { x: 0, y: 0, z: 0 };
