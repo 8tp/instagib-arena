@@ -9,7 +9,7 @@ import { emoteClip } from './emotes';
 import { dyeById } from './dyes';
 import { disposeFxContext, getFxContext, peekFxContext } from './fx-pool';
 import { WornHat } from './hats';
-import { HAS_GEAR, WornGearCtor, type GearSlot } from '../economy/gear';
+import { HAS_GEAR, WornGearCtor, wearLook, type GearSlot } from '../economy/gear';
 import { legacyUnusualFor } from '../economy/display';
 import { parseLookKey } from '../economy/look';
 import { itemDef, type ItemDef } from './items/catalog';
@@ -57,7 +57,7 @@ import {
 
 const SIZE = 256;
 const IDLE_RELEASE_MS = 30_000;
-const STORE_PREFIX = 'ig-thumb:v15:';
+const STORE_PREFIX = 'ig-thumb:v16:';
 // A neutral armour so every thumbnail reads on all four rarity backgrounds.
 const THUMB_SKIN = '#c3ccda';
 // Hats sit on a mid-slate helmet: white caps read lighter, black hats darker.
@@ -244,8 +244,8 @@ export type Turntable = { url: string; frames: number; ms: number; spin: boolean
 const TURN_FRAMES = 36;
 const TURN_PX = 224;
 const TURN_MS = 4200; // one full turn
-const TURN_STORE = 'ig-turn:v1:';
-const TURN_STORE_IDX = 'ig-turn:v1:#idx';
+const TURN_STORE = 'ig-turn:v2:';
+const TURN_STORE_IDX = 'ig-turn:v2:#idx';
 const TURN_STORE_MAX = 6; // a strip is ~120–250 KB: leave sessionStorage to the thumbs
 const TURN_MEM_MAX = 48;
 
@@ -573,9 +573,10 @@ function stepEffects(s: Studio, seconds: number, extra?: (dt: number) => void) {
 }
 
 // Head-and-shoulders window for worn headgear (turn mode): the head sits in a
-// `win`-metre window whose top clears the hat.
-function headWindow(top: number, win: number): { target: THREE.Vector3; dist: number } {
-  const t = Math.max(1.65 + 0.4 * win, top + 0.14);
+// `win`-metre window whose top clears the hat by `pad` (an Unusual effect
+// floats above the hat top and needs more room).
+function headWindow(top: number, win: number, pad = 0.14): { target: THREE.Vector3; dist: number } {
+  const t = Math.max(1.65 + 0.4 * win, top + pad);
   return { target: new THREE.Vector3(0, t - win / 2, 0), dist: win / 2 / Math.tan((30 * Math.PI) / 360) };
 }
 
@@ -585,13 +586,13 @@ async function buildGearSubject(slot: GearSlot, look: Look, mode: Mode): Promise
   const turn = slot === 'back' ? Math.PI - 0.55 : slot === 'face' ? -0.28 : -0.42;
   const c = combatant(turn, 'idle', 0.6, HAT_SKIN);
   const gear = new WornGearCtor(c.ch);
-  gear.setLook(slot, look);
+  wearLook(gear, slot, look);
   // Cloth / plumes / unusual particles settle for a second before the shot.
   for (let i = 0; i < 60; i++) gear.update(1 / 60);
   const undo = mode === 'thumb' && slot === 'hat' && look.e ? silhouette(c.ch) : () => {};
   const top = gear.headTopY();
   const spin = mode === 'turn';
-  const hatWin = spin && slot === 'hat' ? headWindow(top, look.e ? 1.25 : 0.95) : null;
+  const hatWin = spin && slot === 'hat' ? headWindow(top, look.e ? 1.25 : 0.95, look.e ? 0.45 : 0.14) : null;
   const target =
     slot === 'face'
       ? new THREE.Vector3(0, 1.6, 0)
@@ -691,7 +692,7 @@ async function buildSubject(s: Studio, t: Target, mode: Mode = 'thumb'): Promise
       const aim = box.getCenter(new THREE.Vector3()).addScaledVector(new THREE.Vector3(0, 1, 0), -size.y * 0.3);
       if (mode === 'turn') {
         // Worn: head and shoulders, turning.
-        const win = headWindow(bare ? 1.8 : box.max.y, look.e ? 1.25 : 0.95);
+        const win = headWindow(bare ? 1.8 : box.max.y, look.e ? 1.25 : 0.95, look.e ? 0.45 : 0.14);
         return {
           root: c.holder,
           target: win.target,

@@ -8,7 +8,7 @@ import { CharacterAnimator } from './character-anim';
 import { Character, skinColorFor } from './character/character';
 import { dyeById } from './dyes';
 import { attachRailgun, disposeRailgun } from './character/gun';
-import { WornGearCtor, type GearLike } from '../economy/gear';
+import { WornGearCtor, wearLook, type GearLike } from '../economy/gear';
 import type { Loadout } from './items/types';
 import {
   PODIUM_FONT,
@@ -672,7 +672,7 @@ export class PodiumScene {
       let hat: WornHat | null = null;
       if (WornGearCtor && w.looks) {
         gear = new WornGearCtor(character);
-        for (const sl of LOOK_SLOTS) gear.setLook(sl, w.looks[sl] ?? null);
+        for (const sl of LOOK_SLOTS) wearLook(gear, sl, w.looks[sl] ?? null);
       } else if (WornGearCtor) {
         gear = new WornGearCtor(character);
         gear.setLook('hat', w.hatId && !w.hatId.endsWith('.none') ? { d: w.hatId } : null);

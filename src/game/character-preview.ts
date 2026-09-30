@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { WornHat } from './hats';
-import { WornGearCtor, type GearLike } from '../economy/gear';
+import { WornGearCtor, wearLook, type GearLike } from '../economy/gear';
 import { lookKey } from '../economy/look';
 import type { Loadout } from './items/types';
 import { CharacterAnimator } from './character-anim';
@@ -496,7 +496,7 @@ export class CharacterPreview {
       const now = this.cos.looks?.[slot];
       const before = prev?.looks?.[slot];
       if (prev && (now ? lookKey(now) : '') === (before ? lookKey(before) : '')) continue;
-      g.setLook(slot, now ?? null);
+      wearLook(g, slot, now ?? null);
     }
     this.measureHat();
   }
