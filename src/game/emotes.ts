@@ -79,9 +79,11 @@ function takeTheL(): ClipDef {
       { t: t0 + 0.22, e: 'out', root: [0, 0.075, 0, 0], hips: [0, -0.02, 0], fL: [-0.48, Y0 + 0.25, -0.06], fR: [0.12, Y0 - 0.02, 0.02], kL: [-1, 0.3, -0.5], hL: [-0.6, 1.24, -0.06], eL: [-0.3, -1, 0.3], r: { hips: [0, 0, -6], spine: [3, 0, 3], chest: [2, 0, 0], head: [6, 8 * sd, 4 * sd] } },
       { t: t0 + 0.42, e: 'in', root: [0, 0, 0, 0], fL: [-0.2, Y0 + 0.05, 0.02], fR: [0.12, Y0, 0.01] },
     );
-    glyph.push({ t: t0, e: "in", s: 0.42 }, { t: t0 + 0.22, e: "out", s: 0.47 });
+    glyph.push({ t: t0, e: "in", s: 0.32 }, { t: t0 + 0.22, e: "out", s: 0.36 });
   }
-  glyph[0].p = [0.0, 0.35, -0.3];
+  // On the forehead, just in front of the visor (head bone = neck top, 1.565 m),
+  // proud of the fist so the whole L reads from the front.
+  glyph[0].p = [0.0, 0.2, -0.36];
   return { duration: 4 * P, loop: true, keys, props: [{ kind: 'glyphL', bone: 'head', keys: glyph }] };
 }
 
