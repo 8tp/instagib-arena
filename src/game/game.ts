@@ -284,6 +284,11 @@ type TauntState = {
   cancelled: boolean; // jumped out: movement is yours again, the camera is returning
 };
 
+// Nameplate line-of-sight gate (fairness): recheck interval and the body
+// heights (m above the feet) sampled — knees, chest, head.
+const LOS_RECHECK_MS = 100;
+const LOS_SAMPLE_HEIGHTS = [0.5, 1.1, 1.7] as const;
+
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -398,6 +403,11 @@ export class Game {
   // names them; a big plate would sit over their hat).
   private showcasedPlate: { setPlateSuppressed(off: boolean): void } | null = null;
   private tauntHidden: THREE.Object3D[] = []; // opponents hidden from the taunt camera this frame
+  // Fairness: an enemy's nameplate floats above the head, so it could peek over
+  // a low wall while the body is fully hidden (a free wallhack). Plates of
+  // enemies with no body part in line of sight are hidden for the frame.
+  private plateHidden: THREE.Object3D[] = [];
+  private plateLos = new Map<object, { at: number; seen: boolean }>();
   private replayVmActive = false; // the viewmodel is showing the replay star's gun
   private replayVmStreak = -1;
   // Built viewmodel guns kept for reuse, keyed by custom-model key ('' = the
@@ -1031,6 +1041,60 @@ export class Game {
       o.dispose(); // the combatant left / was rebuilt
       this.outlines.delete(body);
     }
+  }
+
+  // Hide (for this frame) the plate of any enemy whose head, chest and knees are
+  // all blocked from the camera. Teammates keep their plates. The ray test is
+  // cached per combatant for LOS_RECHECK_MS so a full lobby stays cheap.
+  private gateEnemyPlates() {
+    const now = performance.now();
+    const eye = this.camera.position;
+    const tdm = this.netMode === 'tdm' && this.localTeam != null;
+    const alive = new Set<object>();
+    const gate = (key: object, plate: THREE.Sprite, pos: { x: number; y: number; z: number }) => {
+      alive.add(key);
+      if (!plate.visible) return;
+      let c = this.plateLos.get(key);
+      if (!c || now - c.at > LOS_RECHECK_MS) {
+        c = { at: now + Math.random() * 30, seen: this.bodyInSight(eye, pos) };
+        this.plateLos.set(key, c);
+      }
+      if (c.seen) return;
+      plate.visible = false;
+      this.plateHidden.push(plate);
+    };
+    for (const rp of this.remotePlayers.values()) {
+      if (tdm && rp.team === this.localTeam) continue;
+      gate(rp, rp.plate, rp.group.position);
+    }
+    if (this.bots) {
+      for (const b of this.bots.bots) {
+        if (this.localTeam != null && b.getTeam() === this.localTeam) continue;
+        gate(b, b.plate, b.state.pos);
+      }
+    }
+    for (const k of this.plateLos.keys()) if (!alive.has(k)) this.plateLos.delete(k);
+  }
+
+  private bodyInSight(eye: THREE.Vector3, feet: { x: number; y: number; z: number }): boolean {
+    for (const h of LOS_SAMPLE_HEIGHTS) {
+      const dx = feet.x - eye.x;
+      const dy = feet.y + h - eye.y;
+      const dz = feet.z - eye.z;
+      const dist = Math.hypot(dx, dy, dz);
+      if (dist < 1e-3) return true;
+      const dir = { x: dx / dist, y: dy / dist, z: dz / dist };
+      let blocked = false;
+      for (const b of this.map.boxes) {
+        const t = rayAabb(eye, dir, b);
+        if (t !== null && t > 0.05 && t < dist - 0.1) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) return true;
+    }
+    return false;
   }
 
   private markOutline(body: Character | null, show: boolean, style: OutlineStyle, frame: number) {
@@ -4346,7 +4410,10 @@ export class Game {
     this.postFx.muteVignette(this.reducedEffects);
     if (this.replay) this.hideLiveBodiesForReplay();
     this.syncEnemyOutlines();
+    this.gateEnemyPlates();
     this.postFx.render();
+    for (const g of this.plateHidden) g.visible = true;
+    this.plateHidden.length = 0;
     for (const g of this.tauntHidden) g.visible = true;
     this.tauntHidden.length = 0;
     for (const g of this.replayHidden) g.visible = true;
