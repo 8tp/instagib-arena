@@ -45,22 +45,27 @@ const TWO_PI = Math.PI * 2;
 
 // ── Weapon inspect ───────────────────────────────────────────────────────────
 // A CS-style look-over of the railgun: swing it up to the centre of the view,
-// turn it to show the side (muzzle toward the right of the screen), then roll it
-// to show the top, and lower it again. Each key is a viewmodel pose DELTA on top
-// of the resting placement (camera-local units / rad); segments ease with a
-// smootherstep so every key is a brief held pose. Authored at 2.5 s; the
-// reduced/low-intensity version is shorter and calmer.
+// turn it side-on (muzzle to the left) so its left flank — the charge window
+// and, on a Tracked gun, the kill-counter module — faces the camera square and
+// holds there a beat, then roll it to show the top, and lower it again. Each
+// key is a viewmodel pose DELTA on top of the resting placement (camera-local
+// units / rad); segments ease with a smootherstep so every key is a brief held
+// pose. Authored at 2.7 s; the reduced/low-intensity version is shorter and
+// calmer.
 type InspectKey = { t: number; x: number; y: number; z: number; rx: number; ry: number; rz: number };
 const INSPECT_KEYS: readonly InspectKey[] = [
   { t: 0, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
   // raise + centre, tilt the muzzle up a touch
-  { t: 0.5, x: -0.2, y: 0.12, z: 0.09, rx: 0.32, ry: 0.15, rz: 0.06 },
-  // show the side: yaw the barrel across the view, coils facing the camera
-  { t: 1.15, x: -0.17, y: 0.11, z: 0.11, rx: 0.1, ry: 1.38, rz: 0.1 },
+  { t: 0.5, x: -0.2, y: 0.15, z: 0.09, rx: 0.3, ry: 0.15, rz: 0.06 },
+  // side-on: the barrel across the view, the left flank lifted into the
+  // middle of the frame and rolled a hair toward the eye…
+  { t: 1.1, x: -0.215, y: 0.235, z: 0.135, rx: 0.08, ry: 1.36, rz: -0.1 },
+  // …held (a slow drift) long enough to read the counter
+  { t: 1.5, x: -0.205, y: 0.24, z: 0.14, rx: 0.1, ry: 1.3, rz: -0.14 },
   // show the top: roll the receiver up toward the camera
-  { t: 1.85, x: -0.2, y: 0.12, z: 0.1, rx: 0.5, ry: 0.55, rz: -0.85 },
+  { t: 2.1, x: -0.2, y: 0.12, z: 0.1, rx: 0.5, ry: 0.55, rz: -0.85 },
   // lower it back to the carry
-  { t: 2.5, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
+  { t: 2.7, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 },
 ];
 const INSPECT_SEC = INSPECT_KEYS[INSPECT_KEYS.length - 1].t;
 const INSPECT_OUT_RATE = 30; // 1/s exponential when cancelled — snaps back in ~0.1 s

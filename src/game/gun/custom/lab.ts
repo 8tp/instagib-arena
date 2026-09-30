@@ -9,7 +9,7 @@ import { Character, skinColorFor } from '../../character/character';
 import { CharacterAnimator } from '../../character-anim';
 import { GUN_SCALE } from '../../character/gun';
 import { ViewmodelMotion } from '../../viewmodel-motion';
-import { CUSTOM_GUN_KEYS } from './index';
+import { CUSTOM_GUN_BUILDS, CUSTOM_GUN_KEYS } from './index';
 import type { CustomGunState } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -25,6 +25,9 @@ import type { CustomGunState } from './types';
 //   ?sheet=tp                  third-person lineup (low LOD on combatants)
 //   ?sheet=turn&model=prism    turntable: 6 angles in the studio
 //   &reduced=1 &low=1          reduced effects / low spec
+//   &tracker=1                 show the real Tracked module (setStrangeKills)
+//   &tracker=plate             a stand-in 136 × 46 × 12 mm block at each
+//                              model's trackerMount (tracker.ts's frame)
 //   &map=reactor &yaw= &pitch= &cell=WxH
 //
 // Each first-person cell is captioned with the body's tris / draw calls /
@@ -139,6 +142,8 @@ export class CustomGunLab {
     const ticker = rail.group.getObjectByName('gun-ticker');
     const tick = ticker ? (ticker.onBeforeRender as unknown as () => void) : null;
     // &hide=motes,strips: hide VFX parts by name (debugging).
+    if (this.params.get('tracker') === '1') rail.setStrangeKills(1337);
+    if (this.params.get('tracker') === 'plate') this.trackerPlate(key, f, lod, rail.group);
     const hide = (this.params.get('hide') ?? '').split(',').filter(Boolean);
     if (hide.length) rail.group.traverse((o) => { if (hide.some((h) => o.name.includes(h))) o.visible = false; });
     return {
@@ -153,6 +158,36 @@ export class CustomGunLab {
       fire: () => rail.notifyFire(),
       dispose: () => rail.dispose(),
     };
+  }
+
+  // QA: a stand-in for the Tracked module in tracker.ts's local frame (x = 0
+  // is its back on the flank, it stands off toward −X, +Z toward the butt).
+  private trackerPlate(key: string, f: RailgunFinish, lod: 'high' | 'low', group: THREE.Group) {
+    let mount: { position: [number, number, number]; rotationY?: number; scale?: number } = { position: [-0.049, -0.013, -0.035] };
+    const build = CUSTOM_GUN_BUILDS[key];
+    if (build) {
+      const inst = build({ lod, finish: f });
+      if (inst.trackerMount) mount = inst.trackerMount;
+      inst.dispose();
+    }
+    const block = new THREE.Mesh(
+      new THREE.BoxGeometry(0.012, 0.046, 0.136),
+      new THREE.MeshStandardMaterial({ color: 0x1c2026, roughness: 0.4, metalness: 0.6 }),
+    );
+    block.position.x = -0.006;
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.112, 0.033),
+      new THREE.MeshBasicMaterial({ color: 0xff9a3c, toneMapped: false }),
+    );
+    face.rotation.y = -Math.PI / 2;
+    face.position.x = -0.0121;
+    const holder = new THREE.Group();
+    holder.position.set(...mount.position);
+    holder.rotation.y = mount.rotationY ?? 0;
+    holder.scale.setScalar(mount.scale ?? 1);
+    holder.add(block, face);
+    group.add(holder);
+    this.extra.push(block, face);
   }
 
   // Advance a subject through a named state (deterministic).

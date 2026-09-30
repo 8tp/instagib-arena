@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { CustomGunBuild } from './types';
 import {
-  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, helix, lathe, motes, stations, strips, surfaceMaterial, torusZ,
-  type Lod, type PartOpts,
+  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, helix, lathe, motes, mountPad, stations, strips, surfaceMaterial, torusZ,
+  type Lod, type PartOpts, type TrackerMount, type V3,
 } from './kit';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -23,8 +23,11 @@ export const COILS_Z = [-0.33, -0.49, -0.65] as const; // coil centres, rear →
 const COIL_LEN = 0.11;
 const COIL_R = 0.05;
 const GAUGE = { y: 0.103, z: -0.02, r: 0.03 };
+// Tracked module seat: a riveted steel plate low on the −X flank, under the
+// valve tube (face x −0.066, y −0.018, z −0.142 … +0.022).
+const MOUNT_FACE: V3 = [-0.066, -0.018, -0.06];
 
-function buildBody(lod: Lod): THREE.BufferGeometry {
+function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount } {
   const hi = lod === 'high';
   const SEG = hi ? 18 : 8;
   const p = new Parts();
@@ -59,6 +62,7 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
     p.add(cylZ(0.004, 0.004, 0.15, 4), { col: 0x100804, rough: 0.5, metal: 0, zone: Z.TUBE, glow: 1.4, at: [sx * 0.058, 0.03, -0.06] });
     for (const z of [0.03, -0.15]) p.add(cylZ(0.017, 0.017, 0.016, hi ? 12 : 6), { ...BRASS, at: [sx * 0.058, 0.03, z] });
   }
+  const mount = mountPad(p, { face: MOUNT_FACE, depth: 0.024, pad: IRON, rim: BRASS, hi });
   addGrip(p, { grip: RUBBER, guard: BRASS, hi });
   // Stock: iron frame round a big copper-banded capacitor can.
   p.add(chamferBox(0.03, 0.026, 0.3, 0.006), { ...IRON, at: [0, 0.052, 0.29] });
@@ -97,7 +101,7 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
     p.add(chamferBox(0.008, 0.01, 0.13, 0.003), { ...BRASS, at: [sx * 0.03, BARREL_Y, -0.845], rot: [0, sx * 0.12, 0] });
     p.add(new THREE.SphereGeometry(0.011, hi ? 12 : 6, hi ? 8 : 4), { ...COPPER, zone: Z.TORUS, glow: 1, at: [sx * 0.022, BARREL_Y, -0.912] });
   }
-  return p.merge(`tesla-${lod}`);
+  return { geo: p.merge(`tesla-${lod}`), mount };
 }
 
 const VERT = /* glsl */ `
@@ -239,7 +243,9 @@ const SPARKS = /* glsl */ `
 export const buildTesla: CustomGunBuild = ({ lod, finish }) => {
   const rig = new GunRig('tesla', lod, finish);
   const d = rig.drive;
-  rig.body(cached(`tesla-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'tesla', vert: VERT, frag: FRAG }));
+  const body = cached(`tesla-body-${lod}`, () => buildBody(lod));
+  rig.trackerMount = body.mount;
+  rig.body(body.geo, surfaceMaterial(d, { key: 'tesla', vert: VERT, frag: FRAG }));
   rig.add(strips(d, { key: 'tesla-arcs', count: lod === 'high' ? 14 : 8, segs: lod === 'high' ? 14 : 8, path: ARCS, pars: ARC_PARS, core: 2.2 }));
   rig.add(motes(d, { key: 'tesla', count: lod === 'high' ? 56 : 16, motion: SPARKS, soft: 6 }));
   return rig.instance();

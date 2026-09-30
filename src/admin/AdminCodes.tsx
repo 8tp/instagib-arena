@@ -5,14 +5,14 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import type { RedeemCodeWire, RewardBundle } from '../game/items/types';
 import { econ, reasonText, type Redemption } from '../economy/api';
-import { timeAgo } from '../economy/display';
 import { bundleSummary, specPreview } from '../inbox/reward';
 import { RewardView, SpecTile } from '../inbox/RewardBits';
 import { TicketGlyph } from '../menu/RewardTile';
 import { CheckLine, RewardBundleEditor } from './RewardBundleEditor';
 import { bundleDraftEmpty, draftToBundle, emptyBundle, type BundleDraft } from './spec-draft';
+import { ago, fmt } from './format';
 import { fmtWhen, fromLocalInput } from './time';
-import { Banner, Card, CopyButton, ExpiryField, Field, Seg, btnCls, inputCls, primaryCls, type Msg } from './ui';
+import { Avatar, Banner, CopyButton, Empty, ExpiryField, Field, Loading, Plate, Seg, type Msg } from './ui';
 import { useBundleCheck } from './useBundleCheck';
 
 const CODE_RE = /^[A-Z0-9][A-Z0-9-]{2,31}$/;
@@ -35,7 +35,7 @@ export function AdminCodesTab() {
   }, [load]);
 
   return (
-    <div>
+    <div className='flex flex-col gap-5'>
       <CreateCode onCreated={(c) => setCodes((cs) => [c, ...(cs ?? []).filter((x) => x.code !== c.code)])} />
       <CodeList codes={codes} error={listErr} onRefresh={() => void load()} onPatch={(c) => setCodes((cs) => (cs ?? []).map((x) => (x.code === c.code ? c : x)))} />
     </div>
@@ -47,9 +47,9 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
   const [mode, setMode] = useState<'auto' | 'custom'>('auto');
   const [code, setCode] = useState('');
   const [bundle, setBundle] = useState<BundleDraft>(() => ({ ...emptyBundle(), credits: '500' }));
-  const [maxUses, setMaxUses] = useState('0');
+  const [maxUses, setMaxUses] = useState(''); // '' = unlimited
   const [expires, setExpires] = useState('');
-  const [minLevel, setMinLevel] = useState('0');
+  const [minLevel, setMinLevel] = useState(''); // '' = anyone
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg>(null);
@@ -57,10 +57,13 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
   const check = useBundleCheck(bundle);
 
   const custom = mode === 'custom' ? code.trim() : '';
-  const codeErr = mode === 'custom' && custom && !CODE_RE.test(custom) ? '3–32 characters: A–Z, 0–9 and dashes (not leading).' : '';
+  const codeErr = mode === 'custom' && custom && !CODE_RE.test(custom) ? '3–32 characters: A–Z, 0–9 and dashes, not starting with a dash.' : '';
   const expiresAt = fromLocalInput(expires);
   const expiryErr = expires && expiresAt <= Date.now() ? 'Pick a time in the future.' : '';
-  const ready = check.state === 'ok' && !codeErr && !expiryErr && !(mode === 'custom' && !custom) && !busy;
+  const problem = check.state !== 'ok' ? (check.state === 'err' ? 'Fix the reward first.' : check.state === 'empty' ? 'Add credits, free rolls or an item.' : 'Checking the reward…') : mode === 'custom' && !custom ? 'Type the custom code.' : codeErr || expiryErr || '';
+  const ready = !problem && !busy;
+  const uses = Math.floor(Number(maxUses) || 0);
+  const lvl = Math.floor(Number(minLevel) || 0);
 
   const create = async () => {
     if (!ready) return;
@@ -69,9 +72,9 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
     const r = await econ.adminCreateCode({
       code: custom || undefined,
       reward: draftToBundle(bundle),
-      maxUses: Math.floor(Number(maxUses) || 0),
+      maxUses: uses,
       expiresAt: expiresAt || undefined,
-      minLevel: Math.floor(Number(minLevel) || 0),
+      minLevel: lvl,
       note: note.trim() || undefined,
     });
     setBusy(false);
@@ -82,11 +85,11 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
   };
 
   return (
-    <Card title='Create a code'>
-      <div className='grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]'>
-        <div className='flex min-w-0 flex-col gap-4'>
+    <Plate title='Create a code' sub='Players redeem it from the inbox. Everything here is checked by the server before you can create it.'>
+      <div className='grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]'>
+        <div className='flex min-w-0 flex-col gap-5'>
           <div className='flex flex-wrap items-end gap-3'>
-            <Field label='Code'>
+            <Field label='Code' as='div'>
               <Seg
                 label='Code source'
                 value={mode}
@@ -98,76 +101,99 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
               />
             </Field>
             {mode === 'custom' ? (
-              <label className='flex min-w-[14rem] flex-1 flex-col gap-1'>
-                <span className='sr-only'>Custom code</span>
-                <input
-                  className={`${inputCls} text-[15px] font-bold uppercase tracking-[0.14em]`}
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))}
-                  maxLength={32}
-                  placeholder='SUMMER-2026'
-                  autoComplete='off'
-                  spellCheck={false}
-                  aria-invalid={!!codeErr}
-                  data-field='code-custom'
-                />
-              </label>
+              <input
+                className='adm-input mono min-w-[14rem] flex-1 text-[15px] font-bold uppercase tracking-[0.14em]'
+                style={{ height: 34 }}
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''))}
+                maxLength={32}
+                placeholder='SUMMER-2026'
+                autoComplete='off'
+                spellCheck={false}
+                aria-label='Custom code'
+                aria-invalid={!!codeErr}
+                data-field='code-custom'
+              />
             ) : (
-              <span className='pb-1.5 font-mono text-[13px] tracking-[0.14em] text-white/40'>XXXX-XXXX-XXXX · made on create</span>
+              <span className='pb-2 font-mono text-[13px] tracking-[0.14em] text-[var(--adm-ink-3)]'>XXXX-XXXX-XXXX · generated on create</span>
             )}
           </div>
-          {codeErr && <div className='-mt-2 text-[11px] text-rose-300'>{codeErr}</div>}
+          {codeErr && <div className='-mt-3 text-[12px] text-[var(--adm-bad)]'>{codeErr}</div>}
 
-          <div>
-            <div className='mb-1.5 text-[10px] uppercase tracking-[0.14em] text-white/40'>Reward</div>
+          <div className='flex flex-col gap-2'>
+            <span className='adm-section-label'>Reward</span>
             <RewardBundleEditor value={bundle} onChange={setBundle} />
-            <div className='mt-2'>
-              <CheckLine check={check} emptyText='Add credits, free rolls or an item.' />
-            </div>
+            <CheckLine check={check} emptyText='Add credits, free rolls or an item.' />
           </div>
 
-          <div className='grid gap-3 sm:grid-cols-[1fr_1fr_minmax(0,2fr)]'>
-            <Field label='Max uses' hint='0 = unlimited'>
-              <input className={inputCls} inputMode='numeric' value={maxUses} onChange={(e) => setMaxUses(e.target.value.replace(/[^0-9]/g, ''))} data-field='code-max' />
+          <div className='flex flex-col gap-3 border-t border-[var(--adm-line)] pt-4'>
+            <span className='adm-section-label'>Limits</span>
+            <div className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.6fr)]'>
+              <Field label='Max uses' hint={uses ? `${fmt(uses)} total` : 'unlimited'} as='div'>
+                <input className='adm-input mono' aria-label='Max uses' inputMode='numeric' placeholder='Unlimited' value={maxUses} onChange={(e) => setMaxUses(e.target.value.replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, 7))} data-field='code-max' />
+                <span className='flex flex-wrap gap-1'>
+                  {[1, 100, 1000].map((n) => (
+                    <button key={n} type='button' className='adm-chip' aria-pressed={uses === n} onClick={() => setMaxUses(String(n))}>
+                      {fmt(n)}
+                    </button>
+                  ))}
+                  <button type='button' className='adm-chip' aria-pressed={uses === 0} onClick={() => setMaxUses('')}>
+                    Unlimited
+                  </button>
+                </span>
+              </Field>
+              <Field label='Min level' hint={lvl ? `Lv ${lvl}+` : 'anyone'} as='div'>
+                <input className='adm-input mono' aria-label='Min level' inputMode='numeric' placeholder='Anyone' value={minLevel} onChange={(e) => setMinLevel(e.target.value.replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, 3))} data-field='code-level' />
+                <span className='flex flex-wrap gap-1'>
+                  {[0, 5, 10, 25].map((n) => (
+                    <button key={n} type='button' className='adm-chip' aria-pressed={lvl === n} onClick={() => setMinLevel(n ? String(n) : '')}>
+                      {n ? `Lv ${n}` : 'Any'}
+                    </button>
+                  ))}
+                </span>
+              </Field>
+              <ExpiryField value={expires} onChange={setExpires} />
+            </div>
+            {expiryErr && <div className='text-[12px] text-[var(--adm-bad)]'>{expiryErr}</div>}
+            <Field label='Note' hint='shown to players on their receipt · ≤ 200'>
+              <input className='adm-input' maxLength={200} value={note} onChange={(e) => setNote(e.target.value)} placeholder='Thanks for playing Instagib Arena.' data-field='code-note' />
             </Field>
-            <Field label='Min level' hint='0 = anyone'>
-              <input className={inputCls} inputMode='numeric' value={minLevel} onChange={(e) => setMinLevel(e.target.value.replace(/[^0-9]/g, ''))} data-field='code-level' />
-            </Field>
-            <ExpiryField value={expires} onChange={setExpires} />
           </div>
-          {expiryErr && <div className='-mt-2 text-[11px] text-rose-300'>{expiryErr}</div>}
-          <Field label='Note' hint='shown to players on their receipt · ≤ 200'>
-            <input className={inputCls} maxLength={200} value={note} onChange={(e) => setNote(e.target.value)} placeholder='Thanks for playing Instagib Arena.' data-field='code-note' />
-          </Field>
 
           <div className='flex flex-wrap items-center gap-3'>
-            <button type='button' className={primaryCls} disabled={!ready} onClick={() => void create()} data-action='code-create'>
+            <button type='button' className='adm-btn primary' disabled={!ready} onClick={() => void create()} data-action='code-create'>
               {busy ? 'Creating…' : 'Create code'}
             </button>
-            <Banner msg={msg} />
+            {problem && <span className='text-[12px] text-[var(--adm-ink-3)]'>{problem}</span>}
           </div>
+          <Banner msg={msg} onClose={() => setMsg(null)} />
 
           {made && (
-            <div className='flex flex-wrap items-center gap-3 rounded-md border border-emerald-400/40 bg-emerald-400/[0.06] px-4 py-3' role='status' data-code-created>
-              <span className='text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-300'>Created</span>
-              <span className='font-display text-2xl font-bold tracking-[0.12em] text-white'>{made.code}</span>
+            <div className='flex flex-wrap items-center gap-x-4 gap-y-2 border border-[rgba(63,214,154,0.4)] bg-[rgba(63,214,154,0.06)] px-4 py-3' role='status' data-code-created>
+              <span className='text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--adm-good)]'>Created</span>
+              <span className='font-mono text-[22px] font-bold tracking-[0.12em] text-white'>{made.code}</span>
               <CopyButton text={made.code} />
-              <span className='font-mono text-[11px] text-white/45'>
-                {made.maxUses ? `${made.maxUses} uses` : 'unlimited uses'} · {made.expiresAt ? `expires ${fmtWhen(made.expiresAt)}` : 'never expires'}
+              <span className='text-[12px] text-[var(--adm-ink-2)]'>
+                {made.maxUses ? `${fmt(made.maxUses)} uses` : 'Unlimited uses'} · {made.expiresAt ? `expires ${fmtWhen(made.expiresAt)}` : 'never expires'}
                 {made.minLevel ? ` · Lv ${made.minLevel}+` : ''}
               </span>
             </div>
           )}
         </div>
 
-        <aside className='flex flex-col gap-2 lg:sticky lg:top-4 lg:self-start'>
-          <div className='text-[10px] uppercase tracking-[0.18em] text-white/40'>Player gets</div>
-          <div className='rounded-lg border border-cyan-400/20 bg-[radial-gradient(100%_70%_at_50%_0%,rgba(103,232,249,0.1),transparent_70%)] p-4'>
-            {bundleDraftEmpty(bundle) ? <div className='py-6 text-center text-[12px] text-white/35'>Nothing yet.</div> : <RewardView bundle={draftToBundle(bundle)} tile={84} />}
+        <aside className='flex flex-col gap-2 lg:sticky lg:top-[120px] lg:self-start'>
+          <span className='adm-section-label'>Player gets</span>
+          <div className='border border-[var(--adm-line)] bg-[radial-gradient(100%_70%_at_50%_0%,rgba(91,227,255,0.08),transparent_70%)] p-4'>
+            {bundleDraftEmpty(bundle) ? <Empty title='Nothing yet'>Add credits, rolls or items.</Empty> : <RewardView bundle={draftToBundle(bundle)} tile={84} />}
+          </div>
+          <div className='text-[12px] leading-relaxed text-[var(--adm-ink-3)]'>
+            {uses ? `First ${fmt(uses)} players` : 'Every player'}
+            {lvl ? ` at level ${lvl}+` : ''}
+            {expiresAt ? `, until ${fmtWhen(expiresAt)}` : ', with no end date'}. One redemption per account.
           </div>
         </aside>
       </div>
-    </Card>
+    </Plate>
   );
 }
 
@@ -176,18 +202,18 @@ function RewardMini({ reward }: { reward: RewardBundle }) {
   const items = reward.items ?? [];
   return (
     <div className='flex flex-wrap items-center gap-1.5'>
-      {!!reward.credits && <span className='rounded bg-amber-300/10 px-1.5 py-0.5 font-display text-[13px] font-bold text-amber-200'>⛁ {reward.credits.toLocaleString()}</span>}
+      {!!reward.credits && <span className='bg-[rgba(243,193,82,0.1)] px-1.5 py-0.5 font-mono text-[12px] font-semibold text-[var(--adm-credit)]'>⛁ {reward.credits.toLocaleString()}</span>}
       {!!reward.rolls && (
-        <span className='inline-flex items-center gap-1 rounded bg-cyan-300/10 px-1.5 py-0.5 font-display text-[13px] font-bold text-cyan-200'>
+        <span className='inline-flex items-center gap-1 bg-[var(--adm-rail-dim)] px-1.5 py-0.5 font-mono text-[12px] font-semibold text-[var(--adm-rail)]'>
           <TicketGlyph size={12} /> {reward.rolls}
         </span>
       )}
       {items.slice(0, 4).map((s, i) => (
         <span key={i} title={bundleSummary({ items: [s] })}>
-          <SpecTile inst={specPreview(s, i)} size={34} />
+          <SpecTile inst={specPreview(s, i)} size={32} />
         </span>
       ))}
-      {items.length > 4 && <span className='text-[11px] text-white/45'>+{items.length - 4}</span>}
+      {items.length > 4 && <span className='text-[12px] text-[var(--adm-ink-3)]'>+{items.length - 4}</span>}
     </div>
   );
 }
@@ -196,12 +222,12 @@ function UsesBar({ uses, max }: { uses: number; max: number }) {
   const frac = max > 0 ? Math.min(1, uses / max) : 0;
   return (
     <div className='min-w-[84px]'>
-      <div className='tabular-nums text-white/80'>
-        {uses.toLocaleString()} <span className='text-white/35'>/ {max > 0 ? max.toLocaleString() : '∞'}</span>
+      <div className='font-mono tabular-nums text-[var(--adm-ink)]'>
+        {uses.toLocaleString()} <span className='text-[var(--adm-ink-3)]'>/ {max > 0 ? max.toLocaleString() : '∞'}</span>
       </div>
       {max > 0 && (
-        <div className='mt-1 h-1 w-full overflow-hidden rounded bg-white/10'>
-          <div className={`h-full ${frac >= 1 ? 'bg-rose-400' : 'bg-cyan-400'}`} style={{ width: `${frac * 100}%` }} />
+        <div className='mt-1 h-1 w-full bg-[var(--adm-line-2)]'>
+          <div className='h-full' style={{ width: `${frac * 100}%`, background: frac >= 1 ? 'var(--adm-warn)' : 'var(--adm-rail)' }} />
         </div>
       )}
     </div>
@@ -221,32 +247,62 @@ function ActiveToggle({ code, onPatch }: { code: RedeemCodeWire; onPatch: (c: Re
   };
   return (
     <span className='flex items-center gap-2'>
-      <button
-        type='button'
-        role='switch'
-        aria-checked={code.active}
-        aria-label={`${code.code} active`}
-        disabled={busy}
-        onClick={() => void flip()}
-        className={`relative h-5 w-9 shrink-0 rounded-full border transition disabled:opacity-50 ${code.active ? 'border-emerald-400/60 bg-emerald-400/30' : 'border-white/20 bg-white/5'}`}
-        data-action='code-active'
-      >
-        <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all ${code.active ? 'left-[18px] bg-emerald-300' : 'left-0.5 bg-white/40'}`} />
+      <button type='button' role='switch' aria-checked={code.active} aria-label={`${code.code} active`} disabled={busy} onClick={() => void flip()} data-action='code-active' className='disabled:opacity-50'>
+        <span className='adm-switch block' data-on={code.active ? '' : undefined} aria-hidden />
       </button>
-      {err && <span className='text-[10px] text-rose-300'>{err}</span>}
+      {err && <span className='text-[11px] text-[var(--adm-bad)]'>{err}</span>}
     </span>
   );
 }
 
-function statusOf(c: RedeemCodeWire): { text: string; cls: string } {
-  if (!c.active) return { text: 'Off', cls: 'text-white/40' };
-  if (c.expiresAt && c.expiresAt <= Date.now()) return { text: 'Expired', cls: 'text-rose-300' };
-  if (c.maxUses > 0 && c.uses >= c.maxUses) return { text: 'Used up', cls: 'text-amber-300' };
-  return { text: 'Live', cls: 'text-emerald-300' };
+type Status = 'live' | 'off' | 'expired' | 'used';
+function statusOf(c: RedeemCodeWire): Status {
+  if (!c.active) return 'off';
+  if (c.expiresAt && c.expiresAt <= Date.now()) return 'expired';
+  if (c.maxUses > 0 && c.uses >= c.maxUses) return 'used';
+  return 'live';
+}
+const STATUS: Record<Status, { label: string; color: string }> = {
+  live: { label: 'Live', color: 'var(--adm-good)' },
+  off: { label: 'Off', color: 'var(--adm-ink-3)' },
+  expired: { label: 'Expired', color: 'var(--adm-bad)' },
+  used: { label: 'Used up', color: 'var(--adm-warn)' },
+};
+
+function Redemptions({ code, rs }: { code: string; rs: Redemption[] | 'loading' | 'error' | undefined }) {
+  if (rs === 'loading' || rs === undefined) return <Loading rows={2} label='Loading redemptions' />;
+  if (rs === 'error') return <span className='text-[var(--adm-bad)]'>Couldn’t load redemptions. Close and reopen to retry.</span>;
+  if (rs.length === 0) return <span className='text-[var(--adm-ink-3)]'>Nobody has redeemed {code} yet.</span>;
+  const first = rs.reduce((a, b) => (b.at < a.at ? b : a));
+  const last = rs.reduce((a, b) => (b.at > a.at ? b : a));
+  return (
+    <div className='flex flex-col gap-3'>
+      <div className='flex flex-wrap gap-x-6 gap-y-1 text-[12px] text-[var(--adm-ink-2)]'>
+        <span>
+          <b className='font-mono text-[var(--adm-ink)]'>{fmt(rs.length)}</b> redemption{rs.length === 1 ? '' : 's'}
+          {rs.length >= 500 ? ' (latest 500)' : ''}
+        </span>
+        <span>First {new Date(first.at).toLocaleString()}</span>
+        <span>Latest {ago(last.at)}</span>
+      </div>
+      <ul className='grid max-h-[260px] grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-x-6 gap-y-1.5 overflow-y-auto'>
+        {rs.map((x, i) => (
+          <li key={`${x.player}-${i}`} className='flex items-center gap-2'>
+            <Avatar name={x.player} />
+            <span className='min-w-0 flex-1 truncate text-[var(--adm-ink)]'>{x.player}</span>
+            <span className='shrink-0 text-[12px] text-[var(--adm-ink-3)]' title={new Date(x.at).toLocaleString()}>
+              {ago(x.at)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function CodeList({ codes, error, onRefresh, onPatch }: { codes: RedeemCodeWire[] | null; error: string; onRefresh: () => void; onPatch: (c: RedeemCodeWire) => void }) {
   const [q, setQ] = useState('');
+  const [status, setStatus] = useState<Status | 'all'>('all');
   const [open, setOpen] = useState<string | null>(null);
   const [reds, setReds] = useState<Record<string, Redemption[] | 'loading' | 'error'>>({});
   const drill = async (code: string) => {
@@ -257,106 +313,110 @@ function CodeList({ codes, error, onRefresh, onPatch }: { codes: RedeemCodeWire[
     setReds((m) => ({ ...m, [code]: r.ok ? r.redemptions : 'error' }));
   };
   const t = q.trim().toUpperCase();
-  const shown = (codes ?? []).filter((c) => !t || c.code.includes(t) || c.note.toUpperCase().includes(t));
+  const all = codes ?? [];
+  const counts = all.reduce<Record<string, number>>((m, c) => ((m[statusOf(c)] = (m[statusOf(c)] ?? 0) + 1), m), {});
+  const shown = all.filter((c) => (status === 'all' || statusOf(c) === status) && (!t || c.code.includes(t) || c.note.toUpperCase().includes(t)));
   return (
-    <Card
-      title={`Codes${codes ? ` · ${codes.length}` : ''}`}
+    <Plate
+      title='Codes'
+      sub={codes ? `${fmt(all.length)} total · ${fmt(counts.live ?? 0)} live` : undefined}
+      flush
       right={
-        <span className='flex items-center gap-2'>
-          <input className={inputCls} placeholder='Filter…' value={q} onChange={(e) => setQ(e.target.value)} aria-label='Filter codes' />
-          <button type='button' className={btnCls} onClick={onRefresh}>
+        <>
+          <div className='flex flex-wrap gap-1' role='group' aria-label='Filter by status'>
+            {(['all', 'live', 'off', 'expired', 'used'] as const).map((s) => (
+              <button key={s} type='button' className='adm-chip' aria-pressed={status === s} onClick={() => setStatus(s)}>
+                {s === 'all' ? 'All' : STATUS[s].label}
+                <span className='n'>{s === 'all' ? all.length : counts[s] ?? 0}</span>
+              </button>
+            ))}
+          </div>
+          <input className='adm-input w-44' style={{ height: 28 }} placeholder='Find code or note…' value={q} onChange={(e) => setQ(e.target.value)} aria-label='Filter codes' />
+          <button type='button' className='adm-btn sm' onClick={onRefresh}>
             Refresh
           </button>
-        </span>
+        </>
       }
     >
-      {error && <Banner msg={{ tone: 'err', text: error }} />}
+      {error && (
+        <div className='px-4 pb-3'>
+          <Banner msg={{ tone: 'err', text: error }} />
+        </div>
+      )}
       {codes === null ? (
-        <div className='py-8 text-center text-[12px] uppercase tracking-[0.2em] text-white/35'>Loading…</div>
+        <div className='px-4 pb-4'>
+          <Loading />
+        </div>
       ) : shown.length === 0 ? (
-        <div className='py-8 text-center text-[12px] text-white/35'>{codes.length ? 'No codes match.' : 'No codes yet — make one above.'}</div>
+        <Empty title={all.length ? 'No codes match.' : 'No codes yet.'}>{all.length ? 'Clear the filter to see every code.' : 'Create one above — it shows up here.'}</Empty>
       ) : (
-        <div className='overflow-x-auto'>
-          <table className='w-full text-left font-mono text-[12px]' data-code-list>
-            <thead className='text-[10px] uppercase tracking-[0.14em] text-white/40'>
+        <div className='adm-scroll max-h-[720px]'>
+          <table className='adm-table' data-code-list>
+            <thead>
               <tr>
-                <th className='py-2 pr-3'>Code</th>
-                <th className='py-2 pr-3'>Reward</th>
-                <th className='py-2 pr-3'>Uses</th>
-                <th className='py-2 pr-3'>Expires</th>
-                <th className='py-2 pr-3'>Min Lv</th>
-                <th className='py-2 pr-3'>Active</th>
-                <th className='py-2 pr-3'>Created</th>
-                <th className='py-2' />
+                <th>Code</th>
+                <th>Reward</th>
+                <th>Uses</th>
+                <th>Expires</th>
+                <th className='num'>Min Lv</th>
+                <th>Active</th>
+                <th>Created</th>
+                <th />
               </tr>
             </thead>
             <tbody>
               {shown.map((c) => {
-                const st = statusOf(c);
-                const rs = reds[c.code];
+                const st = STATUS[statusOf(c)];
+                const isOpen = open === c.code;
                 return (
                   <Fragment key={c.code}>
-                    <tr className={`border-t border-white/5 align-middle ${c.active ? '' : 'opacity-60'}`} data-code={c.code}>
-                      <td className='py-2 pr-3'>
+                    <tr data-code={c.code} style={c.active ? undefined : { opacity: 0.6 }}>
+                      <td>
                         <div className='flex items-center gap-2'>
-                          <b className='text-[13px] tracking-[0.08em] text-white'>{c.code}</b>
+                          <b className='font-mono text-[13px] tracking-[0.06em] text-[var(--adm-ink)]'>{c.code}</b>
                           <CopyButton text={c.code} />
                         </div>
-                        <div className='mt-0.5 flex gap-2 text-[10px]'>
-                          <span className={`font-bold uppercase tracking-[0.12em] ${st.cls}`}>{st.text}</span>
-                          {c.note && <span className='max-w-[220px] truncate text-white/35' title={c.note}>{c.note}</span>}
+                        <div className='mt-1 flex items-center gap-2 text-[11px]'>
+                          <span className='inline-flex items-center gap-1 font-semibold' style={{ color: st.color }}>
+                            <span className='inline-block h-1.5 w-1.5' style={{ background: st.color }} />
+                            {st.label}
+                          </span>
+                          {c.note && (
+                            <span className='max-w-[220px] truncate text-[var(--adm-ink-3)]' title={c.note}>
+                              {c.note}
+                            </span>
+                          )}
                         </div>
                       </td>
-                      <td className='py-2 pr-3'>
+                      <td>
                         <RewardMini reward={c.reward} />
                       </td>
-                      <td className='py-2 pr-3'>
+                      <td>
                         <UsesBar uses={c.uses} max={c.maxUses} />
                       </td>
-                      <td className={`py-2 pr-3 ${c.expiresAt && c.expiresAt <= Date.now() ? 'text-rose-300' : 'text-white/60'}`}>{c.expiresAt ? fmtWhen(c.expiresAt) : <span className='text-white/30'>never</span>}</td>
-                      <td className='py-2 pr-3 text-white/60'>{c.minLevel || <span className='text-white/30'>—</span>}</td>
-                      <td className='py-2 pr-3'>
+                      <td className='whitespace-nowrap' style={{ color: c.expiresAt && c.expiresAt <= Date.now() ? 'var(--adm-bad)' : undefined }}>
+                        {c.expiresAt ? fmtWhen(c.expiresAt) : <span className='text-[var(--adm-ink-3)]'>Never</span>}
+                      </td>
+                      <td className='num'>{c.minLevel || <span className='text-[var(--adm-ink-3)]'>—</span>}</td>
+                      <td>
                         <ActiveToggle code={c} onPatch={onPatch} />
                       </td>
-                      <td className='py-2 pr-3 text-white/50'>
+                      <td className='whitespace-nowrap'>
                         {c.createdBy}
-                        <div className='text-[10px] text-white/30' title={new Date(c.createdAt).toLocaleString()}>
-                          {timeAgo(c.createdAt)}
+                        <div className='text-[11px] text-[var(--adm-ink-3)]' title={new Date(c.createdAt).toLocaleString()}>
+                          {ago(c.createdAt)}
                         </div>
                       </td>
-                      <td className='py-2 text-right'>
-                        <button type='button' className={btnCls} onClick={() => void drill(c.code)} aria-expanded={open === c.code} data-action='code-redemptions'>
-                          Redemptions
+                      <td className='text-right'>
+                        <button type='button' className='adm-btn sm' onClick={() => void drill(c.code)} aria-expanded={isOpen} data-action='code-redemptions'>
+                          {isOpen ? 'Hide' : `Redemptions${c.uses ? ` · ${fmt(c.uses)}` : ''}`}
                         </button>
                       </td>
                     </tr>
-                    {open === c.code && (
-                      <tr className='bg-black/30'>
-                        <td colSpan={8} className='px-3 py-3'>
-                          {rs === 'loading' || rs === undefined ? (
-                            <span className='text-white/40'>Loading…</span>
-                          ) : rs === 'error' ? (
-                            <span className='text-rose-300'>Couldn’t load redemptions.</span>
-                          ) : rs.length === 0 ? (
-                            <span className='text-white/40'>Nobody has redeemed {c.code} yet.</span>
-                          ) : (
-                            <>
-                              <div className='mb-2 text-[10px] uppercase tracking-[0.14em] text-white/40'>
-                                {rs.length} redemption{rs.length === 1 ? '' : 's'}
-                                {rs.length >= 500 ? ' (latest 500)' : ''}
-                              </div>
-                              <ul className='grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-x-6 gap-y-1'>
-                                {rs.map((x, i) => (
-                                  <li key={`${x.player}-${i}`} className='flex justify-between gap-3'>
-                                    <span className='truncate text-white/85'>{x.player}</span>
-                                    <span className='shrink-0 text-white/40' title={new Date(x.at).toLocaleString()}>
-                                      {timeAgo(x.at)}
-                                    </span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </>
-                          )}
+                    {isOpen && (
+                      <tr>
+                        <td colSpan={8} className='bg-[var(--adm-plate)]' style={{ padding: '12px 16px' }}>
+                          <Redemptions code={c.code} rs={reds[c.code]} />
                         </td>
                       </tr>
                     )}
@@ -367,6 +427,6 @@ function CodeList({ codes, error, onRefresh, onPatch }: { codes: RedeemCodeWire[
           </table>
         </div>
       )}
-    </Card>
+    </Plate>
   );
 }

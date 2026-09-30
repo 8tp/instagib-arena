@@ -149,7 +149,7 @@ export class KillstreakEyes {
     const f = this.f;
     const rib = this.rib;
     rib.begin();
-    // Cerebral Discharge: two temple arcs and a bridge across the brow.
+    // Neural Arc (ks.cerebral): two temple arcs and a bridge across the brow.
     if (fx === 'ks.cerebral' && !calm) {
       for (let a = 0; a < 3; a++) {
         this.arcT[a] -= dt;
@@ -276,7 +276,7 @@ export class KillstreakEyes {
           break;
         }
         default: {
-          // Hypno-Beam: rings expanding off each eye, alternating hue, and a
+          // Mesmer Beam (ks.hypno): rings expanding off each eye, alternating hue, and a
           // turning spiral of dots.
           if (j < 3) {
             const ph = (t * 0.85 + j / 3) % 1;

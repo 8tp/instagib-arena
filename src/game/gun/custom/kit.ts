@@ -35,6 +35,9 @@ export type Lod = 'high' | 'low';
 
 // Palette slots (the finish's colours, so a recolour is a uniform write).
 export const PAL = { LIT: 0, BODY: 1, METAL: 2, METAL_LT: 3, ACCENT: 4, HOT: 5 } as const;
+// Zones reserved by the kit (the models use 0 … 13): 14 = fastener heads,
+// 15 = stippled grip. Handled before the model's hook, which ignores them.
+export const KZ = { FASTENER: 14, GRIP: 15 } as const;
 
 // ── Drive: the uniforms every material of one gun shares ───────────────────
 
@@ -134,13 +137,18 @@ float cgFill(float z, float z0, float z1) {
   float p = clamp((z - z0) / (z1 - z0), 0.0, 1.0);
   return smoothstep(p - 0.02, p + 0.06, f * 1.06);
 }
-// Bloom-safe cap (fairness): away from the muzzle tip nothing exceeds 1.3
-// linear (under the 1.5 bloom threshold), so no flare or streak glow can
-// bloom toward the crosshair; only right at the tip may a shot blaze.
-vec3 cgCap(vec3 c, vec3 p) {
+// Bloom-safe cap (fairness). The bloom threshold is 1.5 linear. At REST
+// nothing blooms: lit body emissive stops at 1.2, and each additive VFX layer
+// at 0.7 (layers stack — a strip over a mote over a glowing part must still
+// sum under ~1.4). Only the DISCHARGE lifts the cap (uFire, ~0.25 s): to 1.3
+// along the gun, and right at the muzzle tip high enough to blaze.
+vec3 cgCapK(vec3 c, vec3 p, float rest) {
   float near = 1.0 - smoothstep(0.05, 0.14, distance(p, vec3(0.0, ${BARREL_Y.toFixed(3)}, ${MUZZLE_Z.toFixed(3)})));
-  return min(c, vec3(mix(1.3, 6.0, near)));
+  float shot = clamp(uFire * 4.0, 0.0, 1.0);
+  return min(max(c, vec3(0.0)), vec3(mix(rest, mix(1.3, 6.0, near), shot)));
 }
+vec3 cgCap(vec3 c, vec3 p) { return cgCapK(c, p, 1.2); }
+vec3 cgCapFx(vec3 c, vec3 p) { return cgCapK(c, p, 0.7); }
 mat3 cgRotX(float a) { float c = cos(a), s = sin(a); return mat3(1, 0, 0, 0, c, s, 0, -s, c); }
 mat3 cgRotY(float a) { float c = cos(a), s = sin(a); return mat3(c, 0, -s, 0, 1, 0, s, 0, c); }
 mat3 cgRotZ(float a) { float c = cos(a), s = sin(a); return mat3(c, s, 0, -s, c, 0, 0, 0, 1); }
@@ -245,6 +253,94 @@ export function helix(radius: number, wire: number, z0: number, z1: number, turn
     pts.push(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, z0 + (z1 - z0) * t));
   }
   return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), n, wire, radial, false);
+}
+
+// Tube along a CatmullRom whose radius eases r0 → r1 from the first point to
+// the last (horns, talons, claws, tapering spars). Normals stay the tube's.
+export function taperTube(pts: V3[], r0: number, r1: number, seg: number, radial: number, ease = 1): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(p[0], p[1], p[2])));
+  const g = new THREE.TubeGeometry(curve, seg, 1, radial, false);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const c = new THREE.Vector3();
+  const v = new THREE.Vector3();
+  for (let i = 0; i <= seg; i++) {
+    curve.getPointAt(i / seg, c);
+    const r = r0 + (r1 - r0) * Math.pow(i / seg, ease);
+    for (let j = 0; j <= radial; j++) {
+      const k = i * (radial + 1) + j;
+      v.fromBufferAttribute(pos, k).sub(c).multiplyScalar(r).add(c);
+      pos.setXYZ(k, v.x, v.y, v.z);
+    }
+  }
+  return g;
+}
+
+// Twist a geometry about the axis (0, y0, *) by `rate` radians per unit of z
+// (a sceptre's twisted flutes, a drill-cut barrel). In place; returns it.
+export function twistZ(g: THREE.BufferGeometry, rate: number, y0 = 0): THREE.BufferGeometry {
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const nor = g.attributes.normal as THREE.BufferAttribute | undefined;
+  for (let i = 0; i < pos.count; i++) {
+    const a = pos.getZ(i) * rate;
+    const c = Math.cos(a), s = Math.sin(a);
+    const x = pos.getX(i), y = pos.getY(i) - y0;
+    pos.setXY(i, x * c - y * s, y * s + x * c + y0);
+    if (nor) {
+      const nx = nor.getX(i), ny = nor.getY(i);
+      nor.setXY(i, nx * c - ny * s, ny * c + nx * s);
+    }
+  }
+  return g;
+}
+
+// Hex-head fastener (bolt head + washer) whose axis points along `axis`
+// (outward from the surface it sits on). Tiny: high LOD only.
+export function boltGeo(r: number, axis: 'x' | '-x' | 'y' | 'z' | '-z'): THREE.BufferGeometry {
+  const head = new THREE.CylinderGeometry(r, r, r * 0.9, 6).translate(0, r * 0.65, 0);
+  const washer = new THREE.CylinderGeometry(r * 1.35, r * 1.35, r * 0.35, 8).translate(0, r * 0.18, 0);
+  const g = mergeGeometries([head.toNonIndexed(), washer.toNonIndexed()], false) ?? head;
+  head.dispose();
+  washer.dispose();
+  if (axis === 'x') g.rotateZ(-Math.PI / 2);
+  else if (axis === '-x') g.rotateZ(Math.PI / 2);
+  else if (axis === 'z') g.rotateX(Math.PI / 2);
+  else if (axis === '-z') g.rotateX(-Math.PI / 2);
+  return g;
+}
+
+// A row/set of fasteners (kit zone: bright machined heads) at the given points.
+export function bolts(p: Parts, at: V3[], r: number, axis: 'x' | '-x' | 'y' | 'z' | '-z', o: PartOpts): void {
+  for (const a of at) p.add(boltGeo(r, axis), { ...o, zone: KZ.FASTENER, glow: 0, at: a, flat: true });
+}
+
+// ── Tracked kill-counter mount ──────────────────────────────────────────────
+
+export type TrackerMount = NonNullable<CustomGunInstance['trackerMount']>;
+
+// A flat mounting pad on the camera-facing −X flank for the Tracked module
+// (gun/tracker.ts: a 136 × 46 mm housing ~12 mm deep whose local x = 0 is
+// its back, display facing −X, +Z toward the butt — so a flank parallel to Z
+// needs rotationY 0). `face` = the centre of the pad's outer face (the
+// returned mount position); the pad is `len` along Z × `h` along Y and sinks
+// `depth` into the gun. Sized a little over the housing so a lip (top and
+// bottom) and a bolt at each end stay visible round it (high LOD).
+export function mountPad(
+  p: Parts,
+  o: { face: V3; len?: number; h?: number; depth?: number; pad: PartOpts; rim?: PartOpts; hi: boolean; bolts?: boolean },
+): TrackerMount {
+  const [x, y, z] = o.face;
+  const len = o.len ?? 0.164;
+  const h = o.h ?? 0.056;
+  const depth = o.depth ?? 0.02;
+  p.add(chamferBox(depth, h, len, Math.min(0.006, depth * 0.3)), { ...o.pad, at: [x + depth / 2, y, z], flat: true });
+  if (o.hi && o.rim) {
+    // A thin raised lip framing the seat (top + bottom), proud by ~1.5 mm.
+    for (const sy of [-1, 1]) p.add(chamferBox(0.004, 0.004, len * 0.96, 0.0012), { ...o.rim, at: [x - 0.0005, y + sy * (h / 2 - 0.002), z], flat: true });
+  }
+  if (o.hi && o.bolts !== false) {
+    bolts(p, [[x, y, z - len / 2 + 0.006], [x, y, z + len / 2 - 0.006]], 0.0042, '-x', o.rim ?? o.pad);
+  }
+  return { position: [x, y, z], rotationY: 0, scale: 1 };
 }
 
 // ── Parts: merge solid pieces into one body geometry ───────────────────────
@@ -428,6 +524,16 @@ export function surfaceMaterial(drive: Drive, o: SurfaceOpts): THREE.MeshStandar
           float gmask = vSurf.z;
           float fres = pow(1.0 - clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0), 2.0);
           vec3 glow = vec3(0.0);
+          if (zone == ${KZ.GRIP}) {
+            // Kit: stippled grip panels (fine pits break up the highlight).
+            float st = cgNoise(vOP * 620.0);
+            diffuseColor.rgb *= 0.78 + 0.34 * st;
+            roughnessFactor = clamp(roughnessFactor + 0.12 - 0.2 * st, 0.3, 1.0);
+          } else if (zone == ${KZ.FASTENER}) {
+            // Kit: machined fastener heads (bright rim, dark socket).
+            roughnessFactor = min(roughnessFactor, 0.3);
+            metalnessFactor = 1.0;
+          }
           ${o.frag}
           totalEmissiveRadiance += cgCap(glow, vOP);
         }`,
@@ -520,7 +626,7 @@ export function motes(drive: Drive, o: MotesOpts): THREE.Mesh {
         float cgHalfExtent = max(px, 1.2) * depth / uPx * 0.5;
         mv.xy += corner * cgHalfExtent;
         gl_Position = projectionMatrix * mv;
-        vCol = cgCap(col * max(a, 0.0), p) * min(1.0, (px * px) / 1.44);
+        vCol = cgCapFx(col * max(a, 0.0), p) * min(1.0, (px * px) / 1.44);
         vQ = corner;
         if (a <= 0.002 || seed.w > uDensity) gl_Position = vec4(-9.0, -9.0, -9.0, 1.0);
       }
@@ -630,7 +736,7 @@ export function strips(drive: Drive, o: StripsOpts): THREE.Mesh {
         float sc = length(modelViewMatrix[0].xyz);
         v0.xyz += normalize(side + vec3(1e-6)) * arc.z * w * sc;
         gl_Position = projectionMatrix * v0;
-        vCol = cgCap(c * max(a, 0.0), p0);
+        vCol = cgCapFx(c * max(a, 0.0), p0);
         vSide = arc.z;
         // Cull whole strips only (per-vertex culling would stretch triangles).
         if (rnd.w > uDensity) gl_Position = vec4(-9.0, -9.0, -9.0, 1.0);
@@ -709,7 +815,7 @@ export function billboard(drive: Drive, o: BillboardOpts): THREE.Mesh {
         vec3 col = vec3(0.0);
         float a = 1.0;
         ${o.frag}
-        col = cgCap(col, uAt);
+        col = cgCapFx(col, uAt);
         gl_FragColor = vec4(col, a);
         #include <colorspace_fragment>
       }
@@ -786,7 +892,7 @@ export function fxMesh(drive: Drive, geo: THREE.BufferGeometry, o: FxMeshOpts): 
         vec3 col = vec3(0.0);
         float a = 1.0;
         ${o.frag}
-        col = cgCap(col, vPd);
+        col = ${o.premultiplied ? 'cgCap' : 'cgCapFx'}(col, vPd); // additive layers: the VFX cap
         gl_FragColor = vec4(col, a);
         #include <colorspace_fragment>
       }
@@ -822,6 +928,8 @@ export class GunRig {
   readonly drive: Drive;
   private readonly materials: THREE.Material[] = [];
   private prevFiring = 0;
+  // Where the Tracked kill-counter module seats (see mountPad).
+  trackerMount: TrackerMount | undefined;
   // Density at full quality for this LOD (low LOD = third person: fewer).
   constructor(
     readonly key: string,
@@ -892,6 +1000,7 @@ export class GunRig {
     return {
       group: this.group,
       muzzle: this.muzzle,
+      trackerMount: this.trackerMount,
       update: (dt, s) => {
         this.step(dt, s);
         extra?.(dt, s);
@@ -904,14 +1013,54 @@ export class GunRig {
 
 // ── Common parts (hold geometry matches the standard gun) ──────────────────
 
-// Grip block + trigger guard + trigger, in the standard gun's place so the
-// right hand (palm ≈ (0, −0.12, 0.09)) sits right.
+// Grip + trigger guard + trigger, in the standard gun's place so the right
+// hand (palm ≈ (0, −0.12, 0.09)) sits right. A shaped grip (palm swell,
+// beavertail, flared base, finger ridges) rather than a block; a grip with no
+// zone of its own gets the kit's stipple (KZ.GRIP).
 export function addGrip(p: Parts, o: { grip: PartOpts; guard: PartOpts; hi: boolean }): void {
-  p.add(chamferBox(0.058, 0.2, 0.08, 0.014), { ...o.grip, at: [0, -0.15, 0.1], rot: [0.32, 0, 0] });
-  p.add(chamferBox(0.064, 0.016, 0.088, 0.005), { ...o.guard, at: [0, -0.245, 0.132], rot: [0.32, 0, 0] });
-  p.add(chamferBox(0.014, 0.01, 0.11, 0.003), { ...o.guard, at: [0, -0.093, -0.002] });
-  p.add(chamferBox(0.014, 0.056, 0.012, 0.003), { ...o.guard, at: [0, -0.066, -0.055] });
-  if (o.hi) p.add(chamferBox(0.009, 0.034, 0.011, 0.002), { ...o.guard, at: [0, -0.058, 0.004], rot: [0.3, 0, 0] });
+  const grip: PartOpts = { ...o.grip, zone: o.grip.zone ?? KZ.GRIP };
+  const tilt: V3 = [0.32, 0, 0];
+  // Grip-local: axis = Y (top +0.1 … bottom −0.1), front = −Z. Rectangles
+  // [y, width, depth, zCentre] hulled: slim neck, palm swell, flared base.
+  const pts: V3[] = [];
+  const st: Array<[number, number, number, number]> = [
+    [0.1, 0.05, 0.074, 0.0],
+    [0.04, 0.058, 0.082, 0.002],
+    [-0.03, 0.06, 0.08, 0.001],
+    [-0.085, 0.056, 0.076, -0.001],
+    [-0.1, 0.06, 0.082, 0.0],
+  ];
+  const c = 0.012;
+  for (const [yy, w, d, zc] of st) {
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        pts.push([sx * (w / 2), yy, zc + sz * (d / 2 - c)], [sx * (w / 2 - c * 0.8), yy, zc + sz * (d / 2)]);
+      }
+    }
+  }
+  const g = hull(pts);
+  p.add(g, { ...grip, at: [0, -0.15, 0.1], rot: tilt });
+  // Grip-local → model space (the same rotation + offset as the grip).
+  const ct = Math.cos(tilt[0]), sn = Math.sin(tilt[0]);
+  const gp = (x: number, y: number, z: number): V3 => [x, -0.15 + y * ct - z * sn, 0.1 + y * sn + z * ct];
+  // Base plate (magwell lip), as on the standard gun.
+  p.add(chamferBox(0.066, 0.016, 0.092, 0.005), { ...o.guard, at: [0, -0.245, 0.132], rot: tilt });
+  if (o.hi) {
+    // Beavertail over the web of the hand.
+    p.add(chamferBox(0.052, 0.012, 0.03, 0.004), { ...o.guard, at: gp(0, 0.094, 0.046), rot: [tilt[0] - 0.35, 0, 0], flat: true });
+    // Finger ridges on the front strap (between the fingers).
+    for (const yy of [0.03, -0.015, -0.058]) {
+      p.add(chamferBox(0.05, 0.007, 0.01, 0.003), { ...grip, at: gp(0, yy, -0.041), rot: tilt });
+    }
+    // Trigger guard: a rounded loop from the receiver to the grip's front.
+    const f = gp(0, 0.045, -0.04);
+    p.add(tube([[0, -0.062, -0.062], [0, -0.09, -0.058], [0, -0.103, -0.02], [0, -0.1, f[2] - 0.03], [0, f[1] + 0.005, f[2] - 0.002]], 0.0055, 14, 6), { ...o.guard, scale: [1.5, 1, 1] });
+    // Trigger: a curved blade.
+    p.add(tube([[0, -0.052, -0.004], [0, -0.07, -0.002], [0, -0.084, 0.01]], 0.0045, 6, 5), { ...o.guard, scale: [1.3, 1, 1] });
+  } else {
+    p.add(chamferBox(0.014, 0.01, 0.11, 0.003), { ...o.guard, at: [0, -0.093, -0.002] });
+    p.add(chamferBox(0.014, 0.056, 0.012, 0.003), { ...o.guard, at: [0, -0.066, -0.055] });
+  }
 }
 
 // Triangle count of a geometry (indexed or not).

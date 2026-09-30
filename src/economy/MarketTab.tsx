@@ -97,8 +97,8 @@ export function MarketTab({
 // ── Browse ──────────────────────────────────────────────────────────────────
 
 const QUALITIES: { id: Quality; label: string }[] = [
-  { id: 'unusual', label: 'Unusual' },
-  { id: 'strange', label: 'Strange' },
+  { id: 'unusual', label: 'Anomalous' },
+  { id: 'strange', label: 'Tracked' },
   { id: 'killstreak', label: 'Killstreak' },
   { id: 'professional', label: 'Professional' },
   { id: 'festive', label: 'Festive' },

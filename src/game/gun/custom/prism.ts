@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { CustomGunBuild } from './types';
 import {
-  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, hull, lathe, motes, stations, strips, surfaceMaterial,
-  type Lod, type PartOpts, type V3,
+  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, hull, lathe, motes, mountPad, stations, strips, surfaceMaterial,
+  type Lod, type PartOpts, type TrackerMount, type V3,
 } from './kit';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -18,6 +18,10 @@ import {
 // ─────────────────────────────────────────────────────────────────────────
 
 const Z = { CHROME: 1, CRYSTAL: 3, CORE: 4, SHARD: 5, GAUGE: 6 } as const;
+// Tracked module seat: a chrome pad low on the −X flank, under the crystal
+// charge gauge (it spans the receiver's lower edge + underframe; face x
+// −0.06, y −0.024, z −0.142 … +0.022) so the gauge window stays clear.
+const MOUNT_FACE: V3 = [-0.06, -0.024, -0.06];
 
 function bipyramid(r: number, len: number, sides: number): THREE.BufferGeometry {
   const pts: V3[] = [];
@@ -29,7 +33,7 @@ function bipyramid(r: number, len: number, sides: number): THREE.BufferGeometry 
   return hull(pts);
 }
 
-function buildBody(lod: Lod): THREE.BufferGeometry {
+function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount } {
   const hi = lod === 'high';
   const SEG = hi ? 18 : 8;
   const p = new Parts();
@@ -61,6 +65,7 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
       p.add(chamferBox(0.01, 0.007, 0.22, 0.002), { ...CHROME, at: [sx * 0.051, 0.004, -0.06] });
     }
   }
+  const mount = mountPad(p, { face: MOUNT_FACE, depth: 0.022, pad: DARK, rim: CHROME, hi });
   addGrip(p, { grip: RUBBER, guard: { ...CHROME, flat: false }, hi });
 
   // Skeletal chrome stock around a Pink-Floyd prism.
@@ -118,7 +123,7 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
     const z = -0.44 - (i % 3) * 0.12;
     p.add(bipyramid(0.009, 0.056, 4), { ...CRYSTAL, zone: Z.SHARD, glow: 1.1, at: [Math.cos(a) * 0.082, BARREL_Y + Math.sin(a) * 0.082, z], rot: [0, 0, a] });
   }
-  return p.merge(`prism-${lod}`);
+  return { geo: p.merge(`prism-${lod}`), mount };
 }
 
 const VERT = /* glsl */ `
@@ -199,7 +204,9 @@ const FAN = /* glsl */ `
 export const buildPrism: CustomGunBuild = ({ lod, finish }) => {
   const rig = new GunRig('prism', lod, finish);
   const d = rig.drive;
-  rig.body(cached(`prism-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'prism', vert: VERT, frag: FRAG, envIntensity: 1.3 }));
+  const body = cached(`prism-body-${lod}`, () => buildBody(lod));
+  rig.trackerMount = body.mount;
+  rig.body(body.geo, surfaceMaterial(d, { key: 'prism', vert: VERT, frag: FRAG, envIntensity: 1.3 }));
   rig.add(motes(d, { key: 'prism', count: lod === 'high' ? 72 : 24, motion: MOTES }));
   rig.add(strips(d, { key: 'prism-fan', count: 7, segs: 6, path: FAN, core: 2.5 }));
   return rig.instance();

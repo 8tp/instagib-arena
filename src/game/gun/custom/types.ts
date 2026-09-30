@@ -21,6 +21,13 @@ export type CustomGunState = {
 export type CustomGunInstance = {
   group: THREE.Group;
   muzzle: THREE.Object3D; // beam origin + flash anchor
+  // Where the Tracked kill-counter module seats on this model (model space, on
+  // the camera-facing −X flank). Absent → the standard gun's mount. Same frame
+  // as gun/tracker.ts: `position` = the flank point the module's back (its
+  // local x = 0) sits on; with rotationY 0 its display faces −X and its +Z
+  // runs toward the butt. The custom models seat it on a flat pad (kit.ts
+  // mountPad) sized over the 136 × 46 mm housing.
+  trackerMount?: { position: [number, number, number]; rotationY?: number; scale?: number };
   // Advance animation/VFX (frame-rate independent). Called every frame the gun is drawn.
   update(dt: number, state: CustomGunState): void;
   // Recolour for a finish that shares this model (e.g. an admin tint).

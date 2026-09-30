@@ -492,7 +492,7 @@ export function CaseReveal({
 
               {unusual && (
                 <div className='ec-rv-unusual'>
-                  <span className='ec-rv-unusual-star'>★ Unusual</span>
+                  <span className='ec-rv-unusual-star'>★ Anomalous</span>
                   {fxName && <span className='ec-rv-unusual-fx'>{fxName}</span>}
                 </div>
               )}

@@ -215,17 +215,66 @@ float gunVein(vec3 p) {
   return abs(gNoise(q) + 0.5 * gNoise(q * 2.1 + 3.7) - 0.75);
 }
 
+// Engraved panel seams on the receiver shell (0…1 line mask): two cuts across
+// it and one along each flank between the charge window and the lower plate
+// (the enamel finish runs its gold pinstripes down the same lines).
+float gunSeam(vec3 p, vec3 n, int part) {
+  if (part != ${PART.BODY} || p.z < -0.25 || p.z > 0.15) return 0.0;
+  float m = max(gunLine(abs(p.z - 0.048), 0.0009), gunLine(abs(p.z + 0.155), 0.0009));
+  if (abs(n.x) > 0.7) m = max(m, gunLine(abs(p.y - 0.004), 0.0008));
+  return m * gunFade(0.004);
+}
+
+// Grip stipple: a fine dimple field on the pistol grip and the butt pad.
+bool gunGripZone(vec3 p, int part) {
+  return part == ${PART.RUBBER} && ((p.y < -0.075 && p.z > 0.02 && p.z < 0.2) || p.z > 0.425);
+}
+float gunStipple(vec2 uv) {
+  vec2 q = uv / 0.0036;
+  vec2 f = fract(q + vec2(0.5 * mod(floor(q.y), 2.0), 0.0)) - 0.5;
+  return (1.0 - smoothstep(0.22, 0.34, length(f))) * gunFade(0.0036);
+}
+
+// Cavity occlusion (0…1, 1 = open): contact shadows where parts meet — either
+// side of each coil housing down the barrel channel, under the top cover lip,
+// the receiver's ends, the fin roots, the top of the grip. Analytic in model
+// space (no textures, no extra geometry); applied to the ambient/IBL and,
+// more gently, to the albedo.
+float gunAO(vec3 p, vec3 n, int part) {
+  float ao = 0.8 + 0.2 * smoothstep(-0.9, 0.35, n.y); // faces turned down sit in the gun's own shade
+  if (part >= ${PART.GLOW}) return 1.0;
+  float r = length(p.xy - vec2(0.0, GUN_BARREL_Y));
+  if (p.z < -0.24 && p.z > -0.78 && r < 0.058) {
+    ${COIL_Z.map((z) => `{ float d = max(abs(p.z - (${z.toFixed(4)})) - 0.025, 0.0) / 0.014; ao *= 1.0 - 0.5 * exp(-d * d); }`).join('\n    ')}
+    { float d = max(-0.3 - p.z, 0.0) / 0.02; ao *= 1.0 - 0.45 * exp(-d * d); }
+    { float d = max(p.z + 0.766, 0.0) / 0.02; ao *= 1.0 - 0.45 * exp(-d * d); }
+  }
+  if (part == ${PART.BODY}) {
+    if (abs(n.x) > 0.7) ao *= 1.0 - 0.32 * smoothstep(0.058, 0.079, p.y);
+    ao *= 1.0 - 0.3 * smoothstep(0.112, 0.14, p.z);
+    ao *= 1.0 - 0.35 * smoothstep(-0.212, -0.245, p.z);
+  }
+  if (part == ${PART.METAL_LT} && p.y > 0.1 && abs(p.x) < 0.029 && p.z > -0.08 && p.z < 0.1) {
+    ao *= mix(0.45, 1.0, smoothstep(0.1005, 0.113, p.y)); // fin roots
+  }
+  if (part == ${PART.METAL} && p.y > 0.098 && p.y < 0.102 && abs(p.x) < 0.029) ao *= 0.55; // between the fins
+  if (part == ${PART.RUBBER} && p.y < -0.03 && p.y > -0.12 && p.z > 0.0 && p.z < 0.2) {
+    ao *= mix(0.55, 1.0, smoothstep(-0.04, -0.085, p.y)); // grip root under the receiver
+  }
+  return ao;
+}
+
 // Relief (metres, ≤ ~1 mm) the pattern cuts into a part: grooves < 0.
 float gunHeight(vec3 p, vec3 n, vec3 g) {
   int part = int(g.x + 0.5);
   float w = gunPatternWeight(part);
   vec2 uv = gunUV(p, n, g.z);
   float h = 0.0;
+  if (gunGripZone(p, part)) h -= 0.00035 * gunStipple(uv);
   if (GUN_PAT == 0 || GUN_PAT == 7 || GUN_PAT == 8) {
     // Engraved panel seams across the receiver; ceramic adds plate joints.
     if (part == ${PART.BODY}) {
-      h -= 0.0007 * (1.0 - smoothstep(0.0006, 0.0016, abs(p.z - 0.048)));
-      h -= 0.0007 * (1.0 - smoothstep(0.0006, 0.0016, abs(p.z + 0.155)));
+      h -= 0.0007 * gunSeam(p, n, part);
       if (GUN_PAT == 7) {
         float pz = abs(fract(uv.x / 0.09) - 0.5) * 0.09;
         h -= 0.0008 * (1.0 - smoothstep(0.0008, 0.002, 0.045 - pz));
@@ -258,6 +307,7 @@ struct GunSurf {
   float metal;
   vec3 emit;
   float glow; // 1 on parts lit by the material's own emissive (the glow knob)
+  float ao; // cavity occlusion (gunAO)
 };
 
 // Carbon weave tinted by base: bright tow crowns, dark valleys, and the two
@@ -283,15 +333,25 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
   s.metal = uPartRM[slot].y;
   s.emit = vec3(0.0);
   s.glow = part == ${PART.GLOW} ? 1.0 : 0.0;
+  s.ao = gunAO(p, n, part);
   float w = gunPatternWeight(part);
   vec2 uv = gunUV(p, n, g.z);
 
   // ── Energy parts ──
   if (part >= ${PART.COIL0}) {
     int ci = part - ${PART.COIL0};
-    // Brightest on the band's crown, dimmer down its chamfers.
+    // A wound band under glass: brightest on the crown (dimmer down its
+    // chamfers), fine winding lines across it, and a white-hot centre line —
+    // so it reads as a lit coil even where nothing blooms (locker, previews).
     float crown = smoothstep(${(COIL_R - 0.006).toFixed(4)}, ${COIL_R.toFixed(4)}, length(p.xy - vec2(0.0, GUN_BARREL_Y)));
-    s.emit = uCoil[ci] * (0.55 + 0.45 * crown);
+    float cz = ci == 0 ? ${COIL_Z[0].toFixed(4)} : ci == 1 ? ${COIL_Z[1].toFixed(4)} : ci == 2 ? ${COIL_Z[2].toFixed(4)} : ${COIL_Z[3].toFixed(4)};
+    float dz = (p.z - cz) / 0.0045;
+    float wind = mix(0.86, 0.72 + 0.28 * abs(cos(p.z * 785.4)), gunFade(0.004));
+    float core = exp(-dz * dz) * crown;
+    vec3 c = uCoil[ci];
+    s.emit = c * (0.5 + 0.38 * crown) * wind + vec3(dot(c, vec3(0.3333))) * 0.28 * core;
+    s.rough = 0.22;
+    s.metal = 0.85;
   } else if (part == ${PART.CAP}) {
     s.emit = uCap * (0.8 + 0.2 * sin(p.z * 90.0 - uTime * 6.0));
   } else if (part == ${PART.CORE}) {
@@ -435,12 +495,38 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
     if (part == ${PART.CARBON}) gunCarbon(s, uv, s.albedo * 1.4, 1.0, vn, vdir);
   }
 
-  // Machined edge highlight on chamfers: worn to bright metal.
+  if (part <= ${PART.CARBON}) {
+    // Handling: low-frequency smudges in the roughness (never a flat CG sheen).
+    s.rough *= 0.9 + 0.28 * gNoise(p * 21.0 + 3.1);
+    if (part == ${PART.BODY} && (GUN_PAT == 0 || GUN_PAT == 7 || GUN_PAT == 9)) {
+      // Each panel (between the seams) is its own plate: a slightly different
+      // tone + sheen, and the flanks lighten toward the top so the forms read.
+      float zone = (p.z > 0.048 ? 2.0 : p.z > -0.155 ? 1.0 : 0.0) + (abs(n.x) > 0.7 && p.y < 0.004 ? 3.0 : 0.0);
+      float ph = gHash2(vec2(zone, 7.0));
+      s.albedo *= (0.88 + 0.26 * ph) * (0.86 + 0.28 * smoothstep(-0.035, 0.085, p.y));
+      s.rough += (gHash2(vec2(zone, 13.0)) - 0.5) * 0.14;
+    }
+    // Panel seams: dark, rough cuts (the bump adds the groove on the high tier).
+    float seam = GUN_PAT == 8 ? 0.0 : gunSeam(p, n, part); // enamel gilds its seams
+    s.albedo *= 1.0 - 0.6 * seam;
+    s.rough = mix(s.rough, 0.8, seam);
+  }
+  // Grip stipple: satin dimples in the matte rubber.
+  if (gunGripZone(p, part)) {
+    float st = gunStipple(uv);
+    s.albedo *= 1.0 + 0.5 * st;
+    s.rough = mix(0.92, 0.62, st);
+  }
+  // Machined edge highlight on chamfers, worn to bright metal — broken up so
+  // the wear gathers on some stretches of an edge and skips others.
   if (part <= ${PART.CARBON} && part != ${PART.RUBBER}) {
     float e = g.y;
-    s.albedo = mix(s.albedo, uEdgeCol, 0.4 * e);
-    s.metal = mix(s.metal, 1.0, 0.6 * e);
-    s.rough = mix(s.rough, 0.24, 0.5 * e);
+    float chip = mix(0.55, gNoise(p * 260.0 + 7.3), gunFade(0.004));
+    e *= 0.78 + 0.22 * chip;
+    s.albedo = mix(s.albedo, uEdgeCol, 0.46 * e);
+    s.metal = mix(s.metal, 1.0, 0.7 * e);
+    // (Satin, not mirror: a hot key light on a glossy chamfer would bloom.)
+    s.rough = mix(s.rough, 0.34, 0.6 * e);
   }
   s.rough = clamp(s.rough, 0.06, 1.0);
   return s;
@@ -485,7 +571,13 @@ const FRAG_SURFACE = /* glsl */ `
   gPx = max(length(fwidth(vGunPos)), 1e-6);
   vec3 gunN = normalize(vGunNrm);
   GunSurf gunS = gunSurface(vGunPos, gunN, vGun, normalize(vNormal), normalize(vViewPosition));
-  vec4 diffuseColor = vec4(gunS.albedo, opacity);
+  vec4 diffuseColor = vec4(gunS.albedo * mix(1.0, gunS.ao, 0.55), opacity);
+`;
+
+// Cavity occlusion on the ambient + IBL (after three's own aoMap chunk).
+const FRAG_AO = /* glsl */ `
+  reflectedLight.indirectDiffuse *= gunS.ao;
+  reflectedLight.indirectSpecular *= gunS.ao;
 `;
 
 const FRAG_EMISSIVE = /* glsl */ `
@@ -541,8 +633,8 @@ export function applyFinishUniforms(u: GunUniforms, finish: RailgunFinish | unde
 
   // Receiver coat: a dielectric paint/anodise (its specular sheen is what
   // reads on a near-black gun), a touch lifted so it never crushes to black.
-  col[PART.BODY].copy(lift(body.clone(), 0.012));
-  rm[PART.BODY].set(0.34, 0.25);
+  col[PART.BODY].copy(lift(body.clone(), 0.05));
+  rm[PART.BODY].set(0.36, 0.4);
   col[PART.METAL].copy(lift(metal.clone(), 0.07, 0.45));
   rm[PART.METAL].set(0.36, 0.85);
   col[PART.METAL_LT].copy(lift(metalLt.clone(), 0.2, 0.8));
@@ -676,7 +768,7 @@ export class GunMaterial extends THREE.MeshStandardMaterial {
   }
 
   customProgramCacheKey(): string {
-    return `railgun-surface-2|${this.defines?.GUN_HI !== undefined ? 'hi' : 'lo'}`;
+    return `railgun-surface-3|${this.defines?.GUN_HI !== undefined ? 'hi' : 'lo'}`;
   }
 
   onBeforeCompile(shader: THREE.WebGLProgramParametersWithUniforms) {
@@ -693,6 +785,7 @@ export class GunMaterial extends THREE.MeshStandardMaterial {
       .replace('vec3 totalEmissiveRadiance = emissive;', FRAG_EMISSIVE)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = gunS.rough;')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n  metalnessFactor = gunS.metal;')
-      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${FRAG_BUMP}`);
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${FRAG_BUMP}`)
+      .replace('#include <aomap_fragment>', `#include <aomap_fragment>\n${FRAG_AO}`);
   }
 }

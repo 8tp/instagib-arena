@@ -15,9 +15,9 @@ export type QualityRow = { label: string; odds: string; note?: string; color: st
 export function qualityRows(qo: CaseInfo['qualityOdds']): QualityRow[] {
   const rows: QualityRow[] = [];
   if (qo.unusualHat != null)
-    rows.push({ label: 'Unusual hat', odds: pct(qo.unusualHat), note: `${pct(qo.unusualHatLegendaryPlus ?? qo.unusualHat)} on Legendary+ hats · random particle effect`, color: '#a855f7' });
-  if (qo.unusualEmote != null) rows.push({ label: 'Unusual taunt', odds: pct(qo.unusualEmote), note: 'emotes only · plays its effect around you', color: '#a855f7' });
-  if (qo.strange != null) rows.push({ label: 'Strange', odds: pct(qo.strange), note: 'finishes, beams and finishers · counts your kills, ranks up', color: '#cf6a32' });
+    rows.push({ label: 'Anomalous hat', odds: pct(qo.unusualHat), note: `${pct(qo.unusualHatLegendaryPlus ?? qo.unusualHat)} on Legendary+ hats · random particle effect`, color: '#a855f7' });
+  if (qo.unusualEmote != null) rows.push({ label: 'Anomalous taunt', odds: pct(qo.unusualEmote), note: 'emotes only · plays its effect around you', color: '#a855f7' });
+  if (qo.strange != null) rows.push({ label: 'Tracked', odds: pct(qo.strange), note: 'finishes, beams and finishers · a kill counter on the item that ranks up', color: '#cf6a32' });
   if (qo.killstreak != null) rows.push({ label: 'Killstreak', odds: pct(qo.killstreak), note: 'railgun finishes · sheen glows on a ≥5 streak', color: '#ffd24a' });
   if (qo.professional != null) rows.push({ label: 'Professional Killstreak', odds: pct(qo.professional), note: 'a subset of Killstreak · sheen + visor particles', color: '#ff8a1f' });
   return rows;

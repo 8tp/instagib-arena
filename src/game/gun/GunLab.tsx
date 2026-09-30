@@ -1,11 +1,46 @@
 import { useEffect, useRef, useState } from 'react';
 import { GunLab as Lab } from './gun-lab';
+import { CharacterPreview } from '../character-preview';
 
 // Dev-only harness for the railgun track (/gunlab, not linked anywhere).
 // Deterministic frames of the first-person viewmodel in a real arena, a
 // contact sheet of every finish, the rail beams in every colour and
 // third-person guns on combatants. See gun-lab.ts for the URL params.
+// ?view=locker&finish=gun.stock&kills=87: the Locker/item-preview weapon stage
+// (CharacterPreview) with a Tracked counter.
 export default function GunLab() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('view') === 'locker') return <LockerStageLab params={params} />;
+  return <GunLabView />;
+}
+
+function LockerStageLab({ params }: { params: URLSearchParams }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const k = params.get('kills');
+    const p = new CharacterPreview(canvas, {
+      hatId: 'hat.none',
+      unusualId: 'unusual.none',
+      emoteId: 'emote.cheer',
+      railColor: 'rail.cyan',
+      railgunFinish: params.get('finish') ?? 'gun.stock',
+      killEffect: 'pulse',
+      view: 'weapon',
+      trackedKills: k === null ? null : Number(k),
+    });
+    p.start();
+    return () => p.dispose();
+  }, [params]);
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#0a0d13' }}>
+      <canvas ref={ref} style={{ display: 'block', width: '100%', height: '100%' }} />
+    </div>
+  );
+}
+
+function GunLabView() {
   const ref = useRef<HTMLCanvasElement>(null);
   const [labels, setLabels] = useState<Array<{ x: number; y: number; text: string; anchor?: 'below' | 'left' }>>([]);
   const [caption, setCaption] = useState('');

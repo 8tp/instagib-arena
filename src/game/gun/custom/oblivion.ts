@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { CustomGunBuild } from './types';
 import {
-  BARREL_Y, GunRig, PAL, Parts, addGrip, billboard, cached, chamferBox, fxMesh, hull, lathe, motes, stations, strips, surfaceMaterial,
-  torusZ, type Lod, type PartOpts, type V3,
+  BARREL_Y, GunRig, PAL, Parts, addGrip, billboard, cached, chamferBox, cylZ, fxMesh, hull, lathe, motes, mountPad, rng, stations, strips,
+  surfaceMaterial, taperTube, torusZ, type Lod, type PartOpts, type TrackerMount, type V3,
 } from './kit';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -19,16 +19,43 @@ import {
 // is the charge); on the SHOT the hole inhales — motes from all around fall
 // in, the disc flares, a shock ring leaves the horizon. Streak: the disc runs
 // hotter and faster, the gyres race, the streams thicken.
-// Draws: body (+ gyres, vertex-animated) · horizon · disc · lensing halo ·
+// The barrel is FRACTURED: obsidian chunks floating apart round a bare
+// violet core (jolted apart by the shot); debris shards orbit the hole; a
+// crown of obsidian spikes curls round the emitter; the stock is broken
+// into floating chunks.
+// Draws: body (+ gyres, chunks, shards, vertex-animated) · horizon · disc · lensing halo ·
 // accretion motes · matter streams = 6.
 // ─────────────────────────────────────────────────────────────────────────
 
-const Z = { OBSIDIAN: 1, VEIN: 2, VOIDMETAL: 3, RING0: 4, EMIT: 8 } as const; // rings 4…6
+const Z = { OBSIDIAN: 1, VEIN: 2, VOIDMETAL: 3, RING0: 4, EMIT: 8, SEG: 9, CORE: 10, SHARD: 11 } as const; // rings 4…6
 const HC: V3 = [0, 0.112, -0.06]; // the singularity: over the receiver, where the eye falls
 const RH = 0.024; // event-horizon radius
 const DISC_TILT = 0.2; // disc plane: horizontal, tipped toward the viewer
+// The fractured barrel: SEGS obsidian chunks, one per SEG_STEP of z from
+// SEG_Z0, floating apart round a bare violet core.
+const SEGS = 5;
+const SEG_Z0 = -0.305;
+const SEG_STEP = 0.091;
+const SEG_LEN = 0.068;
+// Tracked module seat: a void-metal plate low on the −X flank (face x −0.058,
+// y −0.012, z −0.142 … +0.022), under the flank edge rail.
+const MOUNT_FACE: V3 = [-0.058, -0.012, -0.06];
 
-function buildBody(lod: Lod): THREE.BufferGeometry {
+// A fractured rock chunk along Z: two jittered rings hulled (faceted).
+function chunk(z0: number, z1: number, r: number, sides: number, seed: number): THREE.BufferGeometry {
+  const rnd = rng(seed);
+  const pts: V3[] = [];
+  for (const [z, k] of [[z0, 1], [z1, 0.92], [(z0 + z1) / 2, 1.08]] as const) {
+    for (let i = 0; i < sides; i++) {
+      const a = ((i + (rnd() - 0.5) * 0.5) / sides) * Math.PI * 2;
+      const rr = r * k * (0.86 + 0.24 * rnd());
+      pts.push([Math.cos(a) * rr, Math.sin(a) * rr, z + (rnd() - 0.5) * 0.012]);
+    }
+  }
+  return hull(pts);
+}
+
+function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount } {
   const hi = lod === 'high';
   const SEG = hi ? 16 : 8;
   const p = new Parts();
@@ -55,35 +82,59 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   p.add(hull([[0, 0.092, -0.14], [0, 0.09, -0.2], [0, 0.082, -0.245], [-0.01, 0.08, -0.14], [0.01, 0.08, -0.14], [-0.01, 0.08, -0.22], [0.01, 0.08, -0.22]]), { ...OBS, zone: Z.VEIN });
   for (const sx of [-1, 1]) p.add(chamferBox(0.008, 0.01, 0.34, 0.003), { ...EDGE, at: [sx * 0.05, 0.03, -0.06] });
   addGrip(p, { grip: { col: 0x0c0a12, rough: 0.7, metal: 0 }, guard: VOID, hi });
-  // Stock: a void-metal spar and an obsidian wedge butt.
-  p.add(chamferBox(0.028, 0.024, 0.3, 0.006), { ...VOID, at: [0, 0.05, 0.29] });
-  p.add(stations([[0.15, 0.03, 0.03, -0.06], [0.42, 0.028, 0.028, -0.095]], 0.007), VOID);
-  p.add(hull([[0, 0.07, 0.41], [0, -0.14, 0.41], [-0.022, 0.05, 0.445], [0.022, 0.05, 0.445], [-0.022, -0.12, 0.445], [0.022, -0.12, 0.445]]), OBS);
+  // Stock: fractured — the spar and the lower bar broken into floating
+  // obsidian chunks (gaps between them), a wedge butt.
+  for (const [z0, z1, k] of [[0.13, 0.205, 0], [0.222, 0.3, 1], [0.318, 0.405, 2]] as const) {
+    p.add(chunk(z0, z1, 0.017, 5, 31 + k), { ...OBS, at: [0, 0.05 - k * 0.006, 0] });
+    p.add(chunk(z0, z1, 0.013, 5, 41 + k), { ...OBS, at: [0, -0.06 - k * 0.012, 0] });
+  }
+  p.add(hull([[0, 0.07, 0.41], [0, -0.14, 0.41], [-0.022, 0.05, 0.445], [0.022, 0.05, 0.445], [-0.022, -0.12, 0.445], [0.022, -0.12, 0.445], [0, -0.17, 0.43]]), OBS);
+  // Tracked module seat.
+  const mount = mountPad(p, { face: MOUNT_FACE, depth: 0.022, pad: { ...VOID, flat: true }, rim: EDGE, hi });
   // Rear: a violet crystal capacitor.
   p.add(hull([[0, 0.05, 0.22], [0, -0.035, 0.22], [0.03, 0.008, 0.22], [-0.03, 0.008, 0.22], [0, 0.008, 0.15], [0, 0.008, 0.29]]), { ...OBS, zone: Z.VEIN });
   // Foregrip.
   p.add(stations([[-0.19, 0.068, 0.054, -0.046], [-0.3, 0.06, 0.046, -0.043]], 0.012), OBS);
 
-  // Barrel: collar, a veined obsidian hex tube banded in void-metal.
+  // Barrel: a void-metal collar, then the FRACTURED barrel — obsidian chunks
+  // floating apart round a bare violet core (the charge meter).
   p.add(lathe([[0.03, -0.3], [0.05, -0.3], [0.062, -0.285], [0.062, -0.25], [0.054, -0.236], [0.022, -0.236]], 6, Math.PI / 6), { ...VOID, flat: true, at: [0, BARREL_Y, 0] });
-  p.add(lathe([[0.03, -0.77], [0.036, -0.77], [0.036, -0.295], [0.03, -0.295]], 6, Math.PI / 6), { ...OBS, at: [0, BARREL_Y, 0] });
-  for (const z of [-0.4, -0.54, -0.68]) {
-    p.add(lathe([[0.034, z - 0.014], [0.048, z - 0.01], [0.05, z], [0.048, z + 0.01], [0.034, z + 0.014]], 6, Math.PI / 6), { ...EDGE, flat: true, at: [0, BARREL_Y, 0] });
+  p.add(cylZ(0.011, 0.011, 0.48, hi ? 10 : 6), { col: 0x06030c, rough: 0.2, metal: 0, zone: Z.CORE, glow: 1, at: [0, BARREL_Y, -0.535] });
+  for (let i = 0; i < SEGS; i++) {
+    const z0 = SEG_Z0 - i * SEG_STEP;
+    p.add(chunk(z0, z0 - SEG_LEN, 0.04 - i * 0.0015, hi ? 7 : 5, 7 + i * 13), { ...OBS, zone: Z.SEG, at: [0, BARREL_Y, 0] });
   }
   p.add(lathe([[0.024, -0.84], [0.05, -0.84], [0.058, -0.82], [0.058, -0.78], [0.046, -0.765], [0.03, -0.765]], 6, Math.PI / 6), { ...VOID, flat: true, at: [0, BARREL_Y, 0] });
+  // Debris: obsidian shards on Keplerian orbits round the singularity, in
+  // the disc's plane (vertex-animated: inner ones whip round faster).
+  {
+    const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2 + DISC_TILT);
+    const n = hi ? 6 : 3;
+    const r = rng(99);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + r() * 0.6;
+      const rad = 0.088 + 0.034 * (i / n);
+      const c = new THREE.Vector3(Math.cos(a) * rad, Math.sin(a) * rad, (r() - 0.5) * 0.02).applyMatrix4(m);
+      const sz = 0.007 + 0.004 * r();
+      const g = hull([[-sz, 0, 0], [sz * 0.8, sz * 0.3, 0.002], [0, sz * 1.6, -sz * 0.4], [0.002, -sz * 0.9, sz * 0.6], [sz * 0.3, 0.2 * sz, sz * 1.1]]);
+      p.add(g, { ...OBS, zone: Z.SHARD, at: [HC[0] + c.x, HC[1] + c.y, HC[2] + c.z], rot: [r() * 3, r() * 3, r() * 3] });
+    }
+  }
   // Containment gyres (animated about the singularity).
   const rr = [0.042, 0.049, 0.056];
   for (let i = 0; i < 3; i++) {
     p.add(torusZ(rr[i], 0.0026, hi ? 6 : 4, hi ? 44 : 16), { pal: PAL.METAL_LT, rough: 0.2, metal: 1, zone: Z.RING0 + i, glow: 1, at: HC });
   }
-  // Emitter: four void-metal fangs + a violet iris.
-  for (let i = 0; i < 4; i++) {
-    const a = Math.PI / 4 + (i * Math.PI) / 2;
-    p.add(hull([[-0.006, 0, -0.8], [0.006, 0, -0.8], [-0.005, 0.016, -0.82], [0.005, 0.016, -0.82], [0, 0.004, -0.93], [0, 0.01, -0.9]]),
-      { ...EDGE, flat: true, at: [Math.cos(a) * 0.046, BARREL_Y + Math.sin(a) * 0.046, 0], rot: [0, 0, a - Math.PI / 2] });
+  // Emitter: a crown of obsidian spikes curling forward round a violet iris.
+  const spikes = hi ? 6 : 4;
+  for (let i = 0; i < spikes; i++) {
+    const a = Math.PI / 2 + (i / spikes) * Math.PI * 2 + Math.PI / spikes;
+    const c = Math.cos(a), sn = Math.sin(a);
+    const at = (r: number, z: number): V3 => [c * r, BARREL_Y + sn * r, z];
+    p.add(taperTube([at(0.05, -0.79), at(0.062, -0.84), at(0.056, -0.895), at(0.038, -0.93)], 0.0075, 0.0008, hi ? 8 : 3, hi ? 5 : 3), { ...OBS, zone: Z.VEIN });
   }
   p.add(torusZ(0.03, 0.005, 6, SEG * 2), { col: 0x100820, rough: 0.2, metal: 0, zone: Z.EMIT, glow: 1, at: [0, BARREL_Y, -0.845] });
-  return p.merge(`oblivion-${lod}`);
+  return { geo: p.merge(`oblivion-${lod}`), mount };
 }
 
 const VERT = /* glsl */ `
@@ -96,21 +147,48 @@ const VERT = /* glsl */ `
     mat3 base = i == 0.0 ? cgRotX(0.5) : (i == 1.0 ? cgRotY(0.9) : cgRotZ(0.8) * cgRotX(-0.7));
     mat3 tumble = i == 0.0 ? cgRotY(sp) : (i == 1.0 ? cgRotX(sp) : cgRotZ(0.785) * cgRotY(sp) * cgRotZ(-0.785));
     cgR = tumble * base;
+  } else if (vZone == ${Z.SEG}) {
+    // Barrel chunks: each floats on its own slow bob and roll; the shot
+    // jolts them apart, then they settle back into line.
+    float i = floor((${(-SEG_Z0).toFixed(3)} - position.z) / ${SEG_STEP.toFixed(3)});
+    float kick = exp(-uShot * 6.0) * step(uShot, 1.2) * (1.0 - uCalm * 0.6);
+    float live = 1.0 - uCalm * 0.7;
+    cgPivot = vec3(0.0, ${BARREL_Y.toFixed(3)}, ${(SEG_Z0 - SEG_LEN / 2).toFixed(3)} - i * ${SEG_STEP.toFixed(3)});
+    cgR = cgRotZ(0.12 * sin(uTime * 0.6 + i * 1.9) * live + uPhase * 0.05 * (mod(i, 2.0) * 2.0 - 1.0));
+    vec2 dir = vec2(cos(i * 2.4 + 0.5), sin(i * 2.4 + 0.5));
+    cgOff = vec3(dir * (0.0022 * sin(uTime * 1.1 + i * 2.3) * live + 0.007 * kick), 0.004 * kick * (i - 2.0));
+  } else if (vZone == ${Z.SHARD}) {
+    vec3 hc = vec3(${HC.map((v) => v.toFixed(3)).join(', ')});
+    mat3 dm = cgRotX(${(-Math.PI / 2 + DISC_TILT).toFixed(4)});
+    vec3 lp = transpose(dm) * (position - hc);
+    float r = length(lp.xy);
+    float w = 0.55 * pow(0.1 / max(r, 0.05), 1.5);
+    cgPivot = hc;
+    cgR = dm * cgRotZ(-(uPhase * 0.8 + uTime * 0.25) * w) * transpose(dm);
   }
 `;
 
 const FRAG = /* glsl */ `
   float fill = clamp((uCharge - 0.1) / 0.88, 0.0, 1.0);
   vec3 violet = mix(uA, uB, 0.2);
-  if (zone == ${Z.OBSIDIAN} || zone == ${Z.VEIN}) {
-    // Veins crawling toward the singularity (flow −Z).
-    vec3 q = vOP * 38.0 + vec3(0.0, 0.0, uTime * 0.9);
+  if (zone == ${Z.OBSIDIAN} || zone == ${Z.VEIN} || zone == ${Z.SEG} || zone == ${Z.SHARD}) {
+    // Glossy obsidian; fine violet veins (sparse, thin) crawling toward the
+    // singularity; conchoidal sheen on the facets.
+    vec3 q = vOP * 34.0 + vec3(0.0, 0.0, uTime * 0.9);
     float n = cgFbm(q);
-    float vein = 1.0 - smoothstep(0.0, 0.035, abs(n - 0.5));
-    float k = zone == ${Z.VEIN} ? 1.0 : vein;
-    diffuseColor.rgb *= 0.5 + 0.5 * cgNoise(vOP * 120.0);
+    float vein = (1.0 - smoothstep(0.0, 0.016, abs(n - 0.5))) * smoothstep(0.42, 0.6, cgNoise(vOP * 13.0 + 4.0));
+    float k = zone == ${Z.VEIN} ? 0.8 : vein;
+    diffuseColor.rgb *= 0.55 + 0.25 * cgNoise(vOP * 60.0);
+    roughnessFactor = 0.24 + 0.12 * cgNoise(vOP * 90.0); // glossy, but no highlight hot enough to bloom
     float pulse = 0.6 + 0.4 * sin(vOP.z * 40.0 + uTime * 4.0) * (1.0 - uCalm);
-    glow += violet * k * gmask * (0.08 + 0.5 * fill * pulse + 0.9 * uStreak + 2.5 * uFire) * (zone == ${Z.VEIN} ? 0.8 : 1.0);
+    glow += violet * k * gmask * (0.1 + 0.6 * fill * pulse + 0.9 * uStreak + 2.5 * uFire);
+    // Chunk and shard edges catch the violet light.
+    if (zone == ${Z.SEG} || zone == ${Z.SHARD}) glow += violet * fres * (0.12 + 0.25 * fill + 0.5 * uStreak + 1.5 * uFire);
+  } else if (zone == ${Z.CORE}) {
+    float f = cgFill(vOP.z, -0.3, -0.77);
+    float fl = 0.7 + 0.3 * sin(vOP.z * 90.0 - uTime * 9.0 * (1.0 - uCalm * 0.7));
+    diffuseColor.rgb = vec3(0.01);
+    glow += mix(violet, uB, 0.25 + 0.3 * uFire) * gmask * (mix(0.04, 1.0 + 0.4 * uStreak, f) * fl + 4.0 * uFire);
   } else if (zone >= ${Z.RING0} && zone <= ${Z.RING0 + 2}) {
     glow += violet * gmask * (0.2 + 0.3 * fill + 0.8 * uStreak + 2.5 * uFire) * (0.3 + fres);
   } else if (zone == ${Z.EMIT}) {
@@ -255,7 +333,9 @@ export const buildOblivion: CustomGunBuild = ({ lod, finish }) => {
   const rig = new GunRig('oblivion', lod, finish);
   const d = rig.drive;
   const hi = lod === 'high';
-  rig.body(cached(`oblivion-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'oblivion', vert: VERT, frag: FRAG }));
+  const body = cached(`oblivion-body-${lod}`, () => buildBody(lod));
+  rig.trackerMount = body.mount;
+  rig.body(body.geo, surfaceMaterial(d, { key: 'oblivion', vert: VERT, frag: FRAG }));
   const horizon = rig.add(fxMesh(d, horizonGeo(), {
     key: 'oblivion-horizon',
     // The horizon swells as it swallows the shot, then settles.

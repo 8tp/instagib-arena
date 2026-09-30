@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { CustomGunBuild } from './types';
 import {
-  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, extrude, fxMesh, lathe, motes, stations, surfaceMaterial, torusZ,
-  type Lod, type PartOpts,
+  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, extrude, fxMesh, lathe, motes, mountPad, stations, surfaceMaterial,
+  taperTube, torusZ, type Lod, type PartOpts, type TrackerMount, type V3,
 } from './kit';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -20,7 +20,22 @@ import {
 
 const Z = { ENAMEL: 1, GOLD: 2, CORE: 3, HALO: 4, SUN: 5, FEATHER0: 8 } as const; // feathers 8 … 12
 const FEATHERS = 5;
-const ROOT = { x: 0.05, y: 0.05, z: -0.22 };
+const ROOT = { x: 0.062, y: 0.056, z: -0.2 }; // wing root (the flare's pivot)
+// Tracked module seat: an enamel cartouche framed in gold, low on the −X
+// flank under the wing root (face x −0.062, y −0.012, z −0.142 … +0.022).
+const MOUNT_FACE: V3 = [-0.062, -0.012, -0.06];
+
+// A feather in the side plane: x = along the quill (→ −z, forward), y = the
+// vane (wider on the leading side), root at the origin.
+function vane(len: number, wid: number): THREE.Shape {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0);
+  s.quadraticCurveTo(len * 0.25, wid * 0.95, len * 0.78, wid * 0.6);
+  s.quadraticCurveTo(len * 0.96, wid * 0.35, len, 0);
+  s.quadraticCurveTo(len * 0.62, -wid * 0.3, len * 0.2, -wid * 0.36);
+  s.quadraticCurveTo(len * 0.04, -wid * 0.2, 0, 0);
+  return s;
+}
 
 function featherShape(len: number, wid: number): THREE.Shape {
   // Leaf/blade outline in the shape plane (x across, y along the feather).
@@ -33,7 +48,7 @@ function featherShape(len: number, wid: number): THREE.Shape {
   return s;
 }
 
-function buildBody(lod: Lod): THREE.BufferGeometry {
+function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount } {
   const hi = lod === 'high';
   const SEG = hi ? 20 : 8;
   const p = new Parts();
@@ -81,34 +96,48 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   p.add(lathe([[0.024, -0.9], [0.04, -0.9], [0.05, -0.885], [0.05, -0.85], [0.036, -0.84]], SEG), { ...GOLD, at: [0, BARREL_Y, 0] });
   p.add(torusZ(0.06, 0.004, 6, hi ? 40 : 14), { ...GOLD_LT, zone: Z.HALO, glow: 1, at: [0, BARREL_Y, -0.82] });
 
-  // Wings: five feathers a side, root at the barrel collar, lying forward
-  // along the flanks (pivot + feather index in the zone → vertex flare).
+  // Wings folded along the barrel's flanks, tips forward: a gold wing arm,
+  // five long primaries shingled down the flank (each rolled so its vane
+  // faces up and out — it reads from the side AND from above), coverts over
+  // their roots. Zone = feather group (the flare fans later groups further).
   for (const sx of [-1, 1]) {
+    const FEATHER: PartOpts = { col: 0xffffff, pal: PAL.BODY, rough: 0.3, metal: 0.05, glow: 1 };
     for (let k = 0; k < FEATHERS; k++) {
-      const len = 0.17 + 0.05 * k;
-      const wid = 0.03 - 0.002 * k;
+      const len = 0.25 + 0.045 * k;
+      const wid = 0.034 - 0.002 * k;
       const zone = Z.FEATHER0 + k;
-      const at: [number, number, number] = [sx * (ROOT.x + 0.004 * k), ROOT.y - 0.015 * k, ROOT.z + 0.01 * k];
-      const yaw = -sx * (0.06 + 0.045 * k); // tips sweep outward
-      const roll = sx * (-0.1 - 0.07 * k); // lying nearly flat, layered down
-      const g = extrude(featherShape(len, wid), 0.004, 'top', 0.001, hi ? 6 : 3);
-      // 'top': shape y → −z (forward), extrusion → y. Lay it on its side:
-      // roll about the feather axis so the flat faces outward.
-      p.add(g, { col: 0xffffff, pal: PAL.BODY, rough: 0.3, metal: 0.05, zone, glow: 1, at, rot: [0, yaw, roll] });
-      if (hi) p.add(chamferBox(0.003, 0.003, len * 0.85, 0.001), { ...GOLD_LT, zone, glow: 0, at: [at[0] - Math.sin(yaw) * len * 0.42, at[1], at[2] - Math.cos(yaw) * len * 0.42], rot: [0, yaw, roll] });
+      const at: V3 = [sx * (0.068 + 0.004 * k), 0.054 - 0.013 * k, -0.2 - 0.022 * k];
+      const rot: V3 = [0.07 - 0.012 * k, -sx * (0.05 + 0.01 * k), sx * (0.55 - 0.05 * k)];
+      p.add(extrude(vane(len, wid), 0.0026, 'side', hi ? 0.0008 : 0, hi ? 6 : 3), { ...FEATHER, zone, at, rot });
+      // Gold quill down the feather.
+      if (hi) p.add(chamferBox(0.004, 0.003, len * 0.86, 0.001).translate(0, 0.004, -len * 0.43), { ...GOLD_LT, zone, glow: 0, at, rot });
     }
+    // Coverts: short feathers over the primaries' roots.
+    for (let k = 0; k < (hi ? 4 : 2); k++) {
+      const len = 0.12 + 0.012 * k;
+      const at: V3 = [sx * (0.074 + 0.002 * k), 0.062 - 0.013 * k, -0.215 - 0.012 * k];
+      p.add(extrude(vane(len, 0.03), 0.003, 'side', hi ? 0.0008 : 0, hi ? 5 : 2),
+        { ...FEATHER, zone: Z.FEATHER0, at, rot: [0.06 - 0.02 * k, -sx * 0.04, sx * 0.7] });
+    }
+    // Wing arm: the gilded leading edge from the shoulder, with a jewel boss.
+    p.add(taperTube([[sx * 0.054, 0.06, -0.17], [sx * 0.07, 0.068, -0.21], [sx * 0.078, 0.064, -0.29], [sx * 0.08, 0.052, -0.36]], 0.0075, 0.003, hi ? 10 : 4, hi ? 6 : 4),
+      { ...GOLD, zone: Z.FEATHER0 });
+    p.add(new THREE.SphereGeometry(0.009, hi ? 10 : 6, hi ? 8 : 4), { ...GOLD_LT, zone: Z.FEATHER0, at: [sx * 0.066, 0.066, -0.2] });
   }
-  return p.merge(`seraph-${lod}`);
+  // Tracked module seat: enamel cartouche, gold lip + gold bolts.
+  const mount = mountPad(p, { face: MOUNT_FACE, depth: 0.022, pad: ENAMEL, rim: GOLD_LT, hi });
+  return { geo: p.merge(`seraph-${lod}`), mount };
 }
 
 const VERT = /* glsl */ `
-  if (vZone >= ${Z.FEATHER0}) {
+  if (vZone >= ${Z.FEATHER0} && vZone < ${Z.FEATHER0 + FEATHERS}) {
     float k = float(vZone - ${Z.FEATHER0});
     float sx = sign(position.x);
     float open = exp(-uShot * 3.2) * (1.0 - exp(-uShot * 28.0)) * step(uShot, 3.0);
     float spread = mix(open, open * 0.4, uCalm) + 0.32 * uStreak + 0.02 * sin(uTime * 1.3 + k) * (1.0 - uCalm);
-    cgPivot = vec3(sx * ${ROOT.x.toFixed(3)}, ${ROOT.y.toFixed(3)} - 0.015 * k, ${ROOT.z.toFixed(3)});
-    // Sweep out (yaw) + lift (roll), later feathers further: the wing fans.
+    cgPivot = vec3(sx * ${ROOT.x.toFixed(3)}, ${ROOT.y.toFixed(3)}, ${ROOT.z.toFixed(3)});
+    // Tips swing out (yaw) and the wing lifts (roll), later groups further:
+    // the wing fans open.
     cgR = cgRotY(-sx * spread * (0.16 + 0.05 * k)) * cgRotZ(sx * spread * (0.14 + 0.035 * k));
   }
 `;
@@ -127,7 +156,9 @@ const FRAG = /* glsl */ `
     glow += uA * fres * (0.04 + 0.2 * uStreak);
   } else if (zone == ${Z.CORE}) {
     float f = cgFill(vOP.z, -0.29, -0.87);
-    glow += mix(uA, uB, 0.6) * (mix(0.1, 1.2, f) + 0.4 * uStreak + 4.0 * uFire);
+    // The light blade (additive, ≤ 0.7) wraps this: together they stay under the
+    // bloom threshold at rest.
+    glow += mix(uA, uB, 0.6) * (mix(0.08, 0.6, f) + 0.15 * uStreak + 4.0 * uFire);
   } else if (zone == ${Z.HALO}) {
     glow += mix(uA, uB, 0.4) * gmask * (0.35 + 0.5 * fill + 1.2 * uStreak + 3.0 * uFire);
   } else if (zone == ${Z.SUN}) {
@@ -135,12 +166,12 @@ const FRAG = /* glsl */ `
     float r = length(q) / 0.02;
     float ray = 0.5 + 0.5 * cos(atan(q.x, q.y) * 12.0 + uTime * 0.6);
     glow += mix(uA, uB, 0.5) * (0.25 + 0.35 * fill * (1.0 - r) + 0.25 * ray * r + 0.8 * uStreak + 2.0 * uFire);
-  } else if (zone >= ${Z.FEATHER0}) {
+  } else if (zone >= ${Z.FEATHER0} && zone < ${Z.FEATHER0 + FEATHERS}) {
     // Feathers: barbs along the vane, gilded toward the tips; glowing edges
     // when the wings flare.
     float open = exp(-uShot * 3.2) * step(uShot, 3.0);
-    float barb = 0.5 + 0.5 * sin((vOP.z * 1.2 + abs(vOP.y) * 2.0) * 260.0);
-    float tip = smoothstep(-0.38, -0.62, vOP.z);
+    float barb = 0.5 + 0.5 * sin((vOP.z * 1.0 + vOP.y * 1.6) * 300.0);
+    float tip = smoothstep(-0.42, -0.66, vOP.z);
     diffuseColor.rgb = mix(diffuseColor.rgb * (0.9 + 0.1 * barb), uL, tip * 0.8);
     metalnessFactor = mix(0.05, 0.9, tip);
     glow += mix(uA, uB, 0.5) * (fres * (0.1 + 0.4 * uStreak) + tip * 0.15 * fill + (0.3 + fres) * 0.7 * open * (1.0 - uCalm * 0.5)) * gmask;
@@ -197,7 +228,9 @@ const GLINTS = /* glsl */ `
 export const buildSeraph: CustomGunBuild = ({ lod, finish }) => {
   const rig = new GunRig('seraph', lod, finish);
   const d = rig.drive;
-  rig.body(cached(`seraph-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'seraph', vert: VERT, frag: FRAG, side: THREE.DoubleSide }));
+  const body = cached(`seraph-body-${lod}`, () => buildBody(lod));
+  rig.trackerMount = body.mount;
+  rig.body(body.geo, surfaceMaterial(d, { key: 'seraph', vert: VERT, frag: FRAG, side: THREE.DoubleSide }));
   rig.add(fxMesh(d, bladeGeo(lod), { key: 'seraph-blade', frag: BLADE_FRAG, side: THREE.FrontSide }));
   rig.add(motes(d, { key: 'seraph', count: lod === 'high' ? 60 : 20, motion: GLINTS, star: true }));
   return rig.instance();

@@ -29,6 +29,7 @@ import {
   TIER_META,
   TIERS,
   UNUSUAL_EFFECTS,
+  slotAllows,
   nextUtcMidnight,
   seasonName,
   utcDayKey,
@@ -42,6 +43,7 @@ import {
   type Loadout,
   type Look,
   type Quality,
+  type SlotAttr,
   type Tier,
 } from '../src/game/items/types';
 import { DEFAULT_LOADOUT, ITEM_DEFS, casePoolFor, itemDef, vaultUnobtainables, type ItemDef } from '../src/game/items/catalog';
@@ -460,7 +462,6 @@ export function lookOfRow(r: ItemRow): Look {
   if (a.ksEffect) l.k = a.ksEffect;
   if (a.festive) l.f = 1;
   if (typeof a.seed === 'number') l.p = a.seed;
-  if (typeof a.wear === 'number') l.w = a.wear;
   if (a.tint) l.t = a.tint;
   return l;
 }
@@ -744,7 +745,6 @@ export function rollQualities(def: ItemDef, tier: Tier, rng: Rng = defaultRng): 
         attrs.sheen = pick(KS_SHEENS, rng).id;
       }
       attrs.seed = rng(1000);
-      attrs.wear = rng(1001) / 1000;
     }
   }
   return { quality, attrs };
@@ -911,7 +911,6 @@ function cleanAdminAttrs(raw: unknown, tier: unknown): { attrs: StoredAttrs; err
   }
   if (a.festive) out.festive = true;
   if (a.seed != null) out.seed = Math.max(0, Math.min(999, Math.floor(Number(a.seed) || 0)));
-  if (a.wear != null) out.wear = Math.max(0, Math.min(1, Number(a.wear) || 0));
   for (const [key, max] of [['nameTag', 24], ['customName', 40], ['customDesc', 200]] as const) {
     if (a[key] == null) continue;
     const s = String(a[key]).trim().slice(0, max);
@@ -944,8 +943,25 @@ export function prepareAdminItem(i: ItemSpecInput): { ok: true; item: PreparedIt
   if (def.default || ENTITLEMENT_SLOTS.has(def.slot)) return { ok: false, error: 'not_an_item' };
   const { attrs, error } = cleanAdminAttrs(i.attrs, i.tier);
   if (error) return { ok: false, error };
+  // Drop what can't apply to this slot (SLOT_ATTRS) rather than failing, so a
+  // code or gift saved before a rule change still grants.
+  const allows = (k: SlotAttr) => slotAllows(def.slot, k);
+  if (attrs.effect && !(allows('effect') && (def.slot !== 'emote' || UNUSUAL_EFFECTS.some((e) => e.id === attrs.effect && e.taunt)))) delete attrs.effect;
+  if (!allows('kills')) delete attrs.kills;
+  if (!allows('sheen')) delete attrs.sheen;
+  if (!allows('ksEffect')) delete attrs.ksEffect;
+  if (!allows('festive')) delete attrs.festive;
+  if (!allows('seed')) delete attrs.seed;
+  if (!allows('tint')) delete attrs.tint;
   const qIn = Array.isArray(i.quality) ? (i.quality.filter((x) => (QUALITIES as readonly unknown[]).includes(x)) as Quality[]) : [];
   const quality = new Set<Quality>(qIn);
+  if (!attrs.effect) quality.delete('unusual');
+  if (!allows('kills')) quality.delete('strange');
+  if (!allows('sheen')) {
+    quality.delete('killstreak');
+    quality.delete('professional');
+  }
+  if (!allows('festive')) quality.delete('festive');
   if (attrs.effect) quality.add('unusual');
   if (attrs.kills != null) quality.add('strange');
   if (attrs.ksEffect) {
@@ -1110,6 +1126,8 @@ export function initEconomy(h: Hooks): void {
   const now = Date.now();
   backupBeforeFirstMigration(now);
   q(`INSERT OR IGNORE INTO instagib_meta (k, v) VALUES ('econ_v3_at', ?)`).run(String(now));
+  // Wear bands were retired: drop the leftover attribute (idempotent).
+  q(`UPDATE instagib_items SET attrs = json_remove(attrs, '$.wear') WHERE json_extract(attrs, '$.wear') IS NOT NULL`).run();
   const ids = q(
     `SELECT u.id FROM instagib_users u LEFT JOIN instagib_stats s ON s.player_id = u.id WHERE s.player_id IS NULL OR s.econ_v3 = 0`,
   ).all() as { id: string }[];

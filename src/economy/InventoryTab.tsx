@@ -10,7 +10,7 @@ import { SegButton, Skeleton } from '../deck';
 import { sfxProps, toast, uiHover, uiSfx } from '../deck-core';
 import { cosmeticById, nameColorById, sourceLabel, titleById } from '../game/cosmetics';
 import { DEFAULT_LOADOUT, ITEM_DEFS, itemDef } from '../game/items/catalog';
-import { TIER_META, strangeRank, STRANGE_RANKS, wearName, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
+import { TIER_META, strangeRank, STRANGE_RANKS, QUALITY_LABEL, type ItemInstanceWire, type ItemSlot, type Loadout } from '../game/items/types';
 import { prefetchThumbnails } from '../game/thumbs';
 import { LockerStage, type StageNameplate } from '../locker/LockerStage';
 import { DyeSwatch, ItemTile } from '../ui/item-tile';
@@ -227,14 +227,18 @@ export function InventoryTab({
   // ── Preview ──────────────────────────────────────────────────────────────
   const baseLooks: Loadout = useMemo(() => settings.looks ?? {}, [settings.looks]);
   const tryLook = shownEntry ? (shownEntry.inst ? instLook(shownEntry.inst) : shownEntry.def.default ? null : { d: shownEntry.def.id }) : null;
-  // An Unusual hat (tried on, or the one you wear) needs the taller crown framing.
+  // An Anomalous hat (tried on, or the one you wear) needs the taller crown framing.
   const hatFx = shownEntry ? tryLook?.e : baseLooks.hat?.e;
   const previewView = slot === 'hat' && hatFx ? 'crown' : SLOT_VIEW[slot];
   const tryKey = shownEntry ? `${shownEntry.key}|${shownEntry.slot}` : '';
+  // The gun on the stage carries its Tracked counter: the finish being tried on,
+  // else the equipped one.
+  const finishInst = shownEntry?.slot === 'finish' ? (shownEntry.inst ?? null) : (settings.finishItem ?? null);
+  const trackedKills = finishInst?.quality.includes('strange') ? (finishInst.attrs.kills ?? 0) : null;
   const cos = useMemo(
-    () => previewCosmetics(baseLooks, shownEntry ? { slot: shownEntry.slot, look: tryLook } : null, previewView, settings),
+    () => ({ ...previewCosmetics(baseLooks, shownEntry ? { slot: shownEntry.slot, look: tryLook } : null, previewView, settings), trackedKills }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseLooks, tryKey, previewView, settings.playerName, settings.reducedEffects],
+    [baseLooks, tryKey, previewView, settings.playerName, settings.reducedEffects, trackedKills],
   );
 
   const titleText = (id: string) => {
@@ -638,7 +642,7 @@ function Details({
             {confirm === inst.uid ? (
               <span className='ec-confirm' role='alertdialog' aria-label='Confirm salvage'>
                 <span>
-                  Salvage{inst.quality.includes('unusual') || TIER_META[tier].rank >= 3 ? ` this ${TIER_META[tier].label}${inst.quality.includes('unusual') ? ' Unusual' : ''}` : ''} for {fmtCredits(gain)}? Can’t be undone.
+                  Salvage{inst.quality.includes('unusual') || TIER_META[tier].rank >= 3 ? ` this ${TIER_META[tier].label}${inst.quality.includes('unusual') ? ` ${QUALITY_LABEL.unusual}` : ''}` : ''} for {fmtCredits(gain)}? Can’t be undone.
                 </span>
                 <button type='button' className='ec-btn ec-btn-danger' data-action='salvage-confirm' disabled={busy} onClick={() => onSalvage(inst)}>Salvage · {fmtCredits(gain)}</button>
                 <button type='button' className='ec-btn' onClick={() => setConfirm(null)}>Cancel</button>
@@ -662,15 +666,14 @@ function EyeGlyph() {
   );
 }
 
-// Provenance-ish facts: origin, minted date, strange progress, wear + seed.
+// Provenance-ish facts: origin, minted date, Tracked progress, pattern seed.
 function InstFacts({ inst }: { inst: ItemInstanceWire }) {
   const a = inst.attrs;
   const rows: [string, string][] = [
     ['Origin', ORIGIN_LABEL[inst.origin]],
     ['Minted', new Date(inst.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })],
   ];
-  if (a.wear != null) rows.push(['Wear', `${a.wear.toFixed(4)} · ${wearName(a.wear)}${a.seed != null ? ` · seed ${a.seed}` : ''}`]);
-  else if (a.seed != null) rows.push(['Pattern seed', String(a.seed)]);
+  if (a.seed != null) rows.push(['Pattern seed', String(a.seed)]);
   if (a.nameTag) rows.push(['Name tag', `“${a.nameTag}”`]);
   rows.push(['Trade', inst.tradable ? 'Tradable' : 'Bound to your account']);
   const strange = inst.quality.includes('strange');
@@ -687,7 +690,7 @@ function InstFacts({ inst }: { inst: ItemInstanceWire }) {
       ))}
       {strange && (
         <div className='ec-facts-wide'>
-          <span>Strange</span>
+          <span>{QUALITY_LABEL.strange}</span>
           <b>
             {strangeRank(kills)} · {kills.toLocaleString()} kills{next ? ` · ${(next.kills - kills).toLocaleString()} to ${next.name}` : ' · top rank'}
           </b>

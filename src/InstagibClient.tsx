@@ -57,7 +57,8 @@ import {
 } from './game/net';
 import { withLegacyFromLooks } from './game/look-runtime';
 import { itemDef } from './game/items/catalog';
-import { TIER_META, qualityPrefix, wearName } from './game/items/types';
+import { QUALITY_LABEL, STRANGE_RANKS, TIER_META, qualityPrefix, strangeRank } from './game/items/types';
+import { qualityTone } from './economy/display';
 import { CHAT_CLIENT_MAX_LEN } from './lobby/helpers';
 import { GlobalChatPanel, OnlinePlayersPanel, OpenLobbies, ServerStatusChip } from './lobby/ServerBrowser';
 import { CreateMatchModal, CreateOnlineModal, InviteModal } from './lobby/CreateMatch';
@@ -1546,9 +1547,10 @@ function ReplayTag({ label, tone }: { label: string; tone: 'cyan' | 'amber' }) {
 /* ───────────────────────── HUD layout ───────────────────────── */
 
 // The equipped finish's card while you inspect the gun: full name (quality
-// prefix + name), Strange kills + rank, wear, pattern seed, mint number, in the
-// tier colour. Data is the equipped instance the hub put in Settings.finishItem;
-// a plain stock/bought finish shows just its name.
+// prefix + name) in the tier colour, pattern seed, mint number; on a Tracked
+// finish, its rank, confirmed kills and progress to the next rank (the same
+// count the gun's counter module shows). Data is the equipped instance the hub
+// put in Settings.finishItem; a plain stock/bought finish shows just its name.
 function InspectCard({ settings, kills }: { settings: Settings; kills: number | null }) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -1564,21 +1566,48 @@ function InspectCard({ settings, kills }: { settings: Settings; kills: number | 
   const prefix = item ? qualityPrefix(item.quality, { ...attrs, kills: kills ?? attrs.kills }) : '';
   const title = prefix ? `${prefix} ${base}` : base;
   const bits: string[] = [];
-  if (kills !== null) bits.push(`${kills.toLocaleString()} kills`);
-  if (typeof attrs.wear === 'number') bits.push(wearName(attrs.wear));
   if (typeof attrs.seed === 'number') bits.push(`Pattern ${attrs.seed}`);
   if (item) bits.push(`#${item.mint}`);
+  let tracked: { rank: string; next: { kills: number; name: string } | undefined; pct: number } | null = null;
+  if (kills !== null) {
+    const next = STRANGE_RANKS.find((r) => r.kills > kills);
+    const cur = [...STRANGE_RANKS].reverse().find((r) => kills >= r.kills) ?? STRANGE_RANKS[0];
+    const pct = next ? Math.max(0, Math.min(1, (kills - cur.kills) / Math.max(1, next.kills - cur.kills))) : 1;
+    tracked = { rank: strangeRank(kills), next, pct };
+  }
+  const tone = qualityTone('strange');
   return (
+    // Upper right on a dark plate: clear of the gun through the whole inspect
+    // (it lifts into the lower middle of the frame) and readable over any map.
     <div
       aria-hidden='true'
-      className='pointer-events-none absolute bottom-44 right-8 max-w-[22rem] text-right font-mono'
+      className='pointer-events-none absolute right-8 top-[26%] w-[20rem] rounded-md bg-black/75 px-4 py-3 text-right font-mono shadow-[0_6px_24px_rgba(0,0,0,0.55)] ring-1 ring-white/10'
       style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
     >
-      <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
-      <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
+      <div className='text-[10px] uppercase tracking-[0.25em] text-white/55'>{TIER_META[tier].label}</div>
+      <div className='text-lg font-semibold leading-tight' style={{ color }}>
         {title}
       </div>
-      {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
+      {tracked && kills !== null && (
+        <div className='mt-2.5 border-t border-white/10 pt-2'>
+          <div className='flex items-baseline justify-between gap-3'>
+            <span className='flex items-baseline gap-2'>
+              <span className='text-[11px] font-bold uppercase tracking-[0.16em]' style={{ color: tone }}>
+                {QUALITY_LABEL.strange}
+              </span>
+              <span className='text-[15px] font-bold text-white'>{tracked.rank}</span>
+            </span>
+            <span className='text-[15px] font-bold tabular-nums text-white'>{kills.toLocaleString()}<span className='ml-1 text-[11px] font-semibold text-white/60'>kills</span></span>
+          </div>
+          <div className='mt-1.5 h-1 overflow-hidden rounded-full bg-white/15'>
+            <div className='h-full rounded-full' style={{ width: `${tracked.pct * 100}%`, background: tone }} />
+          </div>
+          <div className='mt-1 text-[11px] tabular-nums text-white/70'>
+            {tracked.next ? `${(tracked.next.kills - kills).toLocaleString()} to ${tracked.next.name}` : 'Top rank'}
+          </div>
+        </div>
+      )}
+      {bits.length > 0 && <div className='mt-1 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
     </div>
   );
 }

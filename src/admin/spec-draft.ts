@@ -2,7 +2,7 @@
 // the server accepts (server/economy.ts prepareAdminItem). Shared by the Items
 // tab (direct mint) and the Codes / Gifts reward bundles.
 import { ITEM_DEFS, itemDef } from '../game/items/catalog';
-import type { ItemAttrs, RewardBundle, RewardItemSpec, Tier } from '../game/items/types';
+import { UNUSUAL_EFFECTS, slotAllows, type ItemAttrs, type ItemSlot, type RewardBundle, type RewardItemSpec, type SlotAttr, type Tier } from '../game/items/types';
 import { specQualities } from '../inbox/reward';
 
 // Everything an admin can mint: not a virtual default, not an entitlement slot.
@@ -18,7 +18,6 @@ export type SpecDraft = {
   sheen: string;
   ksEffect: string;
   seed: string;
-  wear: string;
   customName: string;
   customDesc: string;
   nameTag: string;
@@ -29,23 +28,50 @@ export type SpecDraft = {
 
 let seq = 1;
 export function newDraft(def = 'hat.tophat'): SpecDraft {
-  return { key: seq++, def, effect: '', strange: false, kills: '0', festive: false, sheen: '', ksEffect: '', seed: '', wear: '', customName: '', customDesc: '', nameTag: '', tint: '', tier: '', bound: false };
+  return { key: seq++, def, effect: '', strange: false, kills: '0', festive: false, sheen: '', ksEffect: '', seed: '', customName: '', customDesc: '', nameTag: '', tint: '', tier: '', bound: false };
 }
 
 export const HEX6 = /^#[0-9a-fA-F]{6}$/;
 
-export function draftToSpec(d: SpecDraft): RewardItemSpec {
-  const def = itemDef(d.def);
+// Which attributes a def's slot takes (types.ts SLOT_ATTRS — the same table the
+// server's prepareAdminItem enforces). Unknown def → nothing slot-specific.
+export const allows = (def: string, attr: SlotAttr): boolean => {
+  const slot = itemDef(def)?.slot;
+  return !!slot && slotAllows(slot, attr);
+};
+// Anomalous effects valid on a slot (emotes take only the taunt-capable ones).
+export const effectsFor = (slot: ItemSlot | undefined) =>
+  !slot || !slotAllows(slot, 'effect') ? [] : slot === 'emote' ? UNUSUAL_EFFECTS.filter((e) => e.taunt) : UNUSUAL_EFFECTS;
+
+// Re-point a draft at another def, clearing whatever the new slot can't carry
+// (the universal fields — name, description, tag, tier, bound — survive).
+export function retarget(d: SpecDraft, def: string): SpecDraft {
+  const next: SpecDraft = { ...d, def };
+  const slot = itemDef(def)?.slot;
+  if (!allows(def, 'effect') || !effectsFor(slot).some((e) => e.id === d.effect)) next.effect = '';
+  if (!allows(def, 'kills')) {
+    next.strange = false;
+    next.kills = '0';
+  }
+  if (!allows(def, 'festive')) next.festive = false;
+  if (!allows(def, 'sheen')) next.sheen = '';
+  if (!allows(def, 'ksEffect') || !next.sheen) next.ksEffect = '';
+  if (!allows(def, 'seed')) next.seed = '';
+  if (!allows(def, 'tint')) next.tint = '';
+  return next;
+}
+
+// Only the attributes the def's slot takes go out — the preview, the validator
+// and the server all see the same item.
+export function draftToSpec(draft: SpecDraft): RewardItemSpec {
+  const d = retarget(draft, draft.def);
   const attrs: ItemAttrs = {};
   if (d.effect) attrs.effect = d.effect;
   if (d.strange) attrs.kills = Math.max(0, Math.min(10_000_000, Math.floor(Number(d.kills) || 0)));
   if (d.festive) attrs.festive = true;
   if (d.sheen) attrs.sheen = d.sheen;
   if (d.ksEffect) attrs.ksEffect = d.ksEffect;
-  if (def?.slot === 'finish') {
-    if (d.seed.trim() !== '') attrs.seed = Math.max(0, Math.min(999, Math.floor(Number(d.seed) || 0)));
-    if (d.wear.trim() !== '') attrs.wear = Math.max(0, Math.min(1, Number(d.wear) || 0));
-  }
+  if (d.seed.trim() !== '') attrs.seed = Math.max(0, Math.min(999, Math.floor(Number(d.seed) || 0)));
   if (d.customName.trim()) attrs.customName = d.customName.trim().slice(0, 40);
   if (d.customDesc.trim()) attrs.customDesc = d.customDesc.trim().slice(0, 200);
   if (d.nameTag.trim()) attrs.nameTag = d.nameTag.trim().slice(0, 24);
@@ -60,7 +86,7 @@ export function draftToSpec(d: SpecDraft): RewardItemSpec {
 // A stored spec (from a code / gift) back into a form draft.
 export function specToDraft(s: RewardItemSpec): SpecDraft {
   const a = (s.attrs ?? {}) as ItemAttrs & { tier?: Tier };
-  return {
+  return retarget({
     ...newDraft(s.def),
     effect: a.effect ?? '',
     strange: a.kills != null,
@@ -69,14 +95,13 @@ export function specToDraft(s: RewardItemSpec): SpecDraft {
     sheen: a.sheen ?? '',
     ksEffect: a.ksEffect ?? '',
     seed: a.seed != null ? String(a.seed) : '',
-    wear: a.wear != null ? String(a.wear) : '',
     customName: a.customName ?? '',
     customDesc: a.customDesc ?? '',
     nameTag: a.nameTag ?? '',
     tint: a.tint ?? '',
     tier: s.tier ?? a.tier ?? '',
     bound: !!s.bound,
-  };
+  }, s.def);
 }
 
 // The Codes / Gifts bundle form.

@@ -131,7 +131,6 @@ function rollQualities(def: ItemDef, roll = Math.random): { quality: Quality[]; 
   }
   if (def.slot === 'finish') {
     attrs.seed = Math.floor(roll() * 1000);
-    attrs.wear = roll();
     if (roll() < QUALITY_ODDS.killstreak) {
       quality.push('killstreak');
       attrs.sheen = KS_SHEENS[Math.floor(roll() * KS_SHEENS.length)].id;
@@ -212,11 +211,11 @@ function seedState() {
   add('back.wings.angel');
   add('back.jetpack');
   add('back.wings.energy');
-  const rail = add('gun.toxic', ['strange', 'killstreak'], { kills: 412, seed: 318, wear: 0.05, sheen: 'sheen.green' });
-  add('gun.gold', ['strange', 'professional', 'killstreak'], { kills: 1340, seed: 77, wear: 0.31, sheen: 'sheen.violet', ksEffect: 'ks.hypno' });
-  add('gun.carbon', [], { seed: 901, wear: 0.42 });
-  add('gun.spectrum', [], { seed: 5, wear: 0.02 });
-  add('gun.reaper', [], { seed: 5, wear: 0.02 });
+  const rail = add('gun.toxic', ['strange', 'killstreak'], { kills: 412, seed: 318, sheen: 'sheen.green' });
+  add('gun.gold', ['strange', 'professional', 'killstreak'], { kills: 1340, seed: 77, sheen: 'sheen.violet', ksEffect: 'ks.hypno' });
+  add('gun.carbon', [], { seed: 901 });
+  add('gun.spectrum', [], { seed: 5 });
+  add('gun.reaper', [], { seed: 5 });
   add('rail.plasma');
   add('rail.gold', ['strange'], { kills: 88 });
   add('rail.spectrum');
@@ -661,7 +660,7 @@ function ibEnsure() {
         rolls: 5,
         items: [
           { def: 'hat.crown', quality: ['unusual'], attrs: { effect: 'fx.galaxy' }, bound: true },
-          { def: 'gun.gold', quality: ['strange', 'killstreak'], attrs: { kills: 0, sheen: 'sheen.violet', seed: 77, wear: 0.03 } },
+          { def: 'gun.gold', quality: ['strange', 'killstreak'], attrs: { kills: 0, sheen: 'sheen.violet', seed: 77 } },
         ],
       },
     }),

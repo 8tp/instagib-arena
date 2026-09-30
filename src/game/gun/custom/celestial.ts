@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import type { CustomGunBuild } from './types';
 import {
-  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, extrude, lathe, motes, stations, strips, surfaceMaterial, torusZ,
-  type Lod, type PartOpts, type V3,
+  BARREL_Y, GunRig, PAL, Parts, addGrip, cached, chamferBox, cylZ, extrude, hull, lathe, motes, mountPad, stations, strips,
+  surfaceMaterial, torusZ, type Lod, type PartOpts, type TrackerMount, type V3,
 } from './kit';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -17,11 +17,17 @@ import {
 // on the SHOT a comet leaves the receiver, spirals once round the barrel and
 // flies off the muzzle trailing a dust tail and an ion tail. Streak: the
 // nebula glows, the moons race, shooting stars cross the gun.
-// Draws: body (+ moons, vertex-animated) · constellation · star dust ·
+// Star-metal window frames on the flanks, an armillary sphere round the
+// planet, a compass star round the barrel collar.
+// Draws: body (+ moons, armillary, vertex-animated) · constellation · star dust ·
 // comet = 4.
 // ─────────────────────────────────────────────────────────────────────────
 
-const Z = { NEBULA: 1, STARMETAL: 2, STAR: 3, MOON: 4, PLANET: 5, CRESCENT: 6 } as const;
+const Z = { NEBULA: 1, STARMETAL: 2, STAR: 3, MOON: 4, PLANET: 5, CRESCENT: 6, ARMILLARY: 7 } as const;
+const PLANET_C: V3 = [0, 0.01, 0.215];
+// Tracked module seat: a star-metal plate low on the −X flank, under the
+// framed nebula window (face x −0.062, y −0.012, z −0.142 … +0.022).
+const MOUNT_FACE: V3 = [-0.062, -0.012, -0.06];
 
 // Constellation nodes (on the back of the receiver and along the barrel top).
 const NODES: V3[] = [
@@ -38,7 +44,7 @@ function crescent(r: number, inner: number, off: number): THREE.Shape {
   return s;
 }
 
-function buildBody(lod: Lod): THREE.BufferGeometry {
+function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount } {
   const hi = lod === 'high';
   const SEG = hi ? 22 : 8;
   const p = new Parts();
@@ -58,6 +64,21 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
     p.add(chamferBox(0.005, 0.006, 0.36, 0.002), { ...METAL, at: [sx * 0.045, 0.07, -0.05] });
     p.add(chamferBox(0.005, 0.005, 0.34, 0.002), { ...METAL, at: [sx * 0.046, -0.018, -0.05] });
   }
+  // Star-metal window frames on the flanks: the nebula reads as a view
+  // through the gun, not a paint job.
+  for (const sx of [-1, 1]) {
+    const x = sx * 0.057;
+    p.add(chamferBox(0.004, 0.004, 0.27, 0.0012), { ...METAL, at: [x, 0.02, -0.045] });
+    if (hi) {
+      for (const z of [0.09, -0.18]) p.add(chamferBox(0.004, 0.05, 0.004, 0.0012), { ...METAL, at: [x, 0.044, z] });
+      // Tiny rivet-stars at the frame corners.
+      for (const z of [0.09, -0.18]) {
+        for (const y of [0.02, 0.068]) p.add(new THREE.OctahedronGeometry(0.004, 0), { ...METAL, at: [x + sx * 0.002, y, z], flat: true });
+      }
+    }
+  }
+  // Tracked module seat.
+  const mount = mountPad(p, { face: MOUNT_FACE, depth: 0.022, pad: DARK, rim: METAL, hi });
   // Stars set into the back (constellation nodes).
   for (const n of NODES) p.add(new THREE.OctahedronGeometry(hi ? 0.0055 : 0.007, 0), { col: 0xffffff, rough: 0.1, metal: 0, zone: Z.STAR, glow: 1, at: n, flat: true });
   addGrip(p, { grip: NEB, guard: METAL, hi });
@@ -68,6 +89,11 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   // A ringed planet where the capacitor sits.
   p.add(new THREE.SphereGeometry(0.034, hi ? 20 : 10, hi ? 14 : 8), { ...NEB, zone: Z.PLANET, at: [0, 0.01, 0.215] });
   p.add(torusZ(0.052, 0.0025, 4, hi ? 36 : 14), { ...METAL, at: [0, 0.01, 0.215], rot: [1.25, 0.35, 0], scale: [1, 1, 0.35] });
+  // An armillary sphere round it: three gimballed star-metal rings (turning).
+  const arm: V3[] = [[0, 0, 0], [0, Math.PI / 2, 0], [Math.PI / 2, 0, 0.5]];
+  for (let i = 0; i < (hi ? 3 : 2); i++) {
+    p.add(torusZ(0.047 + i * 0.003, 0.0018, 4, hi ? 36 : 14), { ...METAL, zone: Z.ARMILLARY, at: PLANET_C, rot: arm[i] });
+  }
   // Foregrip.
   p.add(stations([[-0.19, 0.066, 0.052, -0.046], [-0.3, 0.056, 0.044, -0.043]], 0.02), NEB);
 
@@ -77,19 +103,34 @@ function buildBody(lod: Lod): THREE.BufferGeometry {
   for (const z of [-0.36, -0.58, -0.8]) p.add(cylZ(0.036, 0.036, 0.008, SEG), { ...METAL, at: [0, BARREL_Y, z] });
   const orbits: Array<[number, number, number]> = [[-0.44, 0.055, 0.35], [-0.62, 0.062, -0.3]];
   for (const [z, r, tilt] of orbits) p.add(torusZ(r, 0.0018, 4, hi ? 40 : 14), { ...METAL, at: [0, BARREL_Y, z], rot: [tilt, 0, 0] });
+  // A compass star round the barrel collar: four long diagonal points and
+  // four short cardinal ones, star-metal, faceted.
+  const pts = hi ? 8 : 4;
+  for (let i = 0; i < pts; i++) {
+    const a = Math.PI / 4 + (i / pts) * Math.PI * 2;
+    const len = i % 2 === 0 ? 0.088 : 0.066;
+    const c = Math.cos(a), s = Math.sin(a);
+    const w = 0.012;
+    p.add(hull([[c * 0.05 - s * w, BARREL_Y + s * 0.05 + c * w, -0.3], [c * 0.05 + s * w, BARREL_Y + s * 0.05 - c * w, -0.3],
+      [c * 0.05, BARREL_Y + s * 0.05, -0.286], [c * 0.05, BARREL_Y + s * 0.05, -0.314], [c * len, BARREL_Y + s * len, -0.3]]),
+    { ...METAL, zone: Z.CRESCENT, glow: 0.6, flat: true });
+  }
   // Moons (orbit the barrel).
   p.add(new THREE.SphereGeometry(0.009, hi ? 12 : 6, hi ? 8 : 4), { col: 0xd8def0, rough: 0.8, metal: 0, zone: Z.MOON, at: [0.058, BARREL_Y, -0.46] });
   p.add(new THREE.SphereGeometry(0.0065, hi ? 10 : 5, hi ? 6 : 4), { col: 0xf0d8c8, rough: 0.8, metal: 0, zone: Z.MOON, at: [-0.064, BARREL_Y, -0.64] });
   // Muzzle: a crescent moon cupping the bore + a star-metal lip.
   p.add(lathe([[0.022, -0.86], [0.036, -0.86], [0.04, -0.85], [0.04, -0.82], [0.03, -0.815]], SEG), { ...DARK, at: [0, BARREL_Y, 0] });
   p.add(extrude(crescent(0.058, 0.05, 0.022), 0.012, 'top', 0.002, hi ? 22 : 10), { ...METAL, zone: Z.CRESCENT, glow: 1, at: [0, BARREL_Y, -0.875], rot: [Math.PI / 2, 0, Math.PI / 2] });
-  return p.merge(`celestial-${lod}`);
+  return { geo: p.merge(`celestial-${lod}`), mount };
 }
 
 const VERT = /* glsl */ `
   if (vZone == ${Z.MOON}) {
     cgPivot = vec3(0.0, ${BARREL_Y.toFixed(3)}, 0.0);
     cgR = cgRotZ(uPhase * (0.5 + 0.4 * sign(position.x)));
+  } else if (vZone == ${Z.ARMILLARY}) {
+    cgPivot = vec3(${PLANET_C.map((v) => v.toFixed(3)).join(', ')});
+    cgR = cgRotY(uPhase * 0.3) * cgRotX(0.35);
   }
 `;
 
@@ -100,6 +141,7 @@ const FRAG = /* glsl */ `
     vec3 q = vOP * (zone == ${Z.PLANET} ? 26.0 : 11.0) + vec3(uTime * 0.03, 0.0, uTime * 0.06);
     float n1 = cgFbm(q);
     float n2 = cgFbm(q * 1.9 + 7.3);
+    // Saturated nebula: cyan clouds over violet deep space, magenta knots.
     vec3 neb = mix(vec3(0.03, 0.015, 0.1), uA * 0.6, smoothstep(0.34, 0.74, n1));
     neb = mix(neb, vec3(0.85, 0.2, 0.7) * 0.55, smoothstep(0.5, 0.82, n2) * 0.85);
     vec3 sp = vOP * 115.0;
@@ -113,7 +155,7 @@ const FRAG = /* glsl */ `
     glow += neb * (0.7 + 0.35 * fill + 0.7 * uStreak + 1.6 * uFire) * gmask;
     glow += mix(vec3(0.8, 0.9, 1.0), uB, h.z) * star * tw * (0.9 + 0.8 * big + 0.8 * uStreak + 2.0 * uFire);
     if (zone == ${Z.PLANET}) glow *= 0.6 + 0.8 * fres;
-  } else if (zone == ${Z.STARMETAL}) {
+  } else if (zone == ${Z.STARMETAL} || zone == ${Z.ARMILLARY}) {
     glow += uA * fres * (0.05 + 0.2 * uStreak);
   } else if (zone == ${Z.STAR}) {
     glow += mix(uB, uA, 0.2) * (0.9 + 1.0 * fill + 1.2 * uStreak + 3.0 * uFire);
@@ -194,7 +236,9 @@ export const buildCelestial: CustomGunBuild = ({ lod, finish }) => {
   const rig = new GunRig('celestial', lod, finish);
   const d = rig.drive;
   const hi = lod === 'high';
-  rig.body(cached(`celestial-body-${lod}`, () => buildBody(lod)), surfaceMaterial(d, { key: 'celestial', vert: VERT, frag: FRAG, side: THREE.DoubleSide }));
+  const body = cached(`celestial-body-${lod}`, () => buildBody(lod));
+  rig.trackerMount = body.mount;
+  rig.body(body.geo, surfaceMaterial(d, { key: 'celestial', vert: VERT, frag: FRAG, side: THREE.DoubleSide }));
   rig.add(strips(d, { key: 'celestial-lines', count: EDGES.length, segs: 4, path: LINES, core: 2 }));
   rig.add(motes(d, { key: 'celestial', count: hi ? 90 : 30, motion: DUST, star: true }));
   rig.add(strips(d, { key: 'celestial-comet', count: hi ? 4 : 2, segs: hi ? 28 : 12, path: COMET, core: 2 }));
