@@ -227,7 +227,9 @@ export function InventoryTab({
   // ── Preview ──────────────────────────────────────────────────────────────
   const baseLooks: Loadout = useMemo(() => settings.looks ?? {}, [settings.looks]);
   const tryLook = shownEntry ? (shownEntry.inst ? instLook(shownEntry.inst) : shownEntry.def.default ? null : { d: shownEntry.def.id }) : null;
-  const previewView = slot === 'hat' && tryLook?.e ? 'crown' : SLOT_VIEW[slot];
+  // An Unusual hat (tried on, or the one you wear) needs the taller crown framing.
+  const hatFx = shownEntry ? tryLook?.e : baseLooks.hat?.e;
+  const previewView = slot === 'hat' && hatFx ? 'crown' : SLOT_VIEW[slot];
   const tryKey = shownEntry ? `${shownEntry.key}|${shownEntry.slot}` : '';
   const cos = useMemo(
     () => previewCosmetics(baseLooks, shownEntry ? { slot: shownEntry.slot, look: tryLook } : null, previewView, settings),

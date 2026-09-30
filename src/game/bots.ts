@@ -277,6 +277,11 @@ export class Bot {
   private fallbackBody: THREE.Mesh | null = null;
   private fallbackHead: THREE.Mesh | null = null;
   private nameSprite: THREE.Sprite;
+  // The in-world nameplate (Game hides an enemy's plate for a frame when no
+  // part of the body is in line of sight — see Game.gateEnemyPlates).
+  get plate(): THREE.Sprite {
+    return this.nameSprite;
+  }
   private target: Vec3;
   private roamStuckTimer = 0; // accrues while a roaming bot makes no progress → forces an unstick
   private team: number | null = null; // TDM team (0/1); null in FFA/Duel — drives targeting + nameplate color

@@ -169,6 +169,11 @@ export class RemotePlayer {
   // capsule fallback, which has nothing to animate.
   private anim: CharacterAnimator | null = null;
   private nameSprite: THREE.Sprite;
+  // The in-world nameplate (Game hides an enemy's plate for a frame when no
+  // part of the body is in line of sight — see Game.gateEnemyPlates).
+  get plate(): THREE.Sprite {
+    return this.nameSprite;
+  }
   private fallbackBody: THREE.Mesh | null = null;
   private shieldMesh: THREE.Mesh;
   private shieldMaterial: THREE.MeshBasicMaterial;
