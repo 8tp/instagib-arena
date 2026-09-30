@@ -140,6 +140,10 @@ file.
 
 ## Proxy identity and security checks
 
+Railway overrides a Docker image's entrypoint when a start command is configured.
+The command in `railway.json` explicitly invokes `instagib-entrypoint` so existing
+volume ownership is prepared and the game process runs as the unprivileged Node user.
+
 For Cloudflare → Railway → game server, Railway is the one trusted immediate
 proxy. A production check on 2026-09-29 verified that Railway overwrites
 `X-Real-IP` to the visitor's address on both `instagib.win` and the public
