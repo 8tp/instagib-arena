@@ -25,22 +25,22 @@ import { WornGear, wearableBounds, wearableIds, wearableTris, type GearSlot } fr
 
 type Scen = (t: number) => { x: number; y: number; z: number; vx: number; vy: number; vz: number };
 const G = 25;
-const SCEN: Record<string, Scen> = {
-  run: (t) => ({ x: 0, y: 0, z: -8 * t, vx: 0, vy: 0, vz: -8 }),
-  strafe: (t) => ({ x: 8 * t, y: 0, z: 0, vx: 8, vy: 0, vz: 0 }),
-  dash: (t) => {
+const SCEN = new Map<string, Scen>([
+  ['run', (t) => ({ x: 0, y: 0, z: -8 * t, vx: 0, vy: 0, vz: -8 })],
+  ['strafe', (t) => ({ x: 8 * t, y: 0, z: 0, vx: 8, vy: 0, vz: 0 })],
+  ['dash', (t) => {
     const v = t < 1 ? 9 : t < 1.18 ? 24 : 9;
     const z = t < 1 ? 9 * t : t < 1.18 ? 9 + 24 * (t - 1) : 9 + 24 * 0.18 + 9 * (t - 1.18);
     return { x: 0, y: 0, z: -z, vx: 0, vy: 0, vz: -v };
-  },
-  jump: (t) => {
+  }],
+  ['jump', (t) => {
     const u = t - 1;
     const y = u > 0 ? Math.max(0, 8 * u - 0.5 * G * u * u) : 0;
     const vy = u > 0 && y > 0 ? 8 - G * u : 0;
     return { x: 0, y, z: -8 * t, vx: 0, vy, vz: -8 };
-  },
-  gib: (t) => ({ x: 0, y: 0, z: t < 1 ? -6 * t : -6, vx: 0, vy: 0, vz: t < 1 ? -6 : 0 }),
-};
+  }],
+  ['gib', (t) => ({ x: 0, y: 0, z: t < 1 ? -6 * t : -6, vx: 0, vy: 0, vz: t < 1 ? -6 : 0 })],
+]);
 
 type Entry = { looks: Partial<Record<GearSlot, Look>>; label: string; yaw?: number };
 const TURN: [number, string][] = [
@@ -88,8 +88,8 @@ function wearablesDriver(params: URLSearchParams): LabDriver {
   const T = Number(params.get('t') ?? (pose === 'idle' ? 0.5 : 2));
   const unusual = params.get('unusual');
   const play = params.get('play') === '1';
-  const scen: Scen | undefined = SCEN[pose];
-  const moving = pose in SCEN;
+  const scen = SCEN.get(pose);
+  const moving = Boolean(scen);
   type St = { anim: CharacterAnimator; gear: WornGear; t: number; dead: boolean };
   const st = new Map<Character, St>();
   const pos = new THREE.Vector3();

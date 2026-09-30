@@ -72,8 +72,8 @@ export const adminApiTokenEnabled = API_TOKEN.length > 0;
 function tokenOk(req: Request): boolean {
   if (!API_TOKEN) return false;
   const auth = req.get('authorization') ?? '';
-  const m = /^Bearer\s+(.+)$/i.exec(auth);
-  const provided = m ? m[1].trim() : (req.get('x-admin-token') ?? '').trim();
+  const bearer = auth.slice(0, 7).toLowerCase() === 'bearer ';
+  const provided = (bearer ? auth.slice(7) : req.get('x-admin-token') ?? '').trim();
   if (!provided) return false;
   const a = Buffer.from(provided);
   const b = Buffer.from(API_TOKEN);

@@ -35,6 +35,7 @@ const CHROME =
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     : 'google-chrome');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const logText = (value) => String(value).replace(/[\r\n]/g, ' ').replace(/\x1b/g, '');
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -104,8 +105,9 @@ async function main() {
       pending.set(id, { resolve, reject });
       ws.send(JSON.stringify({ id, method, params }));
     });
-  const evaluate = async (expression) => {
-    const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  const callFunction = async (functionDeclaration, ...args) => {
+    const root = await send('Runtime.evaluate', { expression: 'globalThis' });
+    const r = await send('Runtime.callFunctionOn', { objectId: root.result.objectId, functionDeclaration, arguments: args.map((value) => ({ value })), awaitPromise: true, returnByValue: true });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
     return r.result?.value;
   };
@@ -115,14 +117,14 @@ async function main() {
   await send('Page.navigate', { url: `${base}/` });
   await sleep(2000);
 
-  const mod = `import(${JSON.stringify(`${base}/src/game/sfx/preview.ts`)})`;
-  let names = await evaluate(`${mod}.then((m) => m.listCases())`);
+  const moduleUrl = new URL('/src/game/sfx/preview.ts', base).href;
+  let names = await callFunction('function(url) { return import(url).then(m => m.listCases()); }', moduleUrl);
   if (only) names = names.filter((n) => n.toLowerCase().includes(String(only).toLowerCase()));
   if (!noWav) mkdirSync(outDir, { recursive: true });
 
   const rows = [];
   for (const name of names) {
-    const r = await evaluate(`${mod}.then((m) => m.renderCase(${JSON.stringify(name)}, ${!noWav}))`);
+    const r = await callFunction('function(url, name, writeWav) { return import(url).then(m => m.renderCase(name, writeWav)); }', moduleUrl, name, !noWav);
     if (r.wav) {
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
       writeFileSync(join(outDir, `${slug}.wav`), Buffer.from(r.wav, 'base64'));
@@ -141,13 +143,13 @@ async function main() {
   for (const r of rows) {
     const flagClip = r.peakDb > -1 ? '  << CLIP' : '';
     if (r.peakDb > -1) clipped++;
-    console.log(`${pad(r.name, 34)}${lpad(r.peakDb.toFixed(1), 7)}${lpad(r.rmsDb.toFixed(1), 7)}${lpad(r.shortDb.toFixed(1), 7)}${lpad(r.dur.toFixed(2), 7)}${lpad(r.peakVoices, 5)}   ${r.bands.map((b) => lpad(b, 3)).join(' ')}${flagClip}`);
+    console.log(`${pad(logText(r.name), 34)}${lpad(r.peakDb.toFixed(1), 7)}${lpad(r.rmsDb.toFixed(1), 7)}${lpad(r.shortDb.toFixed(1), 7)}${lpad(r.dur.toFixed(2), 7)}${lpad(r.peakVoices, 5)}   ${r.bands.map((b) => lpad(b, 3)).join(' ')}${flagClip}`);
     if (detail) console.log(`${pad('', 34)}env/100ms: ${r.env.map((d) => d.toFixed(0)).join(' ')}`);
   }
   console.log('-'.repeat(100));
   console.log(clipped ? `${clipped} sound(s) above -1 dBFS` : 'no sound above -1 dBFS');
   if (!noWav) console.log(`WAVs → ${outDir}/`);
-  if (problems.length) console.log(problems.slice(0, 20).join('\n'));
+  if (problems.length) console.log(problems.slice(0, 20).map(logText).join('\n'));
   ws.close();
   cleanup();
   process.exit(0);

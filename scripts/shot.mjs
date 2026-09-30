@@ -62,6 +62,7 @@ const CHROME =
     : 'google-chrome');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const logText = (value) => String(value).replace(/[\r\n]/g, ' ').replace(/\x1b/g, '');
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -225,11 +226,11 @@ async function main() {
     const shot = await send('Page.captureScreenshot', { format: 'jpeg', quality: 85 });
     const file = `${out}-${name}.jpg`;
     writeFileSync(file, Buffer.from(shot.data, 'base64'));
-    console.log(file);
+    console.log(logText(file));
   }
   const gl = await evaluate(`(() => { try { const c = document.createElement('canvas').getContext('webgl2'); const d = c && c.getExtension('WEBGL_debug_renderer_info'); return d ? c.getParameter(d.UNMASKED_RENDERER_WEBGL) : (c ? 'webgl2' : 'none'); } catch (e) { return String(e); } })()`);
-  console.log(`[gl] ${gl}`);
-  if (consoleLines.length) console.log(consoleLines.slice(0, 20).join('\n'));
+  console.log(`[gl] ${logText(gl)}`);
+  if (consoleLines.length) console.log(consoleLines.slice(0, 20).map(logText).join('\n'));
   ws.close();
   cleanup();
   process.exit(0);

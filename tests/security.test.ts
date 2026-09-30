@@ -182,7 +182,9 @@ test('configured admins must already exist; public registration grants no admin 
 });
 test('API rejects cross-origin writes and never caches personalized data', async () => {
   assert.equal((await request('/auth/logout', {}, 'alice', { Origin: 'https://evil.test' })).status, 403);
+  assert.equal((await request('/auth/logout', {}, 'alice', { Origin: 'https://sub.arena.test' })).status, 403);
   assert.equal((await request('/auth/logout', {}, 'alice', { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal(db.userIdFromSession(tokens.alice), 'alice');
   const profile = await request('/profile', undefined, 'alice');
   assert.equal(profile.status, 200);
   assert.equal(profile.headers.get('cache-control'), 'no-store');
@@ -256,6 +258,26 @@ test('daily cases are once per UTC day; staff items stay bound', () => {
   const spec = economy.prepareAdminItem({ def: 'hat.sovereign', bound: false });
   assert.equal(spec.ok, true);
   if (spec.ok) assert.equal(spec.item.bound, true);
+});
+test('equipment rejects prototype keys before reading or mutating a loadout', async () => {
+  const before = economy.equippedOf('alice');
+  for (const slot of ['__proto__', 'constructor', 'prototype']) {
+    assert.deepEqual(economy.equipSlot('alice', slot, null), { ok: false, error: 'bad_slot' });
+    const res = await request('/inventory/equip', { slot, token: null }, 'alice');
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, 'bad_slot');
+  }
+  assert.deepEqual(economy.equippedOf('alice'), before);
+});
+test('replay actor IDs are data keys on a dictionary with no prototype', () => {
+  const id = '__proto__';
+  const data = encodeReplay({ version: 3, hz: 20, mapId: 'causeway', durationMs: 1000, localId: id, won: false,
+    profiles: [{ id, name: 'Audit', kind: 'local', hat: 'hat.none', unusual: 'unusual.none', nameColor: 'name.default', team: null }],
+    frames: [{ t: 0, poses: { [id]: { x: 1, y: 0, z: 0, yaw: 0, pitch: 0, visible: true } } }], kills: [], shots: [] });
+  const poses = decodeReplay(data).frames[0].poses;
+  assert.equal(Object.getPrototypeOf(poses), null);
+  assert.equal(Object.hasOwn(poses, id), true);
+  assert.equal(poses[id].x, 1);
 });
 test('replay decoder rejects hostile counts and truncated data; normal runs survive', () => {
   const data = encodeReplay({ version: 3, hz: 20, mapId: 'causeway', durationMs: 1000, localId: 'a', won: false,

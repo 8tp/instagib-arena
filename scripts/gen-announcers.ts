@@ -28,7 +28,7 @@ if (!voiceId || !packId) {
   process.exit(1);
 }
 
-const lines = ANNOUNCER_PACK_LINES[packId as keyof typeof ANNOUNCER_PACK_LINES];
+const lines = Object.hasOwn(ANNOUNCER_PACK_LINES, packId) ? ANNOUNCER_PACK_LINES[packId as keyof typeof ANNOUNCER_PACK_LINES] : undefined;
 if (!lines || Object.keys(lines).length === 0) {
   console.error(`No lines defined for pack "${packId}" in src/game/announcer-lines.ts`);
   process.exit(1);
