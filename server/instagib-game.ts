@@ -405,6 +405,7 @@ type Room = {
     winnerTeam: number | null;
   } | null;
   resumeAt: number; // ms timestamp; shots ignored until then (post-vote breather)
+  matchStartAt: number; // when the current match went live (its warmup end) — for match length
   firstBloodAwarded: boolean; // first kill of the current match has landed
   emptySince: number; // ms timestamp it became empty, 0 if occupied
   wasEverOccupied: boolean; // distinguishes a never-joined invite room from a post-match empty
@@ -893,6 +894,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       state: 'active',
       vote: null,
       resumeAt: Date.now() + WARMUP_MS, // initial get-ready before the first frag
+      matchStartAt: Date.now() + WARMUP_MS,
       firstBloodAwarded: false,
       emptySince: Date.now(),
       wasEverOccupied: false,
@@ -1056,8 +1058,9 @@ export function attachInstagibWs(wss: WebSocketServer) {
         accuracy: Math.round(accuracy),
         offline: false,
         xp: reply.xpGained,
-        credits: reply.creditsGained, // match + challenges + road, as paid
+        credits: c.playerId ? reply.creditsGained : 0, // match + challenges + road, as paid (guests: a preview only)
         durationMs: Math.max(0, now - c.mStartedAt), // this player's time in the match
+        ...(partial ? {} : { matchMs: Math.max(0, now - room.matchStartAt) }), // the match itself, start → end
         mode,
         src: 'ws',
         partial,
@@ -1235,6 +1238,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     });
     if (room.state === 'active' && room.members.size === 2 && !anyScore) {
       room.resumeAt = Date.now() + WARMUP_MS;
+      room.matchStartAt = room.resumeAt;
     }
     // Spawn into the room's current map.
     const spawn = pickSpawn(room, record, null);
@@ -1787,6 +1791,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
     room.state = 'active';
     room.vote = null;
     room.resumeAt = Date.now() + POST_MATCH_RESET_SEC * 1000;
+    room.matchStartAt = room.resumeAt;
     room.firstBloodAwarded = false;
     room.matchLeft.length = 0;
 

@@ -336,8 +336,8 @@ export type EngagementMetrics = {
   length: MatchLength;
 };
 
-// Match length: online matches played to the end (not a mid-match leave), from
-// the per-player `durationMs` on the match row (recorded since this metric landed).
+// Match length: online matches played to the end (not a mid-match leave), one
+// row per player result, from `matchMs` (else `durationMs`) on the match row.
 export type MatchLength = {
   measured: number; // matches with a recorded length in the range
   avgMs: number | null;
@@ -345,14 +345,17 @@ export type MatchLength = {
   buckets: { label: string; n: number }[]; // distribution by minutes
   byMode: { mode: string; n: number; avgMs: number }[];
 };
-const LENGTH_WHERE = `event = 'match' AND json_extract(detail, '$.durationMs') IS NOT NULL
+// The match's own start → end (`matchMs`, logged on full settles); rows from
+// before that fall back to the player's time present (`durationMs`).
+const LEN = `COALESCE(json_extract(detail, '$.matchMs'), json_extract(detail, '$.durationMs'))`;
+const LENGTH_WHERE = `event = 'match' AND ${LEN} IS NOT NULL
   AND COALESCE(json_extract(detail, '$.partial'), 0) = 0 AND ts >= ? AND ts < ?`;
 const LENGTH_EDGES = [2, 4, 6, 8, 10, 15]; // minutes; last bucket is 15+
 
 function matchLength(from: number, to: number, prevFrom: number): MatchLength {
   const avg = (a: number, b: number): number | null =>
-    (st(`SELECT AVG(json_extract(detail, '$.durationMs')) AS v FROM instagib_audit WHERE ${LENGTH_WHERE}`).get(a, b) as { v: number | null }).v;
-  const rows = st(`SELECT CAST(json_extract(detail, '$.durationMs') / 60000 AS INTEGER) AS m, COUNT(*) AS n
+    (st(`SELECT AVG(${LEN}) AS v FROM instagib_audit WHERE ${LENGTH_WHERE}`).get(a, b) as { v: number | null }).v;
+  const rows = st(`SELECT CAST(${LEN} / 60000 AS INTEGER) AS m, COUNT(*) AS n
                      FROM instagib_audit WHERE ${LENGTH_WHERE} GROUP BY m`).all(from, to) as { m: number; n: number }[];
   const buckets = LENGTH_EDGES.map((hi, i) => ({ label: i === 0 ? `<${hi}m` : `${LENGTH_EDGES[i - 1]}–${hi}m`, n: 0 }));
   buckets.push({ label: `${LENGTH_EDGES[LENGTH_EDGES.length - 1]}m+`, n: 0 });
@@ -362,7 +365,7 @@ function matchLength(from: number, to: number, prevFrom: number): MatchLength {
     const i = LENGTH_EDGES.findIndex((hi) => r.m < hi);
     buckets[i < 0 ? buckets.length - 1 : i].n += r.n;
   }
-  const byMode = st(`SELECT ${MODE_KEY} AS mode, COUNT(*) AS n, AVG(json_extract(detail, '$.durationMs')) AS avgMs
+  const byMode = st(`SELECT ${MODE_KEY} AS mode, COUNT(*) AS n, AVG(${LEN}) AS avgMs
                        FROM instagib_audit WHERE ${LENGTH_WHERE} GROUP BY mode ORDER BY n DESC`).all(from, to) as MatchLength['byMode'];
   const a = avg(from, to);
   const p = avg(prevFrom, from);
@@ -598,7 +601,7 @@ export function recentMatchesByTime(limitRaw: number, before?: { ts: number; id:
       offline: d.offline === true,
       xp: n(d.xp),
       credits: typeof d.credits === 'number' ? d.credits : null,
-      durationMs: typeof d.durationMs === 'number' ? d.durationMs : null,
+      durationMs: typeof d.matchMs === 'number' ? d.matchMs : typeof d.durationMs === 'number' ? d.durationMs : null,
       partial: d.partial === true,
       mode: typeof d.mode === 'string' ? d.mode : null,
     };

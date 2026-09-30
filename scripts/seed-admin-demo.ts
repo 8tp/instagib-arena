@@ -185,6 +185,7 @@ const tx = db.transaction(() => {
         };
         if (!offline) {
           detail.durationMs = Math.round(lenMin * MIN);
+          if (!partial) detail.matchMs = Math.round(lenMin * MIN);
           detail.partial = partial;
         }
         st.audit.run(ts, 'match', u.id, u.name, '', JSON.stringify(detail));
