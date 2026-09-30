@@ -423,22 +423,32 @@ export function RetentionTab() {
   const weekly = useLoad(`/api/admin/metrics/cohorts?weeks=8`, (r) => (r as { cohorts: WeekCohort[] }).cohorts);
   const eligible = daily.state === 'ok' ? daily.data.filter((c) => c.size > 0) : [];
   const size = eligible.reduce((s, c) => s + c.size, 0);
-  const d1 = eligible.reduce((s, c) => s + c.d1, 0);
-  const d7 = eligible.reduce((s, c) => s + c.d7, 0);
-  // W1: of cohorts old enough to have a week 1, the share active in it.
+  // Rates only over cohorts whose window has fully elapsed (an open window
+  // would read as churn).
+  const d1Done = eligible.filter((c) => windowClosed(c.date, 1));
+  const d7Done = eligible.filter((c) => windowClosed(c.date, 7));
+  const d1Base = d1Done.reduce((s, c) => s + c.size, 0);
+  const d7Base = d7Done.reduce((s, c) => s + c.size, 0);
+  const d1 = d1Done.reduce((s, c) => s + c.d1, 0);
+  const d7 = d7Done.reduce((s, c) => s + c.d7, 0);
+  // W1: of cohorts whose week 1 has finished, the share active in it.
   const w = weekly.state === 'ok' ? weekly.data : [];
-  const w1base = w.filter((c) => c.active.length > 1).reduce((s, c) => s + c.size, 0);
-  const w1 = w.filter((c) => c.active.length > 1).reduce((s, c) => s + c.active[1], 0);
+  const w1Done = w.filter((c) => c.active.length > 2);
+  const w1base = w1Done.reduce((s, c) => s + c.size, 0);
+  const w1 = w1Done.reduce((s, c) => s + c.active[1], 0);
   return (
     <div className='flex flex-col gap-5'>
       <Grid cols='md:grid-cols-4'>
         <StatTile accent label='New players · 28d' value={fmt(size)} sub={`${fmt(eligible.length)} days with signups`} />
-        <StatTile label='Day-1 retention' value={size ? pct(d1 / size) : '—'} sub={`${fmt(d1)} came back the next day`} />
-        <StatTile label='Day-7 retention' value={size ? pct(d7 / size) : '—'} sub={`${fmt(d7)} came back within a week`} />
-        <StatTile label='Week-1 retention' value={w1base ? pct(w1 / w1base) : '—'} sub='active in their second week' />
+        <StatTile label='Day-1 retention' value={d1Base ? pct(d1 / d1Base) : '—'} sub={`${fmt(d1)} of ${fmt(d1Base)} came back the next day`} />
+        <StatTile label='Day-7 retention' value={d7Base ? pct(d7 / d7Base) : '—'} sub={`${fmt(d7)} of ${fmt(d7Base)} came back within a week`} />
+        <StatTile label='Week-1 retention' value={w1base ? pct(w1 / w1base) : '—'} sub='active in their second week (finished weeks)' />
       </Grid>
 
-      <Plate title='Weekly cohorts' sub='Each row is the accounts that signed up that week; each cell is the share active (played or signed in) N weeks later.'>
+      <Plate
+        title='Weekly cohorts'
+        sub='Each row is the accounts that signed up that week. Each cell is the share that played a match or signed in during week N after signup. W0 is the signup week itself, so accounts that registered and never played count as inactive there. Outlined cells are the current, unfinished week.'
+      >
         {weekly.state === 'loading' ? <Loading /> : weekly.state === 'error' ? <ErrorState message={weekly.message} onRetry={weekly.retry} /> : <CohortGrid cohorts={w} />}
       </Plate>
 
@@ -471,10 +481,10 @@ export function RetentionTab() {
                       <td className='strong'>{dayLabel(c.date)}</td>
                       <td className='num'>{fmt(c.size)}</td>
                       <td>
-                        <RetentionBar value={c.d1} total={c.size} />
+                        <RetentionBar value={c.d1} total={c.size} open={!windowClosed(c.date, 1)} />
                       </td>
                       <td>
-                        <RetentionBar value={c.d7} total={c.size} />
+                        <RetentionBar value={c.d7} total={c.size} open={!windowClosed(c.date, 7)} />
                       </td>
                     </tr>
                   ))}
@@ -487,8 +497,21 @@ export function RetentionTab() {
   );
 }
 
-function RetentionBar({ value, total }: { value: number; total: number }) {
+// A signup day D's day-N window ([signup + 1d, signup + (N+1)d)) has closed for
+// every account in the cohort once the day after D plus N+1 days has started.
+function windowClosed(isoDay: string, n: 1 | 7, now = Date.now()): boolean {
+  const start = Date.parse(`${isoDay}T00:00:00Z`);
+  return now >= start + (n + 2) * 86_400_000;
+}
+
+function RetentionBar({ value, total, open }: { value: number; total: number; open?: boolean }) {
   const frac = total > 0 ? value / total : 0;
+  if (open)
+    return (
+      <span className='font-mono text-[12px] text-[var(--adm-ink-3)]' title='This window hasn’t finished yet'>
+        — <span className='font-sans'>still open</span>
+      </span>
+    );
   return (
     <div className='flex items-center gap-3'>
       <div className='h-2 w-28 bg-[var(--adm-line)]'>
@@ -501,6 +524,19 @@ function RetentionBar({ value, total }: { value: number; total: number }) {
       </span>
     </div>
   );
+}
+
+// Ink on a cohort cell: the cell is rail cyan at alpha `a` over the plate, so
+// pick dark text once that blend is light enough (WCAG relative luminance).
+const lin = (c: number) => {
+  const x = c / 255;
+  return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+};
+function cellIsLight(a: number): boolean {
+  const mix = (fg: number, bg: number) => fg * a + bg * (1 - a);
+  const L = 0.2126 * lin(mix(91, 12)) + 0.7152 * lin(mix(227, 16)) + 0.0722 * lin(mix(255, 22));
+  // Contrast vs white ((1.05)/(L+.05)) and vs #041016 ((L+.05)/(~0.055)): dark wins above L ≈ 0.18.
+  return L > 0.18;
 }
 
 // Sequential single-hue heat (rail cyan): 0 = surface, 100% = full.
@@ -529,13 +565,19 @@ function CohortGrid({ cohorts }: { cohorts: WeekCohort[] }) {
               {Array.from({ length: weeks }, (_, k) => {
                 if (k >= c.active.length) return <td key={k} />;
                 const v = c.size ? c.active[k] / c.size : 0;
-                const bg = c.size ? `rgba(91, 227, 255, ${(0.06 + v * 0.74).toFixed(3)})` : 'transparent';
+                const a = 0.06 + v * 0.74;
+                const current = k === c.active.length - 1; // the week in progress
                 return (
                   <td
                     key={k}
                     className='h-8 min-w-[52px] text-center font-mono tabular-nums'
-                    style={{ background: bg, color: v > 0.55 ? '#041016' : 'var(--adm-ink)' }}
-                    title={`${fmt(c.active[k])} of ${fmt(c.size)} active in week ${k}`}
+                    style={{
+                      background: c.size ? `rgba(91, 227, 255, ${a.toFixed(3)})` : 'transparent',
+                      color: c.size && cellIsLight(a) ? '#041016' : 'var(--adm-ink)',
+                      outline: current ? '1px dashed var(--adm-ink-3)' : undefined,
+                      outlineOffset: -3,
+                    }}
+                    title={`${fmt(c.active[k])} of ${fmt(c.size)} active in week ${k}${current ? ' (week still in progress)' : ''}`}
                   >
                     {c.size ? pct(v) : '—'}
                   </td>

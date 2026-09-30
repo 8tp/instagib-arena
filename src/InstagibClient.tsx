@@ -1577,32 +1577,37 @@ function InspectCard({ settings, kills }: { settings: Settings; kills: number | 
   }
   const tone = qualityTone('strange');
   return (
+    // Upper right on a dark plate: clear of the gun through the whole inspect
+    // (it lifts into the lower middle of the frame) and readable over any map.
     <div
       aria-hidden='true'
-      className='pointer-events-none absolute bottom-44 right-8 max-w-[22rem] text-right font-mono'
+      className='pointer-events-none absolute right-8 top-[26%] w-[20rem] rounded-md bg-black/75 px-4 py-3 text-right font-mono shadow-[0_6px_24px_rgba(0,0,0,0.55)] ring-1 ring-white/10'
       style={{ opacity: shown ? 1 : 0, transform: shown ? 'none' : 'translateY(6px)', transition: 'opacity 180ms ease, transform 180ms ease' }}
     >
-      <div className='text-[10px] uppercase tracking-[0.25em] text-white/40'>{TIER_META[tier].label}</div>
-      <div className='text-lg font-semibold leading-tight' style={{ color, textShadow: '0 1px 8px rgba(0,0,0,0.8)' }}>
+      <div className='text-[10px] uppercase tracking-[0.25em] text-white/55'>{TIER_META[tier].label}</div>
+      <div className='text-lg font-semibold leading-tight' style={{ color }}>
         {title}
       </div>
       {tracked && kills !== null && (
-        <div className='ml-auto mt-1.5 w-60' style={{ textShadow: '0 1px 6px rgba(0,0,0,0.8)' }}>
-          <div className='flex items-baseline justify-between gap-3 text-[11px] font-semibold'>
-            <span className='uppercase tracking-[0.14em]' style={{ color: tone }}>
-              {QUALITY_LABEL.strange} · {tracked.rank}
+        <div className='mt-2.5 border-t border-white/10 pt-2'>
+          <div className='flex items-baseline justify-between gap-3'>
+            <span className='flex items-baseline gap-2'>
+              <span className='text-[11px] font-bold uppercase tracking-[0.16em]' style={{ color: tone }}>
+                {QUALITY_LABEL.strange}
+              </span>
+              <span className='text-[15px] font-bold text-white'>{tracked.rank}</span>
             </span>
-            <span className='tabular-nums text-white/85'>{kills.toLocaleString()} kills</span>
+            <span className='text-[15px] font-bold tabular-nums text-white'>{kills.toLocaleString()}<span className='ml-1 text-[11px] font-semibold text-white/60'>kills</span></span>
           </div>
-          <div className='mt-1 h-[3px] overflow-hidden rounded-full bg-white/10'>
+          <div className='mt-1.5 h-1 overflow-hidden rounded-full bg-white/15'>
             <div className='h-full rounded-full' style={{ width: `${tracked.pct * 100}%`, background: tone }} />
           </div>
-          <div className='mt-0.5 text-[10px] tabular-nums text-white/45'>
+          <div className='mt-1 text-[11px] tabular-nums text-white/70'>
             {tracked.next ? `${(tracked.next.kills - kills).toLocaleString()} to ${tracked.next.name}` : 'Top rank'}
           </div>
         </div>
       )}
-      {bits.length > 0 && <div className='mt-0.5 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
+      {bits.length > 0 && <div className='mt-1 text-[11px] text-white/60'>{bits.join(' · ')}</div>}
     </div>
   );
 }

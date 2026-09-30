@@ -156,7 +156,9 @@ const FRAG = /* glsl */ `
     glow += uA * fres * (0.04 + 0.2 * uStreak);
   } else if (zone == ${Z.CORE}) {
     float f = cgFill(vOP.z, -0.29, -0.87);
-    glow += mix(uA, uB, 0.6) * (mix(0.1, 1.2, f) + 0.4 * uStreak + 4.0 * uFire);
+    // The light blade (additive, ≤ 0.7) wraps this: together they stay under the
+    // bloom threshold at rest.
+    glow += mix(uA, uB, 0.6) * (mix(0.08, 0.6, f) + 0.15 * uStreak + 4.0 * uFire);
   } else if (zone == ${Z.HALO}) {
     glow += mix(uA, uB, 0.4) * gmask * (0.35 + 0.5 * fill + 1.2 * uStreak + 3.0 * uFire);
   } else if (zone == ${Z.SUN}) {

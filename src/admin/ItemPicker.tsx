@@ -4,6 +4,7 @@
 // Thumbnails come from the shared ItemTile (game/thumbs.ts) — nothing new drawn.
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { itemDef, seasonOf } from '../game/items/catalog';
+import { prefetchThumbnails } from '../game/thumbs';
 import { ITEM_SLOTS, SEASONS, TIERS, TIER_META, type ItemSlot, type Tier } from '../game/items/types';
 import { SLOT_LABEL, SLOT_SHORT } from '../economy/display';
 import { ItemTile } from '../ui/item-tile';
@@ -17,7 +18,7 @@ const MINT_SLOTS = ITEM_SLOTS.filter((s) => MINTABLE.some((d) => d.slot === s));
 const SLOT_COUNT = Object.fromEntries(MINT_SLOTS.map((s) => [s, MINTABLE.filter((d) => d.slot === s).length])) as Record<ItemSlot, number>;
 
 export function TierDot({ tier }: { tier: Tier }) {
-  return <span className='adm-key' style={{ background: tier === 'unobtainable' ? 'linear-gradient(135deg,#ff4fd8,#5be3ff,#f3c152)' : TIER_META[tier].color }} aria-hidden />;
+  return <span className='adm-key' style={{ background: TIER_META[tier].color }} aria-hidden />;
 }
 
 export function ItemPicker({ value, onChange, field = 'def' }: { value: string; onChange: (id: string) => void; field?: string }) {
@@ -61,6 +62,28 @@ export function ItemPicker({ value, onChange, field = 'def' }: { value: string; 
   useEffect(() => {
     if (open) search.current?.focus();
   }, [open]);
+  // The chosen item's thumbnail first, always.
+  useEffect(() => {
+    prefetchThumbnails([value], true);
+  }, [value]);
+  // Every row's tile asks for its thumbnail; move the rows actually in view
+  // to the front of the render queue (on open, filter and scroll).
+  const listEl = useRef<HTMLUListElement>(null);
+  const warmVisible = () => {
+    const el = listEl.current;
+    if (!el) return;
+    const row = 50;
+    const from = Math.max(0, Math.floor(el.scrollTop / row) - 2);
+    const to = Math.min(shown.length, from + Math.ceil(el.clientHeight / row) + 4);
+    prefetchThumbnails(shown.slice(from, to).map((d) => d.id), true);
+  };
+  useEffect(() => {
+    if (!open) return;
+    const raf = requestAnimationFrame(warmVisible); // after the active row scrolls into view
+    return () => cancelAnimationFrame(raf);
+    // Re-warm whenever the visible set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, dq, slot, tier, season]);
   const openList = () => {
     setOpen(true);
     nav.setActive(Math.max(0, shown.findIndex((d) => d.id === value)));
@@ -105,7 +128,7 @@ export function ItemPicker({ value, onChange, field = 'def' }: { value: string; 
       </button>
 
       {open && (
-        <div className='adm-pop' style={{ width: 'min(680px, calc(100vw - 48px))', right: 'auto', maxHeight: 'min(560px, 70vh)' }}>
+        <div className='adm-pop' style={{ maxHeight: 'min(560px, 70vh)' }}>
           <div className='adm-pop-head flex flex-col gap-2'>
             <input
               ref={search}
@@ -156,7 +179,7 @@ export function ItemPicker({ value, onChange, field = 'def' }: { value: string; 
                 ))}
             </div>
           </div>
-          <ul id={listId} role='listbox' aria-label='Items' className='adm-pop-list'>
+          <ul ref={listEl} id={listId} role='listbox' aria-label='Items' className='adm-pop-list' onScroll={warmVisible}>
             {shown.map((d, i) => (
               <li
                 key={d.id}

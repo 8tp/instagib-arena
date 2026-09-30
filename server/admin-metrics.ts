@@ -490,3 +490,53 @@ export function getConcurrency(): { since: number; samples: ConcurrencySample[];
   }
   return { since: bootAt, samples: out, peak, peak24h: p24 };
 }
+
+// ── Recent matches, newest first by time ────────────────────────────────────
+// db.ts getRecentMatches pages by audit id (insert order); this pages by the
+// match timestamp on the (event, ts) index, keyset (ts, id) so ties are stable.
+export type RecentMatch = {
+  id: number;
+  ts: number;
+  playerId: string;
+  playerName: string;
+  kills: number;
+  deaths: number;
+  won: boolean;
+  headshots: number;
+  accuracy: number;
+  offline: boolean;
+  xp: number;
+  mode: string | null;
+};
+export function recentMatchesByTime(limitRaw: number, before?: { ts: number; id: number }): RecentMatch[] {
+  const limit = clampInt(limitRaw, 1, 200);
+  const rows = (
+    before
+      ? st(`SELECT id, ts, actor_id, actor_name, detail FROM instagib_audit
+             WHERE event = 'match' AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?`).all(before.ts, before.ts, before.id, limit)
+      : st(`SELECT id, ts, actor_id, actor_name, detail FROM instagib_audit WHERE event = 'match' ORDER BY ts DESC, id DESC LIMIT ?`).all(limit)
+  ) as { id: number; ts: number; actor_id: string; actor_name: string; detail: string }[];
+  const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return rows.map((r) => {
+    let d: Record<string, unknown> = {};
+    try {
+      d = JSON.parse(r.detail) as Record<string, unknown>;
+    } catch {
+      /* malformed detail → zeros */
+    }
+    return {
+      id: r.id,
+      ts: r.ts,
+      playerId: r.actor_id,
+      playerName: r.actor_name || 'Guest',
+      kills: n(d.kills),
+      deaths: n(d.deaths),
+      won: d.won === true,
+      headshots: n(d.headshots),
+      accuracy: n(d.accuracy),
+      offline: d.offline === true,
+      xp: n(d.xp),
+      mode: typeof d.mode === 'string' ? d.mode : null,
+    };
+  });
+}

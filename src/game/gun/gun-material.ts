@@ -340,9 +340,18 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
   // ── Energy parts ──
   if (part >= ${PART.COIL0}) {
     int ci = part - ${PART.COIL0};
-    // Brightest on the band's crown, dimmer down its chamfers.
+    // A wound band under glass: brightest on the crown (dimmer down its
+    // chamfers), fine winding lines across it, and a white-hot centre line —
+    // so it reads as a lit coil even where nothing blooms (locker, previews).
     float crown = smoothstep(${(COIL_R - 0.006).toFixed(4)}, ${COIL_R.toFixed(4)}, length(p.xy - vec2(0.0, GUN_BARREL_Y)));
-    s.emit = uCoil[ci] * (0.55 + 0.45 * crown);
+    float cz = ci == 0 ? ${COIL_Z[0].toFixed(4)} : ci == 1 ? ${COIL_Z[1].toFixed(4)} : ci == 2 ? ${COIL_Z[2].toFixed(4)} : ${COIL_Z[3].toFixed(4)};
+    float dz = (p.z - cz) / 0.0045;
+    float wind = mix(0.86, 0.72 + 0.28 * abs(cos(p.z * 785.4)), gunFade(0.004));
+    float core = exp(-dz * dz) * crown;
+    vec3 c = uCoil[ci];
+    s.emit = c * (0.5 + 0.38 * crown) * wind + vec3(dot(c, vec3(0.3333))) * 0.28 * core;
+    s.rough = 0.22;
+    s.metal = 0.85;
   } else if (part == ${PART.CAP}) {
     s.emit = uCap * (0.8 + 0.2 * sin(p.z * 90.0 - uTime * 6.0));
   } else if (part == ${PART.CORE}) {
@@ -489,6 +498,14 @@ GunSurf gunSurface(vec3 p, vec3 n, vec3 g, vec3 vn, vec3 vdir) {
   if (part <= ${PART.CARBON}) {
     // Handling: low-frequency smudges in the roughness (never a flat CG sheen).
     s.rough *= 0.9 + 0.28 * gNoise(p * 21.0 + 3.1);
+    if (part == ${PART.BODY} && (GUN_PAT == 0 || GUN_PAT == 7 || GUN_PAT == 9)) {
+      // Each panel (between the seams) is its own plate: a slightly different
+      // tone + sheen, and the flanks lighten toward the top so the forms read.
+      float zone = (p.z > 0.048 ? 2.0 : p.z > -0.155 ? 1.0 : 0.0) + (abs(n.x) > 0.7 && p.y < 0.004 ? 3.0 : 0.0);
+      float ph = gHash2(vec2(zone, 7.0));
+      s.albedo *= (0.88 + 0.26 * ph) * (0.86 + 0.28 * smoothstep(-0.035, 0.085, p.y));
+      s.rough += (gHash2(vec2(zone, 13.0)) - 0.5) * 0.14;
+    }
     // Panel seams: dark, rough cuts (the bump adds the groove on the high tier).
     float seam = GUN_PAT == 8 ? 0.0 : gunSeam(p, n, part); // enamel gilds its seams
     s.albedo *= 1.0 - 0.6 * seam;
@@ -616,8 +633,8 @@ export function applyFinishUniforms(u: GunUniforms, finish: RailgunFinish | unde
 
   // Receiver coat: a dielectric paint/anodise (its specular sheen is what
   // reads on a near-black gun), a touch lifted so it never crushes to black.
-  col[PART.BODY].copy(lift(body.clone(), 0.012));
-  rm[PART.BODY].set(0.34, 0.25);
+  col[PART.BODY].copy(lift(body.clone(), 0.05));
+  rm[PART.BODY].set(0.36, 0.4);
   col[PART.METAL].copy(lift(metal.clone(), 0.07, 0.45));
   rm[PART.METAL].set(0.36, 0.85);
   col[PART.METAL_LT].copy(lift(metalLt.clone(), 0.2, 0.8));

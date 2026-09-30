@@ -23,15 +23,23 @@ function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] 
   return [ref, w];
 }
 
-// 0-based "nice" ticks: 0, step, 2·step … ≥ max (4–5 ticks).
+// 0-based "nice" ticks: 0, step, 2·step … ≥ max (≈4 ticks). Every series here
+// is a count, so steps are whole numbers (no 0.5 / 2.5 that would print as
+// duplicate labels), and ticks are de-duplicated after formatting.
 function niceTicks(max: number, count = 4): number[] {
   if (max <= 0) return [0, 1];
   const raw = max / count;
   const mag = 10 ** Math.floor(Math.log10(raw));
-  // Counts never get fractional ticks (0, 0.5, 1 would round to 0, 1, 1).
-  const step = Math.max(1, [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? raw);
+  const mults = mag >= 10 ? [1, 2, 2.5, 5, 10] : [1, 2, 5, 10];
+  const step = Math.max(1, Math.round(mults.map((m) => m * mag).find((s) => s >= raw) ?? raw));
   const out: number[] = [];
-  for (let v = 0; v < max + step * 0.999; v += step) out.push(Math.round(v * 1000) / 1000);
+  const seen = new Set<string>();
+  for (let v = 0; v < max + step * 0.999; v += step) {
+    const label = compact(v);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    out.push(v);
+  }
   return out;
 }
 

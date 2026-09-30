@@ -57,11 +57,12 @@ export function AdminGiftsTab({ initialPlayer }: { initialPlayer?: string }) {
   }, [target, accounts]);
 
   const expiresAt = fromLocalInput(expires);
-  const problems: string[] = [];
-  if (!title.trim()) problems.push('Add a title.');
-  if (target === 'one' && !player) problems.push('Pick a player.');
-  if (attach && check.state !== 'ok') problems.push(check.state === 'err' ? check.text : check.state === 'empty' ? 'Add something to attach (or untick attachments).' : 'Checking the reward…');
-  if (expires && expiresAt <= Date.now()) problems.push('The expiry must be in the future.');
+  // In form order, each pointing at the field that fixes it.
+  const problems: { text: string; field: string }[] = [];
+  if (target === 'one' && !player) problems.push({ text: 'Pick a recipient.', field: 'gift-player-input' });
+  if (!title.trim()) problems.push({ text: 'Give the message a title.', field: 'gift-title' });
+  if (attach && check.state !== 'ok') problems.push({ text: check.state === 'err' ? check.text : check.state === 'empty' ? 'Add something to attach, or turn off “Attach a reward”.' : 'Checking the reward…', field: 'bundle-credits' });
+  if (expires && expiresAt <= Date.now()) problems.push({ text: 'The expiry must be in the future.', field: 'expires' });
   const ready = problems.length === 0 && !busy;
 
   const send = async () => {
@@ -177,7 +178,19 @@ export function AdminGiftsTab({ initialPlayer }: { initialPlayer?: string }) {
                 <button type='button' className='adm-btn primary' disabled={!ready} onClick={() => void send()} data-action='gift-send'>
                   {busy ? 'Sending…' : target === 'all' ? 'Send to everyone…' : `Send to ${player?.userName ?? '…'}`}
                 </button>
-                {problems.length > 0 && <span className='text-[12px] text-[var(--adm-ink-3)]'>{problems[0]}</span>}
+                {problems.length > 0 && (
+                  <button
+                    type='button'
+                    className='text-left text-[12px] text-[var(--adm-ink-3)] underline decoration-dotted underline-offset-2 hover:text-[var(--adm-ink)]'
+                    onClick={() => {
+                      const el = document.querySelector<HTMLElement>(`[data-field='${problems[0].field}']`);
+                      el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                      el?.focus({ preventScroll: true });
+                    }}
+                  >
+                    {problems[0].text}
+                  </button>
+                )}
               </div>
             )}
             <Banner msg={msg} onClose={() => setMsg(null)} />

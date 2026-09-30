@@ -43,6 +43,7 @@ import {
   getEngagementMetrics,
   getWeeklyCohorts,
   playerCard,
+  recentMatchesByTime,
   searchPlayers,
   startConcurrencySampler,
 } from './admin-metrics';
@@ -397,6 +398,14 @@ adminRouter.get('/metrics/players', (req, res) => {
   const sort = typeof req.query.sort === 'string' ? req.query.sort : undefined;
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
   res.json({ players: getPlayersTable({ sort, q, limit: intParam(req.query.limit, 100) }) });
+});
+
+// Recent matches newest-first by match time (?before=<ts>:<id> keyset). The
+// dashboard's Matches tab; /metrics/matches stays id-ordered for the report.
+adminRouter.get('/metrics/matches-by-time', (req, res) => {
+  const [ts, id] = (typeof req.query.before === 'string' ? req.query.before : '').split(':').map(Number);
+  const before = Number.isFinite(ts) && Number.isFinite(id) && ts > 0 ? { ts, id } : undefined;
+  res.json({ matches: recentMatchesByTime(intParam(req.query.limit, 100), before) });
 });
 
 // Economy health: faucets vs sinks per day, case opens by case, market + trades,

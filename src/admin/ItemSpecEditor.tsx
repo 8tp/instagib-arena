@@ -5,9 +5,12 @@
 // take. One editor feeds direct mints (Items), code rewards and gifts.
 import '../locker/locker.css';
 import '../economy/economy.css';
+import { useEffect } from 'react';
 import { itemDef } from '../game/items/catalog';
+import { prefetchThumbnails } from '../game/thumbs';
+import { lookKey } from '../economy/look';
 import { KS_EFFECTS, KS_SHEENS, SLOT_ATTRS, TIERS, TIER_META, strangeRank, type SlotAttr, type Tier } from '../game/items/types';
-import { SLOT_LABEL, defSeason, instBaseName, instBlurb, instPrefixParts, instTags, instTier } from '../economy/display';
+import { SLOT_LABEL, defSeason, instBaseName, instBlurb, instPrefixParts, instTags, instTier, thumbLook } from '../economy/display';
 import { TagPills, TierChip } from '../economy/parts';
 import { specPreview } from '../inbox/reward';
 import { SpecTile } from '../inbox/RewardBits';
@@ -49,6 +52,12 @@ export function SpecPreview({ draft, count }: { draft: SpecDraft; count?: number
   const season = defSeason(inst.def);
   const prefix = instPrefixParts(inst);
   const blurb = instBlurb(inst);
+  // The preview is what the admin is looking at: its render jumps the queue.
+  const look = thumbLook(inst);
+  const key = look ? lookKey(look) : inst.def;
+  useEffect(() => {
+    prefetchThumbnails([key], true);
+  }, [key]);
   return (
     <div className='flex flex-col items-center gap-3 text-center' data-spec-preview>
       <div className='relative w-[176px]'>
@@ -199,14 +208,24 @@ export function ItemSpecEditor({ value, onChange, preview = true, count }: { val
             {has('tint') && (
               <Field label='Tint' hint='one-off colour' as='div'>
                 <span className='flex items-center gap-2'>
-                  <input
-                    type='color'
-                    aria-label='Tint colour'
-                    value={HEX6.test(d.tint) ? d.tint : '#ff4fd8'}
-                    onChange={(e) => set('tint', e.target.value)}
-                    className={`h-[34px] w-11 shrink-0 cursor-pointer border border-[var(--adm-line-2)] bg-[var(--adm-plate)] p-0.5 ${d.tint ? '' : 'opacity-35'}`}
-                    data-field='spec-tint-picker'
-                  />
+                  {/* Empty = a "no colour" swatch over the native picker (still clickable). */}
+                  <span className='relative h-[34px] w-11 shrink-0'>
+                    <input
+                      type='color'
+                      aria-label='Tint colour'
+                      value={HEX6.test(d.tint) ? d.tint : '#ff4fd8'}
+                      onChange={(e) => set('tint', e.target.value)}
+                      className='h-full w-full cursor-pointer border border-[var(--adm-line-2)] bg-[var(--adm-plate)] p-0.5'
+                      data-field='spec-tint-picker'
+                    />
+                    {!HEX6.test(d.tint) && (
+                      <span
+                        aria-hidden
+                        className='pointer-events-none absolute inset-0 border border-[var(--adm-line-2)] bg-[var(--adm-plate)]'
+                        style={{ backgroundImage: 'linear-gradient(to top right, transparent calc(50% - 1px), var(--adm-ink-3) calc(50% - 1px), var(--adm-ink-3) calc(50% + 1px), transparent calc(50% + 1px))' }}
+                      />
+                    )}
+                  </span>
                   <input
                     className='adm-input mono w-28'
                     value={d.tint}

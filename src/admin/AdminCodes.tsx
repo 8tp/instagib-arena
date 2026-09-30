@@ -47,9 +47,9 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
   const [mode, setMode] = useState<'auto' | 'custom'>('auto');
   const [code, setCode] = useState('');
   const [bundle, setBundle] = useState<BundleDraft>(() => ({ ...emptyBundle(), credits: '500' }));
-  const [maxUses, setMaxUses] = useState('0');
+  const [maxUses, setMaxUses] = useState(''); // '' = unlimited
   const [expires, setExpires] = useState('');
-  const [minLevel, setMinLevel] = useState('0');
+  const [minLevel, setMinLevel] = useState(''); // '' = anyone
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg>(null);
@@ -130,23 +130,23 @@ function CreateCode({ onCreated }: { onCreated: (c: RedeemCodeWire) => void }) {
             <span className='adm-section-label'>Limits</span>
             <div className='grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.6fr)]'>
               <Field label='Max uses' hint={uses ? `${fmt(uses)} total` : 'unlimited'} as='div'>
-                <input className='adm-input mono' aria-label='Max uses' inputMode='numeric' value={maxUses} onChange={(e) => setMaxUses(e.target.value.replace(/[^0-9]/g, '').slice(0, 7))} data-field='code-max' />
+                <input className='adm-input mono' aria-label='Max uses' inputMode='numeric' placeholder='Unlimited' value={maxUses} onChange={(e) => setMaxUses(e.target.value.replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, 7))} data-field='code-max' />
                 <span className='flex flex-wrap gap-1'>
                   {[1, 100, 1000].map((n) => (
                     <button key={n} type='button' className='adm-chip' aria-pressed={uses === n} onClick={() => setMaxUses(String(n))}>
                       {fmt(n)}
                     </button>
                   ))}
-                  <button type='button' className='adm-chip' aria-pressed={uses === 0} onClick={() => setMaxUses('0')}>
-                    ∞
+                  <button type='button' className='adm-chip' aria-pressed={uses === 0} onClick={() => setMaxUses('')}>
+                    Unlimited
                   </button>
                 </span>
               </Field>
               <Field label='Min level' hint={lvl ? `Lv ${lvl}+` : 'anyone'} as='div'>
-                <input className='adm-input mono' aria-label='Min level' inputMode='numeric' value={minLevel} onChange={(e) => setMinLevel(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))} data-field='code-level' />
+                <input className='adm-input mono' aria-label='Min level' inputMode='numeric' placeholder='Anyone' value={minLevel} onChange={(e) => setMinLevel(e.target.value.replace(/[^0-9]/g, '').replace(/^0+/, '').slice(0, 3))} data-field='code-level' />
                 <span className='flex flex-wrap gap-1'>
                   {[0, 5, 10, 25].map((n) => (
-                    <button key={n} type='button' className='adm-chip' aria-pressed={lvl === n} onClick={() => setMinLevel(String(n))}>
+                    <button key={n} type='button' className='adm-chip' aria-pressed={lvl === n} onClick={() => setMinLevel(n ? String(n) : '')}>
                       {n ? `Lv ${n}` : 'Any'}
                     </button>
                   ))}

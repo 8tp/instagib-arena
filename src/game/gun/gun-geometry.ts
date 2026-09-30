@@ -215,7 +215,7 @@ function hexBolt(b: GunBuilder, pos: V3, r: number, axis: 'x' | 'y' | 'z', sign 
 
 function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   const hi = lod === 'high';
-  const SEG = hi ? 24 : 10;
+  const SEG = hi ? 32 : 10;
   const b = new GunBuilder();
   const P = PART;
 
@@ -395,7 +395,7 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   // meter (see CoilDriver in weapon-model.ts).
   for (let i = 0; i < COIL_COUNT; i++) {
     const c = COIL_Z[i];
-    const ring = hi ? 30 : 12;
+    const ring = hi ? 48 : 12;
     b.lathe(P.METAL, hi ? [
       [0.052, c - 0.025], [0.057, c - 0.025], [0.063, c - 0.019], [0.063, c - 0.015], [0.059, c - 0.015],
       [0.059, c + 0.015], [0.063, c + 0.015], [0.063, c + 0.019], [0.057, c + 0.025], [0.052, c + 0.025],
@@ -414,7 +414,7 @@ function buildGeometry(lod: GunLod): THREE.BufferGeometry {
   ], SEG);
   if (hi) b.lathe(P.METAL_LT, [[0.058, -0.812], [0.061, -0.809], [0.061, -0.797], [0.058, -0.794]], SEG);
   b.put(P.RUBBER, latheZ([[0, -0.868], [0.027, -0.868]], SEG), [0, BARREL_Y, 0], undefined, 'none');
-  b.put(P.GLOW, new THREE.TorusGeometry(0.036, 0.006, 6, hi ? 28 : 12), [0, BARREL_Y, -0.873], undefined, 'none');
+  b.put(P.GLOW, new THREE.TorusGeometry(0.036, 0.006, 6, hi ? 40 : 12), [0, BARREL_Y, -0.873], undefined, 'none');
   for (let i = 0; i < 3; i++) {
     const a = Math.PI / 2 + (i * Math.PI * 2) / 3;
     b.put(P.METAL_LT, chamferBox(0.014, 0.022, 0.13, 0.004),

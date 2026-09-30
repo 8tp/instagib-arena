@@ -16,9 +16,9 @@ export function MatchesTab() {
   const [error, setError] = useState('');
   const [mode, setMode] = useState('all');
   const [result, setResult] = useState<'all' | 'win' | 'loss'>('all');
-  const load = useCallback(async (before?: number) => {
+  const load = useCallback(async (before?: MatchRow) => {
     setLoading(true);
-    const r = await getJSON<{ matches: MatchRow[] }>(`/api/admin/metrics/matches?limit=100${before ? `&before=${before}` : ''}`);
+    const r = await getJSON<{ matches: MatchRow[] }>(`/api/admin/metrics/matches-by-time?limit=100${before ? `&before=${before.ts}:${before.id}` : ''}`);
     setLoading(false);
     if (!r.ok) return setError(r.message);
     setError('');
@@ -30,6 +30,7 @@ export function MatchesTab() {
   }, [load]);
   const keyOf = (m: MatchRow) => (m.offline ? 'practice' : m.mode ?? 'unknown');
   const modes = useMemo(() => [...new Set(matches.map(keyOf))], [matches]);
+  // Newest first by match time (server keyset on (ts, id)).
   const shown = matches.filter((m) => (mode === 'all' || keyOf(m) === mode) && (result === 'all' || (result === 'win') === m.won));
   return (
     <Plate
@@ -108,7 +109,7 @@ export function MatchesTab() {
       )}
       {!done && matches.length > 0 && (
         <div className='flex justify-center border-t border-[var(--adm-line)] py-3'>
-          <button type='button' className='adm-btn' onClick={() => void load(matches[matches.length - 1]?.id)} disabled={loading}>
+          <button type='button' className='adm-btn' onClick={() => void load(matches[matches.length - 1])} disabled={loading}>
             {loading ? 'Loading…' : 'Load 100 more'}
           </button>
         </div>

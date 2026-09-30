@@ -16,11 +16,11 @@ import { gunFx, type GunMaterial } from './gun-material';
 //     (same `gun` part attribute, so it wears the finish's metal + machined
 //     edges); cached, shared. Display: a glossy dark glass plane whose
 //     emissive map is a CanvasTexture (mipmapped, anisotropic) redrawn only
-//     when the count changes or while a digit is rolling. +2 draws, and only
+//     when the count changes or while a digit is flipping. +2 draws, and only
 //     on a Tracked gun.
-//   • On a kill the digits that changed roll up (old out the top, new in from
-//     below, ~0.3 s) and flash; time-based, so identical at any frame rate.
-//     Reduced effects: no roll, a soft brightness swell. Low-spec: no roll.
+//   • On a kill the digits that changed flip (the old digit folds shut, the
+//     new one opens, ~0.3 s) and flash; time-based, so identical at any frame rate.
+//     Reduced effects: no flip, a soft brightness swell. Low-spec: no flip.
 //   • Radiance: the lit segments sit at ~1.2 linear (readable, not a lamp),
 //     the kill flash peaks at ~1.4 — under the bloom threshold (1.5).
 //   • Local frame: x = 0 is the mounting face (the gun flank), the display
@@ -46,7 +46,7 @@ const DISPLAY_X = FACE_X - 0.0006;
 // Canvas: 1024 px across the 112 mm window (≈ 9 px/mm).
 const CW = 1024;
 const CH = Math.round((CW * DH) / DW);
-const LABEL_W = 214; // label column (muzzle side)
+const LABEL_W = 262; // label column (muzzle side)
 
 // Backlight: lit bars ≈ 1.2 linear at rest, ≤ ~1.4 at the kill flash (the
 // bloom threshold is 1.5 — readable, never a lamp).
@@ -258,7 +258,7 @@ export class TrackedCounter {
     this.low = low;
   }
 
-  // null hides the module; a number shows it (a rise rolls + flashes the
+  // null hides the module; a number shows it (a rise flips + flashes the
   // digits that changed).
   set(n: number | null) {
     if (n === null || !Number.isFinite(n)) {
@@ -307,7 +307,6 @@ export class TrackedCounter {
     const since = (now - this.changeMs) / 1000;
     const animate = this.rolling && !gunFx.reduced && !this.low && !fxFlags.low;
     const roll = animate ? Math.min(1, since / ROLL_SEC) : 1;
-    const ease = 1 - (1 - roll) ** 3;
     const hot = this.rolling && since < FLASH_SEC ? Math.exp(-since * 4) : 0;
 
     ctx.save();
@@ -321,13 +320,13 @@ export class TrackedCounter {
     ctx.fillRect(0, 0, CW, CH);
     const glow = hexCss(this.ghost);
 
-    // ── Label column: reticle glyph + TRACKED / CONFIRMED KILLS ──
+    // ── Label column: a small reticle glyph over one bold TRACKED ──
     const lc = LABEL_W / 2;
     ctx.strokeStyle = hexCss(this.lit, 0.9);
     ctx.fillStyle = hexCss(this.lit, 0.9);
     ctx.lineWidth = 7;
-    const ry = CH * 0.32;
-    const rr = CH * 0.13;
+    const ry = CH * 0.29;
+    const rr = CH * 0.11;
     ctx.beginPath();
     ctx.arc(lc, ry, rr, 0, Math.PI * 2);
     ctx.stroke();
@@ -353,10 +352,8 @@ export class TrackedCounter {
       ctx.fillText(text, 0, 0);
       ctx.restore();
     };
-    fit('TRACKED', 800, Math.round(CH * 0.165), 4, CH * 0.74, LABEL_W - 26);
-    ctx.globalAlpha = 0.6;
-    fit('CONFIRMED KILLS', 700, Math.round(CH * 0.075), 2, CH * 0.87, LABEL_W - 26);
-    ctx.globalAlpha = 1;
+    ctx.fillStyle = hexCss(this.lit);
+    fit('TRACKED', 900, Math.round(CH * 0.25), 2, CH * 0.8, LABEL_W - 22);
     ctx.letterSpacing = '0px';
     // Divider.
     ctx.fillStyle = glow;
@@ -382,29 +379,29 @@ export class TrackedCounter {
       const was = this.prevText[i] ?? ' ';
       const changed = ch !== was && this.prevText !== '';
       const w = changed ? hot : 0;
-      const drawDigit = (c: string, oy: number, alpha: number) => {
+      // One whole digit, squashed vertically about the cell centre by `sy`
+      // (the flip) — never a partial segment pattern.
+      const drawDigit = (c: string, sy: number) => {
         const m = SEG[c];
-        if (!m || alpha <= 0.01) return;
+        if (!m || sy <= 0.02) return;
         ctx.save();
-        ctx.beginPath();
-        ctx.rect(cx - dw * 0.2, dy - 4, dw * 1.4, dh + 8);
-        ctx.clip();
-        ctx.globalAlpha = alpha;
+        ctx.translate(0, dy + dh / 2);
+        ctx.scale(1, sy);
+        ctx.translate(0, -(dy + dh / 2));
         // Soft glow under the lit bars, then the bars (whiter while flashing).
         ctx.shadowColor = glow;
         ctx.shadowBlur = 18;
         ctx.fillStyle = hexCss(this.lit.clone().lerp(new THREE.Color(1, 1, 1), 0.5 * w));
-        segPath(ctx, m, cx, dy + oy, dw, dh);
+        segPath(ctx, m, cx, dy, dw, dh);
         ctx.fill();
-        ctx.shadowBlur = 0;
         ctx.restore();
       };
-      if (changed && ease < 1) {
-        // Roll: the old digit leaves upward, the new one rises into place.
-        drawDigit(was, -ease * dh * 1.08, 1 - ease);
-        drawDigit(ch, (1 - ease) * dh * 1.08, 0.35 + 0.65 * ease);
+      if (changed && roll < 1) {
+        // Split-flap flip: the old digit folds shut, then the new one opens.
+        if (roll < 0.5) drawDigit(was, Math.cos(roll * Math.PI));
+        else drawDigit(ch, -Math.cos(roll * Math.PI));
       } else {
-        drawDigit(ch, 0, 1);
+        drawDigit(ch, 1);
       }
     }
     // Glass sheen: a faint diagonal highlight across the top.

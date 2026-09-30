@@ -85,7 +85,7 @@ function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount }
   const p = new Parts();
   const IRON: PartOpts = { pal: PAL.BODY, rough: 0.5, metal: 0.8, zone: Z.IRON };
   const STEEL: PartOpts = { pal: PAL.METAL, rough: 0.35, metal: 0.9, zone: Z.IRON };
-  const SILVER: PartOpts = { pal: PAL.METAL_LT, rough: 0.25, metal: 1 };
+  const SILVER: PartOpts = { pal: PAL.METAL_LT, rough: 0.36, metal: 1 }; // no glints hot enough to bloom
   const SOUL: PartOpts = { col: 0x020605, rough: 0.2, metal: 0, zone: Z.SOUL, glow: 1 };
   const BONE: PartOpts = { col: 0xcfc8b8, rough: 0.6, metal: 0 };
 
@@ -143,25 +143,46 @@ function buildBody(lod: Lod): { geo: THREE.BufferGeometry; mount: TrackerMount }
     p.add(lathe([[0.036, z - 0.012], [0.046, z - 0.008], [0.046, z + 0.008], [0.036, z + 0.012]], 6, Math.PI / 6), { ...SILVER, at: [0, BY, 0], flat: true });
   }
 
-  // ── Muzzle: the Reaper's cowl — a peaked hood, a void where the face should
-  // be and two cold eyes; the beam leaves the dark. ──
-  p.add(hull([
-    [-0.036, BY - 0.028, -0.735], [0.036, BY - 0.028, -0.735], [-0.026, BY + 0.04, -0.735], [0.026, BY + 0.04, -0.735],
-    [0, BY + 0.07, -0.77], [-0.02, BY + 0.078, -0.83], [0.02, BY + 0.078, -0.83], [0, BY + 0.088, -0.9],
-    [-0.03, BY + 0.062, -0.9], [0.03, BY + 0.062, -0.9],
-    [-0.055, BY + 0.0, -0.9], [0.055, BY + 0.0, -0.9], [-0.042, BY - 0.046, -0.885], [0.042, BY - 0.046, -0.885],
-    [-0.05, BY - 0.02, -0.82], [0.05, BY - 0.02, -0.82],
-  ]), { ...IRON, flat: true });
-  // Cloth folds down the hood's back.
-  if (hi) {
-    for (const sx of [-1, 1]) {
-      p.add(taperTube([[sx * 0.022, BY + 0.07, -0.86], [sx * 0.034, BY + 0.05, -0.8], [sx * 0.036, BY + 0.03, -0.745]], 0.006, 0.003, 8, 5), IRON);
+  // ── Muzzle: the Reaper's cowl — a peaked hood tapering from the barrel,
+  // a void where the face should be, two cold eyes, a pointed chin-blade;
+  // the beam leaves the dark. ──
+  // Lofted from pointed-arch rings (narrow at the collar, flaring to the
+  // face) with a ridge rising to a peak that overhangs the face.
+  {
+    const rings: Array<[number, number, number, number, number]> = [
+      // z, half-width, half-height, centre y, ridge lift
+      [-0.735, 0.03, 0.032, BY + 0.004, 0.012],
+      [-0.785, 0.04, 0.048, BY + 0.012, 0.022],
+      [-0.845, 0.047, 0.056, BY + 0.012, 0.022],
+      [-0.893, 0.047, 0.054, BY + 0.008, 0.016],
+    ];
+    const pts: V3[] = [];
+    const rn = hi ? 12 : 8;
+    for (const [z, rx, ry, cy, lift] of rings) {
+      for (let i = 0; i < rn; i++) {
+        const a = (i / rn) * Math.PI * 2;
+        const top = Math.max(0, Math.sin(a));
+        const x = Math.cos(a) * rx * (1 - 0.35 * top * top);
+        pts.push([x, cy + Math.sin(a) * ry + lift * Math.pow(top, 6), z]);
+      }
+    }
+    pts.push([0, BY + 0.078, -0.9]); // the peak over the face: level with the muzzle, never ahead of it (sight line)
+    p.add(hull(pts), { ...STEEL, rough: 0.42, flat: true });
+    // Chin blade: an angular point under the face, raking forward.
+    p.add(hull([[-0.02, BY - 0.04, -0.86], [0.02, BY - 0.04, -0.86], [-0.012, BY - 0.052, -0.83], [0.012, BY - 0.052, -0.83],
+      [0, BY - 0.074, -0.905], [-0.006, BY - 0.035, -0.895], [0.006, BY - 0.035, -0.895]]), { ...SILVER, flat: true });
+    if (hi) {
+      // Seams down the hood's back; a silver edge along the ridge to the peak.
+      for (const sx of [-1, 1]) {
+        p.add(taperTube([[sx * 0.018, BY + 0.078, -0.87], [sx * 0.03, BY + 0.058, -0.8], [sx * 0.026, BY + 0.036, -0.745]], 0.005, 0.0025, 8, 5), IRON);
+      }
+      p.add(taperTube([[0, BY + 0.076, -0.897], [0, BY + 0.074, -0.86], [0, BY + 0.054, -0.78], [0, BY + 0.04, -0.74]], 0.0028, 0.004, 10, 5), SILVER);
     }
   }
-  // Hood edge: a heavier rim round the face opening.
-  p.add(torusZ(0.043, 0.0055, hi ? 5 : 3, hi ? 20 : 10), { ...STEEL, at: [0, BY + 0.008, -0.9], scale: [0.95, 1.12, 1] });
-  // The void face (flattened, pure black) and the eyes in it.
-  p.add(new THREE.SphereGeometry(0.036, hi ? 16 : 8, hi ? 10 : 6).scale(1, 1.15, 0.35), { col: 0x000000, rough: 1, metal: 0, zone: Z.VOID, at: [0, BY + 0.008, -0.897] });
+  // Hood edge: a silver rim round the face opening.
+  p.add(torusZ(0.042, 0.005, hi ? 5 : 3, hi ? 20 : 10), { ...SILVER, at: [0, BY + 0.008, -0.897], scale: [0.9, 1.1, 1] });
+  // The void face (inset, pure black) and the eyes in it.
+  p.add(new THREE.SphereGeometry(0.032, hi ? 16 : 8, hi ? 10 : 6).scale(0.95, 1.15, 0.3), { col: 0x000000, rough: 1, metal: 0, zone: Z.VOID, at: [0, BY + 0.008, -0.896] });
   for (const sx of [-1, 1]) {
     p.add(new THREE.SphereGeometry(0.0055, 8, 6).scale(1.4, 0.7, 0.6), { col: 0x010403, rough: 0.3, metal: 0, zone: Z.EYE, glow: 1, at: [sx * 0.014, BY + 0.024, -0.905], rot: [0, 0, -sx * 0.25] });
   }
