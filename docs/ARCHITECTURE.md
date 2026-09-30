@@ -53,8 +53,10 @@ Module map:
 | `player.ts`       | The local player: a **kinematic capsule** character controller (not a physics rigid body). |
 | `locomotion.ts`   | The movement math: ground friction/accel, Quake-style **air acceleration** (capped projection onto wishdir), dash, double-jump, wall-jump. |
 | `weapon.ts`       | Railgun: cooldown, client-side hitscan ray, tracer/impact spawning. |
-| `map.ts`          | Arena geometry, materials, and the collision representation the player controller sweeps against. |
-| `arena-data.ts`   | **THREE-free.** Spawn points, bounds, the map pool, vote constants, room-code length — the table both client and server read. |
+| `map.ts`          | Builds the rendered arena from a map's boxes + its look: lightmap bake, merged per-slot meshes, trim, dressing. |
+| `arena-map-data.ts` | **THREE-free.** The map registry (`MAPS`, `mapById`) and the `ArenaMap` type. Each arena's collision boxes, bounds and hand-placed spawns live in `maps/<id>.ts`, authored with the helpers in `maps/kit.ts` (`shell`, `B`, `steps`, `sym`, tagged boxes). |
+| `world/looks/<id>.ts` | Each map's look: procedural texture recipes, baked light rig, per-tag slots/tints, floor inlays, skyline, sky, fog, exposure. `world/themes.ts` maps ids to looks; `world/theme-kit.ts` holds the types + light helpers. |
+| `arena-data.ts`   | **THREE-free.** Server view of the maps (bounds + spawns, derived from `MAPS`), the map pools, vote constants, room-code length — the table both client and server read. |
 | `constants.ts`    | **THREE-free.** Tunables: frag limit, cooldowns, speeds, eye height, sensitivity defaults, keybinds. |
 | `types.ts`        | **THREE-free.** Shared structural types (`Vec3`, `AABB`, …). |
 | `net.ts`          | Client netcode: the `LobbyClient`, snapshot buffering, and **interpolation** of remote players against a delayed render clock. |

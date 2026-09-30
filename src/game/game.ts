@@ -5,6 +5,7 @@ import {
   BotManager,
   loadBotModel,
   pickFreeSpot,
+  pickSpawnPoint,
   type BotFireIntent,
   type BotModel,
   type BotTarget,
@@ -3256,7 +3257,7 @@ export class Game {
     // Respawn away from where we died AND from every live bot (not just one).
     const avoid = [this.player.pos];
     if (this.bots) for (const b of this.bots.bots) if (b.state.alive) avoid.push(b.state.pos);
-    const spot = pickFreeSpot(this.map, avoid, PLAYER_RADIUS);
+    const spot = pickSpawnPoint(this.map, avoid, PLAYER_RADIUS);
     this.player.pos = { x: spot.x, y: spot.y, z: spot.z };
     this.player.vel = { x: 0, y: 0, z: 0 };
     this.player.onGround = false;

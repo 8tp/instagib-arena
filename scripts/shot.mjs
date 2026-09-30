@@ -15,13 +15,18 @@
 //   --out PREFIX    output path prefix; each shot → <PREFIX>-<name>.jpg
 //   --solo MAP      click Solo vs Bots → pick MAP → Start match (photo mode)
 //   --mode M        ffa | duel | tdm for --solo (default ffa)
-//   --shots LIST    ';'-separated `name[:yaw,pitch[,x,y,z]]` (default "shot")
+//   --shots LIST    ';'-separated `name[:yaw,pitch[,x,y,z]]` (default "shot");
+//                   a positioned view is held every frame (aerial shots don't fall).
+//                   yaw 0 looks toward −z, π/2 toward −x; pitch < 0 looks down.
 //   --wait MS       settle time after the match starts (default 5000)
 //   --each MS       settle time between shots (default 900)
 //   --eval JS       run JS in the page before the first shot
 //   --size WxH      viewport (default 1600x900)
 //   --keep-overlay  don't strip the click-to-play overlay
 //   --no-hud        hide the React HUD layer (pure 3D frame)
+//   --no-gun        hide the first-person railgun (layout / overview shots)
+//   --no-bots       remove the bots (empty arena; they can't kill the camera)
+//   --training      open the Training range from the main menu (instead of --solo)
 //   --cookie N=V    set a cookie on the base origin before loading (e.g. a
 //                   logged-in igsession from a curl cookie jar)
 //
@@ -54,6 +59,9 @@ const [vw, vh] = String(flag('size', '1600x900')).split('x').map(Number);
 const keepOverlay = flag('keep-overlay', false) === true;
 const noHud = flag('no-hud', false) === true;
 const cookie = flag('cookie', null);
+const noGun = flag('no-gun', false) === true;
+const noBots = flag('no-bots', false) === true;
+const trainingMode = flag('training', false) === true;
 
 const CHROME =
   process.env.CHROME_BIN ||
@@ -129,6 +137,9 @@ async function main() {
       consoleLines.push(`[exception] ${msg.params.exceptionDetails?.exception?.description ?? msg.params.exceptionDetails?.text}`);
     } else if (msg.method === 'Runtime.consoleAPICalled' && (msg.params.type === 'error' || msg.params.type === 'warning')) {
       consoleLines.push(`[${msg.params.type}] ${msg.params.args.map((a) => a.value ?? a.description ?? '').join(' ')}`);
+    } else if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'info' && String(msg.params.args[0]?.value ?? '').startsWith('[world]')) {
+      // Map build timings (lightmap bake, texture generation) — dev builds only.
+      consoleLines.push(String(msg.params.args[0].value));
     }
   };
   const send = (method, params = {}) =>
@@ -174,24 +185,8 @@ async function main() {
     if (!ok) throw new Error(`no clickable element matching /${re}/`);
   };
 
-  if (solo) {
-    await clickByText('^solo vs bots');
-    await sleep(600);
-    await evaluate(`(() => {
-      const sel = document.querySelector('select');
-      if (!sel) return false;
-      const opt = [...sel.options].find((o) => o.value === ${JSON.stringify(solo)});
-      if (!opt) return false;
-      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-      set.call(sel, opt.value);
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`);
-    // Mode cards run the name straight into a blurb ("TDMTeam…"), so no \b here.
-    if (mode !== 'ffa') await clickByText(`^${mode === 'tdm' ? 'TDM' : 'Duel'}`);
-    await sleep(300);
-    await clickByText('^start match');
-    await sleep(settle);
+  // Strip the click-to-play overlay's blur, and optionally hide the HUD layer.
+  const clearOverlays = async () => {
     if (!keepOverlay) {
       await evaluate(`(() => {
         const h = [...document.querySelectorAll('h1,h2,div,p,span')].find((e) => e.childElementCount === 0 && /click to play/i.test(e.textContent || ''));
@@ -208,10 +203,44 @@ async function main() {
     if (noHud) {
       await evaluate(`(() => { const c = document.querySelector('canvas'); if (!c) return; for (const el of c.parentElement.children) if (el !== c) el.style.visibility = 'hidden'; })()`);
     }
+  };
+
+  if (solo) {
+    await clickByText('^solo vs bots');
+    await sleep(600);
+    // Mode cards run the name straight into a blurb ("TDMTeam…"), so no \b here.
+    if (mode !== 'ffa') await clickByText(`^${mode === 'tdm' ? 'TDM' : 'Duel'}`);
+    await sleep(200);
+    const picked = await evaluate(`(() => {
+      const card = document.querySelector('[data-map=' + JSON.stringify(${JSON.stringify(solo)}) + ']');
+      if (card) { card.click(); return true; }
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find((o) => o.value === ${JSON.stringify(solo)});
+      if (!opt) return false;
+      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      set.call(sel, opt.value);
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    if (!picked) throw new Error(`no map card for ${solo}`);
+    await sleep(300);
+    await clickByText('^start match');
+    await sleep(settle);
+    await clearOverlays();
+  } else if (trainingMode) {
+    await clickByText('^training range');
+    await sleep(settle);
+    await clearOverlays();
   } else {
     await sleep(Math.min(settle, 2500));
   }
 
+  // Settings sync can re-show the viewmodel after the first shot, so the hide is
+  // re-applied every frame (the hold loop below also calls it).
+  if (noGun) await evaluate(`(() => { window.__shotNoGun = true; const f = () => { if (window.__ig) window.__ig.setViewmodel({ x: 0, y: 0, z: 0 }, true); requestAnimationFrame(f); }; f(); })()`);
+  // Re-applied every frame too: a settings sync / respawn can bring bots back.
+  if (noBots) await evaluate(`(() => { const f = () => { if (window.__ig) window.__ig.setBotsEnabled(false); requestAnimationFrame(f); }; f(); })()`);
   if (evalJs) await evaluate(String(evalJs));
 
   const shots = String(shotsArg).split(';').map((s) => s.trim()).filter(Boolean);
@@ -221,7 +250,16 @@ async function main() {
     if (view) {
       const n = view.split(',').map(Number);
       const pos = n.length >= 5 ? `{x:${n[2]},y:${n[3]},z:${n[4]}}` : 'undefined';
-      await evaluate(`window.__ig && window.__ig.setPlayerView(${n[0]}, ${n[1]}, ${pos})`);
+      // Re-pin the pose every frame until the capture, so aerial viewpoints
+      // don't fall (and a positioned camera isn't shoved by physics).
+      await evaluate(`(() => {
+        window.__shotHold = { yaw: ${n[0]}, pitch: ${n[1]}, pos: ${pos} };
+        if (!window.__shotHoldLoop) {
+          window.__shotHoldLoop = true;
+          const f = () => { const h = window.__shotHold; if (h && window.__ig) window.__ig.setPlayerView(h.yaw, h.pitch, h.pos && { ...h.pos }); requestAnimationFrame(f); };
+          f();
+        }
+      })()`);
     }
     await sleep(each);
     const shot = await send('Page.captureScreenshot', { format: 'jpeg', quality: 85 });
@@ -231,7 +269,7 @@ async function main() {
   }
   const gl = await evaluate(`(() => { try { const c = document.createElement('canvas').getContext('webgl2'); const d = c && c.getExtension('WEBGL_debug_renderer_info'); return d ? c.getParameter(d.UNMASKED_RENDERER_WEBGL) : (c ? 'webgl2' : 'none'); } catch (e) { return String(e); } })()`);
   console.log(`[gl] ${logText(gl)}`);
-  for (const line of consoleLines.slice(0, 20)) console.log(logText(line));
+  for (const line of consoleLines.slice(0, 30)) console.log(logText(line));
   ws.close();
   cleanup();
   process.exit(0);

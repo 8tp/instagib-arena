@@ -5,64 +5,27 @@
 //
 // The client renders the geometry from `map.ts`; the server only needs to know
 // where it's safe to (re)spawn and when a player has fallen out of the world.
-// Spawn points below are hand-authored open-floor positions (y≈0.05) inside
-// each map's bounds, picked to avoid the boxes in `map.ts`.
+// Both come straight from the map modules (src/game/maps/*): bounds + the
+// hand-placed `spawns` list.
 
+import { MAPS } from './arena-map-data';
 import type { AABB, Vec3 } from './types';
 
 export type ArenaNetData = {
   bounds: AABB;
   killY: number; // y below this → fell out of the world → respawn
-  spawns: Vec3[]; // safe ground spawn points
+  spawns: Vec3[]; // safe spawn points (standing on a surface)
 };
-
-const Y = 0.05;
-const p = (x: number, z: number): Vec3 => ({ x, y: Y, z });
 
 // killY sits a few metres below each map's floor (floor min.y is -1 in every
 // map), so a player who clips through or spawns into the void is recovered.
-function arena(
-  bounds: AABB,
-  spawns: Vec3[],
-): ArenaNetData {
+function arena(bounds: AABB, spawns: Vec3[]): ArenaNetData {
   return { bounds, killY: bounds.min.y - 6, spawns };
 }
 
-export const ARENA_NET: Record<string, ArenaNetData> = {
-  causeway: arena(
-    { min: { x: -35, y: -1, z: -25 }, max: { x: 35, y: 22, z: 25 } },
-    [p(0, 19), p(0, -19), p(-28, 0), p(28, 0), p(-12, 12), p(12, -12)],
-  ),
-  reactor: arena(
-    { min: { x: -40, y: -1, z: -28 }, max: { x: 40, y: 24, z: 28 } },
-    [p(-30, 0), p(30, 0), p(0, 12), p(0, -12), p(-30, 12), p(30, -12)],
-  ),
-  lounge: arena(
-    { min: { x: -30, y: -1, z: -22 }, max: { x: 30, y: 20, z: 22 } },
-    [p(0, 16), p(0, -16), p(-20, 0), p(20, 0), p(-12, 12), p(12, -12)],
-  ),
-  nuketown: arena(
-    { min: { x: -32, y: -1, z: -22 }, max: { x: 32, y: 17, z: 22 } },
-    // Backyards behind each house (x≈±29) + the four side-lane corners. Well
-    // spread across both ends and both flanks so no single camper covers them.
-    [p(-29, 0), p(-29, 11), p(-29, -11), p(29, 0), p(29, 11), p(29, -11),
-     p(-12, 16), p(12, 16), p(-12, -16), p(12, -16)],
-  ),
-  containeryard: arena(
-    { min: { x: -13, y: -1, z: -11 }, max: { x: 13, y: 13, z: 11 } },
-    [p(-10.5, 8.5), p(10.5, -8.5), p(-10.5, -8.5), p(10.5, 8.5), p(0, 9), p(0, -9)],
-  ),
-  derrick: arena(
-    { min: { x: -12, y: -1, z: -12 }, max: { x: 12, y: 23, z: 12 } },
-    // Open-floor spawns: NE/SW corners + the four mid-edges. Avoids the
-    // generator roofs (NW/SE corners), central derrick, and flank pillars.
-    [p(9, 9), p(-9, -9), p(0, 9), p(0, -9), p(-9, 0), p(9, 0)],
-  ),
-  training: arena(
-    { min: { x: -23, y: -1, z: -20 }, max: { x: 23, y: 25, z: 20 } },
-    [p(0, 17), p(-18, -10), p(18, -10), p(-18, 10), p(18, 10), p(0, 0)],
-  ),
-};
+export const ARENA_NET: Record<string, ArenaNetData> = Object.fromEntries(
+  MAPS.map((m) => [m.id, arena(m.map.bounds, m.map.spawns)]),
+);
 
 export const DEFAULT_ARENA_ID = 'causeway';
 
@@ -71,15 +34,15 @@ export function arenaNet(id: string): ArenaNetData {
 }
 
 // Maps offered in public Quick-Match auto-rooms and end-of-match votes, split by
-// mode. containeryard (26×22) and derrick (24×24) are tight 1v1 arenas — far too
-// small for free-for-all — so FFA/TDM (the main queue) use only the large maps,
-// and duel gets the small ones. The single-player training range is excluded.
+// mode. The FFA/TDM maps are ~96×72 m with 3–4 play tiers for up to 8 players;
+// containeryard and derrick are ~68×58 m symmetric 1v1 arenas, too tight for a
+// full FFA lobby. The single-player training range is excluded.
 export const FFA_MAP_POOL = ['causeway', 'reactor', 'lounge', 'nuketown'] as const; // large — FFA + TDM
-export const DUEL_MAP_POOL = ['containeryard', 'derrick'] as const; // small — 1v1
+export const DUEL_MAP_POOL = ['containeryard', 'derrick'] as const; // symmetric — 1v1
 // Every online map (mode-agnostic uses: known-arena checks, etc.).
 export const ONLINE_MAP_POOL = [...FFA_MAP_POOL, ...DUEL_MAP_POOL] as const;
 
-// The map pool for a given mode. Duel → tight arenas; everything else → large.
+// The map pool for a given mode. Duel → the 1v1 arenas; everything else → large.
 export function mapPoolForMode(mode: string): readonly string[] {
   return mode === 'duel' ? DUEL_MAP_POOL : FFA_MAP_POOL;
 }

@@ -8,7 +8,7 @@ import { bakeLightmap, faceUv, type LmFace, type LmLight, type Lightmap, type V3
 import { applyMapShading, createMapShading, type MapShading } from './world/map-material';
 import { defaultSlot, FACE_NORMAL, themeForMapId, type SlotParams, type WorldTheme } from './world/themes';
 
-import { MAPS, type ArenaMap } from './arena-map-data';
+import { MAPS, type ArenaMap, type MapBox } from './arena-map-data';
 export { LOUNGE, CAUSEWAY, REACTOR, CONTAINERYARD, DERRICK, TRAINING, NUKETOWN, MAPS, DEFAULT_MAP, mapById, type ArenaMap } from './arena-map-data';
 export { movePlayer, rayAabb, rayAabbNormal, raySphere, type CollisionResult } from './collision';
 
@@ -125,7 +125,7 @@ function trimMaterial(accent: THREE.Color, intensity: number): THREE.MeshStandar
 
 type WorldBake = {
   lm: Lightmap;
-  boxes: AABB[]; // RENDER boxes (perimeter walls lowered to the sky line)
+  boxes: MapBox[]; // RENDER boxes (perimeter walls lowered to the sky line)
   drawn: boolean[];
   slots: SurfaceKind[];
   tints: Array<THREE.Color | null>;
@@ -189,11 +189,11 @@ function toBakeLights(theme: WorldTheme): LmLight[] {
 // Render copies of the AABBs. Open-sky themes draw their tall boundary walls
 // only up to `perimeterTop` (Quake 3 sky-brush style): the collision boxes in
 // map.boxes are untouched — only what's drawn, baked and shadowed is lower.
-function renderBoxes(map: ArenaMap, theme: WorldTheme, perimeter: boolean[]): AABB[] {
+function renderBoxes(map: ArenaMap, theme: WorldTheme, perimeter: boolean[]): MapBox[] {
   const top = theme.perimeterTop;
   return map.boxes.map((b, i) =>
     top !== undefined && perimeter[i] && b.max.y > top
-      ? { min: { ...b.min }, max: { x: b.max.x, y: Math.max(b.min.y + 0.5, top), z: b.max.z } }
+      ? { ...b, min: { ...b.min }, max: { x: b.max.x, y: Math.max(b.min.y + 0.5, top), z: b.max.z } }
       : b,
   );
 }
@@ -228,7 +228,7 @@ function bakeWorld(map: ArenaMap, key: string, theme: WorldTheme): WorldBake {
   const bk = theme.bake;
   const lm = bakeLightmap(boxes, map.bounds, drawn, {
     texel: bk.texel,
-    maxTexels: 120_000,
+    maxTexels: bk.maxTexels ?? 120_000,
     ambientUp: byLuminance(bk.ambientUp, bk.ambient),
     ambientDown: byLuminance(bk.ambientDown, bk.ambient * 0.55),
     aoRadius: bk.ao.radius,
@@ -354,7 +354,7 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
   group.userData.mapRoot = true;
   const id = mapIdOf(map);
   const theme = themeForMapId(id);
-  const tex = getThemeTextures(theme.id);
+  const tex = getThemeTextures(theme.id, theme.textures);
   const world = bakeWorld(map, id ?? `anon:${map.name}`, theme);
   const { lm, slots, tints, perimeter, drawn } = world;
   const rboxes = world.boxes;
@@ -365,6 +365,7 @@ export function buildMapMesh(map: ArenaMap): THREE.Group {
   shading.uHemiScale.value = theme.hemi.mapScale;
   shading.uIblScale.value = theme.env.mapScale;
   shading.uWorldSat.value = theme.worldSaturation;
+  shading.uSatCap.value = Math.min(0.8, theme.satCap ?? 0.6);
   shading.uShadowLift.value = theme.shadowLift ?? (theme.openSky ? 0.3 : 0.55);
 
   // Surfaces: one mesh per visual slot. Tall boundary walls that the bake
