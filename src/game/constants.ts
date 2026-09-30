@@ -102,50 +102,85 @@ export const BOT_HEIGHT = 1.8;
 export const BOT_EYE_FRAC = 0.85; // bot "eye" height as a fraction of BOT_HEIGHT
 export const BOT_HEADSHOT_THRESHOLD = 0.72; // fraction of height above which a hit counts as headshot
 export const BOT_RESPAWN_DELAY = 1.5;
-// How long a roaming bot pauses once it reaches a wander point before picking the
-// next one. Kept SHORT so bots keep moving and never look like they froze (the
-// old 3.5–7.5s pause read as a stand-still glitch).
-export const BOT_MOVE_INTERVAL_MIN = 0.5;
-export const BOT_MOVE_INTERVAL_MAX = 2.0;
 
-// Bot combat AI. Per-difficulty knobs that scale how dangerous — and how
-// human — a bot feels. The aim model tracks a SMOOTHED aim point toward the
-// target, so a laggy tracker mis-leads jukes (humans don't snap), and the error
-// grows with the target's lateral speed (moving targets are genuinely hard):
-//   sightRange  — how far they acquire + engage a target (m)
-//   reaction    — delay after first seeing a target before they can fire (s)
-//   aimError    — base random aim cone half-angle vs a still target (radians)
-//   moveErr     — extra cone added per m/s of the target's LATERAL speed (rad)
-//   aimTrack    — how fast the aim point chases the target (1/s); low = laggy,
-//                 so fast-strafing targets slip the crosshair (the human feel)
-//   whiffChance — probability a given shot is thrown wide (a flubbed shot)
+// Bot AI. Per-difficulty knobs that scale how dangerous — and how human — a
+// bot feels (bot-brain.ts). Bots only know what they perceive: they see inside
+// a view cone with line of sight, hear gunfire and nearby footsteps, remember
+// lost enemies for a while, and — with `tactics` — know the map: power
+// positions, where an enemy will respawn, pre-aiming the angle they expect you
+// from. Their crosshair is a smoothed angle chasing a *perceived* target that
+// trails the truth by `trackLag` (minus what they `lead`), so hits come out of
+// how well they actually track you — strafing beats a weak bot, not dice.
+//   sightRange  — how far they can spot + engage a target (m)
+//   fov         — half-angle of the view cone they notice things in (rad)
+//   nearSense   — within this range you're noticed from any direction (m)
+//   reaction    — first sighting → starting to aim (s, ±25%)
+//   hearing     — gunfire is heard within this radius (m)
+//   memory      — how long a lost enemy stays "known" and hunted (s)
+//   aimTime     — crosshair smoothing time (s); lower = snappier flicks
+//   aimSpeed    — max crosshair speed (rad/s)
+//   trackLag    — perception lag on a moving target (s): trails by ≈ v·lag
+//   lead        — 0..1 share of that lag they compensate for by leading
+//   aimNoise    — steady crosshair wobble, 1σ (rad); more while moving/airborne
+//   flickErr    — fraction of a flick's angle they over/undershoot, then correct
+//   fireTol     — slack around the target they accept before clicking (m)
+//   clickDelay  — on-target → trigger pull (s, min/max)
+//   patience    — how long they wait for a clean shot before firing anyway (s)
 //   fireCooldown— seconds between a bot's shots (>= RAIL_COOLDOWN 1.2)
-//   moveSpeed   — bot movement speed (m/s)
-//   combatStrafe— 0..1 tendency to circle-strafe a target vs. beeline
+//   moveSpeed   — travel speed (m/s)
+//   strafeSpeed — speed while fighting (m/s)
+//   juke        — seconds between strafe reversals (min/max)
+//   tactics     — 0..1 map knowledge: power positions, spawn reads, pre-aim,
+//                 taking high ground mid-fight
 export type BotDifficulty = 'easy' | 'medium' | 'hard';
-export const BOT_DIFFICULTY: Record<
-  BotDifficulty,
-  {
-    sightRange: number;
-    reaction: number;
-    aimError: number;
-    moveErr: number;
-    aimTrack: number;
-    whiffChance: number;
-    fireCooldown: number;
-    moveSpeed: number;
-    combatStrafe: number;
-  }
-> = {
-  // Easy: hits still targets often, but laggy tracking (aimTrack 5 ≈ ~0.5s to
-  // settle) + a big per-speed penalty + frequent whiffs make it miss movers a lot.
-  easy:   { sightRange: 22, reaction: 0.75, aimError: 0.05,  moveErr: 0.022, aimTrack: 5,  whiffChance: 0.18, fireCooldown: 2.2,  moveSpeed: 4.2, combatStrafe: 0.35 },
-  medium: { sightRange: 34, reaction: 0.40, aimError: 0.028, moveErr: 0.009, aimTrack: 13, whiffChance: 0.06, fireCooldown: 1.6,  moveSpeed: 5.6, combatStrafe: 0.6 },
-  // Hard: still a strong tracker, but tuned to be FAIR — a real reaction beat, a
-  // cone that opens up against strafing, slightly laggier tracking and a few more
-  // whiffs, so good movement beats it instead of it feeling robotically perfect.
-  // fireCooldown stays >= RAIL_COOLDOWN. (Also the weekly-challenge opponent.)
-  hard:   { sightRange: 46, reaction: 0.26, aimError: 0.019, moveErr: 0.008, aimTrack: 22, whiffChance: 0.06, fireCooldown: 1.35, moveSpeed: 6.8, combatStrafe: 0.78 },
+export type BotSkill = {
+  sightRange: number;
+  fov: number;
+  nearSense: number;
+  reaction: number;
+  hearing: number;
+  memory: number;
+  aimTime: number;
+  aimSpeed: number;
+  trackLag: number;
+  lead: number;
+  aimNoise: number;
+  flickErr: number;
+  fireTol: number;
+  clickDelay: readonly [number, number];
+  patience: number;
+  fireCooldown: number;
+  moveSpeed: number;
+  strafeSpeed: number;
+  juke: readonly [number, number];
+  tactics: number;
+};
+export const BOT_DIFFICULTY: Record<BotDifficulty, BotSkill> = {
+  // Easy: a real beginner — narrow attention, slow reactions, a tracker that
+  // trails anything moving, loose trigger discipline. Wanders the map.
+  easy: {
+    sightRange: 40, fov: 0.9, nearSense: 3, reaction: 0.55, hearing: 24, memory: 3,
+    aimTime: 0.2, aimSpeed: 8, trackLag: 0.3, lead: 0, aimNoise: 0.034, flickErr: 0.28,
+    fireTol: 0.5, clickDelay: [0.12, 0.3], patience: 0.5, fireCooldown: 2.2,
+    moveSpeed: 6.5, strafeSpeed: 5, juke: [1.2, 2.8], tactics: 0.1,
+  },
+  // Medium: a decent regular — tracks well, leads a little, hunts sounds,
+  // sometimes reads spawns and holds good ground.
+  medium: {
+    sightRange: 58, fov: 1.1, nearSense: 5, reaction: 0.34, hearing: 42, memory: 6,
+    aimTime: 0.14, aimSpeed: 12, trackLag: 0.2, lead: 0.15, aimNoise: 0.019, flickErr: 0.16,
+    fireTol: 0.22, clickDelay: [0.06, 0.16], patience: 0.9, fireCooldown: 1.7,
+    moveSpeed: 8, strafeSpeed: 6.5, juke: [0.6, 1.6], tactics: 0.5,
+  },
+  // Hard: a strong player, not an aimbot — quick but human reactions, leads
+  // strafes, patient trigger, and plays the map (spawns, power spots, pre-aim).
+  // Good movement still beats its tracking. (Also the weekly-challenge opponent.)
+  hard: {
+    sightRange: 76, fov: 1.3, nearSense: 7, reaction: 0.25, hearing: 62, memory: 9,
+    aimTime: 0.1, aimSpeed: 16, trackLag: 0.15, lead: 0.3, aimNoise: 0.012, flickErr: 0.1,
+    fireTol: 0.1, clickDelay: [0.03, 0.09], patience: 1.3, fireCooldown: 1.4,
+    moveSpeed: 9, strafeSpeed: 7.5, juke: [0.35, 1.1], tactics: 0.9,
+  },
 };
 export const DEFAULT_BOT_DIFFICULTY: BotDifficulty = 'medium';
 

@@ -61,7 +61,9 @@ Module map:
 | `types.ts`        | **THREE-free.** Shared structural types (`Vec3`, `AABB`, …). |
 | `net.ts`          | Client netcode: the `LobbyClient`, snapshot buffering, and **interpolation** of remote players against a delayed render clock. |
 | `remote-player.ts`| A remote avatar: skinned model, interpolated transform, nameplate. |
-| `bots.ts`         | Offline bot AI (navigation, aim with human-like error, difficulty tiers). Offline only — bots have map geometry; the online server does not. |
+| `bots.ts`         | Offline bot body: model, animation, cosmetics, respawn; wraps a `BotBrain`. Offline only — bots have map geometry; the online server does not. |
+| `bot-brain.ts`    | **THREE-free.** Bot AI: perception (view cone + LOS, hearing gunfire/footsteps, memory, spawn reads), human-like aim (smoothed crosshair chasing a lagged *perceived* target), nav-driven movement with real jumps/boosts, combat strafing and repositioning, per-difficulty skill (`BOT_DIFFICULTY` in `constants.ts`). |
+| `bot-nav.ts`      | **THREE-free.** Per-map nav graph built from the boxes (standing nodes; walk / jump / double-jump / boost / drop links; core component; per-node visibility → power positions), A*, box spatial index, spawn helpers. QA headless with `npm run bots:sim`. |
 | `audio.ts`        | Procedural weapon SFX (Web Audio) + announcer/medal voice lines (`.ogg`, TTS fallback), with an SFX/announcer volume split. |
 | `effects.ts`      | Tracers, impacts, muzzle flashes, hit sparks. |
 | `renderer.ts`     | WebGL renderer + environment setup. |
