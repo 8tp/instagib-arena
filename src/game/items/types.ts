@@ -225,24 +225,26 @@ export const UNUSUAL_EFFECTS: readonly { id: string; name: string; kind: string;
   { id: 'fx.sakura', name: 'Sakura Drift', kind: 'sakura', taunt: true },
 ];
 
+// Killstreak sheens + professional effects. Ids are stable (stored on items);
+// the names are ours.
 export const KS_SHEENS: readonly { id: string; name: string; color: string }[] = [
-  { id: 'sheen.team', name: 'Team Shine', color: '#5cc8ff' },
-  { id: 'sheen.gold', name: 'Deadly Daffodil', color: '#ffd24a' },
-  { id: 'sheen.orange', name: 'Manndarin', color: '#ff8a1f' },
-  { id: 'sheen.green', name: 'Mean Green', color: '#7dff5a' },
-  { id: 'sheen.lime', name: 'Agonizing Emerald', color: '#3bffb0' },
-  { id: 'sheen.violet', name: 'Villainous Violet', color: '#b86bff' },
-  { id: 'sheen.pink', name: 'Hot Rod', color: '#ff5fcf' },
+  { id: 'sheen.team', name: 'Arc Blue', color: '#5cc8ff' },
+  { id: 'sheen.gold', name: 'Solar Gold', color: '#ffd24a' },
+  { id: 'sheen.orange', name: 'Afterburn', color: '#ff8a1f' },
+  { id: 'sheen.green', name: 'Radium', color: '#7dff5a' },
+  { id: 'sheen.lime', name: 'Neon Mint', color: '#3bffb0' },
+  { id: 'sheen.violet', name: 'Ultraviolet', color: '#b86bff' },
+  { id: 'sheen.pink', name: 'Magenta Surge', color: '#ff5fcf' },
 ];
 
 export const KS_EFFECTS: readonly { id: string; name: string }[] = [
-  { id: 'ks.fire', name: 'Fire Horns' },
-  { id: 'ks.cerebral', name: 'Cerebral Discharge' },
-  { id: 'ks.tornado', name: 'Tornado' },
-  { id: 'ks.flames', name: 'Flames' },
-  { id: 'ks.singularity', name: 'Singularity' },
-  { id: 'ks.incinerator', name: 'Incinerator' },
-  { id: 'ks.hypno', name: 'Hypno-Beam' },
+  { id: 'ks.fire', name: 'Ember Crown' },
+  { id: 'ks.cerebral', name: 'Neural Arc' },
+  { id: 'ks.tornado', name: 'Vortex' },
+  { id: 'ks.flames', name: 'Wildfire' },
+  { id: 'ks.singularity', name: 'Gravity Well' },
+  { id: 'ks.incinerator', name: 'Meltdown' },
+  { id: 'ks.hypno', name: 'Mesmer Beam' },
 ];
 
 // Economy constants (docs/economy.md §4–6).

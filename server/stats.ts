@@ -171,6 +171,7 @@ statsRouter.post('/stats', (req, res) => {
       accuracy: Math.round(accuracy),
       offline,
       xp: result.xpGained,
+      credits: result.creditsGained,
       mode,
       src: 'post',
     },

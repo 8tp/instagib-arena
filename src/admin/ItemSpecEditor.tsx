@@ -122,7 +122,7 @@ export function ItemSpecEditor({ value, onChange, preview = true, count }: { val
         note={
           any && missing.length ? (
             <>
-              {slotName}s can’t carry: {missing.map((a) => ATTR_LABEL[a]).join(', ')}
+              Not available on a {slotName.toLowerCase()}: {missing.map((a) => ATTR_LABEL[a]).join(', ')}
             </>
           ) : undefined
         }

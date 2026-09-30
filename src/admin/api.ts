@@ -84,6 +84,9 @@ export type MatchRow = {
   accuracy: number;
   offline: boolean;
   xp: number;
+  credits?: number | null;
+  durationMs?: number | null;
+  partial?: boolean;
   mode: string | null;
 };
 export type PlayerRow = {
@@ -144,9 +147,17 @@ export type EngagementMetrics = {
   modes: { mode: string; n: number }[];
   hours: number[];
   topPlayers: { id: string; name: string; matches: number; wins: number; kills: number; deaths: number }[];
+  length: MatchLength;
+};
+export type MatchLength = {
+  measured: number;
+  avgMs: number | null;
+  prevAvgMs: number | null;
+  buckets: { label: string; n: number }[];
+  byMode: { mode: string; n: number; avgMs: number }[];
 };
 export type ConcurrencySample = { ts: number; online: number; inMatch: number; rooms: number };
-export type Concurrency = { since: number; samples: ConcurrencySample[]; peak: ConcurrencySample | null; peak24h: ConcurrencySample | null };
+export type Concurrency = { since: number; hours: number; samples: ConcurrencySample[]; peak: ConcurrencySample | null; peak24h: ConcurrencySample | null };
 export type WeeklyChallengeStats = {
   week: string;
   participants: number;

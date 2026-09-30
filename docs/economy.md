@@ -69,7 +69,9 @@ Internal quality ids are stable (stored in DB rows, listings, codes); players se
   item, survives trades) and a rank name from `STRANGE_RANKS` (Tracked → Zeroed-In → … → Kilofrag →
   … → Instagib Incarnate). A Tracked finish carries a kill-counter module on the gun model that
   ticks up live in-match and faces the camera during weapon inspect.
-- **Killstreak** (finishes only): 6%. `sheen` (colour glow on the gun while on a ≥5 streak) and,
+- **Killstreak** (finishes only): 6%. Sheens (Arc Blue, Solar Gold, Afterburn, Radium, Neon Mint, Ultraviolet,
+  Magenta Surge) and professional effects (Ember Crown, Neural Arc, Vortex, Wildfire, Gravity Well, Meltdown,
+  Mesmer Beam) — `KS_SHEENS` / `KS_EFFECTS`, ids stable. `sheen` (colour glow on the gun while on a ≥5 streak) and,
   at 1.5%, **Professional**: `sheen` + `ksEffect` (eye/visor particles while on a streak, like TF2).
 - **Festive** (finishes, hats): only from seasonal cases or admin — festive lights / wrapping.
 - **Pattern** (finishes): `seed` 0–999 (pattern offset/scale variation). (Wear bands were retired;
@@ -164,6 +166,10 @@ come from `def`/`quality` snapshotted on the listing row (indexed) and are memoi
   bound instances.
 
 ## 7. Admin
+Match rows in the audit log carry `credits` (paid: match + challenges + road) and, for online
+matches, `durationMs` (the player's time in the match). Concurrency is sampled once a minute into
+`instagib_concurrency` (pruned to 90 days). The dashboard's economy / engagement / cohort /
+concurrency views read `server/admin-metrics.ts`.
 Admin API + dashboard tab: search a player's inventory; mint any def with chosen quality/attrs
 (or a custom one-off: name, description, tint, effect, tier incl. Unobtainable, bound or not);
 grant credits / free rolls; revoke an item (state `revoked`, logged); view an item's provenance.

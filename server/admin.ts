@@ -425,9 +425,9 @@ adminRouter.get('/metrics/cohorts', (req, res) => {
   res.json(getWeeklyCohorts(intParam(req.query.weeks, 8)));
 });
 
-// Sampled concurrency (1/min in-memory ring, last 24 h; resets on deploy).
-adminRouter.get('/metrics/concurrency', (_req, res) => {
-  res.json({ concurrency: getConcurrency(), live: liveSource() });
+// Sampled concurrency (1/min, persisted; ?hours=1..2160, default 24).
+adminRouter.get('/metrics/concurrency', (req, res) => {
+  res.json({ concurrency: getConcurrency(intParam(req.query.hours, 24)), live: liveSource() });
 });
 
 // Live concurrency right now (online players / players in a match / open rooms).

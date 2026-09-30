@@ -1,7 +1,7 @@
 // Admin dashboard metrics beyond the basics in db.ts: economy health (faucets
 // vs sinks, case opens, market, trades, mint mix, what's held), engagement
-// (DAU/WAU/MAU, matches by mode, guest share, hour-of-day, top players),
-// weekly retention cohorts, sampled concurrency, and the admin player search.
+// (DAU/WAU/MAU, matches by mode, guest share, hour-of-day, match length, top
+// players), weekly retention cohorts, sampled concurrency, and the admin player search.
 //
 // Everything reads data we already keep — the audit log (indexed on
 // (event, ts)), instagib_items / instagib_users / instagib_stats. Date ranges
@@ -206,8 +206,9 @@ function econDaily(from: number, to: number): Map<number, EconDay> {
     st(`SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, COUNT(*) AS n, COALESCE(SUM(${expr}), 0) AS v
           FROM instagib_audit WHERE event = ? AND ts >= ? AND ts < ? ${extra} GROUP BY d`).all(event, from, to) as DayN[];
 
-  // Match payouts: credits = floor(xp × CREDITS_PER_XP) per account match (guests earn nothing).
-  for (const r of byDay('match', `CAST(COALESCE(json_extract(detail, '$.xp'), 0) * ${CREDITS_PER_XP} AS INTEGER)`, `AND actor_id <> ''`)) at(r.d).matchPayout += r.v ?? 0;
+  // Match payouts: the credits actually paid (logged since the match row carried
+  // `credits`); older rows fall back to floor(xp × CREDITS_PER_XP). Guests earn nothing.
+  for (const r of byDay('match', `COALESCE(json_extract(detail, '$.credits'), CAST(COALESCE(json_extract(detail, '$.xp'), 0) * ${CREDITS_PER_XP} AS INTEGER))`, `AND actor_id <> ''`)) at(r.d).matchPayout += r.v ?? 0;
   for (const r of byDay('item.salvage', `COALESCE(json_extract(detail, '$.gained'), 0)`)) at(r.d).salvage += r.v ?? 0;
   for (const ev of ['code.redeem', 'inbox.claim']) for (const r of byDay(ev, `COALESCE(json_extract(detail, '$.credits'), 0)`)) at(r.d).rewards += r.v ?? 0;
   for (const r of byDay('admin.grant_econ', `MAX(COALESCE(json_extract(detail, '$.credits'), 0), 0)`)) at(r.d).grants += r.v ?? 0;
@@ -332,7 +333,41 @@ export type EngagementMetrics = {
   modes: { mode: string; n: number }[];
   hours: number[]; // matches by UTC hour of day, over the range
   topPlayers: { id: string; name: string; matches: number; wins: number; kills: number; deaths: number }[];
+  length: MatchLength;
 };
+
+// Match length: online matches played to the end (not a mid-match leave), from
+// the per-player `durationMs` on the match row (recorded since this metric landed).
+export type MatchLength = {
+  measured: number; // matches with a recorded length in the range
+  avgMs: number | null;
+  prevAvgMs: number | null;
+  buckets: { label: string; n: number }[]; // distribution by minutes
+  byMode: { mode: string; n: number; avgMs: number }[];
+};
+const LENGTH_WHERE = `event = 'match' AND json_extract(detail, '$.durationMs') IS NOT NULL
+  AND COALESCE(json_extract(detail, '$.partial'), 0) = 0 AND ts >= ? AND ts < ?`;
+const LENGTH_EDGES = [2, 4, 6, 8, 10, 15]; // minutes; last bucket is 15+
+
+function matchLength(from: number, to: number, prevFrom: number): MatchLength {
+  const avg = (a: number, b: number): number | null =>
+    (st(`SELECT AVG(json_extract(detail, '$.durationMs')) AS v FROM instagib_audit WHERE ${LENGTH_WHERE}`).get(a, b) as { v: number | null }).v;
+  const rows = st(`SELECT CAST(json_extract(detail, '$.durationMs') / 60000 AS INTEGER) AS m, COUNT(*) AS n
+                     FROM instagib_audit WHERE ${LENGTH_WHERE} GROUP BY m`).all(from, to) as { m: number; n: number }[];
+  const buckets = LENGTH_EDGES.map((hi, i) => ({ label: i === 0 ? `<${hi}m` : `${LENGTH_EDGES[i - 1]}–${hi}m`, n: 0 }));
+  buckets.push({ label: `${LENGTH_EDGES[LENGTH_EDGES.length - 1]}m+`, n: 0 });
+  let measured = 0;
+  for (const r of rows) {
+    measured += r.n;
+    const i = LENGTH_EDGES.findIndex((hi) => r.m < hi);
+    buckets[i < 0 ? buckets.length - 1 : i].n += r.n;
+  }
+  const byMode = st(`SELECT ${MODE_KEY} AS mode, COUNT(*) AS n, AVG(json_extract(detail, '$.durationMs')) AS avgMs
+                       FROM instagib_audit WHERE ${LENGTH_WHERE} GROUP BY mode ORDER BY n DESC`).all(from, to) as MatchLength['byMode'];
+  const a = avg(from, to);
+  const p = avg(prevFrom, from);
+  return { measured, avgMs: a == null ? null : Math.round(a), prevAvgMs: p == null ? null : Math.round(p), buckets, byMode: byMode.map((m) => ({ ...m, avgMs: Math.round(m.avgMs) })) };
+}
 
 const MODE_KEY = `CASE WHEN json_extract(detail, '$.offline') = 1 THEN 'practice' ELSE COALESCE(json_extract(detail, '$.mode'), 'unknown') END`;
 
@@ -410,6 +445,7 @@ export function getEngagementMetrics(daysRaw: number, now = Date.now()): Engagem
     modes: [...modeTotals].map(([mode, n]) => ({ mode, n })).sort((a, b) => b.n - a.n),
     hours,
     topPlayers: top.map((t) => ({ ...t, name: t.name || 'Player' })),
+    length: matchLength(from, to, from - days * DAY_MS),
   };
 }
 
@@ -449,27 +485,34 @@ export function getWeeklyCohorts(weeksRaw: number, now = Date.now()): { weeks: n
 }
 
 // ── Concurrency sampler ─────────────────────────────────────────────────────
-// Online/in-match counts only exist live, so sample them once a minute into an
-// in-memory ring (24 h). Resets on deploy — the dashboard says so.
+// Online/in-match counts only exist live, so sample them once a minute into
+// instagib_concurrency (survives deploys; pruned to 90 days ≈ 130k tiny rows).
 type Live = { online: number; inMatch: number; rooms: number };
 export type ConcurrencySample = { ts: number; online: number; inMatch: number; rooms: number };
-const RING = 24 * 60;
-const samples: ConcurrencySample[] = [];
-let peak: ConcurrencySample | null = null;
+const SAMPLE_KEEP_MS = 90 * DAY_MS;
 let sampler: ReturnType<typeof setInterval> | null = null;
-const bootAt = Date.now();
+
+function ensureConcurrencyTable(): void {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS instagib_concurrency (
+    ts INTEGER PRIMARY KEY,
+    online INTEGER NOT NULL,
+    in_match INTEGER NOT NULL,
+    rooms INTEGER NOT NULL
+  )`);
+}
 
 export function startConcurrencySampler(source: () => Live): void {
+  ensureConcurrencyTable();
   if (sampler) clearInterval(sampler);
+  let ticks = 0;
   const take = () => {
     try {
       const l = source();
-      const s = { ts: Date.now(), online: l.online, inMatch: l.inMatch, rooms: l.rooms };
-      samples.push(s);
-      if (samples.length > RING) samples.splice(0, samples.length - RING);
-      if (!peak || s.online > peak.online) peak = s;
+      const now = Date.now();
+      st(`INSERT OR REPLACE INTO instagib_concurrency (ts, online, in_match, rooms) VALUES (?, ?, ?, ?)`).run(now, l.online, l.inMatch, l.rooms);
+      if (ticks++ % 60 === 0) st(`DELETE FROM instagib_concurrency WHERE ts < ?`).run(now - SAMPLE_KEEP_MS);
     } catch {
-      /* the socket isn't up yet — skip this tick */
+      /* the socket isn't up yet (or the DB is busy) — skip this tick */
     }
   };
   take();
@@ -477,18 +520,33 @@ export function startConcurrencySampler(source: () => Live): void {
   sampler.unref?.();
 }
 
-export function getConcurrency(): { since: number; samples: ConcurrencySample[]; peak: ConcurrencySample | null; peak24h: ConcurrencySample | null } {
-  const cutoff = Date.now() - DAY_MS;
-  let p24: ConcurrencySample | null = null;
-  for (const s of samples) if (s.ts >= cutoff && (!p24 || s.online > p24.online)) p24 = s;
-  // Downsample to ≤ 288 points (5-minute max buckets) for the wire.
+type SampleRow = { ts: number; online: number; in_match: number; rooms: number };
+const toSample = (r: SampleRow): ConcurrencySample => ({ ts: r.ts, online: r.online, inMatch: r.in_match, rooms: r.rooms });
+
+// The last `hours` of samples (downsampled to ≤ 288 max-buckets for the wire),
+// the peak in that window and the all-time (≤ 90 d) peak.
+export function getConcurrency(hoursRaw = 24): {
+  since: number;
+  hours: number;
+  samples: ConcurrencySample[];
+  peak: ConcurrencySample | null;
+  peak24h: ConcurrencySample | null;
+} {
+  ensureConcurrencyTable();
+  const hours = clampInt(hoursRaw, 1, 24 * 90);
+  const from = Date.now() - hours * 3_600_000;
+  const rows = (st(`SELECT ts, online, in_match, rooms FROM instagib_concurrency WHERE ts >= ? ORDER BY ts`).all(from) as SampleRow[]).map(toSample);
+  const first = st(`SELECT MIN(ts) AS ts FROM instagib_concurrency`).get() as { ts: number | null };
+  const peakRow = st(`SELECT ts, online, in_match, rooms FROM instagib_concurrency ORDER BY online DESC, ts DESC LIMIT 1`).get() as SampleRow | undefined;
+  let pWin: ConcurrencySample | null = null;
+  for (const s of rows) if (!pWin || s.online > pWin.online) pWin = s;
   const out: ConcurrencySample[] = [];
-  const step = Math.max(1, Math.ceil(samples.length / 288));
-  for (let i = 0; i < samples.length; i += step) {
-    const slice = samples.slice(i, i + step);
+  const step = Math.max(1, Math.ceil(rows.length / 288));
+  for (let i = 0; i < rows.length; i += step) {
+    const slice = rows.slice(i, i + step);
     out.push(slice.reduce((a, b) => (b.online > a.online ? b : a)));
   }
-  return { since: bootAt, samples: out, peak, peak24h: p24 };
+  return { since: first.ts ?? Date.now(), hours, samples: out, peak: peakRow ? toSample(peakRow) : null, peak24h: pWin };
 }
 
 // ── Recent matches, newest first by time ────────────────────────────────────
@@ -506,6 +564,9 @@ export type RecentMatch = {
   accuracy: number;
   offline: boolean;
   xp: number;
+  credits: number | null; // null on rows from before credits were logged
+  durationMs: number | null; // online matches only
+  partial: boolean; // left mid-match
   mode: string | null;
 };
 export function recentMatchesByTime(limitRaw: number, before?: { ts: number; id: number }): RecentMatch[] {
@@ -536,6 +597,9 @@ export function recentMatchesByTime(limitRaw: number, before?: { ts: number; id:
       accuracy: n(d.accuracy),
       offline: d.offline === true,
       xp: n(d.xp),
+      credits: typeof d.credits === 'number' ? d.credits : null,
+      durationMs: typeof d.durationMs === 'number' ? d.durationMs : null,
+      partial: d.partial === true,
       mode: typeof d.mode === 'string' ? d.mode : null,
     };
   });

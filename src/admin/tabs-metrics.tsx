@@ -1,6 +1,7 @@
 // Read-only metric tabs of the admin console: Overview, Engagement, Economy,
 // Retention. Data: server/db.ts (overview, retention, weekly challenge) and
 // server/admin-metrics.ts (engagement, economy, cohorts, concurrency).
+import { useState } from 'react';
 import { itemDef } from '../game/items/catalog';
 import { CASES, TIER_META, type Tier } from '../game/items/types';
 import { SLOT_LABEL } from '../economy/display';
@@ -9,9 +10,9 @@ import { TIER_COLOR } from '../ui/rarity';
 import { useLoad, type Cohort, type Concurrency, type EconomyMetrics, type EngagementMetrics, type LiveCounts, type Overview, type WeekCohort, type WeeklyChallengeStats } from './api';
 import { BarList, Columns, Legend, LineChart } from './charts';
 import { MODE_LABEL, SERIES } from './palette';
-import { change, compact, dayLabel, fmt, fmtBytes, fmtClear, pct } from './format';
+import { change, compact, dayLabel, fmt, fmtBytes, fmtClear, fmtDur, pct } from './format';
 import { TierDot } from './ItemPicker';
-import { Cr, Empty, ErrorState, Loading, Plate, StatTile } from './ui';
+import { Cr, Delta, Empty, ErrorState, Loading, Plate, Seg, StatTile } from './ui';
 
 // Colour follows the mode (never its rank), so filters never repaint a mode.
 const MODE_COLOR: Record<string, string> = { ffa: SERIES[0], duel: SERIES[1], tdm: SERIES[2], ranked: SERIES[3], practice: SERIES[4], unknown: SERIES[6] };
@@ -44,7 +45,7 @@ export function OverviewTab({ days, live, onOpen }: { days: number; live: LiveCo
     <div className='flex flex-col gap-5'>
       <Grid>
         <StatTile accent label='Online now' value={live ? fmt(live.online) : '—'} sub={live ? `${fmt(live.inMatch)} in a match · ${fmt(live.rooms)} rooms` : 'connecting…'} />
-        <StatTile label='Peak online · 24h' value={peak ? fmt(peak.online) : '—'} sub={peak ? `at ${new Date(peak.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'sampling since deploy'} />
+        <StatTile label='Peak online · 24h' value={peak ? fmt(peak.online) : '—'} sub={peak ? `at ${new Date(peak.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'no samples yet'} />
         <StatTile label='Daily active' value={e ? fmt(e.dau) : '—'} sub={e ? `${pct(e.mau ? e.dau / e.mau : 0)} of monthly · stickiness` : undefined} spark={e?.series.map((d) => d.dau)} />
         <StatTile label='Monthly active' value={e ? fmt(e.mau) : '—'} sub={e ? `${fmt(e.wau)} weekly active` : undefined} />
         <StatTile label={`Matches · ${days}d`} value={e ? compact(e.cur.matches) : '—'} delta={e ? change(e.cur.matches, e.prev.matches) : undefined} vs={vsLabel(days)} spark={e?.series.map((d) => d.matches)} />
@@ -142,7 +143,8 @@ function WeeklyChallengePanel() {
 // ── Engagement ──────────────────────────────────────────────────────────────
 export function EngagementTab({ days }: { days: number }) {
   const eng = useLoad(`/api/admin/metrics/engagement?days=${days}`, (r) => (r as { engagement: EngagementMetrics }).engagement);
-  const conc = useLoad(`/api/admin/metrics/concurrency`, (r) => (r as { concurrency: Concurrency }).concurrency);
+  const [concHours, setConcHours] = useState<'24' | '168'>('24');
+  const conc = useLoad(`/api/admin/metrics/concurrency?hours=${concHours}`, (r) => (r as { concurrency: Concurrency }).concurrency);
   if (eng.state !== 'ok') return <Plate>{eng.state === 'loading' ? <Loading rows={6} /> : <ErrorState message={eng.message} onRetry={eng.retry} />}</Plate>;
   const e = eng.data;
   const labels = e.series.map((p) => p.date);
@@ -190,11 +192,44 @@ export function EngagementTab({ days }: { days: number }) {
       </div>
 
       <div className='grid gap-5 lg:grid-cols-2'>
-        <Plate title='Concurrent players · 24h' sub='Sampled every minute in memory — resets when the server deploys'>
+        <Plate
+          title='Match length'
+          sub={
+            e.length.avgMs == null ? (
+              'Online matches played to the end'
+            ) : (
+              <span className='inline-flex flex-wrap items-center gap-2'>
+                Average <b className='text-[var(--adm-ink)]'>{fmtDur(e.length.avgMs)}</b> over {fmt(e.length.measured)} finished online matches
+                {e.length.prevAvgMs != null && <Delta value={change(e.length.avgMs, e.length.prevAvgMs)} good='none' vs={vs} />}
+              </span>
+            )
+          }
+        >
+          {e.length.measured === 0 ? (
+            <Empty title='No match lengths yet.'>Recorded for online matches from this release on.</Empty>
+          ) : (
+            <Columns labels={e.length.buckets.map((b) => b.label)} xLabel={(s) => s} series={[{ key: 'n', label: 'Matches', color: SERIES[1] }]} rows={e.length.buckets.map((b) => ({ n: b.n }))} height={200} />
+          )}
+        </Plate>
+        <Plate title='Length by mode' sub='Average time in a finished online match'>
+          {e.length.byMode.length === 0 ? (
+            <Empty title='No match lengths yet.' />
+          ) : (
+            <BarList rows={e.length.byMode.map((m) => ({ key: m.mode, label: MODE_LABEL[m.mode] ?? m.mode, value: m.avgMs, color: modeColor(m.mode), note: `${fmt(m.n)} matches` }))} format={(ms) => fmtDur(ms)} />
+          )}
+        </Plate>
+      </div>
+
+      <div className='grid gap-5 lg:grid-cols-2'>
+        <Plate
+          title='Concurrent players'
+          sub='Sampled every minute and stored, so it survives deploys'
+          right={<Seg label='Concurrency range' value={concHours} onChange={setConcHours} options={[{ id: '24', label: '24h' }, { id: '168', label: '7d' }]} />}
+        >
           <Loaded load={conc} rows={3}>
             {(c) =>
               c.samples.length < 2 ? (
-                <Empty title='Not enough samples yet.'>The server records one sample a minute since it started.</Empty>
+                <Empty title='Not enough samples yet.'>The server records one sample a minute.</Empty>
               ) : (
                 <>
                   <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
@@ -205,11 +240,11 @@ export function EngagementTab({ days }: { days: number }) {
                         { label: 'In a match', color: SERIES[2] },
                       ]}
                     />
-                    <span className='text-[12px] text-[var(--adm-ink-2)]'>Peak {c.peak24h ? fmt(c.peak24h.online) : '—'} · since deploy {c.peak ? fmt(c.peak.online) : '—'}</span>
+                    <span className='text-[12px] text-[var(--adm-ink-2)]'>Peak {c.peak24h ? fmt(c.peak24h.online) : '—'} · all-time {c.peak ? fmt(c.peak.online) : '—'}</span>
                   </div>
                   <LineChart
                     labels={c.samples.map((s) => String(s.ts))}
-                    xLabel={(s) => new Date(Number(s)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    xLabel={(s) => (c.hours > 24 ? new Date(Number(s)).toLocaleDateString([], { month: 'short', day: 'numeric' }) : new Date(Number(s)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}
                     series={[
                       { key: 'online', label: 'Online', color: SERIES[0], points: c.samples.map((s) => s.online) },
                       { key: 'inMatch', label: 'In a match', color: SERIES[2], points: c.samples.map((s) => s.inMatch) },
@@ -305,7 +340,7 @@ export function EconomyTab({ days }: { days: number }) {
 
       <Plate
         title='Credits created vs removed'
-        sub='Per UTC day. Created = match payouts (estimated from XP) + salvage + codes & gifts + staff grants. Removed = case opens + listing fees + sale tax.'
+        sub='Per UTC day. Created = match payouts + salvage + codes & gifts + staff grants. Removed = case opens + listing fees + sale tax.'
         right={
           <Legend
             line
@@ -333,7 +368,7 @@ export function EconomyTab({ days }: { days: number }) {
             format={(n) => `⛁ ${compact(n)}`}
             max={Math.max(x.cur.faucet, x.cur.sink, 1)}
             rows={[
-              { key: 'match', label: 'Match payouts (est.)', value: x.cur.matchPayout, note: 'floor(match XP × 0.1) per account match' },
+              { key: 'match', label: 'Match payouts', value: x.cur.matchPayout, note: 'credits paid per account match (older matches estimated from XP)' },
               { key: 'salvage', label: 'Salvage', value: x.cur.salvage },
               { key: 'rewards', label: 'Codes & gifts', value: x.cur.rewards },
               { key: 'grants', label: 'Staff grants', value: x.cur.grants },

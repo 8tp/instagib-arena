@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LevelBadge } from '../ui/item-tile';
 import { getJSON, postJSON, useLoad, type MatchRow, type PlayerRow } from './api';
 import { Select } from './combobox';
-import { ago, fmt, shortDate } from './format';
+import { ago, fmt, fmtDur, shortDate } from './format';
 import { MODE_LABEL } from './palette';
-import { Avatar, Banner, Empty, ErrorState, Loading, Plate, PlayerFlags } from './ui';
+import { Avatar, Banner, Cr, Empty, ErrorState, Loading, Plate, PlayerFlags } from './ui';
 
 // ── Matches ─────────────────────────────────────────────────────────────────
 export function MatchesTab() {
@@ -81,7 +81,9 @@ export function MatchesTab() {
                 <th className='num'>Deaths</th>
                 <th className='num'>HS</th>
                 <th className='num'>Acc</th>
+                <th className='num'>Length</th>
                 <th className='num'>XP</th>
+                <th className='num'>Credits</th>
               </tr>
             </thead>
             <tbody>
@@ -95,12 +97,17 @@ export function MatchesTab() {
                     {!m.playerId && <span className='ml-1.5 text-[11px] text-[var(--adm-ink-3)]'>guest</span>}
                   </td>
                   <td>{MODE_LABEL[keyOf(m)] ?? keyOf(m)}</td>
-                  <td>{m.won ? <span className='font-semibold text-[var(--adm-good)]'>Win</span> : <span className='text-[var(--adm-ink-3)]'>Loss</span>}</td>
+                  <td>
+                    {m.won ? <span className='font-semibold text-[var(--adm-good)]'>Win</span> : <span className='text-[var(--adm-ink-3)]'>Loss</span>}
+                    {m.partial && <span className='ml-1.5 text-[11px] text-[var(--adm-ink-3)]'>left early</span>}
+                  </td>
                   <td className='num text-[var(--adm-ink)]'>{m.kills}</td>
                   <td className='num'>{m.deaths}</td>
                   <td className='num'>{m.headshots}</td>
                   <td className='num'>{m.accuracy}%</td>
+                  <td className='num'>{m.durationMs != null ? fmtDur(m.durationMs) : <span className='text-[var(--adm-ink-3)]'>—</span>}</td>
                   <td className='num'>+{fmt(m.xp)}</td>
+                  <td className='num'>{m.credits != null ? <Cr n={fmt(m.credits)} /> : <span className='text-[var(--adm-ink-3)]'>—</span>}</td>
                 </tr>
               ))}
             </tbody>

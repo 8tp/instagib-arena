@@ -40,6 +40,12 @@ export function change(cur: number, prev: number): number | null {
 }
 
 // mm:ss.s clear time for the weekly speedrun (0 = no winning run).
+// A match-length style duration: "7m 42s", "48s".
+export function fmtDur(ms: number): string {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
 export function fmtClear(ms: number): string {
   if (ms <= 0) return '—';
   const s = ms / 1000;

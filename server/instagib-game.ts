@@ -1056,6 +1056,8 @@ export function attachInstagibWs(wss: WebSocketServer) {
         accuracy: Math.round(accuracy),
         offline: false,
         xp: reply.xpGained,
+        credits: reply.creditsGained, // match + challenges + road, as paid
+        durationMs: Math.max(0, now - c.mStartedAt), // this player's time in the match
         mode,
         src: 'ws',
         partial,

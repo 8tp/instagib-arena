@@ -178,6 +178,12 @@
   border: 1px solid var(--adm-line);
   clip-path: polygon(var(--adm-chamfer) 0, 100% 0, 100% calc(100% - var(--adm-chamfer)), calc(100% - var(--adm-chamfer)) 100%, 0 100%, 0 var(--adm-chamfer));
 }
+/* An open combobox list must escape the plate: the chamfer clip would cut it
+   off (and a later plate would paint over it). */
+.adm-plate:has(.adm-pop) {
+  clip-path: none;
+  z-index: 40;
+}
 /* The chamfer eats the border at the two cut corners; redraw them as ticks. */
 .adm-plate::before,
 .adm-plate::after {
