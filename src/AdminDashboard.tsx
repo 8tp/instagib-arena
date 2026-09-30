@@ -7,6 +7,7 @@ import './admin/admin.css';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAuth } from './auth';
 import { AdminItemsTab } from './economy/AdminItems';
+import { AdminGrantTab } from './economy/AdminGrant';
 import { AdminCodesTab } from './admin/AdminCodes';
 import { AdminGiftsTab } from './admin/AdminGifts';
 import { getJSON, type LiveCounts } from './admin/api';
@@ -15,7 +16,7 @@ import { FeedbackTab, MatchesTab, PlayersTab } from './admin/tabs-tables';
 import { fmt } from './admin/format';
 import { Seg } from './admin/ui';
 
-type Tab = 'overview' | 'engagement' | 'economy' | 'retention' | 'matches' | 'players' | 'items' | 'codes' | 'gifts' | 'feedback';
+type Tab = 'overview' | 'engagement' | 'economy' | 'retention' | 'matches' | 'players' | 'items' | 'grant' | 'codes' | 'gifts' | 'feedback';
 const GROUPS: { label: string; tabs: { id: Tab; label: string }[] }[] = [
   {
     label: 'Observe',
@@ -32,6 +33,7 @@ const GROUPS: { label: string; tabs: { id: Tab; label: string }[] }[] = [
     label: 'Operate',
     tabs: [
       { id: 'items', label: 'Items' },
+      { id: 'grant', label: 'Grant' },
       { id: 'codes', label: 'Codes' },
       { id: 'gifts', label: 'Gifts' },
       { id: 'feedback', label: 'Feedback' },
@@ -55,12 +57,15 @@ export default function AdminDashboard() {
   const [live, setLive] = useState<LiveCounts | null>(null);
   const [openFeedback, setOpenFeedback] = useState<number | null>(null);
   const isAdmin = !!auth.account?.isAdmin;
+  // The console is its own scroll container: the game shell locks body
+  // scrolling (index.css `body { overflow: hidden }`), so the window never scrolls.
+  const scroller = useRef<HTMLDivElement>(null);
 
   const go = useCallback((t: Tab, p?: string) => {
     const h = `#${t}${p ? `/${encodeURIComponent(p)}` : ''}`;
     if (window.location.hash !== h) window.history.replaceState(null, '', h);
     setRoute({ tab: t, player: p });
-    window.scrollTo({ top: 0 });
+    scroller.current?.scrollTo({ top: 0 });
   }, []);
   useEffect(() => {
     const on = () => setRoute(readHash());
@@ -101,7 +106,7 @@ export default function AdminDashboard() {
   }
 
   return (
-    <div className='adm'>
+    <div className='adm adm-scroller' ref={scroller}>
       <header className='adm-head'>
         <div className='mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-x-6 gap-y-2 px-6 pt-3'>
           <div className='flex items-center gap-4'>
@@ -170,7 +175,8 @@ export default function AdminDashboard() {
         {tab === 'retention' && <RetentionTab />}
         {tab === 'matches' && <MatchesTab />}
         {tab === 'players' && <PlayersTab onOpen={(t, p) => go(t, p)} />}
-        {tab === 'items' && <AdminItemsTab key={player ?? ''} initialPlayer={player} />}
+        {tab === 'items' && <AdminItemsTab key={player ?? ''} initialPlayer={player} onGrant={(p) => go('grant', p)} />}
+        {tab === 'grant' && <AdminGrantTab key={player ?? ''} initialPlayer={player} onInventory={(p) => go('items', p)} />}
         {tab === 'codes' && <AdminCodesTab />}
         {tab === 'gifts' && <AdminGiftsTab key={player ?? ''} initialPlayer={player} />}
         {tab === 'feedback' && <FeedbackTab onCounts={setOpenFeedback} />}
