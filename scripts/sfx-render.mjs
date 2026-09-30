@@ -35,7 +35,7 @@ const CHROME =
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     : 'google-chrome');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const logText = (value) => String(value).replace(/[\r\n]/g, ' ').replace(/\x1b/g, '');
+const logText = (value) => String(value).replace(/\x1b/g, '').replace(/\n|\r/g, '');
 
 function freePort() {
   return new Promise((resolve, reject) => {
