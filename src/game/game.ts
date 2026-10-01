@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { ProgressionResp } from '../app-types';
+import { clientAutoFpsCap, clientFramesUncapped } from '../client-bridge';
 import { SoundManager, type AnnouncerPackId, type SoundClipName } from './audio';
 import {
   BotManager,
@@ -138,6 +139,9 @@ const KILLCAM_FOV = 58; // tighter than gameplay FOV → a portrait, not a wide 
 // live play every REPLAY_WARM_SEC and reused across the cinematic's segments, so
 // match end never builds a crowd of characters on one frame.
 const REPLAY_ACTOR_POOL_MAX = 16;
+// rAF-gated frame cap (desktop client): render a frame this early rather than
+// wait one more back-to-back rAF callback. The deadline grid keeps the average exact.
+const FRAME_CAP_SLACK_MS = 0.5;
 const REPLAY_WARM_SEC = 0.5;
 // First-person guns parked for reuse (yours + replay stars' custom models).
 const VM_SPARES_MAX = 3;
@@ -327,6 +331,9 @@ export class Game {
   // <0 = uncapped (MessageChannel tight loop — renders past vsync for the lowest
   // input latency, at high CPU cost). See scheduleFrame().
   private fpsLimit = 0;
+  // Desktop client with an uncapped rAF: the deadline (performance.now()) of
+  // the next rendered frame for the rAF-gated cap. See scheduleFrame().
+  private nextFrameAt = 0;
   private photoMode = false; // dev: see constructor
   private netDebugOn = false; // F3 net-debug overlay
   private frameTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -2396,6 +2403,13 @@ export class Game {
     if (this.disposed || !fn) return;
     let limit = this.fpsLimit;
     if (this.photoMode && typeof document !== 'undefined' && document.hidden) limit = -1;
+    else if (clientFramesUncapped) {
+      // Desktop client with the Chromium frame limit + vsync off: rAF already
+      // runs as fast as the GPU allows, so 0 = "Auto" (2× display), >0 = an
+      // exact cap gated inside rAF, <0 = plain rAF (truly unlimited).
+      this.rafHandle = requestAnimationFrame(limit < 0 ? fn : this.gatedFrame);
+      return;
+    }
     if (limit < 0) {
       // Uncapped: re-run ASAP via a MessageChannel — beats setTimeout's ~4ms
       // clamp, so it can render well past the display refresh.
@@ -2417,6 +2431,27 @@ export class Game {
       this.rafHandle = requestAnimationFrame(fn);
     }
   }
+
+  // rAF-gated cap (desktop client only): skip callbacks until the next frame's
+  // deadline, then advance the deadline by one interval rather than to `now`, so
+  // the remainder carries over and the average rate is exact. No setTimeout:
+  // Chromium clamps nested timers to 4 ms (a 250 fps ceiling). Skipped
+  // callbacks never reach frame(), so the FPS counter counts rendered frames.
+  private gatedFrame = () => {
+    const fn = this.tickFn;
+    if (this.disposed || !fn) return;
+    const now = performance.now();
+    const interval = 1000 / (this.fpsLimit > 0 ? this.fpsLimit : clientAutoFpsCap());
+    if (now < this.nextFrameAt - FRAME_CAP_SLACK_MS) {
+      this.rafHandle = requestAnimationFrame(this.gatedFrame);
+      return;
+    }
+    this.nextFrameAt += interval;
+    // Fell a whole interval behind (a hitch, a mode switch, a backgrounded
+    // tab): resync instead of bursting frames to catch up.
+    if (this.nextFrameAt <= now) this.nextFrameAt = now + interval;
+    fn(now);
+  };
 
   private tickFps(dt: number) {
     this.fpsAccumMs += dt * 1000;

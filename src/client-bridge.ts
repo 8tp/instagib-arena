@@ -63,6 +63,19 @@ function detect(): InstagibClientBridge | null {
 /** The desktop client's bridge, or null in a normal browser. */
 export const instagibClient: InstagibClientBridge | null = detect();
 
+/**
+ * True when the client runs Chromium with the frame-rate limit and vsync off:
+ * rAF then fires back to back, so the game paces itself inside rAF (see
+ * Game.scheduleFrame). Always false in a browser.
+ */
+export const clientFramesUncapped = instagibClient?.frames.uncapped === true;
+
+/** The client's "Auto" cap (fpsLimit 0): twice the display refresh, 288 if unknown. */
+export function clientAutoFpsCap(): number {
+  const hz = instagibClient?.frames.displayHz ?? 0;
+  return hz > 0 ? 2 * Math.round(hz) : 288;
+}
+
 // The contract's room-id shape (the client builds a Discord Join button and an
 // instagib://join/<roomId> link from it).
 const ROOM_ID_RE = /^[A-Z0-9]{4,16}$/;
