@@ -19,6 +19,7 @@ import {
   SENSITIVITY_STEP,
 } from '../game/constants';
 import type { CrosshairConfig, Settings } from '../app-types';
+import { clientAutoFpsCap, clientFramesUncapped } from '../client-bridge';
 import { DEFAULT_CROSSHAIR, DEFAULT_SETTINGS, ENEMY_OUTLINE_MAX, ENEMY_OUTLINE_MIN } from './codec';
 import { CrosshairColorPresets, CrosshairPreview, CrosshairShapePresets } from './CrosshairPreview';
 import {
@@ -308,19 +309,24 @@ export function SettingsModal({
         ),
         row(
           'fpslimit',
-          'frame rate limit fps vsync unlimited',
+          'frame rate limit fps vsync unlimited auto',
           <SelectRow
             label='Frame rate limit'
-            hint='VSync matches your monitor. “Unlimited” gives the lowest input latency at much higher CPU/GPU use.'
+            hint={
+              clientFramesUncapped
+                ? `Auto caps at twice your display refresh (${clientAutoFpsCap()} fps). “Unlimited” can stall the network while you hold fire and move the mouse.`
+                : 'VSync matches your monitor. “Unlimited” gives the lowest input latency at much higher CPU/GPU use.'
+            }
             value={String(settings.fpsLimit)}
             def={String(D.fpsLimit)}
             options={[
-              { id: '0', label: 'VSync (display refresh)' },
+              // Desktop client: vsync is off, so 0 is a 2× display cap, not VSync.
+              { id: '0', label: clientFramesUncapped ? 'Auto (2× display)' : 'VSync (display refresh)' },
               { id: '240', label: '240 fps' },
               { id: '144', label: '144 fps' },
               { id: '120', label: '120 fps' },
               { id: '60', label: '60 fps' },
-              { id: '-1', label: 'Unlimited (uncapped)' },
+              { id: '-1', label: clientFramesUncapped ? 'Unlimited (may hitch while firing)' : 'Unlimited (uncapped)' },
             ]}
             onChange={(v) => set({ fpsLimit: Number(v) })}
           />,
