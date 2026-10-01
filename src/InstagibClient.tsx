@@ -43,6 +43,7 @@ import { NameBadges } from './ui/badges';
 import { HUD_EXIT_LEAD_MS, HUD_EXIT_MS } from './ui/hud-const';
 import { FightCall, HudXpTicker, Killfeed, QuakeScoreboard, ScoreBoxes, type HudMatchInfo } from './ui/hud-quake';
 import { fragLimitFor, mapIdByName, mapNameById, modeLine, modeTitle, placementLine, type MatchFlavor } from './ui/match-info';
+import { emitClientMatchFound, instagibClient, setClientPresence, type ClientPresence } from './client-bridge';
 import { mapById } from './game/map';
 import { setUiVolume } from './game/audio';
 import {
@@ -856,7 +857,44 @@ function GameView({
     () => ({ mapName: currentMapName, modeLine: infoLine, fragLimit: infoLimit }),
     [currentMapName, infoLine, infoLimit],
   );
-  const showInter = online && loadGone && nextMap !== null && nextMap.id !== interDoneId;
+
+  // Desktop client presence (no-op in a browser). Coarse state only: own and
+  // leading-opponent score, never other players' names or positions. Online,
+  // mode/map wait for the server's join ack; the room id is shared only when
+  // someone could actually join (not ranked, not a full duel).
+  const training = config.mode === 'local' && !!config.training;
+  const presenceMode = online && !joined
+    ? undefined
+    : modeTitle(flavor) + (config.mode === 'local' && !training && !isChallenge ? ' vs bots' : '');
+  const presenceMap = online && !joined ? undefined : currentMapName || undefined;
+  const presenceRoom = online && joined && !flavor.ranked ? config.roomId : undefined;
+  const presenceOver = onlineResults || !!rankedResult;
+  const presenceError = !!joinError;
+  useEffect(() => {
+    if (!instagibClient) return;
+    const report = () => {
+      const s = hudStore.getState();
+      if (presenceError) return setClientPresence({ state: 'menu' });
+      if (training) return setClientPresence({ state: 'training', mode: presenceMode, map: presenceMap });
+      const over = presenceOver || !!s.matchOver || !!s.pom || !!s.vote;
+      const p: ClientPresence = { state: over ? 'results' : 'match', mode: presenceMode, map: presenceMap };
+      if (s.teamScores && s.localTeam !== null) {
+        p.score = s.teamScores[s.localTeam];
+        p.opponentScore = s.teamScores[1 - s.localTeam];
+      } else {
+        p.score = s.frags;
+        for (const sc of s.scores) {
+          if (!sc.isLocal) p.opponentScore = Math.max(p.opponentScore ?? 0, sc.frags);
+        }
+      }
+      if (presenceRoom && !(s.mode === 'duel' && s.netPeers > 0)) p.roomId = presenceRoom;
+      setClientPresence(p);
+    };
+    report();
+    return hudStore.subscribe(report);
+  }, [hudStore, training, presenceMode, presenceMap, presenceRoom, presenceOver, presenceError]);
+
+  const showInter =online && loadGone && nextMap !== null && nextMap.id !== interDoneId;
   const interShot = useLevelshot(showInter && nextMap ? mapIdByName(nextMap.name) : null, settings.lowSpec);
   // Warm the levelshots of the ballot while the vote runs, so the interstitial
   // opens on a finished image.
@@ -1154,6 +1192,12 @@ function SpectatorView({
   const specAbort = !!error || loadTimedOut || hud.netStatus === 'error' || hud.netStatus === 'closed';
   const specMapId = specMap ? mapIdByName(specMap) : config.mapId;
   const specShot = useLevelshot(loadGone ? null : specMapId, settings.lowSpec);
+
+  // Desktop client presence (no-op in a browser): what you're watching, never who.
+  const specMode = specMap ? modeTitle({ mode: hud.mode }) : undefined;
+  useEffect(() => {
+    if (instagibClient) setClientPresence({ state: 'spectate', mode: specMode, map: specMap ?? undefined });
+  }, [specMode, specMap]);
 
   // Live preference changes (sensitivity is irrelevant here, but FOV / volume /
   // quality still apply to the spectated view).
@@ -3206,6 +3250,7 @@ function Lobby({
     lobby.onStatus = setLobbyStatus;
     lobby.onResolved = (info) => {
       if (info.kind === 'matched') {
+        emitClientMatchFound(); // quick match / ranked queue popped (desktop client alert)
         startOnline(info.roomId, info.mapId);
       } else if (info.isPublic) {
         startOnline(info.roomId, info.mapId);
@@ -3252,6 +3297,19 @@ function Lobby({
   useEffect(() => {
     lobbyRef.current?.setName(settings.playerName || 'Player');
   }, [settings.playerName]);
+
+  // Desktop client presence (no-op in a browser): in the menu, or queued.
+  const rankedSearching = rankedStatus?.state === 'searching';
+  useEffect(() => {
+    if (!instagibClient) return;
+    setClientPresence(
+      rankedSearching
+        ? { state: 'queue', mode: 'Ranked duel' }
+        : searching
+          ? { state: 'queue', mode: 'Quick match' }
+          : { state: 'menu' },
+    );
+  }, [rankedSearching, searching]);
 
   // Pull the profile (level/XP/credits) + challenges for the lobby chrome.
   // Re-pulls whenever a modal that can change them closes (refreshTick) and
