@@ -6,26 +6,27 @@ import type { RailTarget } from '../weapon';
 // kind. They're rail targets only (no collision), raycast like bots.
 //   static    free-practice targets; respawn in place shortly after a hit
 //   flick     Flick challenge: pops up, shrinks away when its life runs out
-//   strafer   slides along a lane with ADAD jukes and the odd jump
 //   gauntlet  course targets; stay up until hit or the run ends
-// All motion is dt-driven; spawn-in / expiry are scale animations so the
-// shared per-kind materials never need per-target opacity.
+// (Strafers are full player models — see strafers.ts; they share the lane
+// motion below.) All motion is dt-driven; spawn-in / expiry are scale
+// animations so the shared per-kind materials never need per-target opacity.
 
 export const TARGET_RADIUS = 0.42;
 const GRAVITY = 25;
 const HOP_SPEED = 8.2; // ≈1.35 m hop, a strafing player's jump
 const RESPAWN_STATIC = 0.55;
 
-export type TargetKind = 'static' | 'flick' | 'strafer' | 'gauntlet';
+export type TargetKind = 'static' | 'flick' | 'gauntlet';
 
 const KIND_COLOR: Record<TargetKind, { core: number; ring: number }> = {
   static: { core: 0x37a6ff, ring: 0x8af2ff },
   flick: { core: 0xff9f2e, ring: 0xffd27a },
-  strafer: { core: 0xff4fd8, ring: 0xffa6ef },
   gauntlet: { core: 0x2fe39a, ring: 0xa6ffd8 },
 };
 
-type Mover = {
+// A body sliding along a straight lane a→b with ADAD jukes and the odd hop,
+// like a strafing player. `hop` is the height above the lane.
+export type Mover = {
   a: THREE.Vector3;
   b: THREE.Vector3;
   len: number;
@@ -36,6 +37,53 @@ type Mover = {
   hop: number; // height above the lane
   vy: number;
 };
+
+export function makeMover(a: Vec3, b: Vec3, speed: number): Mover {
+  const va = new THREE.Vector3(a.x, a.y, a.z);
+  const vb = new THREE.Vector3(b.x, b.y, b.z);
+  const len = Math.max(0.1, va.distanceTo(vb));
+  return {
+    a: va, b: vb, len,
+    s: Math.random() * len, // start anywhere along the lane
+    v: (Math.random() < 0.5 ? -1 : 1) * speed,
+    speed,
+    jukeIn: 0.3 + Math.random() * 0.8,
+    hop: 0,
+    vy: 0,
+  };
+}
+
+// Advance a mover by dt and write its position (lane point + hop) into `out`.
+export function stepMover(m: Mover, dt: number, out: THREE.Vector3): THREE.Vector3 {
+  m.jukeIn -= dt;
+  if (m.jukeIn <= 0) {
+    // ADAD: usually reverse, sometimes keep going at a new pace; the odd hop,
+    // like a player jumping mid-strafe.
+    m.jukeIn = 0.28 + Math.random() * 0.9;
+    const dir = Math.random() < 0.72 ? -Math.sign(m.v) : Math.sign(m.v);
+    m.v = dir * m.speed * (0.75 + Math.random() * 0.45);
+    if (m.hop === 0 && Math.random() < 0.3) m.vy = HOP_SPEED;
+  }
+  m.s += m.v * dt;
+  if (m.s < 0) {
+    m.s = -m.s;
+    m.v = Math.abs(m.v);
+  } else if (m.s > m.len) {
+    m.s = 2 * m.len - m.s;
+    m.v = -Math.abs(m.v);
+  }
+  if (m.vy !== 0 || m.hop > 0) {
+    m.vy -= GRAVITY * dt;
+    m.hop += m.vy * dt;
+    if (m.hop <= 0) {
+      m.hop = 0;
+      m.vy = 0;
+    }
+  }
+  out.copy(m.a).lerp(m.b, m.s / m.len);
+  out.y += m.hop;
+  return out;
+}
 
 type Target = {
   id: string;
@@ -48,12 +96,12 @@ type Target = {
   life: number; // flick: seconds left (Infinity otherwise)
   lifeMax: number;
   grow: number; // 0 → 1 spawn-in
+  age: number; // seconds since it (re)appeared
   phase: number;
-  mover: Mover | null;
-  tag: string | null; // caller's key (the strafer's lane)
 };
 
-export type TargetHit = { kind: TargetKind; pos: THREE.Vector3 };
+// `age` = seconds the target had been up (Flick's reaction time).
+export type TargetHit = { kind: TargetKind; pos: THREE.Vector3; age: number };
 
 const smooth = (k: number, dt: number) => 1 - Math.exp(-k * dt);
 
@@ -98,9 +146,8 @@ export class TargetField {
       life: Infinity,
       lifeMax: Infinity,
       grow: 0,
+      age: 0,
       phase: Math.random() * Math.PI * 2,
-      mover: null,
-      tag: null,
     };
     this.list.push(t);
     return t;
@@ -121,33 +168,9 @@ export class TargetField {
     return this.make('gauntlet', at).id;
   }
 
-  // A strafing target on the lane a→b, starting at a random point.
-  spawnStrafer(a: Vec3, b: Vec3, speed: number, tag: string): string {
-    const va = new THREE.Vector3(a.x, a.y, a.z);
-    const vb = new THREE.Vector3(b.x, b.y, b.z);
-    const len = Math.max(0.1, va.distanceTo(vb));
-    const s = Math.random() * len;
-    const t = this.make('strafer', va.clone().lerp(vb, s / len));
-    t.tag = tag;
-    t.mover = {
-      a: va, b: vb, len, s,
-      v: (Math.random() < 0.5 ? -1 : 1) * speed,
-      speed,
-      jukeIn: 0.3 + Math.random() * 0.8,
-      hop: 0,
-      vy: 0,
-    };
-    return t.id;
-  }
-
   // Positions currently occupied by live (or respawning) targets of a kind.
   occupied(kind: TargetKind): THREE.Vector3[] {
     return this.list.filter((t) => t.kind === kind).map((t) => t.home);
-  }
-
-  // Tags of the live targets of a kind.
-  tags(kind: TargetKind): string[] {
-    return this.list.filter((t) => t.kind === kind && t.tag !== null).map((t) => t.tag as string);
   }
 
   count(kind: TargetKind): number {
@@ -193,7 +216,7 @@ export class TargetField {
   hit(id: string): TargetHit | null {
     const t = this.list.find((x) => x.id === id && x.alive);
     if (!t) return null;
-    const res = { kind: t.kind, pos: t.group.position.clone() };
+    const res = { kind: t.kind, pos: t.group.position.clone(), age: t.age };
     if (t.kind === 'static') {
       t.alive = false;
       t.group.visible = false;
@@ -204,9 +227,11 @@ export class TargetField {
     return res;
   }
 
-  // Steps motion; flick targets whose life runs out are removed.
-  update(dt: number) {
+  // Steps motion; flick targets whose life runs out are removed. Returns how
+  // many timed out this step.
+  update(dt: number): number {
     this.t += dt;
+    let expired = 0;
     for (const t of [...this.list]) {
       if (!t.alive) {
         t.respawnIn -= dt;
@@ -214,16 +239,19 @@ export class TargetField {
           t.alive = true;
           t.group.visible = true;
           t.grow = 0;
+          t.age = 0;
           t.group.scale.setScalar(0.01);
         }
         continue;
       }
+      t.age += dt;
       t.grow += (1 - t.grow) * smooth(14, dt);
       let scale = t.grow;
       if (t.life !== Infinity) {
         t.life -= dt;
         if (t.life <= 0) {
           this.remove(t);
+          expired += 1;
           continue;
         }
         // Shrink over the last 0.5 s so an expiring target reads as leaving.
@@ -232,40 +260,10 @@ export class TargetField {
       t.group.scale.setScalar(Math.max(0.01, scale));
       t.ring.rotation.z += dt * 1.6;
       t.ring.rotation.x = Math.PI / 2 + Math.sin(this.t + t.phase) * 0.3;
-      const m = t.mover;
-      if (m) {
-        m.jukeIn -= dt;
-        if (m.jukeIn <= 0) {
-          // ADAD: usually reverse, sometimes keep going at a new pace; the
-          // odd hop, like a player jumping mid-strafe.
-          m.jukeIn = 0.28 + Math.random() * 0.9;
-          const dir = Math.random() < 0.72 ? -Math.sign(m.v) : Math.sign(m.v);
-          m.v = dir * m.speed * (0.75 + Math.random() * 0.45);
-          if (m.hop === 0 && Math.random() < 0.3) m.vy = HOP_SPEED;
-        }
-        m.s += m.v * dt;
-        if (m.s < 0) {
-          m.s = -m.s;
-          m.v = Math.abs(m.v);
-        } else if (m.s > m.len) {
-          m.s = 2 * m.len - m.s;
-          m.v = -Math.abs(m.v);
-        }
-        if (m.vy !== 0 || m.hop > 0) {
-          m.vy -= GRAVITY * dt;
-          m.hop += m.vy * dt;
-          if (m.hop <= 0) {
-            m.hop = 0;
-            m.vy = 0;
-          }
-        }
-        t.group.position.copy(m.a).lerp(m.b, m.s / m.len);
-        t.group.position.y += m.hop;
-      } else {
-        // Gentle bob so still targets read as live.
-        t.group.position.y = t.home.y + Math.sin(this.t * 1.5 + t.phase) * 0.1;
-      }
+      // Gentle bob so still targets read as live.
+      t.group.position.y = t.home.y + Math.sin(this.t * 1.5 + t.phase) * 0.1;
     }
+    return expired;
   }
 
   dispose() {

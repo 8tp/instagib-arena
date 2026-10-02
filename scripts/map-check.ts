@@ -429,15 +429,21 @@ function trainingChecks(map: ArenaMap, L: TrainingLayout, errs: string[], warns:
     dists.push(Math.hypot(a.x - eyes[0].x, a.z - eyes[0].z));
   });
   if (hidden) warns.push(`${hidden} gallery anchors are hidden from part of the firing line`);
+  // Lanes are FEET positions of player-sized strafers: standing room and
+  // support all along, plus room for a 1.4 m hop.
   L.gallery.strafeLanes.forEach((ln, k) => {
     for (let t = 0; t <= 1.0001; t += 0.1) {
-      const p = { x: ln.a.x + (ln.b.x - ln.a.x) * t, y: ln.a.y + (ln.b.y - ln.a.y) * t, z: ln.a.z + (ln.b.z - ln.a.z) * t };
-      if (!clearOf(p, 0.5) || !clearOf({ ...p, y: p.y + 2.2 }, 0.5)) {
+      const p = { x: ln.a.x + (ln.b.x - ln.a.x) * t, y: ln.a.y + (ln.b.y - ln.a.y) * t + 0.05, z: ln.a.z + (ln.b.z - ln.a.z) * t };
+      if (capsuleHits(map, p).length || capsuleHits(map, { ...p, y: p.y + 1.4 }).length) {
         errs.push(`strafe lane ${k} is blocked near t=${t.toFixed(1)}`);
         break;
       }
+      if (!supported(map, p)) {
+        errs.push(`strafe lane ${k} is unsupported near t=${t.toFixed(1)}`);
+        break;
+      }
     }
-    const mid = { x: (ln.a.x + ln.b.x) / 2, y: (ln.a.y + ln.b.y) / 2, z: (ln.a.z + ln.b.z) / 2 };
+    const mid = { x: (ln.a.x + ln.b.x) / 2, y: (ln.a.y + ln.b.y) / 2 + 1.2, z: (ln.a.z + ln.b.z) / 2 }; // chest
     if (!los(map, eyes[0], mid)) warns.push(`strafe lane ${k} midpoint is hidden from the firing-line centre`);
   });
   L.course.gates.forEach((g, k) => {

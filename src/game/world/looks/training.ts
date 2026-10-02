@@ -202,10 +202,14 @@ function coursePaint(): Inlay[] {
   const dashX = (z: number, x0: number, x1: number, y: number) => {
     for (let x = x1; x - 1.5 >= x0; x -= 3.5) out.push(rect(x - 1.5, z - 0.12, x, z + 0.12, PAINT_CYAN, y));
   };
-  dashX(-38.75, 33.5, 45.5, 15);
-  dashX(-38.75, 15.5, 27.5, 14.4);
-  dashX(-38.75, -0.5, 8.5, 13.8);
+  dashX(-38.75, 36.5, 45.5, 15);
+  dashX(-36.25, 14.5, 23.5, 20);
   dashZ(-7, -33.5, 1.8, 12);
+  // boost take-off lips: the west edges of C1 and the sky island, and the
+  // spine run ahead of the hurdle
+  out.push(rect(36, -40, 36.4, -37.5, 0xc9a227, 15, { hazard: true }));
+  out.push(rect(14, -38.5, 14.4, -34, 0xc9a227, 20, { hazard: true }));
+  out.push(rect(-9, -20.4, -5, -20, 0xc9a227, 12, { hazard: true }));
   // infield jump ruler (defrag style): take-off bar, a tick every metre,
   // long ticks every 5 m — see how far a jump / double / dash-jump carries
   out.push(rect(34, 0, 35.2, 3, 0xc9a227, 0, { hazard: true }));
@@ -227,7 +231,8 @@ function coursePaint(): Inlay[] {
   bar(50.4, -40, 50.7, -34, PT); // across the dash gap
   bar(53.8, -33.8, 59, -33.5, 8.9); // boost tower top
   bar(46, -34.9, 56, -34.6, 15); // chimney-top deck
-  bar(-9, -34.9, -4, -34.6, 12); // spine head
+  bar(23.4, -38.5, 23.7, -34, 20); // sky island
+  bar(-7.9, -40, -7.6, -34, 24.5); // spine-head tower
   bar(-9, 2.35, -5, 2.65, 12); // spine end
   // finish: chequered band across the hub entrance
   const f = G[G.length - 1];
@@ -273,7 +278,7 @@ const LIGHTS: LightDef[] = [
   wallLamp([-16, 16.5, -37], '+z', WARM, 900, 45, { size: [1.4, 0.6], down: 1.1, angle: 0.55 }),
   // north wall over the course: cool floods above the catwalk
   wallLamp([4, 17.2, -40], '+z', COOL, 700, 40, { size: [1.2, 0.5], down: 1.2, angle: 0.6 }),
-  wallLamp([24, 17.2, -40], '+z', COOL, 700, 40, { size: [1.2, 0.5], down: 1.2, angle: 0.6 }),
+  wallLamp([30, 17.2, -40], '+z', COOL, 700, 40, { size: [1.2, 0.5], down: 1.2, angle: 0.6 }),
   wallLamp([42, 17.2, -40], '+z', COOL, 700, 40, { size: [1.2, 0.5], down: 1.2, angle: 0.6 }),
   // under the chimney-top deck: light the boost face of BT and deck D
   wallLamp([53, 11.5, -40], '+z', COOL, 380, 22, { size: [1.2, 0.5], down: 0.7, angle: 0.75 }),

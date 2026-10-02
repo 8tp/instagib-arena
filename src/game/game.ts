@@ -2976,6 +2976,8 @@ export class Game {
     // matching reset after the shot lands.)
     const trainingShot = this.trainingRange?.freeFire() ?? false;
     if (trainingShot) this.weapon.cooldown = 0;
+    // Flick runs a fast rail; everything else (matches included) the real one.
+    this.weapon.cooldownTotal = this.trainingRange?.shotCooldown() ?? RAIL_COOLDOWN;
     const result = this.weapon.fire(
       muzzle,
       this.tmpForward,
@@ -3025,20 +3027,32 @@ export class Game {
     this.effects.spawnMuzzleFlash(this.scene, this.tmpBeamOrigin, this.weapon.beamColors.core, this.tmpForward, true);
 
     // Training range: count the shot, pop any targets the rail passed through,
-    // and break the streak on a clean miss. Live stats refresh to the HUD.
+    // and break the streak on a clean miss. A kill gets a frag's feedback —
+    // hitmarker, confirm sounds, kill flash + shake. Live stats refresh to the HUD.
     if (this.trainingRange) {
       this.trainingRange.registerShot();
       let hitTarget = false;
+      let headshot = false;
       for (const hit of result.hits) {
         if (hit.target.kind !== 'target') continue;
-        const pos = this.trainingRange.onHit(hit.target.id);
-        if (pos) {
+        const kill = this.trainingRange.onHit(hit.target.id, hit.headshot, this.killEffectStyle);
+        if (kill) {
+          if (!hitTarget) headshot = kill.headshot;
           hitTarget = true;
-          this.spawnKillEffect(pos, hit.headshot, this.killEffectStyle);
-          this.audio.play(hit.headshot ? 'headshot' : 'hit', 0.5);
+          this.spawnKillEffect(kill.pos, kill.headshot, this.killEffectStyle);
         }
       }
-      if (!hitTarget) this.trainingRange.registerMiss();
+      if (hitTarget) {
+        this.audio.killConfirm(headshot, 0.6);
+        this.audio.hitConfirm(headshot, 0.5);
+        this.hitMarker = {
+          id: this.nextEventId++,
+          kind: headshot ? 'headshot' : 'kill',
+          remaining: HIT_MARKER_KILL_DURATION_SEC,
+          total: HIT_MARKER_KILL_DURATION_SEC,
+        };
+        this.fireKillFeedback(headshot);
+      } else this.trainingRange.registerMiss();
       this.emitHud();
     }
 
@@ -4160,6 +4174,7 @@ export class Game {
     this.onHud({
       frags: this.playerFrags,
       railCooldown: this.weapon.cooldown,
+      railCooldownTotal: this.weapon.cooldownTotal,
       dashCooldown: this.player.dashCooldown,
       airJumpsLeft: this.player.airJumpsLeft,
       boostReady: this.player.boostInRange,

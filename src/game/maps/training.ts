@@ -8,7 +8,7 @@ import { B, pt, shell, slab, spawnAt, steps, type MapBox } from './kit';
 // and Quake defrag courses. 120 × 84 m, cap 34 m.
 //
 //            north (−z)
-//   ┌──────────── backstop ──────────┬SH┬═══════ catwalk 15 m ═══════╦deck═╗
+//   ┌──────────── backstop ──────────┬SH┬───── C2 20 ──── C1 15 ════╦deck═╗
 //   │  T3        SP2       T4        │  │ P4 runway ──── dash gap ── D  15  │
 //   │                                │S │  P3                  ┌─────────┐ │
 //   │  T1   AIM GALLERY    T2         │P │  P2   (pit)          │ BT 8.9  │ │
@@ -38,9 +38,16 @@ import { B, pt, shell, slab, spawnAt, steps, type MapBox } from './kit';
 //     4 chimney on BT, a 3 m-wide three-sided shaft climbs 6.1 m to the
 //               15 m deck: wall-jump side to side (each wall-jump refunds
 //               the air jump).
-//     5 bridge  the catwalk along the north wall at 15 m (gaps 5 / 6 m),
-//               drop 3 m onto the spine head and sprint the spine top south.
-//     6 finish  run off the spine's end (12 m drop) and sprint into the hub.
+//     5 sky     west off the deck along C1 (15 m), floor-boost (rocket
+//               jump) up 5 m across a 12 m gap onto the sky island C2, then
+//               boost again 4.5 m up across 18 m onto the spine-head tower SH
+//               (24.5 m; a backboard catches an overshoot). A jump + double
+//               jump peaks at ~3.4 m: both climbs need the boost. A fall from
+//               C1/C2 lands on the P4 runway: go again.
+//     6 spine   drop 12.5 m south off SH onto the spine top and sprint it; the
+//               5 m hurdle on it (teal = boost, like BT and SH) is a
+//               boost-over at full speed.
+//     7 finish  run off the spine's end (12 m drop) and sprint into the hub.
 
 const HX = 60;
 const HZ = 42;
@@ -52,7 +59,10 @@ const PIT_X1 = 27;
 const PT = 2.4; // pit platform top
 const BT_TOP = 8.9; // boost tower top (6.5 m above deck D)
 const DECK = 15; // chimney-top deck + catwalk
+const C2_TOP = DECK + 5; // sky island (above a jump + double jump's reach)
+const SH_TOP = C2_TOP + 4.5; // spine-head tower
 const SPINE = 12; // spine top
+const HURDLE = SPINE + 5; // the spine hurdle's top
 
 // ── the gallery ─────────────────────────────────────────────────────────────
 // Firing line centre (−34, 18.5); a target d metres down-range sits at z = 18.5 − d.
@@ -95,13 +105,19 @@ export const TRAINING: ArenaMap = (() => {
   ];
 
   const spine: MapBox[] = [
-    // spine head (the catwalk drops onto it) + the 12 m spine with two
+    // spine head (the sky run lands on it) + the 12 m spine with two
     // ground-level portals (z −22…−18 and −6…−2, 4.5 m tall)
     B(-9, 0, -40, -4, SPINE, -34, 'spine'),
+    // …raised into the boost tower SH that ends the sky run, with a backboard
+    // on its gallery edge to catch a boost that carries too far
+    B(-9, SPINE, -40, -4, SH_TOP, -34, 'boost'),
+    B(-9, SH_TOP, -40, -8.4, SH_TOP + 3, -34, 'chimney'),
     B(-9, 0, -34, -5, 4.5, -22, 'spine'),
     B(-9, 0, -18, -5, 4.5, -6, 'spine'),
     B(-9, 0, -2, -5, 4.5, 6, 'spine'),
     B(-9, 4.5, -34, -5, SPINE, 6, 'spine'),
+    // the hurdle across the spine run: boost over it (teal = boost, as BT)
+    B(-9, SPINE, -16, -5, HURDLE, -14, 'boost'),
     // recovery block on the course side: boost up (6 m), boost again to the top
     B(-5, 0, -15, -1, 6, -11, 'stand'),
   ];
@@ -128,11 +144,11 @@ export const TRAINING: ArenaMap = (() => {
     B(48.5, BT_TOP, -33.5, 49.5, DECK, -29, 'chimney'),
     B(52.5, BT_TOP, -33.5, 53.5, DECK, -29, 'chimney'),
     B(48.5, BT_TOP, -34, 53.5, DECK, -33.5, 'chimney'),
-    // 5 — the 15 m deck over D, and the catwalk west along the north wall
+    // 5 — the 15 m deck over D, the catwalk west along the north wall, then
+    // the sky island (stood off the wall: no wall-jump shortcut) and SH
     slab(46, -40, 56, -34, DECK, 'catwalk'),
-    slab(33, -40, 46, -37.5, DECK, 'catwalk'),
-    slab(15, -40, 28, -37.5, DECK - 0.6, 'catwalk'), // gap 5, 0.6 m down
-    slab(-1, -40, 9, -37.5, DECK - 1.2, 'catwalk'), // gap 6, 0.6 m down, then 1.8 m down onto the spine head
+    slab(36, -40, 46, -37.5, DECK, 'catwalk'), // C1
+    slab(14, -38.5, 24, -34, C2_TOP, 'catwalk'), // C2: gap 12, 5 m up; then gap 18, 4.5 m up to SH
     // infield target stands
     B(33, 0, 10, 36, 2.4, 13, 'stand'),
     B(40, 0, -14, 43, 3.6, -11, 'stand'),
@@ -213,13 +229,14 @@ export const TRAINING_LAYOUT: TrainingLayout = {
       pt(-28, 1.2, -30),
       pt(-30, 4.5, -36.2), // on the backstop face
     ],
+    // feet on the floor / deck top (player-sized strafers stand on the lane)
     strafeLanes: [
-      { a: pt(-40, 1.2, d(12)), b: pt(-30, 1.2, d(12)) },
-      { a: pt(-48, 1.2, d(20)), b: pt(-36, 1.2, d(20)) },
-      { a: pt(-21, 4, d(28)), b: pt(-11, 4, d(28)) }, // on SP1 (3 m)
-      { a: pt(-51, 1.2, d(36)), b: pt(-39, 1.2, d(36)) },
-      { a: pt(-50, 7, d(45)), b: pt(-38, 7, d(45)) }, // on SP2 (6 m)
-      { a: pt(-35, 1.2, d(52)), b: pt(-23, 1.2, d(52)) },
+      { a: pt(-40, 0, d(12)), b: pt(-30, 0, d(12)) },
+      { a: pt(-48, 0, d(20)), b: pt(-36, 0, d(20)) },
+      { a: pt(-21, 3, d(28)), b: pt(-11, 3, d(28)) }, // on SP1 (3 m)
+      { a: pt(-51, 0, d(36)), b: pt(-39, 0, d(36)) },
+      { a: pt(-50, 6, d(45)), b: pt(-38, 6, d(45)) }, // on SP2 (6 m)
+      { a: pt(-35, 0, d(52)), b: pt(-23, 0, d(52)) },
     ],
     markers: [10, 20, 30, 40, 50].map((m) => ({ at: pt(FLX, 0, d(m)), metres: m })),
   },
@@ -232,9 +249,10 @@ export const TRAINING_LAYOUT: TrainingLayout = {
       gate(50, PT, -40, 59, PT + 3, -34), // G2 across the dash gap (D)
       gate(47.5, BT_TOP, -34, 59, BT_TOP + 3, -22), // G3 boosted onto BT
       gate(46, DECK, -40, 56, DECK + 3, -34), // G4 up the chimney (deck)
-      gate(-9, SPINE, -40, -4, SPINE + 3, -34), // G5 along the catwalk (spine head)
-      gate(-11, SPINE, 0, -3, SPINE + 3, 5), // G6 the spine's end
-      gate(-7, 0, 21, 7, 4, 23), // G7 finish, in front of the hub
+      gate(14, C2_TOP, -38.5, 24, C2_TOP + 3, -34), // G5 boosted onto the sky island (C2)
+      gate(-9, SH_TOP, -40, -4, SH_TOP + 3, -34), // G6 boosted onto the spine-head tower
+      gate(-11, SPINE, 0, -3, SPINE + 3, 5), // G7 the spine's end, past the hurdle
+      gate(-7, 0, 21, 7, 4, 23), // G8 finish, in front of the hub
     ],
     targets: [
       pt(33, 4, 17), // start run
@@ -245,13 +263,14 @@ export const TRAINING_LAYOUT: TrainingLayout = {
       pt(40, 14, -22), // boost
       pt(44, 20, -18), // chimney top
       pt(30, 9, -30), // catwalk
-      pt(12, 20, -30), // catwalk
+      pt(19, 27, -30), // over the sky island, at the top of the boost
       pt(-22, 15, -14), // spine run, over the gallery
       pt(8, 10, -6), // spine run, over the course
       pt(12, 3, 14), // finish sprint
       pt(-16, 5, 12), // finish sprint
     ],
-    // ≈258 m at run speed is ~26 s before the climbs; 32 s is a clean, fast run.
-    par: 32,
+    // ≈258 m at run speed is ~26 s before the climbs; four boosts and the
+    // chimney make 34 s a clean, fast run.
+    par: 34,
   },
 };

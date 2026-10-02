@@ -23,7 +23,9 @@ export type GhostRecord = {
   splits: number[];
 };
 
-const KEY = 'instagib-training-v1';
+// v2: Flick got a fast rail, Strafers player-sized hitboxes and the course
+// new boost gaps — v1 bests and ghosts no longer compare, so they start over.
+const KEY = 'instagib-training-v2';
 
 type Store = {
   best: Partial<Record<ChallengeId, RunRecord>>;
