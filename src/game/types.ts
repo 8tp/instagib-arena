@@ -239,6 +239,7 @@ export type NetDebugStats = {
 export type HudState = {
   frags: number;
   railCooldown: number;
+  railCooldownTotal: number; // seconds a shot locks the rail for (shorter in Flick)
   dashCooldown: number;
   airJumpsLeft: number;
   boostReady: boolean; // a boostable surface is in range under the crosshair
@@ -310,6 +311,17 @@ export type TrainingHud = {
   challenge: TrainingChallengeHud | null; // a challenge counting down / running
   result: TrainingResultHud | null; // the last finished run (cleared after a few seconds)
   notice: string | null; // short-lived line: "Left the firing line — cancelled"
+  pop: TrainingPopHud | null; // the last target kill (popup under the crosshair)
+};
+
+// A target kill: "+1" plus the reaction time (Flick) or HEADSHOT, and the
+// current streak. A new key per kill restarts the popup's CSS animation.
+export type TrainingPopHud = {
+  key: number;
+  label: string; // "+1", "HEADSHOT", "+2" (a rail through two)
+  ms: number | null; // Flick: time from the target popping up to the kill
+  streak: number; // kills in a row without a miss
+  headshot: boolean;
 };
 
 export type TrainingChallengeId = 'flick' | 'strafers' | 'course' | 'gauntlet';
@@ -328,6 +340,8 @@ export type TrainingChallengeHud = {
   gates: number;
   split: number | null; // race: seconds vs your best at the last gate (− = ahead)
   targetsLeft: number | null; // gauntlet: targets still standing
+  missed: number | null; // flick: targets that timed out before you hit them
+  streak: number; // aim: kills in a row without a miss
   best: number | null; // your best score (hits, or seconds for races)
 };
 
@@ -341,6 +355,9 @@ export type TrainingResultHud = {
   shots: number;
   landed: number;
   penalty: number; // seconds added (Gauntlet)
+  avgMs: number | null; // flick: mean reaction time over the run's kills
+  missed: number | null; // flick: targets that timed out
+  bestStreak: number; // aim: longest run of kills without a miss
   best: number | null; // best BEFORE this run
   newBest: boolean;
 };

@@ -23,7 +23,9 @@ export type GhostRecord = {
   splits: number[];
 };
 
-const KEY = 'instagib-training-v1';
+// v2: Flick got a fast rail, Strafers player-sized hitboxes and the course
+// new boost gaps — v1 bests and ghosts no longer compare, so they start over.
+const KEY = 'instagib-training-v2';
 
 type Store = {
   best: Partial<Record<ChallengeId, RunRecord>>;
@@ -36,6 +38,7 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 // Anything malformed (hand-edited, from an older build) is dropped, per record.
 function load(): Store {
   try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem('instagib-training-v1'); // superseded (see KEY)
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
     if (raw) {
       const s = JSON.parse(raw) as Partial<Store>;

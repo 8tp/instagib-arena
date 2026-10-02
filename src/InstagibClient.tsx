@@ -97,6 +97,7 @@ import type {
   TrainingChallengeHud,
   TrainingChallengeId,
   TrainingHud,
+  TrainingPopHud,
   TrainingResultHud,
 } from './game/types';
 import { FragPopup } from './game/kill-overlays';
@@ -274,6 +275,7 @@ const LIGHT_DEVICE =
 const INITIAL_HUD: HudState = {
   frags: 0,
   railCooldown: 0,
+  railCooldownTotal: RAIL_COOLDOWN,
   dashCooldown: 0,
   airJumpsLeft: AIR_JUMPS,
   boostReady: false,
@@ -1714,11 +1716,12 @@ function HudDamageVignette() {
 function HudReloadBar() {
   const fireId = useHudSlice((s) => s.railFireId);
   const cooling = useHudSlice((s) => s.railCooldown > 0);
+  const total = useHudSlice((s) => s.railCooldownTotal);
   // How far into the cooldown the bar was when this shot registered (or when
   // the HUD mounted mid-cooldown) — pinned per shot so the fill never restarts.
-  const elapsedMs = useHudLatched(fireId, (s) => (RAIL_COOLDOWN - s.railCooldown) * 1000);
+  const elapsedMs = useHudLatched(fireId, (s) => (s.railCooldownTotal - s.railCooldown) * 1000);
   if (!cooling) return null;
-  return <ReloadBar fireId={fireId} elapsedMs={elapsedMs} />;
+  return <ReloadBar fireId={fireId} elapsedMs={elapsedMs} total={total} />;
 }
 
 function HudHitMarker() {
@@ -1779,6 +1782,7 @@ function HudTraining({ restartKey }: { restartKey: string }) {
   return (
     <>
       {c ? <ChallengePanel c={c} restartKey={restartKey} /> : <TrainingPanel t={t} restartKey={restartKey} />}
+      {t.pop && <TrainingPop p={t.pop} />}
       {c?.phase === 'countdown' && c.countdown > 0 && <ChallengeCountdown name={c.name} n={c.countdown} />}
       {!c && t.result && <ChallengeResult r={t.result} restartKey={restartKey} />}
       {t.notice && (
@@ -2169,9 +2173,11 @@ const Crosshair = memo(function Crosshair({ cfg }: { cfg: CrosshairConfig }) {
 const ReloadBar = memo(function ReloadBar({
   fireId,
   elapsedMs,
+  total,
 }: {
   fireId: number;
   elapsedMs: number;
+  total: number; // seconds
 }) {
   // Full-width row 24px below the viewport center, flex-centered. No
   // translate math, no intrinsic-width gotchas — the bar sits dead
@@ -2186,7 +2192,7 @@ const ReloadBar = memo(function ReloadBar({
           key={fireId}
           className='hud-fill-x absolute left-0 top-0 h-full w-full rounded-full bg-cyan-300/85 shadow-[0_0_6px_rgba(103,232,249,0.6)]'
           style={cssVars({
-            '--cd-total': `${RAIL_COOLDOWN}s`,
+            '--cd-total': `${total}s`,
             '--cd-elapsed': `${Math.max(0, Math.round(elapsedMs))}ms`,
           })}
         />
@@ -2503,6 +2509,8 @@ const ChallengePanel = memo(function ChallengePanel({ c, restartKey }: { c: Trai
           <>
             <TrainingStat label='Hits' value={`${c.hits}`} accent={accent.text} />
             <TrainingStat label='Accuracy' value={`${acc}%`} accent='text-cyan-200' />
+            <TrainingStat label='Streak' value={`${c.streak}`} accent={c.streak >= 5 ? 'text-amber-300' : 'text-white'} />
+            {c.missed !== null && <TrainingStat label='Missed' value={`${c.missed}`} accent={c.missed ? 'text-rose-300' : 'text-white/60'} />}
           </>
         ) : (
           <>
@@ -2519,6 +2527,26 @@ const ChallengePanel = memo(function ChallengePanel({ c, restartKey }: { c: Trai
       </div>
       <div className='mt-1 text-center text-[9px] uppercase tracking-[0.2em] text-white/45'>
         {restartKey} restart{c.kind === 'aim' ? ' · stay on the firing line' : c.targetsLeft !== null ? ' · +2 s per target left standing' : ' · race your ghost'}
+      </div>
+    </div>
+  );
+});
+
+// A target kill: "+1" beside the crosshair (the XP ticker's style, .hud-xp),
+// with Flick's reaction time and the streak. Keyed per shot, so each kill
+// replays the CSS animation; nothing here moves from React.
+const TrainingPop = memo(function TrainingPop({ p }: { p: TrainingPopHud }) {
+  const fast = p.ms !== null && p.ms < 450;
+  return (
+    <div className='hud-xp-anchor pointer-events-none'>
+      <div key={p.key} className='hud-xp'>
+        <span className='hud-xp-num' style={p.headshot ? { color: '#fcd34d' } : undefined}>{p.label}</span>
+        {p.ms !== null && (
+          <span className='hud-xp-unit' style={fast ? { color: '#6ee7b7' } : undefined}>
+            {p.ms} ms
+          </span>
+        )}
+        {p.streak >= 3 && <div className='hud-xp-tag'>{p.streak} streak</div>}
       </div>
     </div>
   );
@@ -2543,7 +2571,14 @@ const ChallengeResult = memo(function ChallengeResult({ r, restartKey }: { r: Tr
   const best = r.best === null ? null : r.kind === 'race' ? `${r.best.toFixed(2)} s` : `${r.best} hits`;
   const detail =
     r.kind === 'aim'
-      ? `${r.landed}/${r.shots} shots landed · ${acc}% accuracy`
+      ? [
+          `${r.landed}/${r.shots} shots landed · ${acc}% accuracy`,
+          r.avgMs !== null && `avg ${r.avgMs} ms`,
+          r.missed !== null && `${r.missed} missed`,
+          r.bestStreak >= 3 && `best streak ${r.bestStreak}`,
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : r.penalty > 0
         ? `includes +${r.penalty} s for targets left standing`
         : r.id === 'gauntlet'
@@ -2769,14 +2804,15 @@ function HudRailPip() {
   const fireId = useHudSlice((s) => s.railFireId);
   const ready = useHudSlice((s) => s.railCooldown <= 0);
   const text = useHudSlice((s) => s.railCooldown.toFixed(1));
-  const elapsedMs = useHudLatched(fireId, (s) => (RAIL_COOLDOWN - s.railCooldown) * 1000);
+  const total = useHudSlice((s) => s.railCooldownTotal);
+  const elapsedMs = useHudLatched(fireId, (s) => (s.railCooldownTotal - s.railCooldown) * 1000);
   return (
     <CooldownPip
       label='Rail'
       eventId={fireId}
       ready={ready}
       text={text}
-      total={RAIL_COOLDOWN}
+      total={total}
       elapsedMs={elapsedMs}
       accent='#67e8f9'
     />

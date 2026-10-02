@@ -45,7 +45,7 @@ const BOT_NAMES = ['Vex', 'Razor', 'Strafe', 'Pyro', 'Vandal', 'Frost', 'Pulse',
 export type BotFireIntent = { botId: string; botName: string; origin: Vec3; dir: Vec3; team: number | null };
 // The combatant faces -Z at identity. Look yaw is atan2(dx, dz) (0 = +Z),
 // so we add π to rotate the model's natural -Z forward around to match.
-const MODEL_YAW_OFFSET = Math.PI;
+export const MODEL_YAW_OFFSET = Math.PI;
 
 // The character "model" is now built in code (see character/): there is no
 // asset to load. BotModel stays as an opaque token so callers (Game, replays,

@@ -83,6 +83,9 @@ export type RailFireResult = {
 
 export class Railgun {
   cooldown = 0;
+  // Seconds a shot locks the rail for. The real rail is RAIL_COOLDOWN; the
+  // training range's Flick challenge shortens it (local practice only).
+  cooldownTotal = RAIL_COOLDOWN;
   // The local player's equipped rail-beam colors (railColor cosmetic). Enemy
   // beams keep the defaults — spawnBeam's params fall back to the constants.
   private beamCore = RAIL_CORE_COLOR;
@@ -103,7 +106,7 @@ export class Railgun {
 
   // 0 = just fired … 1 = ready (the viewmodel's energy coils show it).
   get charge(): number {
-    return 1 - Math.min(1, Math.max(0, this.cooldown / RAIL_COOLDOWN));
+    return 1 - Math.min(1, Math.max(0, this.cooldown / this.cooldownTotal));
   }
 
   step(dt: number, scene: THREE.Scene) {
@@ -140,7 +143,7 @@ export class Railgun {
     surface?: ArenaMap,
   ): RailFireResult | null {
     if (this.cooldown > 0) return null;
-    this.cooldown = RAIL_COOLDOWN;
+    this.cooldown = this.cooldownTotal;
     localRail.owner = this;
     localRail.charge = 0;
     localRail.shots++;

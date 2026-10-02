@@ -31,9 +31,10 @@ export type TrainingLayout = {
     // firing line and 0.5–14 m high, every one visible from anywhere on the
     // firing line (eye height 1.6 m).
     anchors: Vec3[];
-    // Moving-target rails for Strafers: the target centre slides between a
-    // and b (straight segment, clear of geometry along the way plus 2.2 m of
-    // jump headroom above), visible from the firing line.
+    // Lanes for Strafers: a player-sized strafer's FEET slide between a and
+    // b (on the floor / a deck top; straight, clear of geometry by the player
+    // radius along the way, with room for a 1.4 m hop), visible from the
+    // firing line.
     strafeLanes: Array<{ a: Vec3; b: Vec3 }>;
     // Painted distance markers (the look draws them; the HUD may label them).
     markers: Array<{ at: Vec3; metres: number }>;

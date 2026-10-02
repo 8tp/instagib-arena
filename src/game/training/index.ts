@@ -1,20 +1,23 @@
 import * as THREE from 'three';
 import { playUi } from '../audio';
+import { EYE_HEIGHT } from '../constants';
+import type { KillEffectStyle } from '../cosmetics';
 import type { ArenaMap } from '../map';
-import type { AABB, TrainingChallengeHud, TrainingHud, TrainingResultHud, Vec3 } from '../types';
+import type { AABB, TrainingChallengeHud, TrainingHud, TrainingPopHud, TrainingResultHud, Vec3 } from '../types';
 import type { RailTarget } from '../weapon';
 import { TrainingBests, type GhostRecord, type RunRecord } from './best';
 import { GateFrames, Ghost } from './course-fx';
 import type { ChallengeId, TrainingLayout } from './layout';
 import { Label, PadSign, type SignText } from './signs';
+import { StraferSquad } from './strafers';
 import { TargetField } from './targets';
 
 // ─────────────────────────────────────────────────────────────────────────
 // The training range: free practice plus four challenges you start by
 // standing on a pad in the hub (Titanfall 2 Gauntlet / Valorant range /
 // Quake defrag inspired):
-//   Flick     40 s, pop-up targets across the gallery, real rail cooldown
-//   Strafers  45 s, targets strafing + hopping along lanes, real cooldown
+//   Flick     40 s, pop-up targets across the gallery, fast 0.3 s rail
+//   Strafers  45 s, player models strafing + hopping along lanes, real cooldown
 //   Course    time trial through the checkpoint gates, race your ghost
 //   Gauntlet  the course with targets along it, +2 s per target left up
 // Free practice (no challenge): static targets on the gallery anchors and
@@ -26,8 +29,8 @@ import { TargetField } from './targets';
 type Def = { name: string; kind: 'aim' | 'race'; duration: number; accent: string; rules: string };
 
 export const CHALLENGES: Record<ChallengeId, Def> = {
-  flick: { name: 'Flick', kind: 'aim', duration: 40, accent: '#ffb347', rules: '40 s · pop-up targets · real rail cooldown' },
-  strafers: { name: 'Strafers', kind: 'aim', duration: 45, accent: '#ff6fe0', rules: '45 s · lead strafing, hopping targets' },
+  flick: { name: 'Flick', kind: 'aim', duration: 40, accent: '#ffb347', rules: '40 s · pop-up targets · fast rail' },
+  strafers: { name: 'Strafers', kind: 'aim', duration: 45, accent: '#ff6fe0', rules: '45 s · strafing players · real rail' },
   course: { name: 'Course', kind: 'race', duration: 240, accent: '#5cf2ff', rules: 'Time trial · race your best ghost' },
   gauntlet: { name: 'Gauntlet', kind: 'race', duration: 240, accent: '#43f0a8', rules: 'Course + targets · +2 s per target left' },
 };
@@ -36,12 +39,15 @@ const COUNTDOWN = 3;
 const PAD_HOLD = 0.45; // seconds standing on a pad before it starts
 const FLICK_UP = 2; // targets up at once in Flick
 const FLICK_LIFE = 2.4;
+// Flick drills the flick, not the wait: a 0.3 s rail (the real one is 1.2 s).
+const FLICK_COOLDOWN = 0.3;
 const STRAFERS_UP = 3;
 const STRAFER_RESPAWN = 0.35;
 const GAUNTLET_PENALTY = 2;
 const GHOST_STEP = 0.05;
 const RESULT_SECONDS = 9;
 const NOTICE_SECONDS = 3.5;
+const POP_SECONDS = 1.3; // the .hud-xp popup animation length
 
 export type TrainingPlayer = { pos: Vec3; onGround: boolean };
 export type TrainingTeleport = { pos: Vec3; yaw: number };
@@ -60,6 +66,11 @@ type Run = {
   ghostAcc: number;
   strafeQueue: number[]; // pending strafer respawns (seconds left)
   lastFlick: THREE.Vector3 | null;
+  streak: number; // kills in a row without a miss (or a timed-out flick)
+  bestStreak: number;
+  missed: number; // flick targets that timed out
+  reactSum: number; // flick: summed seconds from pop-up to kill
+  reactN: number;
 };
 
 const inBox = (p: Vec3, b: AABB, pad = 0) =>
@@ -67,6 +78,7 @@ const inBox = (p: Vec3, b: AABB, pad = 0) =>
 
 export class TrainingRange {
   private readonly field: TargetField;
+  private readonly strafers: StraferSquad;
   private readonly bests = new TrainingBests();
   private readonly signs = new Map<ChallengeId, PadSign>();
   private readonly labels: Label[] = [];
@@ -84,6 +96,10 @@ export class TrainingRange {
   private noticeAge = 0;
   private free = { shots: 0, hits: 0, destroyed: 0, streak: 0, bestStreak: 0, elapsed: 0 };
   private shotLanded = false; // the current shot has hit at least one target
+  private shotKills = 0; // targets the current shot has killed
+  private shotCount = 0; // bumps per landed shot (the popup's key)
+  private pop: TrainingPopHud | null = null;
+  private popAge = 0;
   private freeTargetsUp = false;
 
   constructor(
@@ -92,6 +108,7 @@ export class TrainingRange {
     private layout: TrainingLayout,
   ) {
     this.field = new TargetField(scene);
+    this.strafers = new StraferSquad(scene);
     this.gates = new GateFrames(scene, layout.course.gates);
     this.ghost = new Ghost(scene);
     for (const id of Object.keys(CHALLENGES) as ChallengeId[]) {
@@ -141,12 +158,15 @@ export class TrainingRange {
     this.run = {
       id, phase: 'countdown', countdown: COUNTDOWN, t: 0, hits: 0, shots: 0, landed: 0, gate: 0,
       splits: [], ghost: [], ghostAcc: 0, strafeQueue: [], lastFlick: null,
+      streak: 0, bestStreak: 0, missed: 0, reactSum: 0, reactN: 0,
     };
     this.lastId = id;
     this.padLatch = true;
     this.result = null;
     this.notice = null;
+    this.pop = null;
     this.showFreeTargets(false);
+    if (id === 'strafers') this.strafers.prewarm(); // build the bodies during the 3-2-1, not at GO
     playUi('countdownTick', COUNTDOWN + 1);
     if (def.kind === 'race') {
       this.gates.progress(0);
@@ -160,7 +180,8 @@ export class TrainingRange {
   }
 
   private clearRun() {
-    this.field.clear(['flick', 'strafer', 'gauntlet']);
+    this.field.clear(['flick', 'gauntlet']);
+    this.strafers.clear();
     this.gates.setAll('idle');
     this.ghost.stop();
     this.run = null;
@@ -199,6 +220,9 @@ export class TrainingRange {
       shots: r.shots,
       landed: r.landed,
       penalty,
+      avgMs: r.id === 'flick' && r.reactN ? Math.round((r.reactSum / r.reactN) * 1000) : null,
+      missed: r.id === 'flick' ? r.missed : null,
+      bestStreak: r.bestStreak,
       best: prev ? prev.score : null,
       newBest,
     };
@@ -226,7 +250,12 @@ export class TrainingRange {
   // ── per tick ────────────────────────────────────────────────────────────
   // Returns a teleport when a challenge starts from a pad.
   update(dt: number, player: TrainingPlayer): TrainingTeleport | null {
-    this.field.update(dt);
+    const expired = this.field.update(dt);
+    this.strafers.update(dt, { x: player.pos.x, y: player.pos.y + EYE_HEIGHT, z: player.pos.z });
+    if (this.pop) {
+      this.popAge += dt;
+      if (this.popAge > POP_SECONDS) this.pop = null;
+    }
     if (this.result) {
       this.resultAge += dt;
       if (this.resultAge > RESULT_SECONDS) this.result = null;
@@ -253,6 +282,11 @@ export class TrainingRange {
       return null;
     }
     r.t += dt;
+    if (expired && r.id === 'flick') {
+      // A target that timed out is a miss: it breaks the streak.
+      r.missed += expired;
+      r.streak = 0;
+    }
     if (def.kind === 'aim') {
       const fl = this.layout.gallery.firingLine;
       const onLine =
@@ -338,17 +372,17 @@ export class TrainingRange {
   private tickStrafers(r: Run, dt: number) {
     const lanes = this.layout.gallery.strafeLanes;
     r.strafeQueue = r.strafeQueue.map((s) => s - dt).filter((s) => s > 0);
-    let need = Math.min(STRAFERS_UP, lanes.length) - this.field.count('strafer') - r.strafeQueue.length;
+    let need = Math.min(STRAFERS_UP, lanes.length) - this.strafers.count() - r.strafeQueue.length;
     while (need-- > 0) {
       // A lane nobody is on; a respawn prefers a different lane.
-      const busy = new Set(this.field.tags('strafer'));
+      const busy = new Set(this.strafers.tags());
       const free = lanes.map((_, i) => i).filter((i) => !busy.has(String(i)));
       const pool = free.length ? free : lanes.map((_, i) => i);
       const i = pool[Math.floor(Math.random() * pool.length)];
       const ln = lanes[i];
       // Faster on the far lanes, so the angular speed stays comparable.
       const dist = Math.hypot((ln.a.x + ln.b.x) / 2 - this.layout.gallery.start.x, (ln.a.z + ln.b.z) / 2 - this.layout.gallery.start.z);
-      this.field.spawnStrafer(ln.a, ln.b, 5.5 + Math.min(4, dist / 12), String(i));
+      if (!this.strafers.spawn(ln.a, ln.b, 5.5 + Math.min(4, dist / 12), String(i))) break; // every body busy: next tick
     }
   }
 
@@ -363,38 +397,78 @@ export class TrainingRange {
     return !this.run;
   }
 
+  // The rail cooldown for the next shot: Flick runs a fast rail, everything
+  // else the real one (null).
+  shotCooldown(): number | null {
+    return this.run?.id === 'flick' ? FLICK_COOLDOWN : null;
+  }
+
   targets(): RailTarget[] {
-    return this.field.railTargets();
+    return [...this.field.railTargets(), ...this.strafers.railTargets()];
   }
 
   registerShot() {
     this.shotLanded = false;
+    this.shotKills = 0;
     if (this.run) this.run.shots += 1;
     else this.free.shots += 1;
   }
 
   registerMiss() {
-    if (!this.run) this.free.streak = 0;
+    if (this.run) this.run.streak = 0;
+    else this.free.streak = 0;
   }
 
-  // A rail hit; returns the target's position for the kill effect.
-  onHit(id: string): THREE.Vector3 | null {
-    const hit = this.field.hit(id);
-    if (!hit) return null;
+  // A rail kill. Returns where the kill effect goes, and whether it counts as
+  // a headshot (only the strafers' player-shaped bodies have a head).
+  onHit(id: string, headshot: boolean, style?: KillEffectStyle): { pos: THREE.Vector3; headshot: boolean } | null {
+    let pos: THREE.Vector3 | null;
+    let age: number | null = null;
+    let strafer = false;
+    if (this.strafers.owns(id)) {
+      pos = this.strafers.hit(id, style);
+      strafer = true;
+    } else {
+      const hit = this.field.hit(id);
+      pos = hit ? hit.pos : null;
+      if (hit?.kind === 'flick') age = hit.age;
+    }
+    if (!pos) return null;
+    headshot = strafer && headshot;
     const r = this.run;
     const first = !this.shotLanded; // accuracy counts shots, not targets
     this.shotLanded = true;
+    this.shotKills += 1;
+    if (first) this.shotCount += 1;
+    let streak: number;
     if (r) {
       r.hits += 1;
       if (first) r.landed += 1;
-      if (hit.kind === 'strafer') r.strafeQueue.push(STRAFER_RESPAWN);
+      if (strafer) r.strafeQueue.push(STRAFER_RESPAWN);
+      if (age !== null) {
+        r.reactSum += age;
+        r.reactN += 1;
+      }
+      r.streak += 1;
+      if (r.streak > r.bestStreak) r.bestStreak = r.streak;
+      streak = r.streak;
     } else {
       if (first) this.free.hits += 1;
       this.free.destroyed += 1;
       this.free.streak += 1;
       if (this.free.streak > this.free.bestStreak) this.free.bestStreak = this.free.streak;
+      streak = this.free.streak;
     }
-    return hit.pos;
+    // One popup per shot: a rail through two reads "+2".
+    this.pop = {
+      key: this.shotCount,
+      label: this.shotKills > 1 ? `+${this.shotKills}` : headshot ? 'HEADSHOT' : '+1',
+      ms: age !== null ? Math.round(age * 1000) : null,
+      streak,
+      headshot: headshot || (this.pop?.key === this.shotCount && this.pop.headshot),
+    };
+    this.popAge = 0;
+    return { pos, headshot };
   }
 
   // ── HUD ─────────────────────────────────────────────────────────────────
@@ -411,6 +485,7 @@ export class TrainingRange {
       challenge: this.challengeHud(),
       result: this.result,
       notice: this.notice,
+      pop: this.pop,
     };
   }
 
@@ -440,6 +515,8 @@ export class TrainingRange {
       gates: this.layout.course.gates.length,
       split,
       targetsLeft: r.id === 'gauntlet' ? this.field.count('gauntlet') : null,
+      missed: r.id === 'flick' ? r.missed : null,
+      streak: r.streak,
       best: best ? best.score : null,
     };
   }
@@ -452,6 +529,7 @@ export class TrainingRange {
   dispose(scene: THREE.Scene) {
     this.clearRun();
     this.field.dispose();
+    this.strafers.dispose();
     this.gates.dispose();
     this.ghost.dispose();
     for (const s of this.signs.values()) s.dispose(scene);
