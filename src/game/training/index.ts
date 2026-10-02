@@ -166,6 +166,7 @@ export class TrainingRange {
     this.notice = null;
     this.pop = null;
     this.showFreeTargets(false);
+    if (id === 'strafers') this.strafers.prewarm(); // build the bodies during the 3-2-1, not at GO
     playUi('countdownTick', COUNTDOWN + 1);
     if (def.kind === 'race') {
       this.gates.progress(0);

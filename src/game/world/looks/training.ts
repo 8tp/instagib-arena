@@ -209,7 +209,7 @@ function coursePaint(): Inlay[] {
   // spine run ahead of the hurdle
   out.push(rect(36, -40, 36.4, -37.5, 0xc9a227, 15, { hazard: true }));
   out.push(rect(14, -38.5, 14.4, -34, 0xc9a227, 20, { hazard: true }));
-  out.push(rect(-9, -20.4, -5, -20, 0xc9a227, 12, { hazard: true }));
+  out.push(rect(-9, -8.4, -5, -8, 0xc9a227, 12, { hazard: true }));
   // infield jump ruler (defrag style): take-off bar, a tick every metre,
   // long ticks every 5 m — see how far a jump / double / dash-jump carries
   out.push(rect(34, 0, 35.2, 3, 0xc9a227, 0, { hazard: true }));

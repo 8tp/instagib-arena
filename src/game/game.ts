@@ -2821,9 +2821,10 @@ export class Game {
       }
     }
 
-    // Cooldown-to-ready transition → reload-ready ping. Fires once per shot.
+    // Cooldown-to-ready transition → reload-ready ping. Fires once per shot —
+    // not for Flick's fast rail, where every ~0.3 s it would just be noise.
     const ready = this.weapon.cooldown === 0;
-    if (ready && !this.weaponWasReady && !dead) {
+    if (ready && !this.weaponWasReady && !dead && this.weapon.cooldownTotal >= RAIL_COOLDOWN) {
       this.audio.play('reload-ready', 0.6);
     }
     this.weaponWasReady = ready;
@@ -2977,7 +2978,9 @@ export class Game {
     const trainingShot = this.trainingRange?.freeFire() ?? false;
     if (trainingShot) this.weapon.cooldown = 0;
     // Flick runs a fast rail; everything else (matches included) the real one.
-    this.weapon.cooldownTotal = this.trainingRange?.shotCooldown() ?? RAIL_COOLDOWN;
+    // Only between shots: a click the cooldown blocks must not rescale it.
+    const fastRail = this.trainingRange?.shotCooldown() ?? null;
+    if (this.weapon.cooldown <= 0) this.weapon.cooldownTotal = fastRail ?? RAIL_COOLDOWN;
     const result = this.weapon.fire(
       muzzle,
       this.tmpForward,

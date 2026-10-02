@@ -38,6 +38,7 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 // Anything malformed (hand-edited, from an older build) is dropped, per record.
 function load(): Store {
   try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem('instagib-training-v1'); // superseded (see KEY)
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
     if (raw) {
       const s = JSON.parse(raw) as Partial<Store>;

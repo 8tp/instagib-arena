@@ -33,7 +33,7 @@ export type TrainingLayout = {
     anchors: Vec3[];
     // Lanes for Strafers: a player-sized strafer's FEET slide between a and
     // b (on the floor / a deck top; straight, clear of geometry by the player
-    // radius along the way, with 3.4 m of hop headroom), visible from the
+    // radius along the way, with room for a 1.4 m hop), visible from the
     // firing line.
     strafeLanes: Array<{ a: Vec3; b: Vec3 }>;
     // Painted distance markers (the look draws them; the HUD may label them).

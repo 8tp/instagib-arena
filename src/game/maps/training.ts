@@ -45,8 +45,9 @@ import { B, pt, shell, slab, spawnAt, steps, type MapBox } from './kit';
 //               jump peaks at ~3.4 m: both climbs need the boost. A fall from
 //               C1/C2 lands on the P4 runway: go again.
 //     6 spine   drop 12.5 m south off SH onto the spine top and sprint it; the
-//               5 m hurdle on it (teal = boost, like BT and SH) is a
-//               boost-over at full speed.
+//               5 m hurdle at its far end (teal = boost, like BT and SH) is a
+//               boost-over at full speed. It sits where a dash-jump off SH
+//               has come back down below its top, so that can't skip it.
 //     7 finish  run off the spine's end (12 m drop) and sprint into the hub.
 
 const HX = 60;
@@ -116,8 +117,8 @@ export const TRAINING: ArenaMap = (() => {
     B(-9, 0, -18, -5, 4.5, -6, 'spine'),
     B(-9, 0, -2, -5, 4.5, 6, 'spine'),
     B(-9, 4.5, -34, -5, SPINE, 6, 'spine'),
-    // the hurdle across the spine run: boost over it (teal = boost, as BT)
-    B(-9, SPINE, -16, -5, HURDLE, -14, 'boost'),
+    // the hurdle across the spine run's end: boost over it (teal = boost, as BT)
+    B(-9, SPINE, -4, -5, HURDLE, -2, 'boost'),
     // recovery block on the course side: boost up (6 m), boost again to the top
     B(-5, 0, -15, -1, 6, -11, 'stand'),
   ];
@@ -251,7 +252,7 @@ export const TRAINING_LAYOUT: TrainingLayout = {
       gate(46, DECK, -40, 56, DECK + 3, -34), // G4 up the chimney (deck)
       gate(14, C2_TOP, -38.5, 24, C2_TOP + 3, -34), // G5 boosted onto the sky island (C2)
       gate(-9, SH_TOP, -40, -4, SH_TOP + 3, -34), // G6 boosted onto the spine-head tower
-      gate(-11, SPINE, 0, -3, SPINE + 3, 5), // G7 the spine's end, past the hurdle
+      gate(-11, SPINE, 0, -3, SPINE + 10, 5), // G7 the spine's end, past the hurdle (tall: a boost over it flies through high)
       gate(-7, 0, 21, 7, 4, 23), // G8 finish, in front of the hub
     ],
     targets: [
@@ -269,8 +270,8 @@ export const TRAINING_LAYOUT: TrainingLayout = {
       pt(12, 3, 14), // finish sprint
       pt(-16, 5, 12), // finish sprint
     ],
-    // ≈258 m at run speed is ~26 s before the climbs; four boosts and the
-    // chimney make 34 s a clean, fast run.
+    // Estimate, to retune from playtests: the pit, the dash gap, four boosts,
+    // the chimney and the run home make 34 s a clean, fast run.
     par: 34,
   },
 };

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CharacterAnimator, type CharacterAnimInput } from '../character-anim';
 import { Character } from '../character/character';
 import { attachRailgun, disposeRailgun, type AttachedRailgun } from '../character/gun';
+import { MODEL_YAW_OFFSET } from '../bots';
 import { BOT_HEADSHOT_THRESHOLD, BOT_HEIGHT, BOT_RADIUS } from '../constants';
 import { DEFAULT_RAILGUN_FINISH, railgunFinishById, type KillEffectStyle } from '../cosmetics';
 import type { Vec3 } from '../types';
@@ -14,14 +15,13 @@ import { makeMover, stepMover, type Mover } from './targets';
 // the feet, headshots above BOT_HEADSHOT_THRESHOLD), so the drill matches
 // real fights. A kill gibs the body with your finisher.
 //
-// Bodies are pooled: built on the first Strafers run, reused for every spawn,
-// freed on dispose. The pool covers the bodies on the lanes plus the ones
+// Bodies are pooled: built when the first Strafers run starts (during its
+// 3-2-1, not at GO), reused for every spawn, freed on dispose. The pool covers the bodies on the lanes plus the ones
 // still gibbing.
 
 const POOL = 6;
 const ARMOUR = '#ff4fd8'; // the Strafers accent (pad, sign, HUD)
 const GROW_HZ = 16;
-const MODEL_YAW_OFFSET = Math.PI; // camera yaw → model-root yaw (as bots.ts)
 
 type Body = {
   character: Character;
@@ -44,6 +44,11 @@ export class StraferSquad {
 
   constructor(private scene: THREE.Scene) {}
 
+  // Build the pool now (idempotent). Call ahead of the first spawn.
+  prewarm() {
+    if (!this.bodies.length) this.build();
+  }
+
   private build() {
     for (let i = 0; i < POOL; i++) {
       const character = new Character({ colorHex: ARMOUR });
@@ -61,7 +66,7 @@ export class StraferSquad {
   // A strafer on the lane a→b (FEET positions), starting at a random point.
   // Returns false when every body is busy (the caller retries next tick).
   spawn(a: Vec3, b: Vec3, speed: number, tag: string): boolean {
-    if (!this.bodies.length) this.build();
+    this.prewarm();
     const body = this.bodies.find((x) => x.state === 'free');
     if (!body) return false;
     body.id = `st${this.nextId++}`;
@@ -103,7 +108,7 @@ export class StraferSquad {
   railTargets(): RailTarget[] {
     const out: RailTarget[] = [];
     for (const b of this.bodies) {
-      if (b.state !== 'live' || b.grow < 0.35) continue; // not shootable until it has popped in
+      if (b.state !== 'live' || b.grow < 0.9) continue; // not shootable until it has (nearly) popped in: the hitbox is full size
       const p = b.group.position;
       out.push({
         kind: 'target',
