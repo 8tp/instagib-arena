@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-wavedash
 data
 .git
 .github

@@ -1,3 +1,5 @@
+import { apiFetch, gameServerUrl } from './backend';
+import { finishWavedashLoading } from './wavedash';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { memo } from 'react';
 import {
@@ -135,14 +137,10 @@ export type MatchConfig =
   // the server confirms which room/map we're spectating (Game adopts it then).
   | { mode: 'spectator'; mapId: string; serverUrl: string; roomId: string };
 
-// The game server is served on the same origin as the web client (the Node
-// server hosts both the static build and the /ws/instagib socket), so the
-// default multiplayer URL is derived from the current location: ws in dev,
-// wss behind TLS. In dev, Vite proxies /ws to the backend (see vite.config.ts).
+// Same-origin on the website, or the configured backend for portal builds.
 function defaultServerUrl(): string {
   if (typeof window === 'undefined') return 'ws://localhost:8787/ws/instagib';
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}/ws/instagib`;
+  return gameServerUrl();
 }
 
 const SETTINGS_KEY = 'instagib-settings-v2';
@@ -316,6 +314,7 @@ const INITIAL_HUD: HudState = {
 };
 
 export default function InstagibClient() {
+  useEffect(finishWavedashLoading, []);
   const auth = useAuth();
   const [loginOpen, setLoginOpen] = useState(false);
   // Every settings write keeps the legacy per-slot ids in step with `looks`.
@@ -696,7 +695,7 @@ function GameView({
   // the local kill-confirm flex.
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    apiFetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?: InstagibProfile }) => {
         if (!active || !d.profile) return;
@@ -3058,7 +3057,7 @@ async function submitMatchStats(
     // is cosmetic (for the leaderboard), so send the local display name. The
     // `offline` flag scales XP server-side (practice shouldn't be the best farm).
     // `mode` is recorded on the audit row only (powers the dashboard breakdown).
-    const res = await fetch('/api/stats', {
+    const res = await apiFetch('/api/stats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -3079,7 +3078,7 @@ async function submitChallengeRun(
   run: { kills: number; won: boolean; timeMs: number; replay: Uint8Array },
 ): Promise<WeeklyChallengeMe | null> {
   try {
-    const res = await fetch('/api/challenge/weekly', {
+    const res = await apiFetch('/api/challenge/weekly', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -3090,7 +3089,7 @@ async function submitChallengeRun(
     // Upload the replay only when the server says this run now defines the board
     // row (best-effort — a failed upload just leaves the row without a replay).
     if (d.acceptReplay && run.replay.length) {
-      void fetch('/api/challenge/weekly/replay', {
+      void apiFetch('/api/challenge/weekly/replay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         credentials: 'same-origin',
@@ -3295,7 +3294,7 @@ function Lobby({
   const accountName = account?.username ?? '';
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    apiFetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?: MenuProfile }) => {
         if (!active || !d.profile) return;

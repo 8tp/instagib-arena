@@ -12,6 +12,7 @@ const dataDir = mkdtempSync(join(tmpdir(), 'instagib-security-'));
 process.env.DATA_DIR = dataDir;
 process.env.NODE_ENV = 'production';
 process.env.APP_BASE_URL = 'https://arena.test';
+process.env.PORTAL_ORIGINS = 'https://instagib-test.builds.wavedashcdn.com';
 process.env.TRUST_PROXY_HOPS = '0';
 process.env.ADMIN_USERNAMES = 'ExistingAdmin,UnclaimedAdmin';
 process.env.ADMIN_API_TOKEN = randomBytes(32).toString('hex');
@@ -96,6 +97,34 @@ test('origin allow-list checks scheme and configured origin', () => {
   assert.equal(allowedOrigin('https://arena.test', 'anything'), true);
   for (const origin of ['https://evil.test', 'http://arena.test', 'null', 'https://arena.test/path', 'https://user@arena.test']) assert.equal(allowedOrigin(origin, 'arena.test'), false);
   assert.equal(allowedOrigin(undefined, 'arena.test', true), false);
+});
+test('only our exact portal build is trusted for HTTP and WebSockets', () => {
+  assert.equal(allowedOrigin('https://instagib-test.builds.wavedashcdn.com', 'arena.test', true), true);
+  for (const origin of ['https://other.builds.wavedashcdn.com', 'https://instagib-test.builds.wavedashcdn.com.evil.test', 'http://instagib-test.builds.wavedashcdn.com']) {
+    assert.equal(allowedOrigin(origin, 'arena.test', true), false);
+  }
+});
+test('portal preflight, API writes and partitioned account sessions work together', async () => {
+  const origin = 'https://instagib-test.builds.wavedashcdn.com';
+  const preflight = await fetch(`${url}/api/auth/register`, {
+    method: 'OPTIONS', headers: { Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true');
+  assert.match(preflight.headers.get('vary') ?? '', /Origin/);
+  const registered = await request('/auth/register', { username: 'PortalAudit', password: 'audit-password' }, undefined, { Origin: origin, 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(registered.status, 200);
+  const cookie = registered.headers.get('set-cookie') ?? '';
+  for (const flag of [/HttpOnly/, /Secure/, /SameSite=None/, /Partitioned/]) assert.match(cookie, flag);
+  const me = await request('/auth/me', undefined, undefined, { Origin: origin, Cookie: cookie.split(';')[0] });
+  assert.equal((await me.json()).user.username, 'PortalAudit');
+  const loggedOut = await request('/auth/logout', {}, undefined, { Origin: origin, Cookie: cookie.split(';')[0], 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(loggedOut.status, 200);
+  assert.match(loggedOut.headers.get('set-cookie') ?? '', /Partitioned/);
+  const denied = await request('/auth/logout', {}, undefined, { Origin: 'https://other.builds.wavedashcdn.com', 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get('access-control-allow-origin'), null);
 });
 test('direct requests ignore forged proxy and Cloudflare headers', () => {
   assert.equal(clientIp({ headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '5.6.7.8' }, socket: { remoteAddress: '::ffff:127.0.0.1' } } as IncomingMessage), '127.0.0.1');

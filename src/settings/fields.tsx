@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useCallback, useEffect, useId, useState, type CSSProperties, type ReactNode } from 'react';
 import { DeckSwitch, SegButton, UtilButton } from '../deck';
 import { sfxProps, toast } from '../deck-core';
@@ -396,7 +397,7 @@ export function AnnouncerPackRow({
   const [unlocked, setUnlocked] = useState<Set<string> | null>(null);
   useEffect(() => {
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    apiFetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: { unlocked?: string[] } } | null) => {
         if (active) setUnlocked(new Set(d?.profile?.unlocked ?? [])); // empty (e.g. guest) → only default

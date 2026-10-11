@@ -39,11 +39,39 @@ function privateHost(host: string): boolean {
 const configuredOrigin = process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).origin : '';
 if (configuredOrigin && !/^https?:\/\//.test(configuredOrigin)) throw new Error('Invalid APP_BASE_URL');
 
+// Exact origins of our uploaded portal builds, never a platform-wide wildcard.
+const portalOrigins = new Set((process.env.PORTAL_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean).map((origin) => {
+  const url = new URL(origin);
+  if (url.protocol !== 'https:' || url.origin !== origin) throw new Error('Invalid PORTAL_ORIGINS');
+  return origin;
+}));
+export function isPortalOrigin(origin: string | undefined): boolean {
+  return !!origin && portalOrigins.has(origin);
+}
+
+export const portalCors: RequestHandler = (req, res, next) => {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.vary('Origin');
+  if (isPortalOrigin(req.get('origin'))) {
+    res.setHeader('Access-Control-Allow-Origin', req.get('origin')!);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(204).end();
+      return;
+    }
+  }
+  next();
+};
+
 export function allowedOrigin(origin: string | undefined, host: string, websocket = false): boolean {
   if (!origin) return !websocket || !production;
   try {
     const url = new URL(origin);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || origin !== url.origin) return false;
+    if (isPortalOrigin(origin)) return true;
     if (configuredOrigin) return url.origin === configuredOrigin;
     if (!production && privateHost(url.hostname)) return true;
     return url.origin === `${production ? 'https' : 'http'}://${host}`;
@@ -78,7 +106,7 @@ export const protectApi: RequestHandler = (req, res, next) => {
     return;
   }
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
-      (req.get('sec-fetch-site') === 'cross-site' || !allowedOrigin(req.get('origin'), req.get('host') ?? ''))) {
+      ((!isPortalOrigin(req.get('origin')) && req.get('sec-fetch-site') === 'cross-site') || !allowedOrigin(req.get('origin'), req.get('host') ?? ''))) {
     res.status(403).json({ error: 'origin_forbidden' });
     return;
   }

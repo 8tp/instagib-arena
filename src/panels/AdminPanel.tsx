@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useCallback, useEffect, useState } from 'react';
 import { sfxProps, toast } from '../deck-core';
 import { DeckButton, ModalShell, UtilButton } from '../deck';
@@ -16,7 +17,7 @@ type AuditEntry = {
 
 async function adminPost(path: string, body: object): Promise<{ ok: boolean; error?: string }> {
   try {
-    const r = await fetch(`/api/admin/${path}`, {
+    const r = await apiFetch(`/api/admin/${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -54,7 +55,7 @@ export function AdminModal({ onClose }: { onClose: () => void }) {
   const [auditState, setAuditState] = useState<'loading' | 'ready'>('loading');
 
   const refreshAudit = useCallback(() => {
-    fetch('/api/admin/audit?limit=25', { credentials: 'same-origin' })
+    apiFetch('/api/admin/audit?limit=25', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('audit'))))
       .then((d: { events?: AuditEntry[] }) => setAudit(Array.isArray(d.events) ? d.events : []))
       .catch(() => setAudit([]))
@@ -69,7 +70,7 @@ export function AdminModal({ onClose }: { onClose: () => void }) {
     if (!q) return;
     setBusy(true);
     try {
-      const r = await fetch(`/api/admin/lookup?username=${encodeURIComponent(q)}`, {
+      const r = await apiFetch(`/api/admin/lookup?username=${encodeURIComponent(q)}`, {
         credentials: 'same-origin',
       });
       if (r.ok) {

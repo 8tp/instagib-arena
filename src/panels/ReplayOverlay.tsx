@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Settings } from '../app-types';
@@ -55,7 +56,7 @@ export function ReplayViewerOverlay({
     let viewer: ReplayViewer | null = null;
     (async () => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/challenge/weekly/replay?player=${encodeURIComponent(playerId)}`,
           { credentials: 'same-origin' },
         );

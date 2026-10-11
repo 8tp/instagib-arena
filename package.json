@@ -19,6 +19,8 @@
     "netcode:load": "tsx scripts/netcode-load.ts",
     "bots:sim": "tsx scripts/bot-sim.ts",
     "build": "vite build",
+    "build:wavedash": "vite build --mode wavedash --outDir dist-wavedash",
+    "wavedash:push": "npm run build:wavedash && wavedash build push",
     "preview": "vite preview",
     "start": "NODE_ENV=production tsx server/index.ts",
     "serve": "npm run build && npm run start",

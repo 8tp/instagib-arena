@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useCallback, useEffect, useState } from 'react';
 import type { Account } from '../auth';
 import { sfxProps } from '../deck-core';
@@ -83,11 +84,11 @@ export function RankedModal({
 
   const refreshProfile = useCallback(() => {
     if (!account) return;
-    const me = fetch('/api/ranked/me', { credentials: 'same-origin' })
+    const me = apiFetch('/api/ranked/me', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: RankedProfile } | null) => setProfile(d?.profile ?? null))
       .catch(() => {});
-    const board = fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+    const board = apiFetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: RankedLeaderEntry[] } | null) => setLadder(d?.entries ?? []))
       .catch(() => {});

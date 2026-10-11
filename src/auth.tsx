@@ -1,3 +1,4 @@
+import { apiFetch } from './backend';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { DeckButton, DeckTab, ModalShell, TextButton } from './deck';
 import { Field } from './panels/parts';
@@ -23,7 +24,7 @@ async function post(
   body: object,
 ): Promise<{ ok: boolean; error?: string; data?: AuthResponse }> {
   try {
-    const r = await fetch(path, {
+    const r = await apiFetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -43,7 +44,7 @@ export function useAuth(): AuthApi {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/auth/me', { credentials: 'same-origin' })
+    apiFetch('/api/auth/me', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : { user: null }))
       .then((d: { user: Account }) => {
         if (active) setAccount(d.user ?? null);
