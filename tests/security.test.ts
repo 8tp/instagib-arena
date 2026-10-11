@@ -436,6 +436,42 @@ test('game server blocks shots through walls and still awards clear-line hits', 
   assert.equal(kill.victimId, bid);
   a.ws.close(); b.ws.close();
 });
+test('Wavedash JWTs require a valid signer, issuer, audience, expiry, and this game', async () => {
+  const { generateKeyPair, SignJWT } = await import('jose');
+  const { verifyWavedashIdentity } = await import('../server/wavedash');
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const key = async () => publicKey;
+  const allowed = new Set(['our-game']);
+  const token = (claims: Record<string, unknown> = {}, issuer = 'https://auth.wavedash.com', audience = 'gameplay.wavedash.com', expires = '1h') =>
+    new SignJWT({ gcid: 'our-game', scope: 'gameplay', ...claims }).setProtectedHeader({ alg: 'RS256' })
+      .setSubject('wavedash-player').setIssuer(issuer).setAudience(audience).setIssuedAt().setExpirationTime(expires).sign(privateKey);
+  assert.equal(await verifyWavedashIdentity(await token(), key, allowed), 'wavedash-player');
+  for (const invalid of [await token({ gcid: 'another-game' }), await token({ scope: 'admin' }),
+    await token({}, 'https://fake.test'), await token({}, undefined, 'another-audience'), await token({}, undefined, undefined, '-1h')]) {
+    await assert.rejects(verifyWavedashIdentity(invalid, key, allowed));
+  }
+  const wrongKey = await generateKeyPair('RS256');
+  await assert.rejects(verifyWavedashIdentity(await token(), async () => wrongKey.publicKey, allowed));
+  await assert.rejects(verifyWavedashIdentity(await token(), key, new Set()));
+  const response = await request('/auth/wavedash', { token: 'forged', username: 'ExistingAdmin' });
+  assert.equal(response.status, 401);
+});
+
+test('Wavedash identity is stable and cannot take over matching usernames or staff privileges', async () => {
+  const { wavedashAccount, wavedashIdForAccount } = await import('../server/wavedash');
+  const collision = wavedashAccount('wd-collision', 'AliceAudit');
+  assert.notEqual(collision.id, 'alice');
+  assert.notEqual(collision.username, 'AliceAudit');
+  assert.equal(wavedashAccount('wd-collision', 'BobAudit').id, collision.id);
+  assert.equal(wavedashIdForAccount(collision.id), 'wd-collision');
+  const staff = wavedashAccount('wd-staff', 'UnclaimedAdmin');
+  assert.equal(staff.isAdmin, false);
+  assert.notEqual(staff.username, 'UnclaimedAdmin');
+  assert.equal(wavedashAccount('wd-linked', 'ignored', 'alice').id, 'alice');
+  assert.throws(() => wavedashAccount('wd-linked', 'ignored', 'bob'), /already_linked/);
+  assert.throws(() => wavedashAccount('wd-different', 'ignored', 'alice'), /already_linked/);
+});
+
 test('auth attempts share limits even when callers rotate forged forwarding headers', async () => {
   const statuses = [];
   for (let i = 0; i < 14; i++) statuses.push((await request('/auth/login', { username: 'NobodyAudit', password: 'wrong-password' }, undefined, { 'CF-Connecting-IP': `1.2.3.${i}`, 'X-Forwarded-For': `2.3.4.${i}` })).status);

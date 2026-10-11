@@ -450,6 +450,10 @@ export default function InstagibClient() {
     }
   }, [startMatch]);
 
+  if (!auth.ready) {
+    return <div className='fixed inset-0 grid place-items-center bg-[#0a0d13] text-cyan-100' role='status'>Connecting your account…</div>;
+  }
+
   if (view === 'playing' && config) {
     if (config.mode === 'spectator') {
       return (
@@ -481,7 +485,9 @@ export default function InstagibClient() {
 
   return (
     <>
+      {auth.platformError && <div role='alert' className='fixed top-0 inset-x-0 z-[80] bg-amber-950 px-4 py-2 text-center text-sm text-amber-100'>{auth.platformError}</div>}
       <Lobby
+        key={auth.account?.username ?? 'guest'}
         settings={settings}
         onChangeSettings={setSettings}
         onStart={startMatch}
@@ -493,6 +499,7 @@ export default function InstagibClient() {
       />
       {showOnboarding && (
         <OnboardingModal
+          accountName={auth.account?.username}
           onPlayGuest={finishOnboarding}
           onCreateAccount={() => {
             finishOnboarding();
@@ -3281,7 +3288,7 @@ function Lobby({
     // setting changes, so a custom URL isn't silently ignored until reload (#18).
     // playerName is handled by the cheap setName effect below — not a dep here,
     // so typing a name doesn't churn the socket. applyPresence is stable.
-  }, [serverUrl, startOnline, applyPresence]);
+  }, [serverUrl, startOnline, applyPresence, account?.username]);
 
   // Keep the server-side display name fresh without reconnecting.
   useEffect(() => {
@@ -3484,6 +3491,7 @@ function Lobby({
             {account && (
               <AccountMenu
                 isAdmin={account.isAdmin}
+                wavedash={account.wavedash}
                 onStats={() => setStatsOpen(true)}
                 onSettings={() => openSettingsAt('controls')}
                 onAdmin={() => setAdminOpen(true)}
