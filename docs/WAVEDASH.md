@@ -86,7 +86,7 @@ No developer API key is needed or included in the browser or game backend.
 
 The listing uses `public/wavedash-cover.webp` as its cover and a ten-second
 clip from the existing Instagib Arena trailer as its preview. Description,
-cover, preview, FPS/Multiplayer tags, Keyboard + Mouse input, and English are
+cover, preview, FPS/Multiplayer/Arena Shooter/Competitive/Fast-Paced tags, Keyboard + Mouse input, and English are
 configured in the Developer Portal. The description and built-in imagegen prompt
 are saved under `design/marketing/`; site social previews use the same cover. New releases require no store changes
 unless their content or supported controls/languages change.
