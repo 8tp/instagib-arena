@@ -52,8 +52,10 @@ export function isPortalOrigin(origin: string | undefined): boolean {
 export const portalCors: RequestHandler = (req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.vary('Origin');
-  if (isPortalOrigin(req.get('origin'))) {
-    res.setHeader('Access-Control-Allow-Origin', req.get('origin')!);
+  // Return the configured value, rather than reflecting request header data.
+  const portalOrigin = [...portalOrigins].find((origin) => origin === req.get('origin'));
+  if (portalOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', portalOrigin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
