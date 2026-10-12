@@ -84,6 +84,21 @@ online career totals. Wavedash's public SDK permits client score writes, so its
 platform boards do not add a separate server-verified anti-cheat guarantee.
 No developer API key is needed or included in the browser or game backend.
 
+## Room invites
+
+Wavedash builds share the public game page, for example:
+`https://wavedash.com/games/instagib-arena?wvdsh_join=JM9M2`.
+Wavedash forwards `wvdsh_join` as `getLaunchParams().join`; the client validates
+and uppercases that Railway room code, then joins after account sign-in and
+first-run onboarding. The map comes from the authoritative server.
+
+These are custom launch parameters for our existing Railway rooms, not Wavedash
+SDK lobby IDs. `getLobbyInviteLink()` requires membership in a Wavedash SDK lobby,
+so it is not used for these room codes. Copy buttons use Wavedash's `copyLink()`
+to access the host page's clipboard. Ordinary site invites still use `/play?join=`.
+Never share a player's `builds.wavedashcdn.com` iframe URL: it belongs to that
+player's session and does not launch a fresh Wavedash identity for the invitee.
+
 ## Store assets
 
 The listing uses `public/wavedash-cover.webp` as its cover and a ten-second

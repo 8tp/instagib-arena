@@ -1,5 +1,5 @@
 import { apiFetch, gameServerUrl } from './backend';
-import { finishWavedashLoading } from './wavedash';
+import { finishWavedashLoading, wavedashInviteCode } from './wavedash';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { memo } from 'react';
 import {
@@ -361,11 +361,10 @@ export default function InstagibClient() {
       typeof window !== 'undefined' && !window.localStorage.getItem('instagib-onboarded');
     if (firstRun) setShowOnboarding(true);
 
-    // Invite link: ?join=ROOMID drops straight into that room. The map is
-    // unknown until the server confirms the join (Game adopts it then), so we
-    // pass a placeholder map; clear the param so a refresh doesn't re-join.
+    // Wavedash forwards wvdsh_join through SDK launch params; the ordinary
+    // website uses ?join=. The server supplies the room's actual map.
     if (typeof window !== 'undefined') {
-      const code = new URLSearchParams(window.location.search).get('join');
+      const code = wavedashInviteCode() ?? new URLSearchParams(window.location.search).get('join');
       if (code && /^[A-Z0-9]{3,10}$/i.test(code)) {
         const url = new URL(window.location.href);
         url.searchParams.delete('join');

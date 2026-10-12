@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { MAPS } from '../game/map';
+import { wavedashInviteLink, copyWavedashLink } from '../wavedash';
 
 // Helpers shared by the lobby surfaces AND the in-match overlays in
 // InstagibClient (vote screen, HUD chat) — kept here so both import one copy.
@@ -20,8 +21,15 @@ export function mapParts(id: string): { name: string; tag: string } {
 // Build a shareable ?join= invite URL for a room code (used by the invite modal
 // and the waiting-for-opponents overlay).
 export function inviteLink(roomId: string): string {
-  if (typeof window === 'undefined') return `?join=${roomId}`;
-  return `${window.location.origin}${window.location.pathname}?join=${roomId}`;
+  const platformLink = wavedashInviteLink(roomId);
+  if (platformLink) return platformLink;
+  if (typeof window === 'undefined') return `?join=${encodeURIComponent(roomId)}`;
+  return `${window.location.origin}${window.location.pathname}?join=${encodeURIComponent(roomId)}`;
+}
+
+export async function copyInviteLink(link: string): Promise<void> {
+  if (await copyWavedashLink(link)) return;
+  await navigator.clipboard.writeText(link);
 }
 
 // Stable hue from a string (avatars, map placeholders).

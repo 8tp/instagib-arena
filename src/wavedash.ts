@@ -7,6 +7,8 @@ type WavedashSdk = {
   getUserId: () => string;
   getUsername: () => string;
   getUserJwt: () => Promise<Response<string>>;
+  getLaunchParams: () => Record<string, unknown>;
+  copyLink: (url: string) => Promise<boolean>;
   requestStats: () => Promise<Response<unknown>>;
   setStat: (name: string, value: number, storeNow?: boolean) => boolean;
   setAchievement: (name: string, storeNow?: boolean) => boolean;
@@ -19,6 +21,29 @@ type WavedashSdk = {
 export const wavedashBuild = import.meta.env.VITE_WAVEDASH === '1';
 const sdk = () => (window as Window & { Wavedash?: WavedashSdk }).Wavedash;
 let initialized = false;
+
+// Railway room codes are custom launch data, separate from SDK lobby IDs.
+// The public game URL lets each invitee receive their own frame and identity.
+export function wavedashInviteLink(roomId: string): string | null {
+  if (!wavedashBuild) return null;
+  const url = new URL('https://wavedash.com/games/instagib-arena');
+  url.searchParams.set('wvdsh_join', roomId);
+  return url.href;
+}
+
+export function wavedashInviteCode(): string | null {
+  if (!wavedashBuild) return null;
+  const code = sdk()?.getLaunchParams().join;
+  return typeof code === 'string' && /^[A-Z0-9]{3,10}$/i.test(code) ? code.toUpperCase() : null;
+}
+
+export async function copyWavedashLink(url: string): Promise<boolean> {
+  if (!wavedashBuild) return false;
+  const platform = sdk();
+  if (!platform) throw new Error('Wavedash clipboard unavailable');
+  if (!await platform.copyLink(url)) throw new Error('Wavedash could not copy the link');
+  return true;
+}
 
 export function finishWavedashLoading(): void {
   const platform = sdk();

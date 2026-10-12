@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { DeckButton, ModalShell, UtilButton } from '../deck';
 import { CONTROLS } from '../controls';
-import { inviteLink } from './helpers';
+import { inviteLink, copyInviteLink } from './helpers';
 import { IconAlert, IconCheck, IconCopy, IconCrosshair, IconRadar, IconWifiOff } from './shared';
 import './lobby.css';
 
@@ -136,7 +136,7 @@ export function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLea
   useEffect(() => () => window.clearTimeout(copyTimer.current), []);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(link);
+      await copyInviteLink(link);
       setCopied(true);
       window.clearTimeout(copyTimer.current);
       copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
