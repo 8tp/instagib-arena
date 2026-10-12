@@ -13,6 +13,7 @@ process.env.DATA_DIR = dataDir;
 process.env.NODE_ENV = 'production';
 process.env.APP_BASE_URL = 'https://arena.test';
 process.env.PORTAL_ORIGINS = 'https://instagib-test.builds.wavedashcdn.com';
+process.env.WAVEDASH_GAME_CLOUD_IDS = 'ourproduction,ourplaytest';
 process.env.TRUST_PROXY_HOPS = '0';
 process.env.ADMIN_USERNAMES = 'ExistingAdmin,UnclaimedAdmin';
 process.env.ADMIN_API_TOKEN = randomBytes(32).toString('hex');
@@ -103,6 +104,61 @@ test('only our exact portal build is trusted for HTTP and WebSockets', () => {
   for (const origin of ['https://other.builds.wavedashcdn.com', 'https://instagib-test.builds.wavedashcdn.com.evil.test', 'http://instagib-test.builds.wavedashcdn.com']) {
     assert.equal(allowedOrigin(origin, 'arena.test', true), false);
   }
+});
+test('Wavedash origins accept different players and builds only for configured game clouds', async () => {
+  const { portalOriginFor } = await import('../server/security');
+  for (const origin of [
+    'https://ourproduction-66a4c1de-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourplaytest-12345678-abcdef01.builds.wavedashcdn.com',
+  ]) {
+    assert.equal(portalOriginFor(origin), origin);
+    assert.equal(allowedOrigin(origin, 'arena.test', true), true);
+  }
+  for (const origin of [
+    'https://anothergame-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproductionevil-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com.evil.test',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com:8443',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com/',
+    'https://user@ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'http://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com\n',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com/path',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com?x=1',
+    'https://ourproduction-aabbccdd-notahex8.builds.wavedashcdn.com',
+    'https://sub.ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+  ]) {
+    assert.equal(portalOriginFor(origin), undefined, origin);
+    assert.equal(allowedOrigin(origin, 'arena.test', true), false, origin);
+  }
+});
+test('another Wavedash player can preflight, authenticate a session, and connect multiplayer', async () => {
+  const origin = 'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com';
+  const preflight = await fetch(`${url}/api/auth/wavedash`, { method: 'OPTIONS', headers: {
+    Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type',
+  } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true');
+  const token = randomBytes(32).toString('base64url');
+  db.createSession(token, 'alice', Date.now());
+  const cookie = `igsession=${token}`;
+  const me = await request('/auth/me', undefined, undefined, { Origin: origin, Cookie: cookie });
+  assert.equal((await me.json()).user.username, 'AliceAudit');
+  assert.equal(me.headers.get('access-control-allow-origin'), origin);
+  const ws = new WebSocket(`${url.replace('http:', 'ws:')}/ws/instagib`, { origin, headers: { Cookie: cookie } });
+  sockets.add(ws);
+  await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  ws.close();
+  const loggedOut = await request('/auth/logout', {}, undefined, { Origin: origin, Cookie: cookie, 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(loggedOut.status, 200);
+  for (const flag of [/Secure/, /SameSite=None/, /Partitioned/]) assert.match(loggedOut.headers.get('set-cookie') ?? '', flag);
+  const denied = await request('/auth/wavedash', { token: 'forged' }, undefined, {
+    Origin: 'https://anothergame-aabbccdd-3e758e27.builds.wavedashcdn.com', 'Sec-Fetch-Site': 'cross-site',
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get('access-control-allow-origin'), null);
 });
 test('portal preflight, API writes and partitioned account sessions work together', async () => {
   const origin = 'https://instagib-test.builds.wavedashcdn.com';

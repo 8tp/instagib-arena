@@ -39,21 +39,37 @@ function privateHost(host: string): boolean {
 const configuredOrigin = process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).origin : '';
 if (configuredOrigin && !/^https?:\/\//.test(configuredOrigin)) throw new Error('Invalid APP_BASE_URL');
 
-// Exact origins of our uploaded portal builds, never a platform-wide wildcard.
+// Explicit origins remain available for other trusted portals.
 const portalOrigins = new Set((process.env.PORTAL_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean).map((origin) => {
   const url = new URL(origin);
   if (url.protocol !== 'https:' || url.origin !== origin) throw new Error('Invalid PORTAL_ORIGINS');
   return origin;
 }));
+const wavedashGameCloudIds = new Set((process.env.WAVEDASH_GAME_CLOUD_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+
+// Wavedash isolates each player/build on <gameCloudId>-<userHash>-<buildHash>.
+// Trust only our configured games and the platform's exact HTTPS host format.
+// Requiring two eight-digit hashes also excludes ports, paths, suffix tricks,
+// userinfo, additional subdomains, and lookalike game IDs.
+export function portalOriginFor(origin: string | undefined): string | undefined {
+  if (!origin) return undefined;
+  const configured = [...portalOrigins].find((value) => value === origin);
+  if (configured) return configured;
+  const match = /^https:\/\/([a-z0-9]+)-([0-9a-f]{8})-([0-9a-f]{8})\.builds\.wavedashcdn\.com$/.exec(origin);
+  if (!match) return undefined;
+  const gameCloudId = [...wavedashGameCloudIds].find((id) => id === match[1]);
+  if (!gameCloudId) return undefined;
+  return `https://${gameCloudId}-${match[2]}-${match[3]}.builds.wavedashcdn.com`;
+}
+
 export function isPortalOrigin(origin: string | undefined): boolean {
-  return !!origin && portalOrigins.has(origin);
+  return portalOriginFor(origin) !== undefined;
 }
 
 export const portalCors: RequestHandler = (req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.vary('Origin');
-  // Return the configured value, rather than reflecting request header data.
-  const portalOrigin = [...portalOrigins].find((origin) => origin === req.get('origin'));
+  const portalOrigin = portalOriginFor(req.get('origin'));
   if (portalOrigin) {
     res.setHeader('Access-Control-Allow-Origin', portalOrigin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');

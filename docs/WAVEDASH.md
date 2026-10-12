@@ -23,25 +23,27 @@ npm run build:wavedash
 wavedash build push -m "Describe the update"
 ```
 
-Open the returned playtest URL. Read the game iframe's **origin** (the URL's
-scheme and hostname, excluding query parameters). Add that exact HTTPS origin
-to the server's comma-separated `PORTAL_ORIGINS` variable and redeploy. Keep
-the currently published origin listed while testing the new build.
+Configure the public and playtest `WAVEDASH_GAME_CLOUD_IDS` on the server
+(see Accounts below). Wavedash's frame hostname is
+`<gameCloudId>-<8-digit user hash>-<8-digit build hash>.builds.wavedashcdn.com`.
+The first hash changes per player. An exact hostname copied from the developer's
+browser would reject everyone else, breaking both sign-in and multiplayer.
+The server accepts that exact HTTPS format for the configured game clouds only;
+other games, lookalike hosts, ports, and additional subdomains remain blocked.
+`PORTAL_ORIGINS` can still list explicit origins for other trusted portals, but
+is not needed for Wavedash once the game cloud IDs are configured. New players
+and new builds do not require origin variable changes.
 
-Verify loading, guest multiplayer, solo play, and optional accounts. Then:
+Open the returned playtest URL and verify loading, multiplayer, solo play, and
+account sign-in. Then:
 
 ```sh
 wavedash publish BUILD_ID --yes
 ```
 
-The published game has a different origin from its playtest. Add the public
-game iframe's exact origin to `PORTAL_ORIGINS` and redeploy before sharing the
-release. Each new build changes both origins, so repeat this for every upload.
-Do not allow every `*.builds.wavedashcdn.com` game to access account sessions.
-
 Railway's variable changes rebuild the configured GitHub branch. Until this
 server patch is merged there, use `railway variable set --skip-deploys` and
-deploy the patched checkout with `railway up --detach` after changing origins.
+deploy the patched checkout with `railway up --detach` after changing variables.
 Otherwise an automatic rebuild can replace the portal support with older code.
 
 ## Accounts and server permissions
