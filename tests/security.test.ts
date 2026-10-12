@@ -110,6 +110,7 @@ test('Wavedash origins accept different players and builds only for configured g
   for (const origin of [
     'https://ourproduction-66a4c1de-3e758e27.builds.wavedashcdn.com',
     'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-0000000f-00000000.builds.wavedashcdn.com',
     'https://ourplaytest-12345678-abcdef01.builds.wavedashcdn.com',
   ]) {
     assert.equal(portalOriginFor(origin), origin);

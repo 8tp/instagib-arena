@@ -59,7 +59,11 @@ export function portalOriginFor(origin: string | undefined): string | undefined 
   if (!match) return undefined;
   const gameCloudId = [...wavedashGameCloudIds].find((id) => id === match[1]);
   if (!gameCloudId) return undefined;
-  return `https://${gameCloudId}-${match[2]}-${match[3]}.builds.wavedashcdn.com`;
+  // Reconstruct the header from our configured ID and numeric hashes rather
+  // than returning any request-supplied string directly.
+  const userHash = Number.parseInt(match[2], 16).toString(16).padStart(8, '0');
+  const buildHash = Number.parseInt(match[3], 16).toString(16).padStart(8, '0');
+  return `https://${gameCloudId}-${userHash}-${buildHash}.builds.wavedashcdn.com`;
 }
 
 export function isPortalOrigin(origin: string | undefined): boolean {
