@@ -267,7 +267,8 @@ const MIN_RECORD_PRESENCE_MS = 45_000;
 // player (account, or network identity for a guest) in one match are full
 // value, then kill/headshot/streak XP halves
 // every further VICTIM_DECAY_EVERY. Duels are exempt — one opponent is the
-// format, and a duel is capped at its frag limit.
+// format, and a duel is capped at its frag limit — unless both players share a
+// network (a second account on the same machine).
 const VICTIM_FULL_KILLS = 5;
 const VICTIM_DECAY_EVERY = 5;
 // A TDM team win only counts for a member who was in the match at least this
@@ -591,15 +592,22 @@ function netIdFrom(req?: UpgradeReq): string {
   return req ? clientIp(req) : 'unknown';
 }
 
-// Are these the same player for progression purposes? Same account, or the
-// same network identity (your own guest tab, a second account on this
-// machine). Shared-IP households therefore don't earn XP off each other — an
-// accepted trade-off. An undeterminable IP never matches.
+// Are these the same player for progression purposes? Same account, or a guest
+// on your own network (your own guest tab). Two DIFFERENT accounts on one
+// network — friends at a LAN, a school lab, a household — are different
+// players: their frags count, but always under the repeat-victim decay (see
+// the kill handler), so a second account on the same machine can't be farmed
+// for full XP. An undeterminable IP never matches.
 function sameIdentity(
   a: { playerId: string; netId: string },
   b: { playerId: string; netId: string },
 ): boolean {
   if (a.playerId && a.playerId === b.playerId) return true;
+  if (a.playerId && b.playerId) return false;
+  return sameNetwork(a, b);
+}
+
+function sameNetwork(a: { netId: string }, b: { netId: string }): boolean {
   return a.netId !== 'unknown' && a.netId === b.netId;
 }
 
@@ -2002,10 +2010,11 @@ export function attachInstagibWs(wss: WebSocketServer) {
     shooter.frags += 1;
     victim.deaths += 1;
     // Progression counters (a throttled aimbot shot above never gets here).
-    // A frag counts unless the victim is YOU — the same account, or anyone on
-    // your network identity (your own guest tab, a second account on the same
-    // machine). Guests from elsewhere count normally. A shot spent on a
-    // non-counting victim leaves accuracy untouched (out of hits and shots).
+    // A frag counts unless the victim is YOU — the same account, or a guest on
+    // your network (your own guest tab). A different account on your network
+    // counts, but its duel exemption from the repeat-victim decay is dropped.
+    // A shot spent on a non-counting victim leaves accuracy untouched (out of
+    // hits and shots).
     if (!sameIdentity(victim, shooter)) {
       shooter.mKills += 1;
       shooter.mHits += 1;
@@ -2013,7 +2022,7 @@ export function attachInstagibWs(wss: WebSocketServer) {
       const n = (shooter.mVictims.get(vKey) ?? 0) + 1;
       shooter.mVictims.set(vKey, n);
       shooter.mKillWeight +=
-        room.mode === 'duel' || n <= VICTIM_FULL_KILLS
+        (room.mode === 'duel' && !sameNetwork(victim, shooter)) || n <= VICTIM_FULL_KILLS
           ? 1
           : 2 ** -Math.ceil((n - VICTIM_FULL_KILLS) / VICTIM_DECAY_EVERY);
       if (bestHeadshot) shooter.mHeadshots += 1;

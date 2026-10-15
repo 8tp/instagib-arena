@@ -29,12 +29,12 @@ Code map:
   **nothing**.
 - **You can't farm yourself.** A frag counts toward progression (kills,
   headshots, streak, accuracy, career stats, leaderboards, challenges) unless
-  the victim is *you*: the same account, or anyone on the same network identity
-  — the WS upgrade's client IP (CF-Connecting-IP, else the first
-  X-Forwarded-For hop, else the socket address). That covers "account + own
-  guest tab" and "a second account on the same machine". Guests on other
-  networks count like anyone else. **Accepted trade-off:** players sharing an
-  IP (a household, an office) don't earn XP off each other.
+  the victim is *you*: the same account, or a guest on your network identity
+  (the WS upgrade's client IP; see `clientIp` in `server/security.ts`). That
+  covers "account + own guest tab". Two **different accounts** on one network
+  (a household, a LAN, a school lab) do count, but always under the
+  repeat-victim XP decay — even in duels, which are otherwise exempt — so a
+  second account on the same machine can't be farmed for full XP.
 - **One account, one slot per room**: a second live tab gets `join-failed` with
   reason `'duplicate'` (and quick-match skips rooms the account is already in);
   a reconnect that lost its resume token reclaims the account's own dropped
