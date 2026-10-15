@@ -29,7 +29,7 @@
     "test:security": "node --import tsx --test tests/security.test.ts"
   },
   "dependencies": {
-    "better-sqlite3": "12.11.1",
+    "better-sqlite3": "13.0.3",
     "cookie-parser": "^1.4.7",
     "express": "^4.21.2",
     "jose": "^6.2.12",
