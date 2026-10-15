@@ -39,11 +39,61 @@ function privateHost(host: string): boolean {
 const configuredOrigin = process.env.APP_BASE_URL ? new URL(process.env.APP_BASE_URL).origin : '';
 if (configuredOrigin && !/^https?:\/\//.test(configuredOrigin)) throw new Error('Invalid APP_BASE_URL');
 
+// Explicit origins remain available for other trusted portals.
+const portalOrigins = new Set((process.env.PORTAL_ORIGINS ?? '').split(/[\s,]+/).filter(Boolean).map((origin) => {
+  const url = new URL(origin);
+  if (url.protocol !== 'https:' || url.origin !== origin) throw new Error('Invalid PORTAL_ORIGINS');
+  return origin;
+}));
+const wavedashGameCloudIds = new Set((process.env.WAVEDASH_GAME_CLOUD_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+
+// Wavedash isolates each player/build on <gameCloudId>-<userHash>-<buildHash>.
+// Trust only our configured games and the platform's exact HTTPS host format.
+// Requiring two eight-digit hashes also excludes ports, paths, suffix tricks,
+// userinfo, additional subdomains, and lookalike game IDs.
+export function portalOriginFor(origin: string | undefined): string | undefined {
+  if (!origin) return undefined;
+  const configured = [...portalOrigins].find((value) => value === origin);
+  if (configured) return configured;
+  const match = /^https:\/\/([a-z0-9]+)-([0-9a-f]{8})-([0-9a-f]{8})\.builds\.wavedashcdn\.com$/.exec(origin);
+  if (!match) return undefined;
+  const gameCloudId = [...wavedashGameCloudIds].find((id) => id === match[1]);
+  if (!gameCloudId) return undefined;
+  // Reconstruct the header from our configured ID and numeric hashes rather
+  // than returning any request-supplied string directly.
+  const userHash = Number.parseInt(match[2], 16).toString(16).padStart(8, '0');
+  const buildHash = Number.parseInt(match[3], 16).toString(16).padStart(8, '0');
+  return `https://${gameCloudId}-${userHash}-${buildHash}.builds.wavedashcdn.com`;
+}
+
+export function isPortalOrigin(origin: string | undefined): boolean {
+  return portalOriginFor(origin) !== undefined;
+}
+
+export const portalCors: RequestHandler = (req, res, next) => {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.vary('Origin');
+  const portalOrigin = portalOriginFor(req.get('origin'));
+  if (portalOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', portalOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(204).end();
+      return;
+    }
+  }
+  next();
+};
+
 export function allowedOrigin(origin: string | undefined, host: string, websocket = false): boolean {
   if (!origin) return !websocket || !production;
   try {
     const url = new URL(origin);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || origin !== url.origin) return false;
+    if (isPortalOrigin(origin)) return true;
     if (configuredOrigin) return url.origin === configuredOrigin;
     if (!production && privateHost(url.hostname)) return true;
     return url.origin === `${production ? 'https' : 'http'}://${host}`;
@@ -78,7 +128,7 @@ export const protectApi: RequestHandler = (req, res, next) => {
     return;
   }
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
-      (req.get('sec-fetch-site') === 'cross-site' || !allowedOrigin(req.get('origin'), req.get('host') ?? ''))) {
+      ((!isPortalOrigin(req.get('origin')) && req.get('sec-fetch-site') === 'cross-site') || !allowedOrigin(req.get('origin'), req.get('host') ?? ''))) {
     res.status(403).json({ error: 'origin_forbidden' });
     return;
   }

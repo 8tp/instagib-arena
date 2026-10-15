@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 // Small menu-side plumbing (kept out of the component files so they stay
 // Fast-Refresh friendly).
 import { useEffect, useRef, useState } from 'react';
@@ -47,7 +48,7 @@ export function useMedia(query: string): boolean {
 
 export async function fetchChallenges(): Promise<ChallengeLists | null> {
   try {
-    const r = await fetch('/api/challenges', { credentials: 'same-origin' });
+    const r = await apiFetch('/api/challenges', { credentials: 'same-origin' });
     if (!r.ok) return null;
     const d = (await r.json()) as { challenges?: ChallengeLists } & { resetsAt?: ChallengeLists['resetsAt'] };
     if (!d.challenges) return null;
@@ -61,7 +62,7 @@ export async function fetchChallenges(): Promise<ChallengeLists | null> {
 // Claim a completed challenge's reward; toasts the result. True on success.
 export async function claimChallengeReward(id: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/challenges/claim', {
+    const res = await apiFetch('/api/challenges/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',

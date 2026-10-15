@@ -12,6 +12,8 @@ const dataDir = mkdtempSync(join(tmpdir(), 'instagib-security-'));
 process.env.DATA_DIR = dataDir;
 process.env.NODE_ENV = 'production';
 process.env.APP_BASE_URL = 'https://arena.test';
+process.env.PORTAL_ORIGINS = 'https://instagib-test.builds.wavedashcdn.com';
+process.env.WAVEDASH_GAME_CLOUD_IDS = 'ourproduction,ourplaytest';
 process.env.TRUST_PROXY_HOPS = '0';
 process.env.ADMIN_USERNAMES = 'ExistingAdmin,UnclaimedAdmin';
 process.env.ADMIN_API_TOKEN = randomBytes(32).toString('hex');
@@ -96,6 +98,90 @@ test('origin allow-list checks scheme and configured origin', () => {
   assert.equal(allowedOrigin('https://arena.test', 'anything'), true);
   for (const origin of ['https://evil.test', 'http://arena.test', 'null', 'https://arena.test/path', 'https://user@arena.test']) assert.equal(allowedOrigin(origin, 'arena.test'), false);
   assert.equal(allowedOrigin(undefined, 'arena.test', true), false);
+});
+test('only our exact portal build is trusted for HTTP and WebSockets', () => {
+  assert.equal(allowedOrigin('https://instagib-test.builds.wavedashcdn.com', 'arena.test', true), true);
+  for (const origin of ['https://other.builds.wavedashcdn.com', 'https://instagib-test.builds.wavedashcdn.com.evil.test', 'http://instagib-test.builds.wavedashcdn.com']) {
+    assert.equal(allowedOrigin(origin, 'arena.test', true), false);
+  }
+});
+test('Wavedash origins accept different players and builds only for configured game clouds', async () => {
+  const { portalOriginFor } = await import('../server/security');
+  for (const origin of [
+    'https://ourproduction-66a4c1de-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-0000000f-00000000.builds.wavedashcdn.com',
+    'https://ourplaytest-12345678-abcdef01.builds.wavedashcdn.com',
+  ]) {
+    assert.equal(portalOriginFor(origin), origin);
+    assert.equal(allowedOrigin(origin, 'arena.test', true), true);
+  }
+  for (const origin of [
+    'https://anothergame-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproductionevil-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com.evil.test',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com:8443',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com/',
+    'https://user@ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'http://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com\n',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com/path',
+    'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com?x=1',
+    'https://ourproduction-aabbccdd-notahex8.builds.wavedashcdn.com',
+    'https://sub.ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com',
+  ]) {
+    assert.equal(portalOriginFor(origin), undefined, origin);
+    assert.equal(allowedOrigin(origin, 'arena.test', true), false, origin);
+  }
+});
+test('another Wavedash player can preflight, authenticate a session, and connect multiplayer', async () => {
+  const origin = 'https://ourproduction-aabbccdd-3e758e27.builds.wavedashcdn.com';
+  const preflight = await fetch(`${url}/api/auth/wavedash`, { method: 'OPTIONS', headers: {
+    Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type',
+  } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true');
+  const token = randomBytes(32).toString('base64url');
+  db.createSession(token, 'alice', Date.now());
+  const cookie = `igsession=${token}`;
+  const me = await request('/auth/me', undefined, undefined, { Origin: origin, Cookie: cookie });
+  assert.equal((await me.json()).user.username, 'AliceAudit');
+  assert.equal(me.headers.get('access-control-allow-origin'), origin);
+  const ws = new WebSocket(`${url.replace('http:', 'ws:')}/ws/instagib`, { origin, headers: { Cookie: cookie } });
+  sockets.add(ws);
+  await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  ws.close();
+  const loggedOut = await request('/auth/logout', {}, undefined, { Origin: origin, Cookie: cookie, 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(loggedOut.status, 200);
+  for (const flag of [/Secure/, /SameSite=None/, /Partitioned/]) assert.match(loggedOut.headers.get('set-cookie') ?? '', flag);
+  const denied = await request('/auth/wavedash', { token: 'forged' }, undefined, {
+    Origin: 'https://anothergame-aabbccdd-3e758e27.builds.wavedashcdn.com', 'Sec-Fetch-Site': 'cross-site',
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get('access-control-allow-origin'), null);
+});
+test('portal preflight, API writes and partitioned account sessions work together', async () => {
+  const origin = 'https://instagib-test.builds.wavedashcdn.com';
+  const preflight = await fetch(`${url}/api/auth/register`, {
+    method: 'OPTIONS', headers: { Origin: origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), origin);
+  assert.equal(preflight.headers.get('access-control-allow-credentials'), 'true');
+  assert.match(preflight.headers.get('vary') ?? '', /Origin/);
+  const registered = await request('/auth/register', { username: 'PortalAudit', password: 'audit-password' }, undefined, { Origin: origin, 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(registered.status, 200);
+  const cookie = registered.headers.get('set-cookie') ?? '';
+  for (const flag of [/HttpOnly/, /Secure/, /SameSite=None/, /Partitioned/]) assert.match(cookie, flag);
+  const me = await request('/auth/me', undefined, undefined, { Origin: origin, Cookie: cookie.split(';')[0] });
+  assert.equal((await me.json()).user.username, 'PortalAudit');
+  const loggedOut = await request('/auth/logout', {}, undefined, { Origin: origin, Cookie: cookie.split(';')[0], 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(loggedOut.status, 200);
+  assert.match(loggedOut.headers.get('set-cookie') ?? '', /Partitioned/);
+  const denied = await request('/auth/logout', {}, undefined, { Origin: 'https://other.builds.wavedashcdn.com', 'Sec-Fetch-Site': 'cross-site' });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get('access-control-allow-origin'), null);
 });
 test('direct requests ignore forged proxy and Cloudflare headers', () => {
   assert.equal(clientIp({ headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '5.6.7.8' }, socket: { remoteAddress: '::ffff:127.0.0.1' } } as IncomingMessage), '127.0.0.1');
@@ -407,6 +493,42 @@ test('game server blocks shots through walls and still awards clear-line hits', 
   assert.equal(kill.victimId, bid);
   a.ws.close(); b.ws.close();
 });
+test('Wavedash JWTs require a valid signer, issuer, audience, expiry, and this game', async () => {
+  const { generateKeyPair, SignJWT } = await import('jose');
+  const { verifyWavedashIdentity } = await import('../server/wavedash');
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const key = async () => publicKey;
+  const allowed = new Set(['our-game']);
+  const token = (claims: Record<string, unknown> = {}, issuer = 'https://auth.wavedash.com', audience = 'gameplay.wavedash.com', expires = '1h') =>
+    new SignJWT({ gcid: 'our-game', scope: 'gameplay', ...claims }).setProtectedHeader({ alg: 'RS256' })
+      .setSubject('wavedash-player').setIssuer(issuer).setAudience(audience).setIssuedAt().setExpirationTime(expires).sign(privateKey);
+  assert.equal(await verifyWavedashIdentity(await token(), key, allowed), 'wavedash-player');
+  for (const invalid of [await token({ gcid: 'another-game' }), await token({ scope: 'admin' }),
+    await token({}, 'https://fake.test'), await token({}, undefined, 'another-audience'), await token({}, undefined, undefined, '-1h')]) {
+    await assert.rejects(verifyWavedashIdentity(invalid, key, allowed));
+  }
+  const wrongKey = await generateKeyPair('RS256');
+  await assert.rejects(verifyWavedashIdentity(await token(), async () => wrongKey.publicKey, allowed));
+  await assert.rejects(verifyWavedashIdentity(await token(), key, new Set()));
+  const response = await request('/auth/wavedash', { token: 'forged', username: 'ExistingAdmin' });
+  assert.equal(response.status, 401);
+});
+
+test('Wavedash identity is stable and cannot take over matching usernames or staff privileges', async () => {
+  const { wavedashAccount, wavedashIdForAccount } = await import('../server/wavedash');
+  const collision = wavedashAccount('wd-collision', 'AliceAudit');
+  assert.notEqual(collision.id, 'alice');
+  assert.notEqual(collision.username, 'AliceAudit');
+  assert.equal(wavedashAccount('wd-collision', 'BobAudit').id, collision.id);
+  assert.equal(wavedashIdForAccount(collision.id), 'wd-collision');
+  const staff = wavedashAccount('wd-staff', 'UnclaimedAdmin');
+  assert.equal(staff.isAdmin, false);
+  assert.notEqual(staff.username, 'UnclaimedAdmin');
+  assert.equal(wavedashAccount('wd-linked', 'ignored', 'alice').id, 'alice');
+  assert.throws(() => wavedashAccount('wd-linked', 'ignored', 'bob'), /already_linked/);
+  assert.throws(() => wavedashAccount('wd-different', 'ignored', 'alice'), /already_linked/);
+});
+
 test('auth attempts share limits even when callers rotate forged forwarding headers', async () => {
   const statuses = [];
   for (let i = 0; i < 14; i++) statuses.push((await request('/auth/login', { username: 'NobodyAudit', password: 'wrong-password' }, undefined, { 'CF-Connecting-IP': `1.2.3.${i}`, 'X-Forwarded-For': `2.3.4.${i}` })).status);

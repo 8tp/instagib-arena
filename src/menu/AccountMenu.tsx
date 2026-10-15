@@ -7,12 +7,14 @@ import './menu.css';
 // through its buttons, Esc or a click outside closes it.
 export function AccountMenu({
   isAdmin,
+  wavedash = false,
   onStats,
   onSettings,
   onAdmin,
   onLogout,
 }: {
   isAdmin: boolean;
+  wavedash?: boolean;
   onStats: () => void;
   onSettings: () => void;
   onAdmin: () => void;
@@ -60,7 +62,7 @@ export function AccountMenu({
         {...sfxProps('uiToggle')}
         className='menu-acct-btn'
       >
-        Account
+        {wavedash ? 'Wavedash account' : 'Account'}
         <svg width={10} height={10} viewBox='0 0 10 10' aria-hidden='true'>
           <path d='M1 3l4 4 4-4' fill='none' stroke='currentColor' strokeWidth='1.8' />
         </svg>

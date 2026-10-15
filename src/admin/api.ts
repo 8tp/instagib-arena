@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 // Admin console data layer: typed GETs for the metrics endpoints (server/db.ts +
 // server/admin-metrics.ts) and the player search. Mutations stay on `econ`
 // (src/economy/api.ts). Every route is under /api/admin (requireAdmin).
@@ -9,7 +10,7 @@ export type Load<T> = { state: 'loading' } | { state: 'error'; message: string }
 
 export async function getJSON<T>(url: string): Promise<{ ok: true; data: T } | { ok: false; message: string }> {
   try {
-    const r = await fetch(url, { credentials: 'same-origin' });
+    const r = await apiFetch(url, { credentials: 'same-origin' });
     if (r.status === 403) return { ok: false, message: 'Your session is not an admin session. Sign in again.' };
     if (!r.ok) return { ok: false, message: `The server answered ${r.status}.` };
     return { ok: true, data: (await r.json()) as T };
@@ -20,7 +21,7 @@ export async function getJSON<T>(url: string): Promise<{ ok: true; data: T } | {
 
 export async function postJSON<T>(url: string, body: object): Promise<T | null> {
   try {
-    const r = await fetch(url, {
+    const r = await apiFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',

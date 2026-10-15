@@ -1,3 +1,4 @@
+import { apiFetch } from './backend';
 import { useState } from 'react';
 import { GITHUB_NEW_ISSUE } from './links';
 import { DeckButton, ModalShell, SegButton, TextButton } from './deck';
@@ -41,7 +42,7 @@ export function FeedbackModal({ onClose, playerName }: { onClose: () => void; pl
     setBusy(true);
     setErr(null);
     try {
-      const r = await fetch('/api/feedback', {
+      const r = await apiFetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',

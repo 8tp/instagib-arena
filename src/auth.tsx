@@ -1,12 +1,14 @@
+import { apiFetch } from './backend';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { DeckButton, DeckTab, ModalShell, TextButton } from './deck';
 import { Field } from './panels/parts';
+import { wavedashBuild, wavedashCredentials, syncWavedashCareer, watchWavedashSaves } from './wavedash';
 
 // Client auth: guest by default, optional account. The session lives in an
 // httpOnly cookie set by the server, so the client only holds the username (or
 // null = guest). Progression is bound to the account server-side.
 
-export type Account = { username: string; isAdmin: boolean; isVerified: boolean } | null;
+export type Account = { username: string; isAdmin: boolean; isVerified: boolean; wavedash?: boolean } | null;
 
 export type AuthApi = {
   account: Account;
@@ -14,16 +16,17 @@ export type AuthApi = {
   login: (username: string, password: string) => Promise<string | null>; // returns error code or null
   register: (username: string, password: string, email: string) => Promise<string | null>;
   logout: () => Promise<void>;
+  platformError: string | null;
 };
 
-type AuthResponse = { user?: { username: string; isAdmin?: boolean; isVerified?: boolean } };
+type AuthResponse = { user?: { username: string; isAdmin?: boolean; isVerified?: boolean; wavedash?: boolean } };
 
 async function post(
   path: string,
   body: object,
 ): Promise<{ ok: boolean; error?: string; data?: AuthResponse }> {
   try {
-    const r = await fetch(path, {
+    const r = await apiFetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -40,15 +43,26 @@ async function post(
 export function useAuth(): AuthApi {
   const [account, setAccount] = useState<Account>(null);
   const [ready, setReady] = useState(false);
+  const [platformError, setPlatformError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    fetch('/api/auth/me', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : { user: null }))
+    (async () => {
+      if (wavedashBuild) {
+        const credentials = await wavedashCredentials();
+        if (credentials) {
+          const response = await post('/api/auth/wavedash', credentials);
+          if (!response.ok) throw new Error('Wavedash sign-in failed');
+          return { user: response.data?.user ?? null };
+        }
+      }
+      const r = await apiFetch('/api/auth/me');
+      return r.ok ? r.json() : { user: null };
+    })()
       .then((d: { user: Account }) => {
         if (active) setAccount(d.user ?? null);
       })
-      .catch(() => {})
+      .catch(() => { if (active && wavedashBuild) setPlatformError('Wavedash progress could not be connected. Reload to retry, or sign in to an Instagib account.'); })
       .finally(() => {
         if (active) setReady(true);
       });
@@ -56,6 +70,16 @@ export function useAuth(): AuthApi {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!account?.wavedash || !wavedashBuild) return;
+    const unwatch = watchWavedashSaves((success) => setPlatformError(success ? null : 'Your progress is saved in Instagib. Wavedash stats could not sync; reload to retry.'));
+    void syncWavedashCareer();
+    const timer = window.setInterval(() => void syncWavedashCareer(), 15_000);
+    const onVisible = () => { if (!document.hidden) void syncWavedashCareer(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { unwatch(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [account]);
 
   const login = useCallback(async (username: string, password: string) => {
     const r = await post('/api/auth/login', { username, password });
@@ -82,7 +106,7 @@ export function useAuth(): AuthApi {
     setAccount(null);
   }, []);
 
-  return { account, ready, login, register, logout };
+  return { account, ready, login, register, logout, platformError };
 }
 
 // Server error code → which field it belongs to + the message. Anything not

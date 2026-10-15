@@ -26,7 +26,7 @@ import { authRouter, adminUsernamesFromEnv } from './auth';
 import { adminApiTokenEnabled, adminRouter, setLiveCountsSource } from './admin';
 import { syncAdminsFromEnv } from './db';
 import { attachInstagibWs } from './instagib-game';
-import { allowedOrigin, clientIp, protectApi } from './security';
+import { allowedOrigin, clientIp, portalCors, protectApi } from './security';
 
 const INSTAGIB_WS_PATH = '/ws/instagib';
 
@@ -89,6 +89,7 @@ app.use((_req, res, next) => {
 });
 
 app.use(cookieParser());
+app.use('/api', portalCors);
 app.use('/api', protectApi);
 app.use(express.json({ limit: '16kb', inflate: false }));
 

@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { ModalShell, Skeleton } from '../deck';
 import { rankedTier } from '../game/constants';
@@ -48,7 +49,7 @@ export function StatsModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     let active = true;
     setState('loading');
-    fetch('/api/profile')
+    apiFetch('/api/profile')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile unavailable'))))
       .then((d: { profile?: InstagibProfile }) => {
         if (!active) return;

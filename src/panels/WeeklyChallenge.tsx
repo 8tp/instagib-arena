@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useEffect, useState } from 'react';
 import type { Settings } from '../app-types';
 import type { Account } from '../auth';
@@ -56,7 +57,7 @@ export function WeeklyChallengeModal({
   useEffect(() => {
     let active = true;
     setFailed(false);
-    fetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
+    apiFetch('/api/challenge/weekly/leaderboard', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { entries?: WeeklyChallengeEntry[]; me?: WeeklyChallengeMe | null; map?: string; fragLimit?: number } | null) => {
         if (!active) return;

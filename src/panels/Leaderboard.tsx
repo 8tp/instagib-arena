@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 import { useEffect, useState } from 'react';
 import { ModalShell } from '../deck';
 import { rankedTier } from '../game/constants';
@@ -140,7 +141,7 @@ export function LeaderboardModal({ onClose }: { onClose: () => void }) {
     let active = true;
     setState('loading');
     if (window === 'ranked') {
-      fetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
+      apiFetch('/api/ranked/leaderboard', { credentials: 'same-origin' })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error('ranked unavailable'))))
         .then((d: { entries?: RankedLeaderEntry[]; me?: RankedProfile | null }) => {
           if (!active) return;
@@ -155,7 +156,7 @@ export function LeaderboardModal({ onClose }: { onClose: () => void }) {
         active = false;
       };
     }
-    fetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25`, { credentials: 'same-origin' })
+    apiFetch(`/api/leaderboard?sort=${sort}&window=${window}&limit=25`, { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('leaderboard unavailable'))))
       .then((d: { leaderboard?: LeaderboardEntry[]; you?: LeaderboardYou }) => {
         if (!active) return;

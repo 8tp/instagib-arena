@@ -1,8 +1,9 @@
 import { lazy, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, MemoryRouter, Routes, Route } from 'react-router-dom';
 import './index.css';
 import Landing from './pages/Landing';
+import { wavedashBuild } from './wavedash';
 
 // Code-split the game client: it drags in the whole Three.js engine (~1MB), and
 // the landing page shouldn't pay for that on first paint. The /play route loads
@@ -15,6 +16,9 @@ const GunLab = lazy(() => import('./game/gun/GunLab'));
 const FxLab = lazy(() => import('./game/fx/FxLab'));
 const CustomGunLab = lazy(() => import('./game/gun/custom/CustomGunLab'));
 const AdminDashboard = lazy(() => import('./AdminDashboard'));
+// Portal entrypoints run inside /embed rather than a website route. Keep their
+// navigation in memory so URL paths don't depend on the platform's host page.
+const Router = wavedashBuild ? MemoryRouter : BrowserRouter;
 
 // Full-screen fallback while a route chunk downloads. Same deck ground as the
 // pages either side of it (no flash), the crosshair mark from the favicon /
@@ -46,9 +50,14 @@ const Loading = () => (
 // effects in dev, which would spin up two GL contexts / two sockets. Production
 // builds never run StrictMode anyway, so we keep dev and prod identical here.
 createRoot(document.getElementById('root')!).render(
-  <BrowserRouter>
+  <Router>
     <Routes>
-      <Route path="/" element={<Landing />} />
+      <Route
+        path="/"
+        element={wavedashBuild ? (
+          <Suspense fallback={<Loading />}><InstagibClient /></Suspense>
+        ) : <Landing />}
+      />
       <Route
         path="/play"
         element={
@@ -114,5 +123,5 @@ createRoot(document.getElementById('root')!).render(
         }
       />
     </Routes>
-  </BrowserRouter>,
+  </Router>,
 );

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { DeckButton, ModalShell, UtilButton } from '../deck';
 import { CONTROLS } from '../controls';
-import { inviteLink } from './helpers';
+import { inviteLink, copyInviteLink } from './helpers';
 import { IconAlert, IconCheck, IconCopy, IconCrosshair, IconRadar, IconWifiOff } from './shared';
 import './lobby.css';
 
@@ -45,9 +45,11 @@ function StateHeader({
 export function OnboardingModal({
   onPlayGuest,
   onCreateAccount,
+  accountName,
 }: {
   onPlayGuest: () => void;
   onCreateAccount: () => void;
+  accountName?: string;
 }) {
   // Escape / backdrop = play as guest (every other modal is escapable). The
   // drifting deck grid inside the sheet is this dialog's one flourish — it is
@@ -64,11 +66,11 @@ export function OnboardingModal({
       footer={({ close }) => (
         <>
           <DeckButton onClick={close} size='sm' center sound='uiBack'>
-            Play as Guest
+            {accountName ? 'Enter the Arena' : 'Play as Guest'}
           </DeckButton>
-          <DeckButton onClick={onCreateAccount} solid accent='emerald' center>
+          {!accountName && <DeckButton onClick={onCreateAccount} solid accent='emerald' center>
             Create account
-          </DeckButton>
+          </DeckButton>}
         </>
       )}
     >
@@ -96,8 +98,9 @@ export function OnboardingModal({
         </div>
       </div>
       <p className='border-t border-white/10 pt-4 font-sans text-[13px] leading-relaxed text-white/55'>
-        Jump in as a <span className='text-white/85'>guest</span> right now — or create a free account
+        {accountName ? <>Signed in as <span className='text-white/85'>{accountName}</span>. Your XP, levels, credits, and cosmetics are saved to your account.</> : <>Jump in as a <span className='text-white/85'>guest</span> right now — or create a free account
         to save your XP, levels, credits, and cosmetics and climb the leaderboards.
+        </>}
       </p>
     </ModalShell>
   );
@@ -133,7 +136,7 @@ export function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLea
   useEffect(() => () => window.clearTimeout(copyTimer.current), []);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(link);
+      await copyInviteLink(link);
       setCopied(true);
       window.clearTimeout(copyTimer.current);
       copyTimer.current = window.setTimeout(() => setCopied(false), 1500);

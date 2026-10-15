@@ -6,7 +6,7 @@ import type { MatchConfig } from '../InstagibClient';
 import { GAME_MODES, MAX_PLAYERS, type BotDifficulty, type GameMode } from '../game/constants';
 import { MAPS } from '../game/map';
 import { ONLINE_MAP_POOL } from '../game/arena-data';
-import { inviteLink } from './helpers';
+import { inviteLink, copyInviteLink } from './helpers';
 import { IconCopy, MapPicker } from './shared';
 import './lobby.css';
 
@@ -93,7 +93,7 @@ export function InviteModal({
   const inputRef = useRef<HTMLInputElement>(null);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(link);
+      await copyInviteLink(link);
       toast('Copied invite link', { tone: 'ok' });
     } catch {
       // Clipboard API blocked (insecure context / permission) — select the

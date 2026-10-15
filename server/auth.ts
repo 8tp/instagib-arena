@@ -16,7 +16,8 @@ import {
   userIdFromSession,
 } from './db';
 import { containsProfanity, isReservedName } from './profanity';
-import { clientIp, RateLimiter } from './security';
+import { clientIp, isPortalOrigin, RateLimiter } from './security';
+import { hasWavedashAccount, verifyWavedashIdentity, wavedashAccount, wavedashIdForAccount } from './wavedash';
 
 // Usernames designated as admins via the ADMIN_USERNAMES env var (comma- or
 // space-separated, case-insensitive). Only existing accounts are promoted at
@@ -38,6 +39,14 @@ const cookieOpts = {
   maxAge: SESSION_MAX_AGE,
   path: '/',
 };
+
+function sessionCookieOptions(req: Request) {
+  // CHIPS gives the portal its own session even when third-party cookies are
+  // blocked. The ordinary website retains its first-party SameSite=Lax cookie.
+  return isPortalOrigin(req.get('origin'))
+    ? { ...cookieOpts, sameSite: 'none' as const, secure: true, partitioned: true }
+    : cookieOpts;
+}
 
 let activeHashes = 0;
 async function hashPw(password: string, salt: string): Promise<Buffer> {
@@ -96,9 +105,40 @@ authRouter.get('/auth/me', (req, res) => {
   const user = id ? findUserById(id) : undefined;
   res.json({
     user: user
-      ? { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified }
+      ? { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified, wavedash: hasWavedashAccount(id), wavedashUserId: wavedashIdForAccount(id) }
       : null,
   });
+});
+
+authRouter.post('/auth/wavedash', async (req, res, next) => {
+  if (rateLimited(clientIp(req), Date.now())) {
+    res.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.token !== 'string' || body.token.length > 8192) {
+    res.status(401).json({ error: 'invalid_wavedash' });
+    return;
+  }
+  let identity: string;
+  try { identity = await verifyWavedashIdentity(body.token); }
+  catch { res.status(401).json({ error: 'invalid_wavedash' }); return; }
+  const linkId = body.link === true ? accountId(req) : undefined;
+  if (body.link === true && !linkId) {
+    res.status(401).json({ error: 'login_required' });
+    return;
+  }
+  try {
+    const user = wavedashAccount(identity, typeof body.username === 'string' ? body.username : '', linkId);
+    const token = genToken();
+    createSession(token, user.id, Date.now());
+    res.cookie(SESSION_COOKIE, token, sessionCookieOptions(req));
+    res.json({ user: { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified, wavedash: true, wavedashUserId: identity } });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'already_linked') {
+      res.status(409).json({ error: 'already_linked' });
+    } else next(err);
+  }
 });
 
 authRouter.post('/auth/register', async (req, res, next) => {
@@ -158,7 +198,7 @@ authRouter.post('/auth/register', async (req, res, next) => {
     });
     const token = genToken();
     createSession(token, id, Date.now());
-    res.cookie(SESSION_COOKIE, token, cookieOpts);
+    res.cookie(SESSION_COOKIE, token, sessionCookieOptions(req));
     logEvent({ event: 'register', actorId: id, actorName: username, ip: clientIp(req) });
     res.json({ user: { username, isAdmin: false, isVerified: false } });
   } catch (err) {
@@ -195,7 +235,7 @@ authRouter.post('/auth/login', async (req, res, next) => {
     }
     const token = genToken();
     createSession(token, user!.id, Date.now());
-    res.cookie(SESSION_COOKIE, token, cookieOpts);
+    res.cookie(SESSION_COOKIE, token, sessionCookieOptions(req));
     const acct = findUserById(user!.id);
     logEvent({ event: 'login', actorId: user!.id, actorName: user!.username, ip: clientIp(req) });
     res.json({
@@ -209,6 +249,7 @@ authRouter.post('/auth/login', async (req, res, next) => {
 authRouter.post('/auth/logout', (req, res) => {
   const token = req.cookies?.[SESSION_COOKIE];
   if (typeof token === 'string') deleteSession(token);
-  res.clearCookie(SESSION_COOKIE, { path: '/' });
+  const { maxAge: _maxAge, ...clearOptions } = sessionCookieOptions(req);
+  res.clearCookie(SESSION_COOKIE, clearOptions);
   res.json({ ok: true });
 });

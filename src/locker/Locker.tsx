@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 // The Locker is the economy hub (docs/economy.md): a full-screen shell with
 // four tabs — Inventory (the 3D loadout + your item instances), Cases (the
 // reel, published odds), Market (fixed-price listings) and Trades (direct
@@ -95,7 +96,7 @@ export function Locker({
   useEffect(() => {
     if (!account) return;
     let live = true;
-    void fetch('/api/profile', { credentials: 'same-origin' })
+    void apiFetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { profile?: InstagibProfile } | null) => {
         if (live && d?.profile) setProfile(d.profile);

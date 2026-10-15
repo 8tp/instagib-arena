@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 // Economy REST client (docs/economy.md §10–11) + the response shapes as the
 // server (server/economy-routes.ts) sends them. With `?mockEconomy=1`
 // (sticky for the tab) every call is answered by an in-memory mock (./mock.ts)
@@ -142,7 +143,7 @@ export function mockOn(): boolean {
 
 async function real<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<Res<T>> {
   try {
-    const r = await fetch(url, {
+    const r = await apiFetch(url, {
       method,
       credentials: 'same-origin',
       headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,

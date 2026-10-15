@@ -1,3 +1,4 @@
+import { apiFetch } from '../backend';
 // The playercard (kill banner) + its stat picker, shared by the killcam, the
 // Locker and the results screen.
 import './player-card.css';
@@ -31,7 +32,7 @@ export function CardStatsEditor({
   useEffect(() => {
     if (givenProfile !== undefined) return;
     let active = true;
-    fetch('/api/profile', { credentials: 'same-origin' })
+    apiFetch('/api/profile', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('profile'))))
       .then((d: { profile?: InstagibProfile }) => {
         if (active && d.profile) setProfile(d.profile);
