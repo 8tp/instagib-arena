@@ -127,9 +127,20 @@ export function DisconnectedOverlay({ error, onLeave }: { error: boolean; onLeav
   );
 }
 
-// Online + alone: instead of a silent empty arena, show what's happening and a
-// one-click way to fill the lobby (#6a).
-export function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLeave: () => void }) {
+// Online + alone: instead of a silent empty arena, show what's happening, a
+// one-click way to fill the lobby (#6a), and practice bots to play meanwhile.
+// Doubles as the pause card while practicing (`practicing`).
+export function WaitingForOpponents({
+  roomId,
+  practicing,
+  onPractice,
+  onLeave,
+}: {
+  roomId: string;
+  practicing: boolean;
+  onPractice: () => void;
+  onLeave: () => void;
+}) {
   const link = inviteLink(roomId);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef(0);
@@ -147,8 +158,12 @@ export function WaitingForOpponents({ roomId, onLeave }: { roomId: string; onLea
   return (
     <ModalShell label='Waiting for opponents' z='z-30' width='w-[460px]' backdrop='heavy'>
       <StateHeader tone='cyan' icon={<IconRadar size={28} />} ping eyebrow='Waiting for opponents' title="You're the only one here">
-        The match starts the moment another player joins. Share the link to fill the lobby.
+        The match starts the moment another player joins. Practice against bots meanwhile — they
+        leave as soon as someone arrives. Practice doesn't count toward stats.
       </StateHeader>
+      <DeckButton onClick={onPractice} solid accent='emerald' full center sound='uiConfirm'>
+        {practicing ? 'Resume Practice' : 'Practice vs Bots'}
+      </DeckButton>
       <div className='flex flex-col gap-2'>
         <div className='lb-copy-row'>
           <input

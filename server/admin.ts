@@ -41,6 +41,7 @@ import {
   getConcurrency,
   getEconomyMetrics,
   getEngagementMetrics,
+  getFunnel,
   getWeeklyCohorts,
   playerCard,
   recentMatchesByTime,
@@ -425,6 +426,12 @@ adminRouter.get('/metrics/cohorts', (req, res) => {
   res.json(getWeeklyCohorts(intParam(req.query.weeks, 8)));
 });
 
+// Player-journey funnel per day × source (web / wavedash / guest): menu →
+// match start → practice, sign-ups/sign-ins, recorded matches (?days=1..90).
+adminRouter.get('/metrics/funnel', (req, res) => {
+  res.json({ funnel: getFunnel(intParam(req.query.days, 14)) });
+});
+
 // Sampled concurrency (1/min, persisted; ?hours=1..2160, default 24).
 adminRouter.get('/metrics/concurrency', (req, res) => {
   res.json({ concurrency: getConcurrency(intParam(req.query.hours, 24)), live: liveSource() });
@@ -493,6 +500,7 @@ adminRouter.get('/metrics/report', (req, res) => {
     overview: getMetricsOverview(),
     timeseries: getMetricsTimeseries(days),
     recentModeBreakdown: modeBreakdown(sample),
+    funnel: getFunnel(days),
     weekly: { ...getWeeklyChallengeStats(), map: WEEKLY_CHALLENGE_MAP, fragLimit: WEEKLY_CHALLENGE_FRAG_LIMIT },
   });
 });

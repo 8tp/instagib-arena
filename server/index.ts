@@ -20,6 +20,7 @@ import { leaderboardRouter } from './leaderboard';
 import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
 import { feedbackRouter } from './feedback';
+import { telemetryRouter } from './telemetry';
 import { economyRouter } from './economy-routes';
 import { startTradeSweep } from './trades';
 import { authRouter, adminUsernamesFromEnv } from './auth';
@@ -65,13 +66,15 @@ const CSP = [
   "frame-ancestors 'none'",
   "img-src 'self' data: blob:",
   "media-src 'self'",
-  "script-src 'self'",
+  // Cloudflare Web Analytics: the edge injects its beacon script, which reports
+  // to cloudflareinsights.com. Nothing else third-party runs.
+  "script-src 'self' https://static.cloudflareinsights.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   // blob:/data: are needed by three.js: GLTFLoader decodes GLB-embedded textures
   // (e.g. the character model) by creating a blob: URL and fetch()-ing it, which
   // connect-src governs — without blob: those textures silently fail to load.
-  "connect-src 'self' blob: data:",
+  "connect-src 'self' blob: data: https://cloudflareinsights.com",
   "worker-src 'self' blob:",
   "form-action 'self'",
 ].join('; ');
@@ -118,6 +121,7 @@ app.use('/api', leaderboardRouter);
 app.use('/api', rankedRouter);
 app.use('/api', challengeRouter);
 app.use('/api', feedbackRouter);
+app.use('/api', telemetryRouter);
 app.use('/api', economyRouter);
 app.use('/api/admin', adminRouter);
 
