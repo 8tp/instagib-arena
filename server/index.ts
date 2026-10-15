@@ -21,6 +21,7 @@ import { rankedRouter } from './ranked';
 import { challengeRouter } from './challenge';
 import { feedbackRouter } from './feedback';
 import { telemetryRouter } from './telemetry';
+import { mountSeoPages, NOT_FOUND_HTML } from './seo-pages';
 import { economyRouter } from './economy-routes';
 import { startTradeSweep } from './trades';
 import { authRouter, adminUsernamesFromEnv } from './auth';
@@ -133,6 +134,9 @@ app.use('/api/admin', adminRouter);
   if (admins.length) console.log(`[admin] ADMIN_USERNAMES=[${admins.join(', ')}] — ${n} synced`);
 }
 
+// Server-rendered content pages for search (server/seo-pages.ts).
+mountSeoPages(app);
+
 if (hasBuild) {
   // Long-cache fingerprinted assets; never cache the HTML shell.
   app.use(
@@ -178,10 +182,21 @@ if (hasBuild) {
         .replaceAll('content="https://instagib.win/"', `content="https://instagib.win${route}"`),
     );
   }
+  // Client routes (src/main.tsx). The dev labs and admin stay reachable but
+  // out of the index; anything else is a real 404 rather than a soft-404 shell.
+  const INDEXED_ROUTES = new Set(['/', '/play']);
+  const NOINDEX_ROUTES = new Set(['/admin', '/podiumlab', '/lockerlab', '/rewardslab', '/gunlab', '/fxlab', '/customgunlab']);
+  // app.get also answers HEAD (Express sends the headers without the body).
   app.get(/.*/, (req, res, next) => {
-    if (req.method !== 'GET' || req.path.startsWith('/api')) return next();
+    if (req.path.startsWith('/api')) return next();
     res.setHeader('Cache-Control', 'no-cache');
-    res.type('html').send(shellByRoute.get(req.path) ?? shellHtml);
+    const route = req.path.length > 1 ? req.path.replace(/\/+$/, '') : req.path;
+    if (!INDEXED_ROUTES.has(route) && !NOINDEX_ROUTES.has(route)) {
+      res.status(404).type('html').send(NOT_FOUND_HTML);
+      return;
+    }
+    if (NOINDEX_ROUTES.has(route)) res.setHeader('X-Robots-Tag', 'noindex');
+    res.type('html').send(shellByRoute.get(route) ?? shellHtml);
   });
 } else if (!dev) {
   console.warn(

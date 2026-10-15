@@ -31,7 +31,7 @@ No health bars, no loadouts — the whole game is **aim and movement**.
 
 - **One-shot railgun.** No health, no armor, no other weapons. Pure duel of aim + movement.
 - **Quake-style movement.** Strafe-jump acceleration, air control, directional dash, double-jump, wall-jump, and a damage-free boost-jump off surfaces.
-- **Game modes** — Free-for-all, **Duel** (1v1, first to the frag limit), **Team Deathmatch** (Red vs Blue), **Last-Man-Standing**, and a **Ranked Duel** Elo ladder (login-only 1v1). Pre-match 3-2-1 countdown, mercy-rule blowout ends.
+- **Game modes** — Free-for-all, **Duel** (1v1, first to the frag limit), **Team Deathmatch** (Red vs Blue), and a **Ranked Duel** Elo ladder (login-only 1v1). Pre-match 3-2-1 countdown, mercy-rule blowout ends.
 - **Server-authoritative multiplayer** with serious netcode (see [below](#the-netcode) — it's the most interesting engineering in the repo):
   - Lag compensation — the server rewinds every target to the shooter's render time before raycasting hitboxes. What you saw is what you hit.
   - 64 Hz binary snapshots, clock sync, fixed-delay interpolation of remotes, dead-reckoning through packet loss.
@@ -156,7 +156,6 @@ pairs you with rooms of the same mode).
 | **Free-for-all** | up to 8 | First player to the frag limit ends the match → map vote. |
 | **Duel (1v1)** | 2 | A single race to the frag limit — no rounds, no pauses. Leaving mid-match forfeits. A login-only **Ranked Duel** ladder uses the same format with Elo. |
 | **Team Deathmatch** | up to 8 | Red vs Blue. Friendly fire is off; first team to the team frag limit wins. |
-| **Last-Man-Standing** | up to 8 | Rounds; lose a life per death, last player alive takes the round. |
 
 Mode tunables (frag/round limits, team sizes, colors) live in
 `src/game/constants.ts` and are shared verbatim by the client and the

@@ -252,6 +252,13 @@ export default function Landing() {
 
         <footer className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-4 text-[12px] text-white/40 sm:px-10">
           <span>Desktop · best in Chrome / Edge</span>
+          {/* Plain links to the server-rendered content pages (crawlable). */}
+          <nav aria-label="Guides" className="flex flex-wrap gap-x-4">
+            <a href="/what-is-instagib" className="transition hover:text-white/80">What is instagib?</a>
+            <a href="/how-to-play" className="transition hover:text-white/80">How to play</a>
+            <a href="/maps" className="transition hover:text-white/80">Maps</a>
+            <a href="/leaderboard" className="transition hover:text-white/80">Leaderboard</a>
+          </nav>
           {arena && (
             <span className="hidden sm:inline">
               Live arena <span className="text-white/65">{arena}</span>
