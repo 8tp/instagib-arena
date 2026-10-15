@@ -38,7 +38,7 @@ curl -H "X-Admin-Token: $ADMIN_API_TOKEN"        https://instagib.win/api/admin/
 
 | Method | Path | Query | Returns |
 |---|---|---|---|
-| GET | `/api/admin/metrics/report` | `days` (def 14), `sample` (def 200, max 200) | **One-call snapshot:** `{generatedAt, via, live, overview, timeseries, recentModeBreakdown, weekly}` |
+| GET | `/api/admin/metrics/report` | `days` (def 14), `sample` (def 200, max 200) | **One-call snapshot:** `{generatedAt, via, live, overview, timeseries, recentModeBreakdown, funnel, weekly}` |
 | GET | `/api/admin/metrics/overview` | — | KPIs: accounts, matches, kills/deaths, global accuracy, XP, avg lifetime, DAU/MAU stickiness, + 24h/7d/30d windows |
 | GET | `/api/admin/metrics/timeseries` | `days` (def 30) | Dense daily series: matches / logins / registrations / active players (zero-filled) |
 | GET | `/api/admin/metrics/retention` | `days` (def 14) | D1/D7 cohort retention by registration day |
@@ -46,6 +46,7 @@ curl -H "X-Admin-Token: $ADMIN_API_TOKEN"        https://instagib.win/api/admin/
 | GET | `/api/admin/metrics/players` | `sort` (kills\|games\|level\|accuracy\|xp\|recent), `q`, `limit` (def 100) | Searchable player table |
 | GET | `/api/admin/metrics/weekly` | — | This week's challenge: participants, runs, winners, fastest clear, top kills, replays stored + bytes, map, fragLimit |
 | GET | `/api/admin/metrics/live` | — | `{online, inMatch, rooms}` right now (same as the public `/api/live`) |
+| GET | `/api/admin/metrics/funnel` | `days` (def 14, max 90) | Per day × source (`web`/`wavedash`/`guest`): menu views, match starts, practice-bot starts, registrations, sign-ins, recorded matches + distinct players |
 ### Admin-session-only (token-only callers get `403 forbidden`)
 
 | Method | Path | Body |

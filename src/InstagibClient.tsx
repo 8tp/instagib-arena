@@ -1,5 +1,6 @@
 import { apiFetch, gameServerUrl } from './backend';
 import { finishWavedashLoading, wavedashInviteCode } from './wavedash';
+import { trackStep } from './telemetry';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { memo } from 'react';
 import {
@@ -299,6 +300,7 @@ const INITIAL_HUD: HudState = {
   matchOver: null,
   netStatus: 'off',
   netPeers: 0,
+  practice: false,
   netRttMs: 0,
   warmupMsLeft: 0,
   localInvulnMs: 0,
@@ -399,6 +401,10 @@ export default function InstagibClient() {
   // or "Guest" otherwise. This is the source of truth (overrides any old local
   // name) so guests always read "Guest" and accounts always read their handle.
   useEffect(() => {
+    if (auth.ready) trackStep('menu');
+  }, [auth.ready]);
+
+  useEffect(() => {
     if (!auth.ready) return;
     const name = auth.account?.username ?? 'Guest';
     setSettings((s) => (s.playerName === name ? s : { ...s, playerName: name }));
@@ -407,6 +413,13 @@ export default function InstagibClient() {
   // Bumped per match so a late offline-stats reply can't land on a newer one.
   const exitToken = useRef(0);
   const startMatch = useCallback((cfg: MatchConfig) => {
+    trackStep(
+      'match_start',
+      cfg.mode === 'multiplayer' ? 'online'
+        : cfg.mode === 'spectator' ? 'spectate'
+          : cfg.challenge ? 'challenge'
+            : cfg.training ? 'training' : 'solo',
+    );
     exitToken.current++;
     setLastResult(null);
     setLastProgression(null);
@@ -554,6 +567,7 @@ function GameView({
       matchOver: s.matchOver,
       netStatus: s.netStatus,
       netPeers: s.netPeers,
+      practice: s.practice,
       vote: s.vote,
       pom: s.pom,
       chat: s.chat,
@@ -752,20 +766,28 @@ function GameView({
   }, [onExit, offlineMatch, isChallenge, reportsOwnStats, endProgression]);
 
   // Online + alone in the room: release the cursor so the waiting overlay's
-  // buttons (copy invite / leave) are clickable, and so the player isn't stuck
-  // running around an empty arena (#6a).
-  const waiting =
+  // buttons (practice / copy invite / leave) are clickable, and so the player
+  // isn't stuck running around an empty arena (#6a). Practicing vs bots keeps
+  // the cursor; the overlay returns as the pause card when it's released.
+  const alone =
     config.mode === 'multiplayer' &&
     hud.netStatus === 'open' &&
     hud.netPeers === 0 &&
     !hud.vote &&
     !hud.matchOver &&
     !joinError;
+  const waiting = alone && !(hud.practice && hud.locked);
+  const idleAlone = alone && !hud.practice;
   useEffect(() => {
-    if (waiting && typeof document !== 'undefined' && document.pointerLockElement) {
+    if (idleAlone && typeof document !== 'undefined' && document.pointerLockElement) {
       document.exitPointerLock();
     }
-  }, [waiting]);
+  }, [idleAlone]);
+  const practice = useCallback(() => {
+    if (!hudStore.getState().practice) trackStep('practice_start');
+    gameRef.current?.setPracticeBots(true);
+    requestPlay();
+  }, [requestPlay, hudStore]);
 
   // Online + the socket dropped mid-match: the net layer auto-retries, but the
   // local sim keeps running against an empty arena. Surface it + release the
@@ -960,8 +982,18 @@ function GameView({
       {waiting && (
         <WaitingForOpponents
           roomId={config.mode === 'multiplayer' ? config.roomId : ''}
+          practicing={hud.practice}
+          onPractice={practice}
           onLeave={leave}
         />
+      )}
+      {alone && hud.practice && hud.locked && (
+        <div className='pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center p-6'>
+          <div className='clip-deck flex items-center gap-3 whitespace-nowrap border border-emerald-300/25 bg-black/60 px-4 py-2 backdrop-blur-sm'>
+            <span className='font-mono text-[10px] uppercase tracking-[0.24em] text-emerald-300/85'>Practice</span>
+            <span className='font-display text-sm text-white/70'>Bots leave when a player joins · Esc for invite link</span>
+          </div>
+        </div>
       )}
       {disconnected && !waiting && (
         <DisconnectedOverlay error={hud.netStatus === 'error'} onLeave={leave} />

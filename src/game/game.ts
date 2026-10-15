@@ -202,6 +202,9 @@ export type NetMatchEvent =
 export type NetMatchListener = (ev: NetMatchEvent) => void;
 
 const PLAYER_NAME_DEFAULT = 'You';
+// Practice bots that fill an online room while you're alone in it (FFA/TDM
+// maps; a duel arena gets one).
+const PRACTICE_BOT_COUNT = 3;
 // Stream our position at the sim-tick rate (64Hz) rather than the 32Hz snapshot
 // rate. The server samples whatever pos it last received when it builds each
 // 32Hz snapshot; if we only send at 32Hz those two unsynchronized clocks beat
@@ -391,6 +394,7 @@ export class Game {
   private net: NetClient | null = null;
   private remotePlayers = new Map<string, RemotePlayer>();
   private wantBots = true;
+  private practiceBots = false; // online + alone: local bots until a player joins
   private wantMultiplayer = false;
   private multiplayerUrl = '';
   private multiplayerRoomId = '';
@@ -909,6 +913,61 @@ export class Game {
   setBotsEnabled(enabled: boolean) {
     this.wantBots = enabled;
     this.applyBotsState();
+  }
+
+  // Online + alone in the room: local practice bots fill the empty arena until
+  // a real player joins. Purely client-side — the server never sees them, so
+  // nothing they do counts toward stats or XP — and they leave the moment a
+  // peer arrives (see endPracticeBots). Never in ranked or while spectating.
+  setPracticeBots(on: boolean) {
+    if (on === this.practiceBots) return;
+    if (on && (!this.net || this.spectator || this.ranked || this.vote || this.net.otherPeers() > 0)) return;
+    if (!on) {
+      this.endPracticeBots(false);
+      return;
+    }
+    this.practiceBots = true;
+    this.botDifficulty = 'easy';
+    this.botCount = this.netMode === 'duel' ? 1 : PRACTICE_BOT_COUNT;
+    this.wantBots = true;
+    this.applyBotsState();
+    // The same cold-open grace an offline match gets, so the first bot to spot
+    // you can't frag you on the spawn frame.
+    this.localRespawnInvuln = LOCAL_WARMUP_SEC + LOCAL_RESPAWN_INVULN_SEC;
+    this.emitHud();
+  }
+
+  // Practice is over (a player joined, a vote began, or the socket dropped):
+  // drop the bots and every local count they fed, so the real match starts
+  // from zero — including a killcam/replay that would star a vanished bot.
+  private endPracticeBots(playerJoined: boolean) {
+    if (!this.practiceBots) return;
+    this.practiceBots = false;
+    this.wantBots = false;
+    this.applyBotsState();
+    this.killcam = null;
+    this.localRespawnInvuln = 0;
+    this.recorder.reset();
+    this.medals = new MedalTracker();
+    this.streaks.clear();
+    this.killfeed.length = 0;
+    this.playerFrags = 0;
+    this.playerDeaths = 0;
+    this.playerHeadshots = 0;
+    this.playerShotsFired = 0;
+    this.playerShotsHit = 0;
+    this.resetMatchDrama();
+    if (playerJoined) {
+      this.banner = {
+        id: this.nextEventId++,
+        tier: 'special',
+        title: 'Player joined',
+        subtitle: 'Match starting',
+        remaining: BANNER_DURATION_SEC,
+        total: BANNER_DURATION_SEC,
+      };
+    }
+    this.emitHud();
   }
 
   setBotCount(n: number) {
@@ -2341,6 +2400,9 @@ export class Game {
       steps += 1;
     }
     if (steps === 5) this.accumulator = 0;
+    if (this.practiceBots && this.net && (this.net.otherPeers() > 0 || this.vote || this.net.status !== 'open')) {
+      this.endPracticeBots(this.net.otherPeers() > 0);
+    }
     this.tickHudTimers(dt);
     this.tickFps(dt);
     this.frameDt = dt;
@@ -4094,10 +4156,13 @@ export class Game {
       // snapshots). Track it in BOTH directions: a previous "only raise" left the
       // scoreboard stuck at the old total after a round/match reset (server →0)
       // because emitHud re-raised it from a stale snapshot value.
-      this.playerFrags = this.net.localFrags;
-      this.playerDeaths = this.net.localDeaths;
-      scores[0].frags = this.playerFrags;
-      scores[0].deaths = this.playerDeaths;
+      // While practicing alone, the local bot frags are the only score.
+      if (!this.practiceBots) {
+        this.playerFrags = this.net.localFrags;
+        this.playerDeaths = this.net.localDeaths;
+        scores[0].frags = this.playerFrags;
+        scores[0].deaths = this.playerDeaths;
+      }
       // Online, the name is server-authoritative (your account username, or the
       // "Guest N" the server assigned in this room) — show that, not the local
       // label, so your scoreboard row matches what everyone else sees.
@@ -4156,7 +4221,7 @@ export class Game {
     }
 
     // Match-drama cues read the local player's standing — skip while spectating.
-    if (!this.spectator) this.updateMatchDrama(board, teamScores);
+    if (!this.spectator && !this.practiceBots) this.updateMatchDrama(board, teamScores);
 
     // Spectator HUD: who's in view + the switch list + their crosshair share-code.
     let spectatorHud: SpectatorHud | null = null;
@@ -4207,6 +4272,7 @@ export class Game {
       // remotes.size briefly hits 0 in a 1v1 — keying "waiting for opponents"
       // off that falsely pauses the match. They're still in the room.
       netPeers: this.net ? this.net.otherPeers() : 0,
+      practice: this.practiceBots,
       netRttMs: this.net ? Math.round(this.net.rttMs) : 0,
       warmupMsLeft: this.warmupMsLeft(),
       localInvulnMs: this.net?.localInvulnMs ?? 0,

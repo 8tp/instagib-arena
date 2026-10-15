@@ -268,6 +268,7 @@ export type HudState = {
   matchOver: { won: boolean } | null; // non-null freezes the match → results screen
   netStatus: NetStatus;
   netPeers: number;
+  practice: boolean; // online + alone: local practice bots are in the arena
   netRttMs: number; // round-trip time to the game server (0 when offline)
   warmupMsLeft: number; // ms left in the match-start "get ready" warmup; 0 when live
   localInvulnMs: number; // remaining server-tracked invuln; 0 when killable

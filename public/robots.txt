@@ -6,5 +6,9 @@ Disallow: /api/
 # Dev-lab routes (cosmetic preview sandboxes) — not for the index.
 Disallow: /podiumlab
 Disallow: /lockerlab
+Disallow: /rewardslab
+Disallow: /gunlab
+Disallow: /fxlab
+Disallow: /customgunlab
 
 Sitemap: https://instagib.win/sitemap.xml

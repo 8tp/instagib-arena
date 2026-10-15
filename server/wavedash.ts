@@ -29,6 +29,10 @@ export function hasWavedashAccount(userId: string): boolean {
   return !!sqlite.prepare('SELECT 1 FROM instagib_wavedash_accounts WHERE user_id = ?').get(userId);
 }
 
+export function hasWavedashIdentity(wavedashId: string): boolean {
+  return !!sqlite.prepare('SELECT 1 FROM instagib_wavedash_accounts WHERE wavedash_id = ?').get(wavedashId);
+}
+
 export function wavedashIdForAccount(userId: string): string | null {
   const row = sqlite.prepare('SELECT wavedash_id FROM instagib_wavedash_accounts WHERE user_id = ?').get(userId) as { wavedash_id: string } | undefined;
   return row?.wavedash_id ?? null;

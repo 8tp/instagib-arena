@@ -17,7 +17,7 @@ import {
 } from './db';
 import { containsProfanity, isReservedName } from './profanity';
 import { clientIp, isPortalOrigin, RateLimiter } from './security';
-import { hasWavedashAccount, verifyWavedashIdentity, wavedashAccount, wavedashIdForAccount } from './wavedash';
+import { hasWavedashAccount, hasWavedashIdentity, verifyWavedashIdentity, wavedashAccount, wavedashIdForAccount } from './wavedash';
 
 // Usernames designated as admins via the ADMIN_USERNAMES env var (comma- or
 // space-separated, case-insensitive). Only existing accounts are promoted at
@@ -129,9 +129,19 @@ authRouter.post('/auth/wavedash', async (req, res, next) => {
     return;
   }
   try {
+    const isNew = !hasWavedashIdentity(identity);
     const user = wavedashAccount(identity, typeof body.username === 'string' ? body.username : '', linkId);
     const token = genToken();
     createSession(token, user.id, Date.now());
+    // Wavedash signs in on every launch, so these 'login' rows are its sessions
+    // (DAU / retention); a first-time identity is its registration.
+    logEvent({
+      event: isNew && !linkId ? 'register' : 'login',
+      actorId: user.id,
+      actorName: user.username,
+      detail: { src: 'wavedash', ...(linkId && isNew ? { linked: true } : {}) },
+      ip: clientIp(req),
+    });
     res.cookie(SESSION_COOKIE, token, sessionCookieOptions(req));
     res.json({ user: { username: user.username, isAdmin: user.isAdmin, isVerified: user.isVerified, wavedash: true, wavedashUserId: identity } });
   } catch (err) {

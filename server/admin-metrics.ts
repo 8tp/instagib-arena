@@ -607,3 +607,71 @@ export function recentMatchesByTime(limitRaw: number, before?: { ts: number; id:
     };
   });
 }
+
+// ── Player-journey funnel ───────────────────────────────────────────────────
+// Per UTC day and source (web / wavedash): the client-reported steps (menu →
+// match start → practice; see server/telemetry.ts), sign-ups and sign-ins,
+// and the server-recorded matches. `players` is distinct accounts, else
+// distinct networks for guests. Range clamped to 1..90 days.
+
+export type FunnelDay = {
+  date: string;
+  src: 'web' | 'wavedash' | 'guest';
+  menu: number;
+  matchStarts: number;
+  practiceStarts: number;
+  registrations: number;
+  logins: number;
+  matchesRecorded: number;
+  playersRecorded: number;
+};
+
+export function getFunnel(daysRaw: number, now = Date.now()): FunnelDay[] {
+  const days = clampInt(daysRaw, 1, 90);
+  const from = (dayIndex(now) - (days - 1)) * DAY_MS;
+  const rows = new Map<string, FunnelDay>();
+  const row = (d: number, src: FunnelDay['src']): FunnelDay => {
+    const key = `${d}|${src}`;
+    let r = rows.get(key);
+    if (!r) {
+      r = { date: dayISO(d), src, menu: 0, matchStarts: 0, practiceStarts: 0, registrations: 0, logins: 0, matchesRecorded: 0, playersRecorded: 0 };
+      rows.set(key, r);
+    }
+    return r;
+  };
+  const steps = st(
+    `SELECT CAST(ts/${DAY_MS} AS INTEGER) AS d, json_extract(detail, '$.step') AS step,
+            json_extract(detail, '$.src') AS src, COUNT(*) AS n
+       FROM instagib_audit WHERE event = 'funnel' AND ts >= ? GROUP BY d, step, src`,
+  ).all(from) as { d: number; step: string; src: string | null; n: number }[];
+  for (const s of steps) {
+    const r = row(s.d, s.src === 'wavedash' ? 'wavedash' : 'web');
+    if (s.step === 'menu') r.menu += s.n;
+    else if (s.step === 'match_start') r.matchStarts += s.n;
+    else if (s.step === 'practice_start') r.practiceStarts += s.n;
+  }
+  const signins = st(
+    `SELECT CAST(a.ts/${DAY_MS} AS INTEGER) AS d, a.event AS event,
+            CASE WHEN w.user_id IS NOT NULL THEN 'wavedash' ELSE 'web' END AS src, COUNT(*) AS n
+       FROM instagib_audit a LEFT JOIN instagib_wavedash_accounts w ON w.user_id = a.actor_id
+      WHERE a.event IN ('register', 'login') AND a.ts >= ? GROUP BY d, a.event, src`,
+  ).all(from) as { d: number; event: string; src: 'web' | 'wavedash'; n: number }[];
+  for (const s of signins) {
+    const r = row(s.d, s.src);
+    if (s.event === 'register') r.registrations += s.n;
+    else r.logins += s.n;
+  }
+  const matches = st(
+    `SELECT CAST(a.ts/${DAY_MS} AS INTEGER) AS d,
+            CASE WHEN a.actor_id = '' THEN 'guest' WHEN w.user_id IS NOT NULL THEN 'wavedash' ELSE 'web' END AS src,
+            COUNT(*) AS n, COUNT(DISTINCT CASE WHEN a.actor_id <> '' THEN a.actor_id ELSE a.ip END) AS u
+       FROM instagib_audit a LEFT JOIN instagib_wavedash_accounts w ON w.user_id = a.actor_id
+      WHERE a.event = 'match' AND a.ts >= ? GROUP BY d, src`,
+  ).all(from) as { d: number; src: FunnelDay['src']; n: number; u: number }[];
+  for (const m of matches) {
+    const r = row(m.d, m.src);
+    r.matchesRecorded += m.n;
+    r.playersRecorded += m.u;
+  }
+  return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date) || a.src.localeCompare(b.src));
+}
