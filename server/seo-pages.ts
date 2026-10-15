@@ -14,9 +14,22 @@ import {
   RANKED_DUEL_FRAG_LIMIT,
   TDM_FRAG_LIMIT,
 } from '../src/game/constants';
-import { CONTROLS } from '../src/controls';
 
 const ORIGIN = 'https://instagib.win';
+
+// Default binds, as in src/controls.ts. Restated here because the runtime image
+// ships only src/game alongside server/ (see Dockerfile).
+const CONTROLS: ReadonlyArray<readonly [string, string]> = [
+  ['WASD', 'Move'],
+  ['Mouse', 'Aim'],
+  ['Left click', 'Fire railgun — recharges after each shot'],
+  ['Space', 'Jump (double-jump in the air)'],
+  ['Shift', 'Dash (directional, short cooldown)'],
+  ['Right click', 'Boost-jump off a nearby surface'],
+  ['Wall + Space', 'Wall-jump for height + speed'],
+  ['Tab', 'Scoreboard'],
+  ['Esc', 'Release mouse / menu'],
+];
 
 const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
